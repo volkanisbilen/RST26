@@ -469,16 +469,17 @@ impl WorldState {
             return;
         }
         if let Some(mut handle) = self.sessions.get_mut(&sid) {
-            if handle.saved_magic_map.contains_key(&skill_id) {
-                return;
-            }
-            if handle.saved_magic_map.len() >= Self::MAX_SAVED_MAGIC {
+            if !handle.saved_magic_map.contains_key(&skill_id)
+                && handle.saved_magic_map.len() >= Self::MAX_SAVED_MAGIC
+            {
                 return;
             }
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
+            // Re-applying the same scroll refreshes its active buff; refresh
+            // the persisted expiry too instead of keeping the older deadline.
             handle
                 .saved_magic_map
                 .insert(skill_id, now_ms + (duration_secs as u64) * 1000);
