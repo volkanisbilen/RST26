@@ -51,3 +51,19 @@ Client-side visual/gameplay confirmation remains a separate live test.
 - PUS service and HTML SHA256 matched the pre-deployment VPS copies.
 - Source archive SHA256:
   `6528d990f61a4a0245f7ac92310d800807742194afec6891f22f0536cbb76c2a`.
+
+## Historical migration compatibility
+
+The first restart was rejected by SQLx: Windows CRLF migration files did not
+match previously applied Linux checksums. Normalize ordinary migration line
+endings, but preserve already-applied VPS files byte-for-byte when checking
+against `_sqlx_migrations`. Four historical data migrations retained CRLF;
+`20260916000001_repair_live_clan_cape_state.sql` also had a different historical
+body on the VPS. Those five files were restored from the pre-deploy source
+backup. All applied migration checksums then matched. No checksum records were
+rewritten and no historical cape migration was rerun. Future deployments must
+retain this applied-migration baseline rather than overwrite it from Windows.
+
+Release executable SHA256:
+`024b32318384681327d78aecf450529815593e58a1d84e3c7d34cebf1dfd00a2`.
+The service reached READY on 2026-09-23 at 16:38:31 UTC; PUS returned HTTP 200.
