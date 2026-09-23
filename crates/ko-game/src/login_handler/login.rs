@@ -166,7 +166,11 @@ pub async fn handle(session: &mut LoginSession, pkt: Packet) -> anyhow::Result<(
 
             if exists.is_none() && auto_register {
                 match repo
-                    .create_auto_registered(&account_id, &password, &session.addr().ip().to_string())
+                    .create_auto_registered(
+                        &account_id,
+                        &password,
+                        &session.addr().ip().to_string(),
+                    )
                     .await
                 {
                     Ok(Some(_)) => {
@@ -178,7 +182,11 @@ pub async fn handle(session: &mut LoginSession, pkt: Packet) -> anyhow::Result<(
                         response.write_u32(0);
                         session.send_packet(&response).await?;
                         session.set_account_id(account_id.clone());
-                        tracing::info!("[{}] LS auto-registered account: {}", session.addr(), account_id);
+                        tracing::info!(
+                            "[{}] LS auto-registered account: {}",
+                            session.addr(),
+                            account_id
+                        );
                         return Ok(());
                     }
                     Ok(None) => {}
@@ -190,7 +198,11 @@ pub async fn handle(session: &mut LoginSession, pkt: Packet) -> anyhow::Result<(
                 }
             }
 
-            tracing::info!("[{}] LS login failed (not found): account='{}'", session.addr(), account_id);
+            tracing::info!(
+                "[{}] LS login failed (not found): account='{}'",
+                session.addr(),
+                account_id
+            );
             send_result(session, AUTH_NOT_FOUND, None).await?;
         }
         Err(e) => {

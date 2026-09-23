@@ -98,6 +98,15 @@ impl GameServer {
         // Start background tick systems — collect handles for clean shutdown.
         let mut bg_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
+        let pus_bind =
+            std::env::var("PUS_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
+        bg_tasks.push(crate::pus_web::start(
+            self.world.clone(),
+            self.pool.clone(),
+            pus_bind,
+        ));
+        info!("Power Up Store web service started");
+
         bg_tasks.push(crate::systems::regen::start_regen_task(self.world.clone()));
         info!("HP/MP regen tick started");
 

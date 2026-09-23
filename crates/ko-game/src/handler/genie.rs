@@ -105,18 +105,27 @@ const GENIE_OPTIONS_MAX_SIZE: usize = 174;
 // v2615 B19360 writes, B1A4B0 reads: u16 count, count*u32 skills,
 // u16(42), 42 option bytes. Never truncate this variable-size structure.
 fn valid_options(data: &[u8]) -> bool {
-    if data.len() < 4 || data.len() > GENIE_OPTIONS_MAX_SIZE { return false; }
+    if data.len() < 4 || data.len() > GENIE_OPTIONS_MAX_SIZE {
+        return false;
+    }
     let count = u16::from_le_bytes([data[0], data[1]]) as usize;
     let offset = 2 + count * 4;
-    count <= 32 && data.len() == offset + 44
-        && data[offset..offset + 2] == [42, 0]
+    count <= 32 && data.len() == offset + 44 && data[offset..offset + 2] == [42, 0]
 }
 
 fn default_options() -> Vec<u8> {
     let mut options = vec![0; GENIE_OPTIONS_DEFAULT_SIZE];
     options[2] = 42;
     // Defaults initialized by CUIGenie_Main at B18E1D and B1A4E6.
-    for (index, value) in [(2,30), (3,10), (4,30), (6,30), (8,80), (25,3), (27,2)] {
+    for (index, value) in [
+        (2, 30),
+        (3, 10),
+        (4, 30),
+        (6, 30),
+        (8, 80),
+        (25, 3),
+        (27, 2),
+    ] {
         options[4 + index] = value;
     }
     options
@@ -408,7 +417,11 @@ async fn handle_save_options(
     // Reject incomplete payloads without destroying the last complete settings.
     let payload = r.read_remaining();
     if !valid_options(payload) {
-        warn!("WIZ_GENIE: rejected malformed options: sid={}, bytes={}", sid, payload.len());
+        warn!(
+            "WIZ_GENIE: rejected malformed options: sid={}, bytes={}",
+            sid,
+            payload.len()
+        );
         return Ok(());
     }
     let options = payload.to_vec();
@@ -866,10 +879,12 @@ mod tests {
         assert!(valid_options(&default_options()));
         for count in 0u16..=32 {
             let mut blob = count.to_le_bytes().to_vec();
-            for slot in 0..count { blob.extend_from_slice(&(100001u32 + u32::from(slot)*1000000).to_le_bytes()); }
+            for slot in 0..count {
+                blob.extend_from_slice(&(100001u32 + u32::from(slot) * 1000000).to_le_bytes());
+            }
             blob.extend_from_slice(&default_options()[2..]);
             assert!(valid_options(&blob));
-            assert!(!valid_options(&blob[..blob.len()-1]));
+            assert!(!valid_options(&blob[..blob.len() - 1]));
         }
         assert!(!valid_options(&[0; 62]));
     }

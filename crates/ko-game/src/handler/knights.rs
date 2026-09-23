@@ -538,9 +538,7 @@ async fn handle_join(
 
 // ── KNIGHTS_JOIN_REQ (17) ─────────────────────────────────────────────
 
-fn read_join_req_response(
-    reader: &mut ko_protocol::PacketReader<'_>,
-) -> Option<(u8, u16, u16)> {
+fn read_join_req_response(reader: &mut ko_protocol::PacketReader<'_>) -> Option<(u8, u16, u16)> {
     let response = reader.read_u8()?;
     // v2615 sub_8413E0 sends response:u8, inviter:u32, clan:u16.
     // Reading clan immediately after response mistook the inviter SID for it.
@@ -580,14 +578,20 @@ async fn handle_join_req(
         .with_session(sid, |h| h.pending_knights_invite)
         .unwrap_or(0);
     if pending == 0 || pending != clan_id {
-        warn!(sid, clan_id, pending, inviter_id, "Clan invitation mismatch");
+        warn!(
+            sid,
+            clan_id, pending, inviter_id, "Clan invitation mismatch"
+        );
         return Ok(());
     }
-    let valid_inviter = session.world().get_character_info(inviter_id).is_some_and(|c| {
-        c.knights_id == clan_id
-            && c.nation == ch.nation
-            && (c.fame == CHIEF || c.fame == VICECHIEF)
-    });
+    let valid_inviter = session
+        .world()
+        .get_character_info(inviter_id)
+        .is_some_and(|c| {
+            c.knights_id == clan_id
+                && c.nation == ch.nation
+                && (c.fame == CHIEF || c.fame == VICECHIEF)
+        });
     if !valid_inviter {
         session.send_packet(&knights_error(KNIGHTS_JOIN, 2)).await?;
         return Ok(());
@@ -3847,7 +3851,10 @@ mod tests {
         pkt.write_u16(0x5678); // clan id
 
         let mut reader = ko_protocol::PacketReader::new(&pkt.data);
-        assert_eq!(read_join_req_response(&mut reader), Some((1, 0x1234, 0x5678)));
+        assert_eq!(
+            read_join_req_response(&mut reader),
+            Some((1, 0x1234, 0x5678))
+        );
     }
 
     #[test]

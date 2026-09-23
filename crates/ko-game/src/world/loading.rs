@@ -1733,9 +1733,8 @@ impl WorldState {
             .unwrap_or_default()
             .as_secs() as i64;
         for row in &knights_rows {
-            let valid_mark = row.s_mark_version > 0
-                && row.s_mark_len == 2400
-                && row.mark.len() == 2400;
+            let valid_mark =
+                row.s_mark_version > 0 && row.s_mark_len == 2400 && row.mark.len() == 2400;
             if row.s_mark_version > 0 && !valid_mark {
                 tracing::warn!(
                     clan_id = row.id_num,
@@ -1838,11 +1837,18 @@ impl WorldState {
              (e.origin_item_num3,e.origin_item_count3), \
              (e.origin_item_num4,e.origin_item_count4), \
              (e.origin_item_num5,e.origin_item_count5)) x(item,qty) \
-             WHERE q.b_zone IN (1,11,12,19) AND x.item>=100000000 AND x.qty>0"
-        ).fetch_all(pool).await?;
+             WHERE q.b_zone IN (1,11,12,19) AND x.item>=100000000 AND x.qty>0",
+        )
+        .fetch_all(pool)
+        .await?;
         self.collection_drop_items.clear();
-        for item in collection_items { self.collection_drop_items.insert(item as u32, ()); }
-        tracing::info!(count = self.collection_drop_items.len(), "Collection drop policy loaded: Luferson/Eslant x1.60; other monster items x1.15");
+        for item in collection_items {
+            self.collection_drop_items.insert(item as u32, ());
+        }
+        tracing::info!(
+            count = self.collection_drop_items.len(),
+            "Collection drop policy loaded: Luferson/Eslant x1.60; other monster items x1.15"
+        );
 
         let monster_rows = quest_repo.load_quest_monsters().await?;
         for row in &monster_rows {

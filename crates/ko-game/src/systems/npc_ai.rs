@@ -1221,7 +1221,7 @@ async fn npc_fighting(
     //   if (m_bHasFriends || GetType() == NPC_BOSS)
     //     FindFriend(GetType() == NPC_BOSS ? MonSearchAny : MonSearchSameFamily);
     let is_boss = tmpl.npc_type == NPC_BOSS;
-    if ai.has_friends || is_boss {
+    if (ai.has_friends || is_boss) && world.npc_damage_contains(npc_id, target_id) {
         alert_pack(world, npc_id, ai, tmpl, target_id, is_boss);
     }
 
@@ -1588,13 +1588,10 @@ fn npc_fighting_npc(
                 pet.hp = cur_hp;
             }
         });
-        let hp_pkt =
-            crate::handler::pet::build_pet_hp_change_packet(max_hp, cur_hp, npc_id);
+        let hp_pkt = crate::handler::pet::build_pet_hp_change_packet(max_hp, cur_hp, npc_id);
         world.send_to_session_owned(owner_sid, hp_pkt);
-        let dmg_pkt = crate::handler::pet::build_pet_damage_display_packet(
-            npc_target as i32,
-            damage as i16,
-        );
+        let dmg_pkt =
+            crate::handler::pet::build_pet_damage_display_packet(npc_target as i32, damage as i16);
         world.send_to_session_owned(owner_sid, dmg_pkt);
     }
 
@@ -2502,9 +2499,8 @@ async fn try_boss_magic(
 /// Searches the 3x3 region grid for same-family NPCs. If found, sets their
 /// target to the current attacker and transitions them to Attacking state.
 /// Alert nearby NPCs to join combat when a pack NPC or boss is attacked.
-/// When `is_boss` is true, uses MonSearchAny — alerts ANY nearby NPC regardless
-/// of family type. When false, uses MonSearchSameFamily — only alerts NPCs with
-/// matching `family_type` that also have `has_friends`.
+/// Boss type alone does not establish an alliance. All callers require a
+/// nonzero matching family; recruited allies cannot relay an unprovoked shout.
 fn alert_pack(
     world: &WorldState,
     npc_id: NpcId,
@@ -2513,6 +2509,10 @@ fn alert_pack(
     target_id: SessionId,
     is_boss: bool,
 ) {
+    let caller_inst = match world.get_npc_instance(npc_id) {
+        Some(n) if n.is_monster => n,
+        _ => return,
+    };
     let zone = match world.get_zone(ai.zone_id) {
         Some(z) => z,
         None => return,
@@ -2543,13 +2543,13 @@ fn alert_pack(
             continue;
         }
 
-        if is_boss {
-            // MonSearchAny: alert any NPC in range (boss path)
-        } else {
-            // MonSearchSameFamily: only same-family NPCs with has_friends
-            if !ally_ai.has_friends || ally_ai.family_type != ai.family_type {
-                continue;
-            }
+        if !pack_family_matches(
+            ai.family_type,
+            ally_ai.family_type,
+            is_boss,
+            ally_ai.has_friends,
+        ) {
+            continue;
         }
 
         // Skip gate NPCs — they should not be called as friends
@@ -2562,19 +2562,27 @@ fn alert_pack(
             None => continue,
         };
 
-        if is_gate_npc_type(ally_tmpl.npc_type) {
+        if !ally_inst.is_monster
+            || !caller_inst.is_monster
+            || ally_inst.event_room != caller_inst.event_room
+            || ally_tmpl.group != caller_template.group
+            || is_gate_npc_type(ally_tmpl.npc_type)
+        {
             continue;
         }
 
-        // C++ CNpc::FindFriendRegion() measures every candidate against the
-        // CALLER's m_byTracingRange. Using each ally's range here causes a
-        // long-range ally to pull itself (and then its whole pack) into combat,
-        // producing the map-wide chain aggro seen in game.
+        // Assistance uses the caller's local awareness, not its longer chase
+        // radius. Otherwise one attacked monster recruits unrelated spawns.
         let dx = ai.cur_x - ally_ai.cur_x;
         let dz = ai.cur_z - ally_ai.cur_z;
         let dist = (dx * dx + dz * dz).sqrt();
 
-        if caller_template.search_range == 0 || dist > caller_template.tracing_range as f32 {
+        if caller_template.search_range == 0
+            || dist
+                > caller_template
+                    .search_range
+                    .min(caller_template.tracing_range) as f32
+        {
             continue;
         }
 
@@ -2588,6 +2596,10 @@ fn alert_pack(
             s.skill_cooldown_ms = s.last_tick_ms + NPC_SKILL_COOLDOWN_MS;
         });
     }
+}
+
+fn pack_family_matches(caller: u8, ally: u8, boss: bool, has_friends: bool) -> bool {
+    caller != 0 && caller == ally && (boss || has_friends)
 }
 
 /// Find the most injured same-family NPC for healer AI.
@@ -5423,7 +5435,7 @@ mod tests {
     }
 
     #[test]
-    fn test_alert_pack_boss_skips_family_check() {
+    fn test_alert_pack_boss_requires_family_check() {
         // In alert_pack with is_boss=true, NPCs of different family
         // should still be eligible (MonSearchAny).
         let caller_ai = NpcAiState {
@@ -5440,16 +5452,29 @@ mod tests {
         };
         let is_boss = true;
 
-        // Boss path: should NOT skip due to family mismatch
-        let skip_for_family = if is_boss {
-            false // MonSearchAny: don't check family
-        } else {
-            !ally_ai.has_friends || ally_ai.family_type != caller_ai.family_type
-        };
-        assert!(
-            !skip_for_family,
-            "Boss should not skip allies of different family"
+        let skip_for_family = !pack_family_matches(
+            caller_ai.family_type,
+            ally_ai.family_type,
+            is_boss,
+            ally_ai.has_friends,
         );
+        assert!(skip_for_family, "Boss must not recruit unrelated monsters");
+    }
+
+    #[test]
+    fn test_pack_atross_manticore_centaur_are_not_allies() {
+        for family in [14, 18, 26] {
+            assert!(pack_family_matches(family, family, true, false));
+            for other in [14, 18, 26] {
+                assert_eq!(
+                    pack_family_matches(family, other, true, true),
+                    family == other
+                );
+            }
+        }
+        assert!(!pack_family_matches(0, 0, true, true));
+        assert!(!pack_family_matches(14, 14, false, false));
+        assert!(pack_family_matches(14, 14, false, true));
     }
 
     #[test]
@@ -5470,11 +5495,12 @@ mod tests {
         };
         let is_boss = false;
 
-        let skip_for_family = if is_boss {
-            false
-        } else {
-            !ally_ai.has_friends || ally_ai.family_type != caller_ai.family_type
-        };
+        let skip_for_family = !pack_family_matches(
+            caller_ai.family_type,
+            ally_ai.family_type,
+            is_boss,
+            ally_ai.has_friends,
+        );
         assert!(
             skip_for_family,
             "Non-boss should skip allies of different family"

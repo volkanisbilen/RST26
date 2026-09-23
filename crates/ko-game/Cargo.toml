@@ -19,5 +19,7 @@ chrono = { workspace = true }
 rand = { workspace = true }
 mlua = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 sqlx = { workspace = true }
+axum = { workspace = true }

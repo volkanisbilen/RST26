@@ -63,12 +63,20 @@ impl<'a> UserDataRepository<'a> {
         Ok(())
     }
 
-    pub async fn save_genie_options(&self, user_id: &str, options: &[u8]) -> Result<(), sqlx::Error> {
+    pub async fn save_genie_options(
+        &self,
+        user_id: &str,
+        options: &[u8],
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO user_genie_data (user_id, genie_time, genie_options, first_using_genie) \
              VALUES ($1, 0, $2, 0) ON CONFLICT (user_id) DO UPDATE \
-             SET genie_options = EXCLUDED.genie_options"
-        ).bind(user_id).bind(options).execute(self.pool).await?;
+             SET genie_options = EXCLUDED.genie_options",
+        )
+        .bind(user_id)
+        .bind(options)
+        .execute(self.pool)
+        .await?;
         Ok(())
     }
 

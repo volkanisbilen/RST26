@@ -127,6 +127,18 @@ async fn handle_store_open(session: &mut ClientSession) -> anyhow::Result<()> {
     session
         .send_packet(&build_store_open_success(free_slots))
         .await?;
+
+    // The v2625 client embeds WebView2. Give it a short-lived, account-bound
+    // URL; catalog, price and balance are always revalidated server-side.
+    if let Some(account_id) = session.account_id().filter(|v| !v.is_empty()) {
+        let token = crate::pus_web::create_session(
+            sid,
+            account_id.to_string(),
+            world.get_session_name(sid).unwrap_or_default(),
+            session.addr().ip(),
+        );
+        tracing::debug!(sid, token_prefix = %&token[..8], "PUS WebView2 session prepared");
+    }
     Ok(())
 }
 

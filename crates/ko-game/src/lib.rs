@@ -22,6 +22,7 @@ pub mod npc;
 pub mod npc_type_constants;
 pub mod object_event_constants;
 pub mod packet_io;
+pub mod pus_web;
 pub mod race_constants;
 pub mod rate_limiter;
 pub mod server;

@@ -32,16 +32,36 @@ use crate::zone::SessionId;
 const LOOT_DROP_ITEMS: usize = 12;
 
 fn boosted_drop_chance(base: i32, monster: bool, collection: bool) -> i32 {
-    let multiplier = if !monster { 100 } else if collection { 160 } else { 115 };
+    let multiplier = if !monster {
+        100
+    } else if collection {
+        160
+    } else {
+        115
+    };
     ((base.max(0) * multiplier + 50) / 100).min(10_000)
 }
 
-fn resolve_drop_item(world: &WorldState, code: i32, level: i32, nation: u8, rng: &mut impl Rng) -> u32 {
-    if code >= 100_000_000 { code as u32 }
-    else if code < 100 { super::item_production::item_production(world, code, level, nation) }
-    else if let Some(group) = world.get_make_item_group(code) {
-        if group.items.is_empty() { 0 } else { group.items[rng.gen_range(0..group.items.len())] as u32 }
-    } else { 0 }
+fn resolve_drop_item(
+    world: &WorldState,
+    code: i32,
+    level: i32,
+    nation: u8,
+    rng: &mut impl Rng,
+) -> u32 {
+    if code >= 100_000_000 {
+        code as u32
+    } else if code < 100 {
+        super::item_production::item_production(world, code, level, nation)
+    } else if let Some(group) = world.get_make_item_group(code) {
+        if group.items.is_empty() {
+            0
+        } else {
+            group.items[rng.gen_range(0..group.items.len())] as u32
+        }
+    } else {
+        0
+    }
 }
 
 /// Arrow stack count for arrow drops.
@@ -247,9 +267,14 @@ pub fn simulate_npc_drops(
             // Resolve first so a quest item in a mixed group gets its own
             // multiplier without boosting every other member of that group.
             let resolved = resolve_drop_item(world, item_code, tmpl.level as i32, nation, &mut rng);
-            if resolved == 0 { continue; }
-            let mut chance = boosted_drop_chance(percent as i32, tmpl.is_monster,
-                world.is_boosted_collection_drop(npc.zone_id, resolved));
+            if resolved == 0 {
+                continue;
+            }
+            let mut chance = boosted_drop_chance(
+                percent as i32,
+                tmpl.is_monster,
+                world.is_boosted_collection_drop(npc.zone_id, resolved),
+            );
             if premium > 0 {
                 chance += chance * premium / 100;
             }
@@ -409,10 +434,16 @@ pub fn generate_npc_loot(
             //   3) clan premium (additive)
             //   4) flame level bonus (additive)
             //   5) drop event (multiplicative)
-            let resolved_id = resolve_drop_item(world, item_id, tmpl.level as i32, killer_nation, &mut rng);
-            if resolved_id == 0 { continue; }
-            let mut adjusted_percent = boosted_drop_chance(percent as i32, tmpl.is_monster,
-                world.is_boosted_collection_drop(npc.zone_id, resolved_id));
+            let resolved_id =
+                resolve_drop_item(world, item_id, tmpl.level as i32, killer_nation, &mut rng);
+            if resolved_id == 0 {
+                continue;
+            }
+            let mut adjusted_percent = boosted_drop_chance(
+                percent as i32,
+                tmpl.is_monster,
+                world.is_boosted_collection_drop(npc.zone_id, resolved_id),
+            );
 
             // 1) Premium drop (additive): iPer += iPer * pers1 / 100
             let prem_drop = world.get_premium_property(killer_sid, PremiumProperty::DropPercent);

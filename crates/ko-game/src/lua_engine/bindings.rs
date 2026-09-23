@@ -6935,28 +6935,76 @@ mod tests {
             (500034, 4, 120, 0, 100),
         ] {
             world.insert_magic(MagicRow {
-                magic_num: id, en_name: None, kr_name: None, description: None,
-                t_1: None, before_action: None, target_action: None, self_effect: None,
-                flying_effect: None, target_effect: None, moral: Some(1), skill_level: None,
-                skill: None, msp: None, hp: None, s_sp: None, item_group: None,
-                use_item: None, cast_time: None, recast_time: None, success_rate: None,
-                type1: Some(4), type2: None, range: None, etc: None,
-                use_standing: None, skill_check: None, icelightrate: None,
+                magic_num: id,
+                en_name: None,
+                kr_name: None,
+                description: None,
+                t_1: None,
+                before_action: None,
+                target_action: None,
+                self_effect: None,
+                flying_effect: None,
+                target_effect: None,
+                moral: Some(1),
+                skill_level: None,
+                skill: None,
+                msp: None,
+                hp: None,
+                s_sp: None,
+                item_group: None,
+                use_item: None,
+                cast_time: None,
+                recast_time: None,
+                success_rate: None,
+                type1: Some(4),
+                type2: None,
+                range: None,
+                etc: None,
+                use_standing: None,
+                skill_check: None,
+                icelightrate: None,
             });
             world.insert_magic_type4(MagicType4Row {
-                i_num: id, buff_type: Some(kind), radius: None, duration: Some(600),
-                attack_speed: Some(100), speed: Some(speed), ac: Some(ac), ac_pct: Some(100),
-                attack: Some(attack), magic_attack: Some(100), max_hp: None,
-                max_hp_pct: None, max_mp: None, max_mp_pct: None,
-                str: None, sta: None, dex: None, intel: None, cha: None,
-                fire_r: None, cold_r: None, lightning_r: None, magic_r: None,
-                disease_r: None, poison_r: None, exp_pct: None, special_amount: None,
-                hit_rate: None, avoid_rate: None,
+                i_num: id,
+                buff_type: Some(kind),
+                radius: None,
+                duration: Some(600),
+                attack_speed: Some(100),
+                speed: Some(speed),
+                ac: Some(ac),
+                ac_pct: Some(100),
+                attack: Some(attack),
+                magic_attack: Some(100),
+                max_hp: None,
+                max_hp_pct: None,
+                max_mp: None,
+                max_mp_pct: None,
+                str: None,
+                sta: None,
+                dex: None,
+                intel: None,
+                cha: None,
+                fire_r: None,
+                cold_r: None,
+                lightning_r: None,
+                magic_r: None,
+                disease_r: None,
+                poison_r: None,
+                exp_pct: None,
+                special_amount: None,
+                hit_rate: None,
+                avoid_rate: None,
             });
-            assert!(lua.load(format!("return CastSkill(1, {id})")).eval::<bool>().unwrap());
+            assert!(lua
+                .load(format!("return CastSkill(1, {id})"))
+                .eval::<bool>()
+                .unwrap());
             let buffs = world.get_active_buffs(1);
             let applied = buffs.iter().find(|b| b.skill_id == id as u32).unwrap();
-            assert_eq!((applied.attack, applied.ac, applied.speed), (attack, ac, speed));
+            assert_eq!(
+                (applied.attack, applied.ac, applied.speed),
+                (attack, ac, speed)
+            );
         }
         assert_eq!(world.get_buff_attack_amount(1), 120);
         assert_eq!(world.get_buff_ac_amount(1), 100);
@@ -6972,7 +7020,8 @@ mod tests {
             (40, 211, 29999, 0, 0),
         ] {
             let lua = Lua::new();
-            lua.load(format!(r#"
+            lua.load(format!(
+                r#"
                 UID=1; EVENT={event}; level={level}; gold={gold}; skill=0; cost=0; casts=0;
                 function CheckLevel() return level end
                 function HowmuchItem(_, id) if id==900000000 then return gold else return 0 end end
@@ -6980,11 +7029,19 @@ mod tests {
                 function GoldLose(_, amount) cost=cost+amount end
                 function NpcMsg() end
                 function SelectMsg() end
-            "#)).exec().unwrap();
-            lua.load(include_str!("../../../../Quests/31508_NEnchant.lua")).exec().unwrap();
+            "#
+            ))
+            .exec()
+            .unwrap();
+            lua.load(include_str!("../../../../Quests/31508_NEnchant.lua"))
+                .exec()
+                .unwrap();
             assert_eq!(lua.globals().get::<i32>("skill").unwrap(), expected_skill);
             assert_eq!(lua.globals().get::<i32>("cost").unwrap(), expected_cost);
-            assert_eq!(lua.globals().get::<i32>("casts").unwrap(), i32::from(expected_skill != 0));
+            assert_eq!(
+                lua.globals().get::<i32>("casts").unwrap(),
+                i32::from(expected_skill != 0)
+            );
         }
     }
 

@@ -98,3 +98,7 @@ db_backup/
 # Runtime logs and dumps
 *.log
 *.dmp
+
+# Local deployment staging and client executable backups
+/.codex-tmp/
+*.exe.pus-backup

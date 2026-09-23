@@ -1062,7 +1062,11 @@ async fn item_upgrade(
                 update.write_u16(1);
                 update.write_u8(1);
                 update.write_u8(source.slot as u8);
-                update.write_u32(if slot.item_id == 0 { source.item_id } else { slot.item_id });
+                update.write_u32(if slot.item_id == 0 {
+                    source.item_id
+                } else {
+                    slot.item_id
+                });
                 update.write_u32(slot.count as u32);
                 update.write_u8(0);
                 update.write_u16(slot.durability as u16);
@@ -1102,11 +1106,12 @@ async fn item_upgrade(
             && proto.item_class == Some(3)
             && matches!(item_type, 4 | 5)
             && (7..=9).contains(&(new_item_id % 10));
-        let has_upgrade_notice = high_class_success || notice_proto
-            .as_ref()
-            .and_then(|p| p.upgrade_notice)
-            .unwrap_or(0)
-            != 0;
+        let has_upgrade_notice = high_class_success
+            || notice_proto
+                .as_ref()
+                .and_then(|p| p.upgrade_notice)
+                .unwrap_or(0)
+                != 0;
         if has_upgrade_notice {
             let upgrade_notice_enabled = world
                 .get_server_settings()
@@ -1210,7 +1215,12 @@ fn is_scroll_compatible(item_class: ScrollType, user_scroll: ScrollType) -> bool
 }
 
 /// Send a failure response packet.
-fn upgrade_response_header(upgrade_type: u8, mode: u8, result: UpgradeResult, logos: bool) -> Packet {
+fn upgrade_response_header(
+    upgrade_type: u8,
+    mode: u8,
+    result: UpgradeResult,
+    logos: bool,
+) -> Packet {
     // 2625 sub_B99EB0 reads mode/result; sub_B95810 then reads the logos flag
     // on a failed normal upgrade (subtype 2), before reading item slots.
     let mut packet = Packet::new(Opcode::WizItemUpgrade as u8);
@@ -4194,12 +4204,33 @@ mod tests {
 
     #[test]
     fn test_upgrade_failure_matches_2625_parser() {
-        let pkt = upgrade_response_header(ITEM_UPGRADE, UPGRADE_TYPE_NORMAL, UpgradeResult::Failed, false);
+        let pkt = upgrade_response_header(
+            ITEM_UPGRADE,
+            UPGRADE_TYPE_NORMAL,
+            UpgradeResult::Failed,
+            false,
+        );
         assert_eq!(pkt.data, vec![ITEM_UPGRADE, UPGRADE_TYPE_NORMAL, 0, 0]);
-        let protected = upgrade_response_header(ITEM_UPGRADE, UPGRADE_TYPE_NORMAL, UpgradeResult::Failed, true);
-        assert_eq!(protected.data, vec![ITEM_UPGRADE, UPGRADE_TYPE_NORMAL, 0, 1]);
-        let accessory = upgrade_response_header(ITEM_ACCESSORIES, UPGRADE_TYPE_NORMAL, UpgradeResult::Failed, false);
-        assert_eq!(accessory.data, vec![ITEM_ACCESSORIES, UPGRADE_TYPE_NORMAL, 0]);
+        let protected = upgrade_response_header(
+            ITEM_UPGRADE,
+            UPGRADE_TYPE_NORMAL,
+            UpgradeResult::Failed,
+            true,
+        );
+        assert_eq!(
+            protected.data,
+            vec![ITEM_UPGRADE, UPGRADE_TYPE_NORMAL, 0, 1]
+        );
+        let accessory = upgrade_response_header(
+            ITEM_ACCESSORIES,
+            UPGRADE_TYPE_NORMAL,
+            UpgradeResult::Failed,
+            false,
+        );
+        assert_eq!(
+            accessory.data,
+            vec![ITEM_ACCESSORIES, UPGRADE_TYPE_NORMAL, 0]
+        );
     }
 
     #[test]
