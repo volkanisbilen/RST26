@@ -478,6 +478,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Applies to all opcodes EXCEPT: TYPE4_EXTEND, CANCEL, CANCEL_TRANSFORMATION, FAIL.
     // Type-9 skills (stealth) are also excluded per C++ (bType[0] != 9).
     let skill_type = skill.type1.unwrap_or(0) as u8;
+    let is_scroll_buff =
+        skill.item_group.unwrap_or(0) == 255 && skill_type == 4 && skill.use_item.unwrap_or(0) > 0;
     let (has_instant_cast, on_cooldown) = world
         .with_session(sid, |h| {
             let cd = h
@@ -489,7 +491,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         })
         .unwrap_or((false, false));
     if skill_type != 9
-        && (!has_instant_cast || is_manes_offensive_magic)
+        && (!has_instant_cast || is_manes_offensive_magic || is_scroll_buff)
         && b_opcode != MAGIC_TYPE4_EXTEND
         && b_opcode != MAGIC_CANCEL
         && b_opcode != MAGIC_CANCEL2
@@ -931,12 +933,18 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // Formula: expiry = UNIXTIME2 + (sReCastTime * 90)ms
             let recast_time = skill.recast_time.unwrap_or(0);
             let configured_recast_ms = recast_time.max(0) as u64 * 90;
-            let recast_ms = if is_manes_offensive_magic {
+            // Consumable buffs with a zero recast value can otherwise be
+            // replayed repeatedly by queued client packets (consuming several
+            // scrolls in one click). Keep a short server-side floor even for
+            // instant-cast characters.
+            let recast_ms = if is_scroll_buff {
+                configured_recast_ms.max(1000)
+            } else if is_manes_offensive_magic {
                 configured_recast_ms.max(900)
             } else {
                 configured_recast_ms
             };
-            if recast_ms > 0 && (!has_instant_cast || is_manes_offensive_magic) {
+            if recast_ms > 0 && (!has_instant_cast || is_manes_offensive_magic || is_scroll_buff) {
                 let now = std::time::Instant::now();
                 let expiry = now + std::time::Duration::from_millis(recast_ms);
                 world.update_session(sid, |h| {
@@ -3867,6 +3875,10 @@ fn apply_magic_class_bonus(
 
 // ── Type 4: Buffs / Debuffs ──────────────────────────────────────────────
 
+fn should_persist_type4_magic(skill: &MagicRow, skill_id: u32) -> bool {
+    skill_id > 500_000 || (skill.type1 == Some(4) && skill.item_group == Some(255))
+}
+
 /// Execute Type 4 skill — apply buff or debuff.
 /// Creates an `ActiveBuff` from the `MagicType4Row` data and applies it
 /// to the target via `world.apply_buff()`. Overwrites any existing buff
@@ -3918,8 +3930,8 @@ fn execute_type4(
         broadcast_kaul_state_change(world, caster_sid, &type4_data, instance.skill_id);
         broadcast_size_state_change(world, caster_sid, &type4_data, instance.skill_id);
         broadcast_buff_state_change_on_apply(world, caster_sid, &type4_data, instance.skill_id);
-        // Persist scroll buffs (skill_id > 500000) across logout/zone change
-        if instance.skill_id > 500000 {
+        // Persist both high-ID custom buffs and ordinary item-group scrolls.
+        if should_persist_type4_magic(skill, instance.skill_id) {
             world.insert_saved_magic(caster_sid, instance.skill_id, duration);
         }
 
@@ -4372,7 +4384,7 @@ fn execute_type4(
             // BUG-3 fix: recalculate derived stats after self-area buff
             world.set_user_ability(caster_sid);
             // Persist scroll self-area buffs across logout/zone change
-            if instance.skill_id > 500000 {
+            if should_persist_type4_magic(skill, instance.skill_id) {
                 let sa_duration = type4_data.duration.unwrap_or(0).max(0) as u16;
                 world.insert_saved_magic(caster_sid, instance.skill_id, sa_duration);
             }
@@ -4591,7 +4603,7 @@ fn execute_type4(
             broadcast_size_state_change(world, target_sid, &type4_data, instance.skill_id);
             broadcast_buff_state_change_on_apply(world, target_sid, &type4_data, instance.skill_id);
             // Persist scroll buffs on AOE targets
-            if instance.skill_id > 500000 {
+            if should_persist_type4_magic(skill, instance.skill_id) {
                 world.insert_saved_magic(target_sid, instance.skill_id, duration);
             }
         }
@@ -4663,7 +4675,7 @@ fn grant_type4_buff_to_target(
     world.set_user_ability(target_sid);
     // This sends total_hit with buff multipliers so the client shows the updated attack value.
     world.send_item_move_refresh(target_sid);
-    if instance.skill_id > 500000 {
+    if should_persist_type4_magic(skill, instance.skill_id) {
         world.insert_saved_magic(target_sid, instance.skill_id, duration);
     }
 }

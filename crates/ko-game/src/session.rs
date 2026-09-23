@@ -633,7 +633,7 @@ impl ClientSession {
             }
 
             // ── 2. Save active buffs (saved magic) ───────────────────────
-            self.save_saved_magic_async();
+            self.save_saved_magic().await;
 
             // ── 3. Save premium state ─────────────────────────────────────
             if !account_id.is_empty() {
@@ -1455,21 +1455,18 @@ impl ClientSession {
         &self.world
     }
 
-    /// Save active saved magic entries to DB (fire-and-forget).
-    ///
-    /// Called on disconnect and zone change to persist scroll buffs.
-    pub(crate) fn save_saved_magic_async(&self) {
+    /// Save active saved magic entries to DB and wait until the replacement
+    /// is complete. Zone transitions must not race this delete/insert with a
+    /// later logout save, or the character can lose its persistent scrolls.
+    pub(crate) async fn save_saved_magic(&self) {
         let char_id = match self.character_id.as_deref() {
             Some(id) if !id.is_empty() => id.to_string(),
             _ => return,
         };
         let entries = self.world.get_saved_magic_entries(self.session_id);
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            let repo = ko_db::repositories::saved_magic::SavedMagicRepository::new(&pool);
-            if let Err(e) = repo.save_saved_magic(&char_id, &entries).await {
-                tracing::error!(char_id, "failed to save magic on disconnect: {}", e);
-            }
-        });
+        let repo = ko_db::repositories::saved_magic::SavedMagicRepository::new(&self.pool);
+        if let Err(e) = repo.save_saved_magic(&char_id, &entries).await {
+            tracing::error!(char_id, "failed to save magic on zone change: {}", e);
+        }
     }
 }

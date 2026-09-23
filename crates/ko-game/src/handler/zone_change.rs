@@ -785,7 +785,7 @@ pub async fn trigger_zone_change(
     save_position_async(session, dest_zone, dest_x, dest_z);
 
     // 9. Save active buffs to DB for persistence across zone change
-    session.save_saved_magic_async();
+    session.save_saved_magic().await;
 
     // 10. Send active event time (for players entering event zones)
     crate::systems::event_room::send_active_event_time(&world, sid);

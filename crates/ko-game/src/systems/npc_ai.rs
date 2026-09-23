@@ -1217,11 +1217,11 @@ async fn npc_fighting(
         }
     };
 
-    // Group AI: call nearby same-family NPCs to help
-    //   if (m_bHasFriends || GetType() == NPC_BOSS)
-    //     FindFriend(GetType() == NPC_BOSS ? MonSearchAny : MonSearchSameFamily);
+    // Friend packs may assist; bosses never recruit nearby monsters.
     let is_boss = tmpl.npc_type == NPC_BOSS;
-    if (ai.has_friends || is_boss) && world.npc_damage_contains(npc_id, target_id) {
+    // Bosses such as Manticore and Attila fight only the player who hit them;
+    // they must not recruit nearby same-family spawns into the encounter.
+    if ai.has_friends && !is_boss && world.npc_damage_contains(npc_id, target_id) {
         alert_pack(world, npc_id, ai, tmpl, target_id, is_boss);
     }
 
@@ -2599,7 +2599,7 @@ fn alert_pack(
 }
 
 fn pack_family_matches(caller: u8, ally: u8, boss: bool, has_friends: bool) -> bool {
-    caller != 0 && caller == ally && (boss || has_friends)
+    !boss && caller != 0 && caller == ally && has_friends
 }
 
 /// Find the most injured same-family NPC for healer AI.
@@ -5376,55 +5376,22 @@ mod tests {
 
     #[test]
     fn test_boss_alert_pack_condition() {
-        //   if (m_bHasFriends || GetType() == NPC_BOSS)
-        //     FindFriend(GetType() == NPC_BOSS ? MonSearchAny : MonSearchSameFamily);
-
-        // Case 1: has_friends=true, not boss -> should alert (same-family)
         let ai = NpcAiState {
             has_friends: true,
             ..make_test_ai()
         };
-        let npc_type: u8 = 0; // regular monster
-        let is_boss = npc_type == NPC_BOSS;
-        assert!(
-            ai.has_friends || is_boss,
-            "has_friends=true should trigger alert"
-        );
-        assert!(!is_boss, "Regular monster is not a boss");
-
-        // Case 2: has_friends=false, is boss -> should alert (any)
-        let ai2 = NpcAiState {
-            has_friends: false,
-            ..make_test_ai()
-        };
-        let npc_type2: u8 = NPC_BOSS;
-        let is_boss2 = npc_type2 == NPC_BOSS;
-        assert!(
-            ai2.has_friends || is_boss2,
-            "Boss NPC should trigger alert even without has_friends"
-        );
-        assert!(is_boss2, "NPC_BOSS type should be detected");
-
-        // Case 3: has_friends=false, not boss -> should NOT alert
-        let ai3 = NpcAiState {
-            has_friends: false,
-            ..make_test_ai()
-        };
-        let npc_type3: u8 = 0;
-        let is_boss3 = npc_type3 == NPC_BOSS;
-        assert!(
-            !(ai3.has_friends || is_boss3),
-            "Non-boss without has_friends should not alert"
-        );
+        assert!(ai.has_friends);
+        assert!(pack_family_matches(14, 14, false, ai.has_friends));
+        assert!(!pack_family_matches(14, 14, true, ai.has_friends));
     }
 
     #[test]
     fn test_boss_search_type_selection() {
-        // Boss: MonSearchAny (skips family check)
-        // Non-boss: MonSearchSameFamily (requires family match)
+        // Bosses must not call allies even if family IDs match.
         let boss_type: u8 = NPC_BOSS;
         let is_boss = boss_type == NPC_BOSS;
         assert!(is_boss, "Boss should use MonSearchAny");
+        assert!(!pack_family_matches(14, 14, is_boss, true));
 
         let regular_type: u8 = 0;
         let is_regular_boss = regular_type == NPC_BOSS;
@@ -5436,8 +5403,7 @@ mod tests {
 
     #[test]
     fn test_alert_pack_boss_requires_family_check() {
-        // In alert_pack with is_boss=true, NPCs of different family
-        // should still be eligible (MonSearchAny).
+        // Bosses never recruit allies, regardless of family.
         let caller_ai = NpcAiState {
             has_friends: false,
             family_type: 10,
@@ -5462,14 +5428,11 @@ mod tests {
     }
 
     #[test]
-    fn test_pack_atross_manticore_centaur_are_not_allies() {
+    fn test_pack_atross_manticore_centaur_family_rules() {
         for family in [14, 18, 26] {
-            assert!(pack_family_matches(family, family, true, false));
+            assert!(!pack_family_matches(family, family, true, false));
             for other in [14, 18, 26] {
-                assert_eq!(
-                    pack_family_matches(family, other, true, true),
-                    family == other
-                );
+                assert_eq!(pack_family_matches(family, other, true, true), false);
             }
         }
         assert!(!pack_family_matches(0, 0, true, true));

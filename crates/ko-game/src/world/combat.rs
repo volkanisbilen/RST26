@@ -461,7 +461,11 @@ impl WorldState {
     /// Insert a skill into the saved magic map for persistence.
     ///
     pub fn insert_saved_magic(&self, sid: SessionId, skill_id: u32, duration_secs: u16) {
-        if skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID {
+        let is_item_scroll_buff = skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID
+            && self
+                .get_magic(skill_id as i32)
+                .is_some_and(|skill| skill.type1 == Some(4) && skill.item_group == Some(255));
+        if skill_id == 0 || (skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID && !is_item_scroll_buff) {
             return;
         }
         if let Some(mut handle) = self.sessions.get_mut(&sid) {

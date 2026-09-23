@@ -416,6 +416,16 @@ pub fn battle_zone_open(state: &mut BattleState, n_type: u8, zone: u8, now_unix:
     if (n_type == BATTLEZONE_OPEN || n_type == SNOW_BATTLEZONE_OPEN) && !state.is_war_open() {
         reset_battle_zone(state);
 
+        // Scheduled events set this explicitly; GM-triggered opens do not.
+        // A zero duration makes the first war tick close the event immediately.
+        if state.battle_time <= 0 {
+            state.battle_time = if n_type == SNOW_BATTLEZONE_OPEN {
+                1800
+            } else {
+                3600
+            };
+        }
+
         state.battle_open = if n_type == BATTLEZONE_OPEN {
             NATION_BATTLE
         } else {

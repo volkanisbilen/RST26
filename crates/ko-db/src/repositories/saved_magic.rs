@@ -59,10 +59,12 @@ impl<'a> SavedMagicRepository<'a> {
         character_id: &str,
         entries: &[(u32, i32)], // (skill_id, remaining_duration_secs)
     ) -> Result<(), sqlx::Error> {
-        // Delete existing entries first
+        // Replace the character's rows atomically so a failed insert cannot
+        // leave the player with no saved scroll buffs after the DELETE.
+        let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM user_saved_magic WHERE character_id = $1")
             .bind(character_id)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?;
 
         // Filter valid entries (max 10, non-zero skill, positive duration)
@@ -75,6 +77,7 @@ impl<'a> SavedMagicRepository<'a> {
             .collect();
 
         if valid.is_empty() {
+            tx.commit().await?;
             return Ok(());
         }
 
@@ -88,7 +91,8 @@ impl<'a> SavedMagicRepository<'a> {
                 .push_bind(skill_id)
                 .push_bind(duration);
         });
-        builder.build().execute(self.pool).await?;
+        builder.build().execute(&mut *tx).await?;
+        tx.commit().await?;
 
         Ok(())
     }

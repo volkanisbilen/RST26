@@ -47,6 +47,19 @@ fn effective_warp_destination(warp_id: i16, raw_zone: i16, nation: u8) -> u16 {
     }
 }
 
+fn is_hidden_moradon_abyss_warp(
+    source_zone: u16,
+    name: &str,
+    announce: &str,
+    dest_zone: i16,
+) -> bool {
+    if !(21..=25).contains(&source_zone) {
+        return false;
+    }
+    let label = format!("{name} {announce}").to_ascii_lowercase();
+    dest_zone == 9 || label.contains("abyss")
+}
+
 use crate::npc_type_constants::MAX_OBJECT_RANGE;
 use crate::object_event_constants::OBJECT_WARP_GATE;
 
@@ -171,6 +184,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     };
 
+    // Keep the removed Moradon Abyss destination unavailable even if a client
+    // submits a stale/forged warp ID instead of selecting from the visible list.
+    if is_hidden_moradon_abyss_warp(pos.zone_id, &warp.name, &warp.announce, warp.dest_zone) {
+        send_select_fail(session).await?;
+        return Ok(());
+    }
+
     // Nation check: if warp is nation-restricted, must match player nation
     if warp.nation != 0 && warp.nation != char_info.nation as i16 {
         send_select_fail(session).await?;
@@ -280,6 +300,9 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
     let battle = world.get_battle_state();
     let mut entries: Vec<&ko_protocol::smd::WarpInfo> = Vec::with_capacity(warps.len());
     for warp in &warps {
+        if is_hidden_moradon_abyss_warp(pos.zone_id, &warp.name, &warp.announce, warp.dest_zone) {
+            continue;
+        }
         // Nation filter: skip if warp is nation-restricted and doesn't match
         if warp.nation != 0 && warp.nation != char_info.nation as i16 {
             continue;
