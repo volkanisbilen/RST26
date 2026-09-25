@@ -134,6 +134,13 @@ impl WorldState {
     pub fn clear_npc_damage(&self, nid: NpcId) {
         self.npc_damage.remove(&nid);
     }
+    /// Remove one player's threat/damage entry without affecting loot rights
+    /// for other players who are still fighting this NPC.
+    pub fn clear_npc_player_damage(&self, nid: NpcId, sid: SessionId) {
+        if let Some(inner) = self.npc_damage.get(&nid) {
+            inner.remove(&sid);
+        }
+    }
     /// Get all damage entries for an NPC, returning `Vec<(SessionId, i32)>`.
     ///
     /// XP/NP distribution on NPC death.
@@ -165,9 +172,16 @@ impl WorldState {
     pub fn notify_npc_damaged(&self, nid: NpcId, attacker_sid: SessionId) {
         // Snapshot fields we need for find_friends after releasing the lock.
         let mut should_find_friends = false;
-        let mut is_boss = false;
+        let is_boss = self
+            .get_npc_instance(nid)
+            .and_then(|npc| self.get_npc_template(npc.proto_id, npc.is_monster))
+            .is_some_and(|tmpl| tmpl.npc_type == NPC_BOSS);
 
         if let Some(mut ai) = self.npc_ai.get_mut(&nid) {
+            // Reactive aggro bypasses find_enemy(), which normally starts the
+            // chase timer. A first hit must start it too (and subsequent hits
+            // keep an active fight alive).
+            ai.last_combat_time_ms = ai.last_tick_ms.max(1);
             // Only switch target if NPC is in a non-combat state
             //   if (GetNpcState() == NPC_STANDING || NPC_MOVING || NPC_SLEEPING)
             match ai.state {
@@ -190,21 +204,9 @@ impl WorldState {
             }
         }
 
-        // Check for boss type via template lookup (NPC_BOSS = 3).
-        if !should_find_friends {
-            if let Some(inst) = self.get_npc_instance(nid) {
-                if let Some(tmpl) = self.get_npc_template(inst.proto_id, inst.is_monster) {
-                    if tmpl.npc_type == NPC_BOSS {
-                        should_find_friends = true;
-                        is_boss = true;
-                    }
-                }
-            }
-        }
-
         // Call find_friends outside the npc_ai borrow.
-        if should_find_friends {
-            self.find_friends(nid, is_boss);
+        if should_find_friends && !is_boss {
+            self.find_friends(nid, false);
         }
     }
 
@@ -655,6 +657,24 @@ impl WorldState {
             let in_pkt = build_npc_inout(NPC_IN, &updated_npc, &tmpl);
 
             self.broadcast_to_zone_event_room(ZONE_JURAID, room_id, Arc::new(in_pkt), None);
+
+            // The C++ server also sends CNpc::SendJuraidBridgeFlag() when
+            // changing the physical bridge collision state. NPC_INOUT alone
+            // updates its visible gate_open field, but the client keeps the
+            // bridge collision closed without this OBJECT_GATE event.
+            let mut gate_pkt = Packet::new(Opcode::WizObjectEvent as u8);
+            gate_pkt.write_u8(crate::object_event_constants::OBJECT_GATE);
+            gate_pkt.write_u8(1);
+            gate_pkt.write_u32(npc.nid);
+            gate_pkt.write_u8(1);
+            self.broadcast_to_3x3(
+                ZONE_JURAID,
+                npc.region_x,
+                npc.region_z,
+                Arc::new(gate_pkt),
+                None,
+                room_id,
+            );
 
             tracing::debug!(
                 npc_id = npc.nid,
@@ -1809,6 +1829,7 @@ mod tests {
             NpcAiState {
                 state: NpcState::Standing,
                 target_id: None,
+                last_tick_ms: 10_000,
                 ..test_ai_state()
             },
         );
@@ -1816,6 +1837,7 @@ mod tests {
         let ai = world.get_npc_ai(nid).unwrap();
         assert_eq!(ai.target_id, Some(1));
         assert!(matches!(ai.state, NpcState::Attacking));
+        assert_eq!(ai.last_combat_time_ms, 10_000);
     }
 
     #[test]
@@ -2443,7 +2465,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_friends_boss_calls_any_family() {
+    fn test_damaged_boss_does_not_recruit_even_with_friends_flag() {
         // Bosses use MonSearchAny — should alert NPCs of any family type.
         let world = WorldState::new();
         let boss_nid: NpcId = 3000;
@@ -2483,7 +2505,7 @@ mod tests {
             boss_nid,
             NpcAiState {
                 state: NpcState::Standing,
-                has_friends: false, // boss doesn't need has_friends
+                has_friends: true, // Bosses must not recruit even with this flag.
                 family_type: 10,
                 zone_id: 21,
                 cur_x: 100.0,
@@ -2540,11 +2562,10 @@ mod tests {
 
         let friend_ai = world.get_npc_ai(friend_nid).unwrap();
         assert_eq!(
-            friend_ai.target_id,
-            Some(42),
-            "Boss should call any nearby NPC regardless of family type"
+            friend_ai.target_id, None,
+            "Damaging a boss must not recruit nearby NPCs"
         );
-        assert_eq!(friend_ai.state, NpcState::Attacking);
+        assert_eq!(friend_ai.state, NpcState::Standing);
     }
 
     #[test]
@@ -2816,7 +2837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_friends_boss_does_not_need_has_friends() {
+    fn test_damaged_boss_without_friends_flag_does_not_recruit() {
         // Bosses trigger MonSearchAny even without has_friends flag.
         let world = WorldState::new();
         let boss_nid: NpcId = 7000;
@@ -2912,9 +2933,8 @@ mod tests {
 
         let friend_ai = world.get_npc_ai(friend_nid).unwrap();
         assert_eq!(
-            friend_ai.target_id,
-            Some(42),
-            "Boss should alert any NPC even without has_friends flag"
+            friend_ai.target_id, None,
+            "Bosses without has_friends must not recruit nearby NPCs"
         );
     }
 
@@ -4102,6 +4122,20 @@ mod tests {
         world.record_npc_damage(nid, 1, 200);
         assert!(world.npc_damage_contains(nid, 1));
         assert!(!world.npc_damage_contains(nid, 2));
+    }
+
+    #[test]
+    fn test_clear_npc_player_damage_preserves_other_attackers() {
+        let world = WorldState::new();
+        let nid = world.allocate_npc_id();
+        world.record_npc_damage(nid, 1, 200);
+        world.record_npc_damage(nid, 2, 300);
+
+        world.clear_npc_player_damage(nid, 1);
+
+        assert!(!world.npc_damage_contains(nid, 1));
+        assert!(world.npc_damage_contains(nid, 2));
+        assert_eq!(world.get_max_damage_user(nid), Some(2));
     }
 
     /// get_npc_damage_entries returns all recorded players.

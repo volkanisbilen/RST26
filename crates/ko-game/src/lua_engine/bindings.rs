@@ -3141,8 +3141,8 @@ fn lua_nation_change(lua: &Lua, (uid, nation): (i32, u8)) -> LuaResult<()> {
 }
 
 /// GetExpPercent(uid) -> i32
-/// Calculate XP percentage toward current level.
-/// Returns 0-100 as a percentage.
+/// Match the client/server level-table check used by GetExpPercent().
+/// The game uses this as a full-level gate (not a progress-bar percentage).
 fn lua_get_exp_percent(lua: &Lua, uid: i32) -> LuaResult<i32> {
     let w = get_world(lua)?;
     let sid = uid as SessionId;
@@ -3152,22 +3152,12 @@ fn lua_get_exp_percent(lua: &Lua, uid: i32) -> LuaResult<i32> {
         None => return Ok(0),
     };
 
-    let cur_level_exp = w.get_exp_by_level(ch.level, 0);
-    let next_level_exp = w.get_exp_by_level(ch.level + 1, 0);
-
-    if next_level_exp <= cur_level_exp || next_level_exp <= 0 {
-        return Ok(0);
-    }
-
-    let exp_in_level = (ch.exp as i64).saturating_sub(cur_level_exp);
-    let exp_range = next_level_exp.saturating_sub(cur_level_exp);
-
-    if exp_range == 0 {
-        return Ok(0);
-    }
-
-    let pct = (exp_in_level * 100) / exp_range;
-    Ok(pct.clamp(0, 100) as i32)
+    let required_exp = w.get_exp_by_level(ch.level, ch.rebirth_level);
+    Ok(if required_exp > 0 && ch.exp == required_exp as u64 {
+        100
+    } else {
+        0
+    })
 }
 
 /// CheckClanPoint(uid) -> i32
@@ -6205,18 +6195,38 @@ mod tests {
     }
 
     #[test]
-    fn test_get_exp_percent() {
+    fn test_get_exp_percent_uses_full_level_threshold() {
         let (lua, world) = setup_lua_world();
-        // Set up level_up_table: level 30 exp=10000, level 31 exp=20000
+        // The game helper is a gate: it returns 100 only at the current
+        // level's table threshold, rather than interpolating between levels.
         world.insert_level_up((30, 0), 10000);
         world.insert_level_up((31, 0), 20000);
-        // Set player exp to 15000 (50% between 10000 and 20000)
         world.update_character_stats(1, |ch| {
-            ch.exp = 15000;
+            ch.level = 30;
+            ch.exp = 9999;
+        });
+        let before: i32 = lua.load("return GetExpPercent(1)").eval().unwrap();
+        assert_eq!(before, 0);
+
+        world.update_character_stats(1, |ch| {
+            ch.exp = 10000;
         });
 
         let result: i32 = lua.load("return GetExpPercent(1)").eval().unwrap();
-        assert_eq!(result, 50);
+        assert_eq!(result, 100);
+    }
+
+    #[test]
+    fn test_get_exp_percent_works_at_level_cap_and_rebirth_tier() {
+        let (lua, world) = setup_lua_world();
+        world.insert_level_up((83, 2), 900_000);
+        world.update_character_stats(1, |ch| {
+            ch.level = 83;
+            ch.rebirth_level = 2;
+            ch.exp = 900_000;
+        });
+        let result: i32 = lua.load("return GetExpPercent(1)").eval().unwrap();
+        assert_eq!(result, 100);
     }
 
     #[test]

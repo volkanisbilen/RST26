@@ -28,8 +28,10 @@ use crate::handler::zone_change;
 use crate::session::{ClientSession, SessionState};
 use crate::systems::war::{NATION_BATTLE, SIEGE_BATTLE};
 use crate::world::types::{
-    ZONE_ARDREAM, ZONE_ELMORAD_ESLANT, ZONE_KARUS_ESLANT, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+    ZONE_ARDREAM, ZONE_BATTLE, ZONE_BATTLE2, ZONE_BATTLE3, ZONE_BATTLE4, ZONE_BATTLE5,
+    ZONE_BATTLE6, ZONE_ELMORAD_ESLANT, ZONE_KARUS_ESLANT, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
 };
+use crate::world::WorldState;
 
 /// Default max users per zone (`m_sMaxUser`, not yet stored in our zone model).
 const DEFAULT_MAX_USERS: u16 = 150;
@@ -45,6 +47,28 @@ fn effective_warp_destination(warp_id: i16, raw_zone: i16, nation: u8) -> u16 {
         (_, 19) if nation == 2 => ZONE_ELMORAD_ESLANT,
         _ => raw_zone.max(0) as u16,
     }
+}
+
+pub(super) fn resolve_active_battle_warp(world: &WorldState, effective_zone: u16) -> u16 {
+    if !matches!(
+        effective_zone,
+        ZONE_BATTLE | ZONE_BATTLE2 | ZONE_BATTLE3 | ZONE_BATTLE4 | ZONE_BATTLE5 | ZONE_BATTLE6
+    ) {
+        return effective_zone;
+    }
+
+    let battle = world.get_battle_state();
+    if battle.battle_open == NATION_BATTLE || battle.battle_open == SIEGE_BATTLE {
+        let active_zone = battle.battle_zone_id();
+        if matches!(
+            active_zone,
+            ZONE_BATTLE | ZONE_BATTLE2 | ZONE_BATTLE3 | ZONE_BATTLE4 | ZONE_BATTLE5 | ZONE_BATTLE6
+        ) {
+            return active_zone;
+        }
+    }
+
+    effective_zone
 }
 
 fn is_hidden_moradon_abyss_warp(
@@ -197,8 +221,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         return Ok(());
     }
 
-    let effective_dest_zone =
-        effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation);
+    let effective_dest_zone = resolve_active_battle_warp(
+        &world,
+        effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation),
+    );
 
     // Validate after resolving v2615's legacy zone-19 Eslant destination.
     match world.get_zone(effective_dest_zone) {
@@ -226,7 +252,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if rz < warp.radius {
             rz = -rz;
         }
-        (warp.dest_x + rx, warp.dest_z + rz, effective_dest_zone)
+        if (61..=66).contains(&effective_dest_zone) {
+            (0.0, 0.0, effective_dest_zone)
+        } else {
+            (warp.dest_x + rx, warp.dest_z + rz, effective_dest_zone)
+        }
     };
 
     // Same-zone warp: send success response before warping
@@ -308,8 +338,10 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
             continue;
         }
 
-        let effective_dest_zone =
-            effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation);
+        let effective_dest_zone = resolve_active_battle_warp(
+            &world,
+            effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation),
+        );
 
         // Destination zone must exist and be active after legacy resolution.
         match world.get_zone(effective_dest_zone) {
@@ -339,7 +371,12 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
     }
 
     // Sort by zone ID (C++ sorts by sZone)
-    entries.sort_by_key(|w| effective_warp_destination(w.warp_id, w.dest_zone, char_info.nation));
+    entries.sort_by_key(|w| {
+        resolve_active_battle_warp(
+            &world,
+            effective_warp_destination(w.warp_id, w.dest_zone, char_info.nation),
+        )
+    });
 
     // Build the response packet
     let mut result = Packet::new(Opcode::WizWarpList as u8);
@@ -350,10 +387,9 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
         result.write_u16(warp.warp_id as u16);
         result.write_string(&warp.name);
         result.write_string(&warp.announce);
-        result.write_u16(effective_warp_destination(
-            warp.warp_id,
-            warp.dest_zone,
-            char_info.nation,
+        result.write_u16(resolve_active_battle_warp(
+            &world,
+            effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation),
         ));
         result.write_u16(DEFAULT_MAX_USERS);
         result.write_u32(warp.pay);

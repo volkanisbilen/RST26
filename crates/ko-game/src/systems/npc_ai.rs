@@ -900,6 +900,13 @@ fn npc_tracing(
         && now_ms.saturating_sub(ai.last_combat_time_ms) > TRACER_TIMEOUT_MS
     {
         tracing::debug!("NPC {} tracer timeout (12s no combat)", npc_id);
+        // TENDER NPCs use the damage ledger as their aggro list. Leaving the
+        // entry behind after disengaging makes them reacquire the same player
+        // whenever they pass by, even long after the fight ended. Remove only
+        // this target's entry; retain other attackers' loot/threat records.
+        if ai.attack_type == TENDER_ATTACK_TYPE {
+            world.clear_npc_player_damage(npc_id, target_id);
+        }
         world.update_npc_ai(npc_id, |s| {
             s.state = NpcState::Standing;
             s.target_id = None;

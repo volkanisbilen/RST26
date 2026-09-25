@@ -32,7 +32,7 @@ use crate::systems::buff_tick::build_buff_expired_packet;
 #[cfg(test)]
 use crate::world::NATION_ELMORAD;
 use crate::world::{
-    ActiveBuff, CharacterInfo, NpcBuffEntry, WorldState, NATION_KARUS, USER_DEAD, USER_SITDOWN,
+    ActiveBuff, CharacterInfo, NpcBuffEntry, Position, WorldState, NATION_KARUS, USER_DEAD, USER_SITDOWN,
     ZONE_BATTLE2, ZONE_BATTLE3, ZONE_CHAOS_DUNGEON, ZONE_DELOS, ZONE_DUNGEON_DEFENCE,
     ZONE_FORGOTTEN_TEMPLE, ZONE_KNIGHT_ROYALE, ZONE_SNOW_BATTLE, ZONE_UNDER_CASTLE,
 };
@@ -478,8 +478,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Applies to all opcodes EXCEPT: TYPE4_EXTEND, CANCEL, CANCEL_TRANSFORMATION, FAIL.
     // Type-9 skills (stealth) are also excluded per C++ (bType[0] != 9).
     let skill_type = skill.type1.unwrap_or(0) as u8;
-    let is_scroll_buff =
-        skill.item_group.unwrap_or(0) == 255 && skill_type == 4 && skill.use_item.unwrap_or(0) > 0;
+    let is_scroll_buff = matches!(skill.item_group, Some(9 | 255))
+        && skill_type == 4
+        && skill.use_item.unwrap_or(0) > 0;
     let (has_instant_cast, on_cooldown) = world
         .with_session(sid, |h| {
             let cd = h
@@ -870,6 +871,21 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             }
 
             // Check mana for non-type2 skills (type2 already deducted in FLYING)
+            if skill_type == 8
+                && b_opcode == MAGIC_EFFECTING
+                && world.get_magic_type8(skill.magic_num).is_some_and(|t8| {
+                    (t8.warp_type == 25
+                        && type8_warp25_destination(&world, sid, &instance, &skill).is_none())
+                        || (t8.warp_type == 27
+                            && type8_warp27_destination(&world, sid, &instance, &skill).is_none())
+                        || (t8.warp_type == 12
+                            && type8_warp12_target(&world, sid, &instance, &skill).is_none())
+                })
+            {
+                world.send_to_session_owned(sid, instance.build_fail_packet());
+                return Ok(());
+            }
+
             if skill_type != 2
                 && !check_and_deduct_mana(&world, sid, &caster, &skill, instance.target_id)
             {
@@ -3875,8 +3891,11 @@ fn apply_magic_class_bonus(
 
 // ── Type 4: Buffs / Debuffs ──────────────────────────────────────────────
 
-fn should_persist_type4_magic(skill: &MagicRow, skill_id: u32) -> bool {
-    skill_id > 500_000 || (skill.type1 == Some(4) && skill.item_group == Some(255))
+pub(crate) fn should_persist_type4_magic(skill: &MagicRow, skill_id: u32) -> bool {
+    skill_id > 500_000
+        || (skill.type1 == Some(4)
+            && matches!(skill.item_group, Some(9 | 255))
+            && skill.use_item.unwrap_or(0) > 0)
 }
 
 /// Execute Type 4 skill — apply buff or debuff.
@@ -3899,6 +3918,23 @@ fn execute_type4(
     };
 
     let moral = skill.moral.unwrap_or(0);
+
+    // Flash items are instant stack increments, not duration-zero Type4 buffs.
+    // Handle only real casts here: saved-magic recasts must never add stacks.
+    if type4_data.buff_type == Some(BUFF_TYPE_FISHING) {
+        if !crate::systems::flash::use_flash(
+            world,
+            caster_sid,
+            type4_data.special_amount.unwrap_or(0),
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        return true;
+    }
 
     // ── Self-buff ───────────────────────────────────────────────────
     if moral == MORAL_SELF {
@@ -7297,6 +7333,140 @@ fn execute_type8(
 
     let warp_type = type8_data.warp_type;
 
+    // Type 25 is used by Descent and Wild Advent (2625 Skill_Magic_8.tbl).
+    // The older Rust fallback treated every unrecognized warp type as a
+    // knockback, so these skills played an effect but never moved the caster.
+    if warp_type == 25 {
+        let destination = match type8_warp25_destination(world, caster_sid, instance, skill) {
+            Some(pos) => pos,
+            None => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
+
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        world.update_position(
+            caster_sid,
+            destination.zone_id,
+            destination.x,
+            destination.y,
+            destination.z,
+        );
+
+        let mut warp = Packet::new(Opcode::WizWarp as u8);
+        warp.write_u16((destination.x * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+        warp.write_u16((destination.z * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+        warp.write_i16(-1);
+        world.send_to_session_owned(caster_sid, warp);
+        return true;
+    }
+
+    // Type 27 is used by the TBL-defined summon/teleport skills. C++ requires
+    // an enabled teleport zone, same zone and same nation before moving caster
+    // to the target's current position.
+    if warp_type == 27 {
+        let destination = match type8_warp27_destination(world, caster_sid, instance, skill) {
+            Some(pos) => pos,
+            None => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
+
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        world.update_position(
+            caster_sid,
+            destination.zone_id,
+            destination.x,
+            destination.y,
+            destination.z,
+        );
+        let mut warp = Packet::new(Opcode::WizWarp as u8);
+        warp.write_u16((destination.x * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+        warp.write_u16((destination.z * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+        warp.write_i16(-1);
+        world.send_to_session_owned(caster_sid, warp);
+        return true;
+    }
+
+    // Type 12 summons an eligible party member to the caster. These are the
+    // 2625 client-table friend-summon skills (109004/110004/209004/210004,
+    // 490042 and 490050); restrictions mirror MagicInstance::ExecuteType8.
+    if warp_type == 12 {
+        let target_sid = match type8_warp12_target(world, caster_sid, instance, skill) {
+            Some(target_sid) => target_sid,
+            None => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
+        let Some(destination) = world.get_position(caster_sid) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        world.update_position(
+            target_sid,
+            destination.zone_id,
+            destination.x,
+            destination.y,
+            destination.z,
+        );
+        let mut warp = Packet::new(Opcode::WizWarp as u8);
+        warp.write_u16((destination.x * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+        warp.write_u16((destination.z * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+        warp.write_i16(-1);
+        world.send_to_session_owned(target_sid, warp);
+        return true;
+    }
+
+    // Type 21 is the monster-summon scroll/staff family. The source server
+    // chooses uniformly from the corresponding summon-list class.
+    if warp_type == 21 {
+        let summon_type = match skill.magic_num {
+            490088 | 490093 | 490096 | 490097 | 500202 => 1,
+            492015 => 2,
+            _ => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
+        let Some(position) = world.get_position(caster_sid) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+        let summons = world.get_monster_summons_by_type(summon_type);
+        if summons.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let selected = rand::thread_rng().gen_range(0..summons.len());
+        let spawned = world.spawn_event_npc(
+            summons[selected].s_sid as u16,
+            true,
+            position.zone_id,
+            position.x,
+            position.z,
+            1,
+        );
+        if spawned.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        return true;
+    }
+
     // v2625 Skill_Magic_8 uses warp type 26 for Blink (older DB snapshots
     // used 20).  The client sends the already-resolved destination in
     // sData[0]/sData[2], in tenths of a world unit.  Previously this path
@@ -7378,11 +7548,21 @@ fn execute_type8(
         return true;
     }
 
-    // Knockback: apply kick_distance in the direction from caster to target
+    // Only the explicitly implemented knockback subtype may use the generic
+    // kick-distance calculation. Other warp types are summons, event warps,
+    // pulls, or special mechanics and must not be mis-executed as knockback.
+    if warp_type != 29 {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    }
+
+    // Soccer ball movement: apply kick_distance in the direction from caster
+    // to target (the special socket/move-result behavior is not represented by
+    // this generic player-only handler, so reject non-NPC targets below).
     let kick_dist = type8_data.kick_distance as f32;
     if kick_dist > 0.0 {
         let target_id = instance.target_id;
-        if target_id >= 0 {
+        if target_id >= 0 && (target_id as u32) >= NPC_BAND {
             let target_sid = target_id as SessionId;
             let caster_pos = world.get_position(caster_sid);
             let target_pos = world.get_position(target_sid);
@@ -7412,10 +7592,168 @@ fn execute_type8(
         }
     }
 
+    if kick_dist <= 0.0 || (instance.target_id as u32) < NPC_BAND {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    }
+
     instance.data[1] = 1;
     let pkt = instance.build_packet(MAGIC_EFFECTING);
     broadcast_to_caster_region(world, caster_sid, &pkt);
     true
+}
+
+/// Validate the C++ MagicInstance::ExecuteType8 warp-type-25 prerequisites
+/// and return the target position if the caster may teleport to them.
+fn type8_warp25_destination(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &MagicInstance,
+    skill: &MagicRow,
+) -> Option<Position> {
+    let target_sid = u16::try_from(instance.target_id).ok()?;
+    if instance.target_id < 0 || (instance.target_id as u32) >= NPC_BAND {
+        return None;
+    }
+
+    let caster = world.get_character_info(caster_sid)?;
+    let target = world.get_character_info(target_sid)?;
+    let caster_pos = world.get_position(caster_sid)?;
+    let target_pos = world.get_position(target_sid)?;
+    if caster_sid == target_sid || caster_pos.zone_id != target_pos.zone_id {
+        return None;
+    }
+
+    let type8 = world.get_magic_type8(skill.magic_num)?;
+    let dx = target_pos.x - caster_pos.x;
+    let dz = target_pos.z - caster_pos.z;
+    let max_distance = type8.radius.max(0) as f32;
+    if max_distance <= 0.0 || (dx * dx + dz * dz).sqrt() > max_distance {
+        return None;
+    }
+
+    match skill.moral.unwrap_or(0) {
+        MORAL_PARTY => {
+            if caster.party_id.is_none() || caster.party_id != target.party_id {
+                return None;
+            }
+        }
+        MORAL_ENEMY => {
+            if !crate::handler::attack::is_hostile_to(
+                world,
+                caster_sid,
+                &caster,
+                &caster_pos,
+                target_sid,
+                &target,
+                &target_pos,
+            ) {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+
+    // C++ allows Wild Advent outside a teleport-enabled zone; Descent still
+    // obeys the zone's teleport flag.
+    if !matches!(skill.magic_num, 108770 | 208770)
+        && !world
+            .get_zone(caster_pos.zone_id)
+            .and_then(|zone| zone.zone_info.clone())
+            .is_some_and(|info| info.abilities.teleport)
+    {
+        return None;
+    }
+
+    let valid_destination = world
+        .get_zone(target_pos.zone_id)
+        .is_some_and(|zone| zone.is_valid_position(target_pos.x, target_pos.z));
+    valid_destination.then_some(target_pos)
+}
+
+/// Validate C++ warp-type-27 requirements and return the caster destination.
+fn type8_warp27_destination(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &MagicInstance,
+    skill: &MagicRow,
+) -> Option<Position> {
+    let target_sid = u16::try_from(instance.target_id).ok()?;
+    if instance.target_id < 0 || (instance.target_id as u32) >= NPC_BAND {
+        return None;
+    }
+    let caster = world.get_character_info(caster_sid)?;
+    let target = world.get_character_info(target_sid)?;
+    let caster_pos = world.get_position(caster_sid)?;
+    let target_pos = world.get_position(target_sid)?;
+    if caster_pos.zone_id != target_pos.zone_id || caster.nation != target.nation {
+        return None;
+    }
+    if skill.magic_num == 500038
+        && (crate::world::ZONE_SPBATTLE_MIN..=crate::world::ZONE_SPBATTLE_MAX)
+            .contains(&caster_pos.zone_id)
+    {
+        return None;
+    }
+    if !world
+        .get_zone(caster_pos.zone_id)
+        .and_then(|zone| zone.zone_info.clone())
+        .is_some_and(|info| info.abilities.teleport)
+    {
+        return None;
+    }
+    world
+        .get_zone(target_pos.zone_id)
+        .is_some_and(|zone| zone.is_valid_position(target_pos.x, target_pos.z))
+        .then_some(target_pos)
+}
+
+/// Validate the C++ friend-summon Type 12 gates and return the party target.
+fn type8_warp12_target(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &MagicInstance,
+    skill: &MagicRow,
+) -> Option<SessionId> {
+    let target_sid = u16::try_from(instance.target_id).ok()?;
+    if instance.target_id < 0 || (instance.target_id as u32) >= NPC_BAND {
+        return None;
+    }
+    let caster = world.get_character_info(caster_sid)?;
+    let target = world.get_character_info(target_sid)?;
+    let caster_pos = world.get_position(caster_sid)?;
+    let target_pos = world.get_position(target_sid)?;
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if caster_sid == target_sid
+        || caster_pos.zone_id != target_pos.zone_id
+        || caster.party_id.is_none()
+        || caster.party_id != target.party_id
+        || world.is_player_dead(target_sid)
+        || world.is_player_blinking(target_sid, now_unix)
+    {
+        return None;
+    }
+
+    let zone = world.get_zone(caster_pos.zone_id)?;
+    let abilities = &zone.zone_info.as_ref()?.abilities;
+    match skill.magic_num {
+        490042 => return None, // Monster summon counterpart is not a friend-call skill.
+        490050 if !abilities.calling_friend => return None,
+        109004 | 110004 | 209004 | 210004 if !abilities.teleport_friend => return None,
+        _ => {}
+    }
+    if matches!(skill.magic_num, 490042 | 490050)
+        && (caster_pos.zone_id == ZONE_FORGOTTEN_TEMPLE
+            || (caster_pos.zone_id == crate::world::ZONE_KARUS
+                || caster_pos.zone_id == crate::world::ZONE_ELMORAD)
+                && !abilities.calling_friend)
+    {
+        return None;
+    }
+    Some(target_sid)
 }
 
 // ── Type 9: Stealth / Invisibility ──────────────────────────────────────
@@ -13143,6 +13481,25 @@ mod tests {
             skill_check: None,
             icelightrate: None,
         }
+    }
+
+    #[test]
+    fn test_item_group_nine_scroll_is_saved_but_class_buff_is_not() {
+        let mut skill = make_test_magic(490053, MORAL_SELF);
+        skill.type1 = Some(4);
+        skill.item_group = Some(9);
+        skill.use_item = Some(389053000);
+        assert!(should_persist_type4_magic(&skill, 490053));
+        let world = crate::world::WorldState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(1, tx);
+        world.insert_magic(skill.clone());
+        world.insert_saved_magic(1, 490053, 1800);
+        assert!(world.has_saved_magic(1, 490053));
+        skill.use_item = None;
+        assert!(!should_persist_type4_magic(&skill, 490053));
+        skill.item_group = Some(0);
+        assert!(!should_persist_type4_magic(&skill, 112615));
     }
 
     #[test]

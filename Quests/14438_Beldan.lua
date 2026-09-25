@@ -1,7 +1,7 @@
 local NPC = 14438;
 
 if (EVENT == 3000) then
-	NpcMsg(UID, 815, NPC);
+	SelectMsg(UID, 2, -1, 807, NPC, 67, 3011, 68, -1);
 end
 
 if (EVENT == 3010) then

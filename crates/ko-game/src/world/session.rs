@@ -20,10 +20,21 @@ impl WorldState {
     /// The closure receives a mutable reference to the `CharacterInfo` and can
     /// modify any fields. Commonly used after stat/skill point allocation.
     pub fn update_character_stats(&self, id: SessionId, updater: impl FnOnce(&mut CharacterInfo)) {
-        if let Some(mut handle) = self.sessions.get_mut(&id) {
+        let vitals_changed = if let Some(mut handle) = self.sessions.get_mut(&id) {
             if let Some(ref mut ch) = handle.character {
+                let before = (ch.hp, ch.max_hp, ch.mp, ch.max_mp);
                 updater(ch);
+                before != (ch.hp, ch.max_hp, ch.mp, ch.max_mp)
+            } else {
+                false
             }
+        } else {
+            false
+        };
+        // Drop the session-map guard before party lookup/broadcast. Updating
+        // vitals through this common path must refresh both HP and MP bars.
+        if vitals_changed {
+            crate::handler::party::broadcast_party_hp(self, id);
         }
     }
     /// Recalculate max HP/MP using the coefficient formula and update the session.
@@ -852,18 +863,32 @@ impl WorldState {
     }
     /// Update a player's current HP in CharacterInfo.
     pub fn update_character_hp(&self, id: SessionId, hp: i16) {
-        if let Some(mut handle) = self.sessions.get_mut(&id) {
+        let changed = if let Some(mut handle) = self.sessions.get_mut(&id) {
             if let Some(ref mut ch) = handle.character {
+                let changed = ch.hp != hp;
                 ch.hp = hp;
+                changed
+            } else {
+                false
             }
+        } else { false };
+        if changed {
+            crate::handler::party::broadcast_party_hp(self, id);
         }
     }
     /// Update a player's current MP in CharacterInfo.
     pub fn update_character_mp(&self, id: SessionId, mp: i16) {
-        if let Some(mut handle) = self.sessions.get_mut(&id) {
+        let changed = if let Some(mut handle) = self.sessions.get_mut(&id) {
             if let Some(ref mut ch) = handle.character {
+                let changed = ch.mp != mp;
                 ch.mp = mp;
+                changed
+            } else {
+                false
             }
+        } else { false };
+        if changed {
+            crate::handler::party::broadcast_party_hp(self, id);
         }
     }
     /// Update a player's current SP in CharacterInfo.

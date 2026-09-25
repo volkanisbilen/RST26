@@ -336,6 +336,22 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
     // Handle special NPC types by npc_type
     if let Some(ref t) = tmpl {
         match t.npc_type {
+            crate::npc_type_constants::NPC_VICTORY_GATE => {
+                let battle = world.get_battle_state();
+                if battle.is_nation_battle()
+                    && battle.victory == ch.nation
+                    && pos.zone_id == battle.battle_zone_id()
+                {
+                    // NPCHandler.cpp: the winner chooses the existing Victory Gate.
+                    let (zone, x, z) = match ch.nation {
+                        1 if battle.elmorad_open_flag => (2, 222.0, 1846.0),
+                        2 if battle.karus_open_flag => (1, 1865.0, 168.0),
+                        _ => return Ok(()),
+                    };
+                    super::zone_change::trigger_zone_change(session, zone, x, z).await?;
+                }
+                return Ok(());
+            }
             NPC_ROLLINGSTONE => {
                 // Instant death — apply full HP damage
                 let damage = ch.max_hp;

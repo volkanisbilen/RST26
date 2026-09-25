@@ -3548,6 +3548,9 @@ fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow
         .as_secs() as i32;
 
     let opened = world.update_battle_state(|state| {
+        if state.is_war_open() {
+            war::reset_battle_zone(state);
+        }
         war::battle_zone_open(state, war::BATTLEZONE_OPEN, zone_index, now_unix)
     });
 

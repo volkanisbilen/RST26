@@ -462,9 +462,9 @@ impl WorldState {
     ///
     pub fn insert_saved_magic(&self, sid: SessionId, skill_id: u32, duration_secs: u16) {
         let is_item_scroll_buff = skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID
-            && self
-                .get_magic(skill_id as i32)
-                .is_some_and(|skill| skill.type1 == Some(4) && skill.item_group == Some(255));
+            && self.get_magic(skill_id as i32).is_some_and(|skill| {
+                crate::handler::magic_process::should_persist_type4_magic(&skill, skill_id)
+            });
         if skill_id == 0 || (skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID && !is_item_scroll_buff) {
             return;
         }
@@ -1675,9 +1675,18 @@ impl WorldState {
             pkt.write_u32(*skill_id);
             pkt.write_u32(sid as u32);
             pkt.write_u32(sid as u32);
-            // 7 data words: all zeros (standard for recast)
-            for _ in 0..7 {
-                pkt.write_u32(0);
+            // Match a successful Type4 cast: result and remaining duration
+            // are required by the client to restore the scroll icon/timer.
+            for value in [
+                0,
+                1,
+                0,
+                *remaining_secs as u32,
+                0,
+                type4.speed.unwrap_or(0) as u32,
+                0,
+            ] {
+                pkt.write_u32(value);
             }
 
             // Broadcast to 3x3 region
@@ -2373,7 +2382,7 @@ mod recast_saved_magic_tests {
 
     #[tokio::test]
     async fn test_recast_builds_magic_effecting_packet_format() {
-        // Verify the MAGIC_EFFECTING packet format is correct by building one manually.
+        // Verify the MAGIC_EFFECTING recast packet carries success and duration.
         // Broadcast delivery requires full zone setup (tested via integration tests),
         // but we verify the packet structure here.
         let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
@@ -2381,8 +2390,8 @@ mod recast_saved_magic_tests {
         pkt.write_u32(500100); // skill_id
         pkt.write_u32(1); // caster_id = sid
         pkt.write_u32(1); // target_id = sid
-        for _ in 0..7 {
-            pkt.write_u32(0); // data words
+        for value in [0, 1, 0, 120, 0, 100, 0] {
+            pkt.write_u32(value);
         }
 
         assert_eq!(pkt.opcode, Opcode::WizMagicProcess as u8);
@@ -2391,9 +2400,8 @@ mod recast_saved_magic_tests {
         assert_eq!(r.read_u32(), Some(500100));
         assert_eq!(r.read_u32(), Some(1));
         assert_eq!(r.read_u32(), Some(1));
-        // 7 data words of zero
-        for _ in 0..7 {
-            assert_eq!(r.read_u32(), Some(0));
+        for expected in [0, 1, 0, 120, 0, 100, 0] {
+            assert_eq!(r.read_u32(), Some(expected));
         }
     }
 

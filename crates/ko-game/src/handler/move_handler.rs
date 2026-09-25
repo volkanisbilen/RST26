@@ -457,9 +457,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if let Some(event) = zone.check_event(x, z) {
             match event.event_type {
                 GameEventType::ZoneChange => {
-                    let dest_zone = event.exec[0] as u16;
-                    let dest_x = event.exec[1] as f32;
-                    let dest_z = event.exec[2] as f32;
+                    let raw_zone = event.exec[0] as u16;
+                    let dest_zone = super::warp_list::resolve_active_battle_warp(&world, raw_zone);
+                    let (dest_x, dest_z) = if (61..=66).contains(&raw_zone) {
+                        // Each war map has separate nation start positions.
+                        (0.0, 0.0)
+                    } else {
+                        (event.exec[1] as f32, event.exec[2] as f32)
+                    };
                     zone_change::trigger_zone_change(session, dest_zone, dest_x, dest_z).await?;
                 }
                 GameEventType::TrapDead => {

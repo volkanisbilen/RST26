@@ -221,7 +221,8 @@ pub fn simulate_npc_drops(
         .get_character_info(tester_sid)
         .map(|ch| ch.nation)
         .unwrap_or(0);
-    let premium = world.get_premium_property(tester_sid, PremiumProperty::DropPercent);
+    let premium = world.get_premium_property(tester_sid, PremiumProperty::DropPercent)
+        + crate::systems::flash::get_flash_dc_bonus(world, tester_sid) as i32;
     let scroll = world
         .with_session(tester_sid, |h| h.drop_scroll_amount)
         .unwrap_or(0) as i32;
@@ -446,7 +447,8 @@ pub fn generate_npc_loot(
             );
 
             // 1) Premium drop (additive): iPer += iPer * pers1 / 100
-            let prem_drop = world.get_premium_property(killer_sid, PremiumProperty::DropPercent);
+            let prem_drop = world.get_premium_property(killer_sid, PremiumProperty::DropPercent)
+                + crate::systems::flash::get_flash_dc_bonus(world, killer_sid) as i32;
             if prem_drop > 0 {
                 adjusted_percent += adjusted_percent * prem_drop / 100;
             }

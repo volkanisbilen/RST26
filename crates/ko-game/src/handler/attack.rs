@@ -37,9 +37,11 @@ use crate::handler::durability::{WORE_TYPE_ATTACK, WORE_TYPE_DEFENCE};
 use crate::npc::NpcId;
 use crate::npc_type_constants::{
     NPC_BIFROST_MONUMENT, NPC_BORDER_MONUMENT, NPC_CLAN_WAR_MONUMENT, NPC_DESTROYED_ARTIFACT,
-    NPC_FOSIL, NPC_GATE, NPC_GATE2, NPC_GATE_LEVER, NPC_GUARD_TOWER1, NPC_GUARD_TOWER2,
-    NPC_OBJECT_FLAG, NPC_PARTNER_TYPE, NPC_PHOENIX_GATE, NPC_PRISON, NPC_PVP_MONUMENT, NPC_REFUGEE,
-    NPC_SANTA, NPC_SOCCER_BAAL, NPC_SPECIAL_GATE, NPC_TREE, NPC_VICTORY_GATE,
+    NPC_FOSIL, NPC_GATE,
+    NPC_GATE2, NPC_GATE_LEVER, NPC_GUARD_TOWER1, NPC_GUARD_TOWER2,
+    NPC_OBJECT_FLAG, NPC_PARTNER_TYPE, NPC_PHOENIX_GATE,
+    NPC_PRISON, NPC_PVP_MONUMENT, NPC_REFUGEE, NPC_SANTA, NPC_SOCCER_BAAL, NPC_SPECIAL_GATE,
+    NPC_TREE, NPC_VICTORY_GATE,
 };
 use crate::session::{ClientSession, SessionState};
 use crate::systems::bdw;
@@ -2802,14 +2804,17 @@ pub(crate) async fn handle_npc_death(
         );
     }
 
+    let (killer_nation, killer_name, killer_clan_id) = world
+        .get_character_info(killer_sid)
+        .map_or((0u8, String::new(), 0u16), |ch| {
+            (ch.nation, ch.name.clone(), ch.knights_id)
+        });
+
+    process_war_warder_gatekeeper_death(world, npc.zone_id, npc.special_type, killer_nation);
+
     // ── Monument death processing (C++ CNpc::OnDeathProcess) ─────────
     // Only applies to non-monster NPCs with monument types.
     if !tmpl.is_monster {
-        let (killer_nation, killer_name, killer_clan_id) = world
-            .get_character_info(killer_sid)
-            .map_or((0u8, String::new(), 0u16), |ch| {
-                (ch.nation, ch.name.clone(), ch.knights_id)
-            });
         super::monument::monument_death_dispatch(
             world,
             npc,
@@ -2819,6 +2824,60 @@ pub(crate) async fn handle_npc_death(
             killer_clan_id,
         )
         .await;
+    }
+
+    fn process_war_warder_gatekeeper_death(
+        world: &WorldState,
+        zone_id: u16,
+        special_type: i16,
+        killer_nation: u8,
+    ) {
+        // NpcDefines.h: war objectives are spawn special types, not NPC model types.
+        let (owner_nation, label, is_gatekeeper) = match special_type {
+            90 | 91 => (NATION_KARUS, "Karus warder", false),
+            92 | 93 => (NATION_ELMORAD, "El Morad warder", false),
+            98 => (NATION_KARUS, "Karus gatekeeper", true),
+            99 => (NATION_ELMORAD, "El Morad gatekeeper", true),
+            _ => return,
+        };
+
+        if !(NATION_KARUS..=NATION_ELMORAD).contains(&killer_nation)
+            || killer_nation == owner_nation
+        {
+            return;
+        }
+
+        let state = world.get_battle_state();
+        if !state.is_nation_battle() || state.victory != 0 || zone_id != state.battle_zone_id() {
+            return;
+        }
+
+        world.increment_war_npc_kill(owner_nation);
+
+        let killer_label = if killer_nation == NATION_KARUS {
+            "Karus"
+        } else {
+            "El Morad"
+        };
+        crate::systems::war::broadcast_war_announcement(
+            world,
+            &format!("{label} has been killed by {killer_label}!"),
+            None,
+        );
+        let notice = super::chat::build_chat_packet(
+            7, 1, 0xFFFF, "",
+            &format!("{label} has been killed by {killer_label}!"), 0, 0, 0,
+        );
+        world.broadcast_to_all(std::sync::Arc::new(notice), None);
+
+        if is_gatekeeper {
+            // Do not move players here. The existing Victory Gate/object-event flow
+            // handles invasion warps; this only opens the winner state it depends on.
+            world
+                .update_battle_state(|s| crate::systems::war::battle_zone_result(s, killer_nation));
+            let msg = crate::systems::war::build_winner_string(killer_nation);
+            crate::systems::war::broadcast_war_announcement(world, &msg, None);
+        }
     }
 
     // ── Monster Stone boss kill (C++ CNpc::MonsterStoneKillProcess) ────

@@ -53,7 +53,7 @@ const BOT_MINING_INTERVAL_MS: u64 = 120_000; // 2 minutes
 const BOT_MERCHANT_CHAT_INTERVAL_MS: u64 = 60_000; // 1 minute
 
 /// Search range for finding targets (game units).
-const BOT_SEARCH_RANGE: f32 = 45.0;
+const BOT_SEARCH_RANGE: f32 = 32.0;
 
 /// Attack range for melee attacks (game units).
 /// Default 7.0 matches C++ fallback when skill has no range defined.
@@ -500,10 +500,10 @@ fn get_bot_attack_cooldown(bot: &BotInstance, world: Option<&WorldState>) -> u64
     }
 }
 
-/// Detect the weapon kind of a rogue bot's RIGHTHAND slot.
+/// Detect the weapon kind of a rogue bot's weapon slots.
 /// - BOW(70) / CROSSBOW(71) → arrow skills
 /// - DAGGER(11) → dagger skills
-/// - SHIELD(60) → check LEFTHAND instead
+/// - Empty/shield off-hand layouts are tolerated; both hands are inspected.
 /// Returns the item kind value, or `WEAPON_KIND_DAGGER` as fallback.
 fn detect_rogue_weapon_kind(bot: &BotInstance, world: Option<&WorldState>) -> i32 {
     let world = match world {
@@ -511,14 +511,52 @@ fn detect_rogue_weapon_kind(bot: &BotInstance, world: Option<&WorldState>) -> i3
         None => return WEAPON_KIND_DAGGER, // no world → default dagger
     };
 
-    let (right_item_id, _, _) = bot.equip_visual[VISUAL_RIGHTHAND_IDX];
-    if right_item_id == 0 {
-        return WEAPON_KIND_DAGGER;
+    let mut first_weapon_kind = None;
+    for slot_idx in [VISUAL_RIGHTHAND_IDX, VISUAL_LEFTHAND_IDX] {
+        let (item_id, _, _) = bot.equip_visual[slot_idx];
+        if item_id == 0 {
+            continue;
+        }
+        let Some(kind) = world.get_item(item_id).and_then(|item| item.kind) else {
+            continue;
+        };
+        if kind == WEAPON_KIND_BOW || kind == WEAPON_KIND_CROSSBOW {
+            return kind;
+        }
+        first_weapon_kind.get_or_insert(kind);
     }
+    first_weapon_kind.unwrap_or(WEAPON_KIND_DAGGER)
+}
 
-    match world.get_item(right_item_id) {
-        Some(item) => item.kind.unwrap_or(WEAPON_KIND_DAGGER),
-        None => WEAPON_KIND_DAGGER,
+fn bot_attack_range_for_skill(world: &WorldState, bot: &BotInstance, skill_id: u32) -> f32 {
+    let table_range = world
+        .get_magic(skill_id as i32)
+        .and_then(|m| m.range)
+        .unwrap_or(0) as f32;
+
+    let fallback = if bot.is_rogue() {
+        let kind = detect_rogue_weapon_kind(bot, Some(world));
+        if kind == WEAPON_KIND_BOW || kind == WEAPON_KIND_CROSSBOW {
+            28.0
+        } else {
+            BOT_ATTACK_RANGE
+        }
+    } else if bot.is_mage() || bot.is_priest() {
+        25.0
+    } else {
+        BOT_ATTACK_RANGE
+    };
+
+    let range = if table_range > 0.0 {
+        table_range
+    } else {
+        fallback
+    };
+
+    if bot.is_warrior() || (bot.is_rogue() && range <= BOT_ATTACK_RANGE + 1.0) {
+        range.clamp(3.0, BOT_ATTACK_RANGE)
+    } else {
+        range.clamp(6.0, 28.0)
     }
 }
 
@@ -1235,8 +1273,10 @@ fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
             let dx = target_x - bot.x;
             let dz = target_z - bot.z;
             let distance = (dx * dx + dz * dz).sqrt();
+            let skill_id = select_bot_skill_with_weapon(bot, Some(world));
+            let attack_range = bot_attack_range_for_skill(world, bot, skill_id);
 
-            if distance <= BOT_ATTACK_RANGE {
+            if distance <= attack_range {
                 // In attack range — perform attack.
                 bot_perform_attack(world, bot, target_sid, target_x, target_y, target_z, now_ms);
             } else if distance <= BOT_SEARCH_RANGE {
@@ -1257,7 +1297,7 @@ fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
                 let arrived = {
                     let dx2 = new_x - target_x;
                     let dz2 = new_z - target_z;
-                    (dx2 * dx2 + dz2 * dz2).sqrt() <= BOT_ATTACK_RANGE
+                    (dx2 * dx2 + dz2 * dz2).sqrt() <= attack_range
                 };
                 let echo: u8 = if target_changed {
                     1 // new target — start of new movement
@@ -2651,11 +2691,6 @@ fn is_pk_zone(zone_id: u16) -> bool {
 
 /// Check if a position is inside the map bounds.
 ///
-/// The loaded SMD `is_movable` grid is an event/navigation layer, not a
-/// collision mask: applying it to every route rejected valid Ronark tiles and
-/// left all bots stationary. Collision-sensitive routes are still sampled by
-/// `is_bot_move_valid`; the authoritative server movement check remains the
-/// map-boundary validation used by live players.
 /// Returns `true` if the position is within bounds (or if no map data is loaded).
 fn is_bot_position_valid(world: &WorldState, zone_id: u16, x: f32, z: f32) -> bool {
     match world.get_zone(zone_id) {
@@ -2675,9 +2710,10 @@ fn is_bot_move_valid(
     to_x: f32,
     to_z: f32,
 ) -> bool {
-    const SAMPLES: usize = 4;
-    (1..=SAMPLES).all(|sample| {
-        let t = sample as f32 / SAMPLES as f32;
+    let distance = ((to_x - from_x).powi(2) + (to_z - from_z).powi(2)).sqrt();
+    let samples = (distance / 1.5).ceil().max(4.0) as usize;
+    (1..=samples).all(|sample| {
+        let t = sample as f32 / samples as f32;
         is_bot_position_valid(
             world,
             zone_id,

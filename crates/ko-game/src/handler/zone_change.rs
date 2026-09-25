@@ -256,6 +256,9 @@ fn validate_zone_entry(world: &WorldState, sid: SessionId, dest_zone: u16) -> Re
             if let Some(zone) = world.get_zone(dest_zone) {
                 if zone.is_war_zone() {
                     let battle_state = world.get_battle_state();
+                    if !battle_state.is_war_open() {
+                        return Err((WARP_ERROR, 0));
+                    }
                     if dest_zone == ZONE_SNOW_BATTLE {
                         // Snow battle uses offset from ZONE_SNOW_BATTLE
                         if (dest_zone - ZONE_SNOW_BATTLE) as u8 != battle_state.battle_zone {

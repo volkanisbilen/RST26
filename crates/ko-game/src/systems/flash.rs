@@ -5,8 +5,8 @@
 //! - `UserLevelExperienceSystem.cpp:443-534` — `ExpFlash/DcFlash/WarFlash/SendFlashNotice`
 //! - `PremiumSystem.cpp:32` — flash reset on premium switch
 //! ## Flash System Overview
-//! Flash bonuses are earned per-kill with the BUFF_TYPE_FISHING (48) buff active.
-//! Each kill stacks +10% bonus (EXP/DC/WAR depending on premium type), up to 100%.
+//! Flash items add one stack per successful use, not per monster kill.
+//! EXP/DC add 10% up to 100%; WAR adds 1 loyalty up to 10.
 //! The flash timer counts down in 1-minute intervals; when it hits 0 the bonus is removed.
 //! ## Burning / Flame System
 //! Flame level (0-3) increments once per hour while online. Each level adds
@@ -54,7 +54,41 @@ pub fn is_flash_premium(premium_type: u8) -> bool {
     (10..=12).contains(&premium_type) || premium_type == 7
 }
 
-/// Apply flash XP bonus on NPC kill (BUFF_TYPE_FISHING with sSpecialAmount == 2).
+/// Validate before consuming the item. Recasts do not enter this path.
+pub fn use_flash(world: &WorldState, sid: SessionId, kind: i32) -> bool {
+    let allowed = world
+        .with_session(sid, |h| match kind {
+            1 => matches!(h.premium_in_use, 7 | 10) && h.flash_dc_bonus < 100,
+            2 => matches!(h.premium_in_use, 7 | 11) && h.flash_exp_bonus < 100,
+            3 => matches!(h.premium_in_use, 7 | 12) && h.flash_war_bonus < 10,
+            _ => false,
+        })
+        .unwrap_or(false);
+    if !allowed {
+        return false;
+    }
+    match kind {
+        1 => dc_flash(world, sid),
+        2 => exp_flash(world, sid),
+        3 => war_flash(world, sid),
+        _ => return false,
+    }
+    // Set count from the actual bonus, including when changing flash type.
+    world.update_session(sid, |h| {
+        h.flash_count = match kind {
+            1 => h.flash_dc_bonus / 10,
+            2 => h.flash_exp_bonus / 10,
+            _ => h.flash_war_bonus,
+        };
+        h.flash_check_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+    });
+    true
+}
+
+/// Apply flash XP bonus on item use (BUFF_TYPE_FISHING with sSpecialAmount == 2).
 /// Increments flash_exp_bonus by 10 (max 100), resets DC/WAR bonuses,
 /// updates flash_time and flash_count, sets flash_type to EXP.
 pub fn exp_flash(world: &WorldState, sid: SessionId) {
@@ -94,7 +128,7 @@ pub fn exp_flash(world: &WorldState, sid: SessionId) {
     send_flash_notice(world, sid, false);
 }
 
-/// Apply flash DC/Drop bonus on NPC kill (BUFF_TYPE_FISHING with sSpecialAmount == 1).
+/// Apply flash DC/Drop bonus on item use (BUFF_TYPE_FISHING with sSpecialAmount == 1).
 pub fn dc_flash(world: &WorldState, sid: SessionId) {
     let (premium, current_bonus) = world
         .with_session(sid, |h| (h.premium_in_use, h.flash_dc_bonus))
@@ -130,7 +164,7 @@ pub fn dc_flash(world: &WorldState, sid: SessionId) {
     send_flash_notice(world, sid, false);
 }
 
-/// Apply flash WAR/Loyalty bonus on NPC kill (BUFF_TYPE_FISHING with sSpecialAmount == 3).
+/// Apply flash WAR/Loyalty bonus on item use (BUFF_TYPE_FISHING with sSpecialAmount == 3).
 pub fn war_flash(world: &WorldState, sid: SessionId) {
     let (premium, current_bonus) = world
         .with_session(sid, |h| (h.premium_in_use, h.flash_war_bonus))
@@ -424,6 +458,46 @@ mod tests {
     }
 
     // ── exp_flash tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_use_flash_ten_stacks_then_rejects_without_mutation() {
+        for (premium, kind) in [(10, 1), (11, 2), (12, 3)] {
+            let (world, sid) = setup_world_with_premium(premium);
+            for count in 1..=10 {
+                assert!(use_flash(&world, sid, kind));
+                assert_eq!(world.with_session(sid, |h| h.flash_count), Some(count));
+                let bonus = match kind {
+                    1 => get_flash_dc_bonus(&world, sid),
+                    2 => get_flash_exp_bonus(&world, sid),
+                    _ => get_flash_war_bonus(&world, sid),
+                };
+                assert_eq!(bonus, if kind == 3 { count } else { count * 10 });
+            }
+            assert!(!use_flash(&world, sid, kind));
+            assert_eq!(world.with_session(sid, |h| h.flash_count), Some(10));
+        }
+    }
+
+    #[test]
+    fn test_use_flash_rejects_wrong_premium_and_unknown_kind() {
+        let (world, sid) = setup_world_with_premium(11);
+        assert!(!use_flash(&world, sid, 1));
+        assert!(!use_flash(&world, sid, 3));
+        assert!(!use_flash(&world, sid, 4));
+        assert_eq!(world.with_session(sid, |h| h.flash_count), Some(0));
+    }
+
+    #[test]
+    fn test_use_flash_switch_resets_count_to_actual_bonus() {
+        let (world, sid) = setup_world_with_premium(7);
+        for _ in 0..5 {
+            assert!(use_flash(&world, sid, 2));
+        }
+        assert!(use_flash(&world, sid, 1));
+        assert_eq!(get_flash_exp_bonus(&world, sid), 0);
+        assert_eq!(get_flash_dc_bonus(&world, sid), 10);
+        assert_eq!(world.with_session(sid, |h| h.flash_count), Some(1));
+    }
 
     #[test]
     fn test_exp_flash_stacks() {
