@@ -101,30 +101,9 @@ async fn handle_base_create(session: &mut ClientSession, sub_type: u8) -> anyhow
 async fn handle_castle_flag(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sw = world.siege_war().read().await;
-
-    let mut resp = Packet::new(Opcode::WizSiege as u8);
-    resp.write_u8(2);
-    resp.write_u8(0); // C++ SByte + uint8(0)
-
-    if sw.master_knights != 0 {
-        if let Some(clan) = world.get_knights(sw.master_knights) {
-            // C++ sends: clan_id(u16) + mark_version(u16) + flag(u8) + grade(u8)
-            // CKnights::GetID() returns uint16 (Knights.h:110)
-            resp.write_u16(clan.id);
-            resp.write_u16(clan.mark_version);
-            resp.write_u8(clan.flag);
-            resp.write_u8(clan.grade);
-        } else {
-            // No valid clan -- send zeroes
-            resp.write_u32(0);
-            resp.write_u16(0);
-        }
-    } else {
-        // No master knights -- C++ sends u32(0) + u16(0)
-        resp.write_u32(0);
-        resp.write_u16(0);
-    }
-
+    let owner = sw.master_knights;
+    drop(sw);
+    let resp = build_castle_flag_packet(&world, owner);
     session.send_packet(&resp).await?;
     Ok(())
 }
@@ -169,7 +148,7 @@ async fn handle_moradon_npc(session: &mut ClientSession, sub_type: u8) -> anyhow
             resp.write_u8(4);
             resp.write_u16(sw.castle_index);
             resp.write_u8(1); // count
-            resp.write_string(&clan_name);
+            resp.write_sbyte_string(&clan_name);
             resp.write_u8(clan_nation);
             resp.write_u16(clan_members);
             resp.write_u8(sw.war_request_day);
@@ -198,7 +177,7 @@ async fn handle_moradon_npc(session: &mut ClientSession, sub_type: u8) -> anyhow
             resp.write_u8(5);
             resp.write_u16(sw.castle_index);
             resp.write_u8(sw.siege_type);
-            resp.write_string(&clan_name);
+            resp.write_sbyte_string(&clan_name);
             resp.write_u8(clan_nation);
             resp.write_u16(clan_members);
             session.send_packet(&resp).await?;
@@ -648,7 +627,8 @@ pub async fn monument_capture(world: &WorldState, killer_clan_id: u16, pool: &ko
     world.siege_war().write().await.master_knights = killer_clan_id;
     tracing::info!(killer_clan_id, castle_index, "CSW owner persisted to knights_siege_warfare");
 
-    let arc_flag = Arc::new(build_castle_flag_packet(world, killer_clan_id));
+    let flag = build_castle_flag_packet(world, killer_clan_id);
+    let arc_flag = Arc::new(flag);
     for sid in world.sessions_in_zone(ZONE_DELOS) {
         world.send_to_session_arc(sid, Arc::clone(&arc_flag));
     }
@@ -678,22 +658,23 @@ pub(crate) fn build_castle_flag_packet(world: &WorldState, owner_clan_id: u16) -
     let mut resp = Packet::new(Opcode::WizSiege as u8);
     resp.write_u8(2);
     resp.write_u8(0);
-
     if owner_clan_id != 0 {
         if let Some(clan) = world.get_knights(owner_clan_id) {
-            // C++ sends: clan_id(u16) + mark_version(u16) + flag(u8) + grade(u8)
-            // CKnights::GetID() returns uint16 (Knights.h:110)
             resp.write_u16(clan.id);
             resp.write_u16(clan.mark_version);
             resp.write_u8(clan.flag);
             resp.write_u8(clan.grade);
         } else {
-            resp.write_u32(0);
             resp.write_u16(0);
+            resp.write_u16(0);
+            resp.write_u8(0);
+            resp.write_u8(0);
         }
     } else {
-        resp.write_u32(0);
         resp.write_u16(0);
+        resp.write_u16(0);
+        resp.write_u8(0);
+        resp.write_u8(0);
     }
 
     resp
@@ -814,6 +795,7 @@ pub fn csw_prepare_open(state: &mut CswEventState, preparing_minutes: u32, now: 
     state.started = true;
     state.prepare_check = false;
     state.war_check = false;
+    state.prep_minutes = preparing_minutes;
     state.monument_time = 0;
 }
 
@@ -824,6 +806,7 @@ pub fn csw_war_open(state: &mut CswEventState, wartime_minutes: u32, now: u64) {
     }
     state.prepare_check = true;
     state.status = CswOpStatus::War;
+    state.war_minutes = wartime_minutes;
     state.csw_time = now + (wartime_minutes as u64) * MINUTE;
 }
 
@@ -1032,12 +1015,9 @@ mod tests {
         assert_eq!(pkt.opcode, Opcode::WizSiege as u8);
         assert_eq!(pkt.data[0], 2); // opcode
         assert_eq!(pkt.data[1], 0); // SByte
-                                    // u32(0) + u16(0)
-        assert_eq!(
-            u32::from_le_bytes([pkt.data[2], pkt.data[3], pkt.data[4], pkt.data[5]]),
-            0
-        );
+        assert_eq!(u32::from_le_bytes(pkt.data[2..6].try_into().unwrap()), 0);
         assert_eq!(u16::from_le_bytes([pkt.data[6], pkt.data[7]]), 0);
+        assert_eq!(pkt.data.len(), 8);
     }
 
     #[test]
@@ -1068,11 +1048,7 @@ mod tests {
         let world = make_test_world();
         // Owner 999 does not exist
         let pkt = build_castle_flag_packet(&world, 999);
-        // Falls back to u32(0) + u16(0)
-        assert_eq!(
-            u32::from_le_bytes([pkt.data[2], pkt.data[3], pkt.data[4], pkt.data[5]]),
-            0
-        );
+        assert_eq!(u32::from_le_bytes(pkt.data[2..6].try_into().unwrap()), 0);
         assert_eq!(u16::from_le_bytes([pkt.data[6], pkt.data[7]]), 0);
     }
 

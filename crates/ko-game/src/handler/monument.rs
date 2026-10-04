@@ -421,16 +421,6 @@ async fn csw_monument_process(world: &WorldState, npc: &NpcInstance, killer_clan
         return;
     }
 
-    // Ensure this NPC is in the AI lifecycle even when it came from an object or
-    // event spawn path, which does not normally allocate AI state for static NPCs.
-    let respawn_scheduled = world.schedule_npc_respawn(npc.nid, 30_000);
-    tracing::info!(
-        npc_id = npc.nid,
-        zone_id = npc.zone_id,
-        respawn_scheduled,
-        "CSW artifact respawn scheduled"
-    );
-
     let captured = match world.db_pool() {
         Some(pool) => crate::handler::siege::monument_capture(world, killer_clan_id, pool).await,
         None => {
@@ -447,7 +437,7 @@ async fn csw_monument_process(world: &WorldState, npc: &NpcInstance, killer_clan
         .map(|clan| clan.name.clone())
         .unwrap_or_else(|| format!("Clan #{}", killer_clan_id));
     let message = format!(
-        "CSW: {} artifacti ele geçirdi. Artifact 30 saniye içinde yeniden doğacak.",
+        "CSW: {} artifacti ele geçirdi. Artifact 60 saniye içinde yeniden doğacak.",
         clan_name
     );
     let packet = crate::handler::chat::build_chat_packet(8, 1, 0xFFFF, "", &message, 0, 0, 0);

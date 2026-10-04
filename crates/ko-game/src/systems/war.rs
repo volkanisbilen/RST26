@@ -1051,11 +1051,10 @@ async fn csw_tick_world(world: &WorldState) {
             world.broadcast_to_all(Arc::new(pkt), None);
         }
         CswTickAction::TransitionToWar => {
-            // Read wartime from CSW options
-            let wartime = world
-                .get_csw_opt()
-                .map(|opt| opt.war_time as u32)
-                .unwrap_or(40);
+            // Use the duration accepted by +cswstart (or loaded by +cswfast),
+            // not a second DB lookup that could silently discard the command's
+            // requested value.
+            let wartime = world.csw_event().read().await.war_minutes;
 
             {
                 let mut state = world.csw_event().write().await;

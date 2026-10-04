@@ -2691,6 +2691,7 @@ pub struct CswEventState {
     pub started: bool,
     /// Unix timestamp when the monument was last killed.
     pub monument_time: u64,
+    /// Client-visible monument state from WIZ_SIEGE (C++ MonumentType).
     /// Whether the preparation phase check has fired.
     pub prepare_check: bool,
     /// Whether the war phase check has fired.

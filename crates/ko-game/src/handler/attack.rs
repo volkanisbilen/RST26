@@ -2216,7 +2216,7 @@ async fn handle_npc_attack(
             npc_id,
             &npc,
             &tmpl,
-            is_manes_survival_zone,
+            is_manes_survival_zone || tmpl.npc_type == NPC_DESTROYED_ARTIFACT,
         )
         .await;
 
@@ -2237,6 +2237,11 @@ async fn handle_npc_attack(
         new_hp,
         damage as i32,
     );
+
+    // CSW's lethal objective packet must follow the attack result on 2625.
+    if new_hp <= 0 && tmpl.npc_type == NPC_DESTROYED_ARTIFACT {
+        broadcast_npc_death(&world, attacker_sid, npc_id);
+    }
 
     if tmpl.s_sid == crate::systems::manes_survival::DARK_DRAGON_SID as u16 {
         world.manes_survival_manager.broadcast_dark_dragon_status(
@@ -2459,6 +2464,8 @@ pub(crate) async fn handle_npc_death(
     tmpl: &crate::npc::NpcTemplate,
     defer_death_broadcast: bool,
 ) {
+    let is_csw_artifact = tmpl.npc_type == NPC_DESTROYED_ARTIFACT;
+
     // Manes must receive the combat result and HP=0 before WIZ_DEAD. Its
     // physical/magic callers emit this packet after those two packets.
     if !defer_death_broadcast {
@@ -2483,6 +2490,28 @@ pub(crate) async fn handle_npc_death(
             pos.as_ref().map(|p| p.x as i16).unwrap_or(0),
             pos.as_ref().map(|p| p.z as i16).unwrap_or(0),
         );
+    }
+
+    // CSW's artifact is an objective, not a regular monster kill. The C++
+    // server sends only the objective handler here; generic EXP/NP, quest,
+    // achievement, and loot processing can desynchronize the 2625 client.
+    if is_csw_artifact {
+        let (killer_nation, killer_name, killer_clan_id) = world
+            .get_character_info(killer_sid)
+            .map_or((0u8, String::new(), 0u16), |ch| {
+                (ch.nation, ch.name.clone(), ch.knights_id)
+            });
+
+        // NPC.cpp configures NPC_DESTROYED_ARTIFACT with a 60-second regen.
+        // Schedule it even when the capture is rejected so it cannot remain
+        // permanently dead after an invalid/out-of-phase attack.
+        let scheduled = world.schedule_npc_respawn(npc_id, 60_000);
+        tracing::info!(npc_id, killer_clan_id, scheduled, "CSW artifact death isolated from regular NPC rewards");
+        super::monument::monument_death_dispatch(
+            world, npc, tmpl, killer_nation, &killer_name, killer_clan_id,
+        ).await;
+        world.clear_npc_damage(npc_id);
+        return;
     }
 
     // ── Daily rank stat: MHTotalKill++ ────────────────────────────────

@@ -2747,6 +2747,7 @@ async fn handle_csw_start(session: &mut ClientSession, args: &[&str]) -> anyhow:
     {
         let mut state = world.csw_event().write().await;
         super::siege::csw_prepare_open(&mut state, prep_minutes, now);
+        state.war_minutes = war_minutes;
     }
 
     // Broadcast preparation notice

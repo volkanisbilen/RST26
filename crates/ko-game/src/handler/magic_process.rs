@@ -2100,9 +2100,18 @@ async fn execute_type1_aoe(
         if new_hp > 0 {
             world.notify_npc_damaged(npc_id, caster_sid);
         } else if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-            let is_manes = super::attack::is_manes_survival_npc(&npc);
-            super::attack::handle_npc_death(world, caster_sid, npc_id, &npc, &tmpl, is_manes).await;
-            if is_manes {
+            let defer_death_packet = super::attack::is_manes_survival_npc(&npc)
+                || tmpl.npc_type == NPC_DESTROYED_ARTIFACT;
+            super::attack::handle_npc_death(
+                world,
+                caster_sid,
+                npc_id,
+                &npc,
+                &tmpl,
+                defer_death_packet,
+            )
+            .await;
+            if defer_death_packet {
                 manes_dead_npcs.push(npc_id);
             }
         }
@@ -3664,12 +3673,18 @@ async fn execute_type3(
                 } else {
                     // NPC died
                     if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-                        let is_manes = super::attack::is_manes_survival_npc(&npc);
+                        let defer_death_packet = super::attack::is_manes_survival_npc(&npc)
+                            || tmpl.npc_type == NPC_DESTROYED_ARTIFACT;
                         super::attack::handle_npc_death(
-                            world, caster_sid, npc_id, &npc, &tmpl, is_manes,
+                            world,
+                            caster_sid,
+                            npc_id,
+                            &npc,
+                            &tmpl,
+                            defer_death_packet,
                         )
                         .await;
-                        if is_manes {
+                        if defer_death_packet {
                             manes_dead_npcs.push(npc_id);
                         }
                     }
@@ -6740,7 +6755,8 @@ async fn apply_skill_damage_to_npc(
             npc_id,
             &npc,
             &tmpl,
-            super::attack::is_manes_survival_npc(&npc),
+            super::attack::is_manes_survival_npc(&npc)
+                || tmpl.npc_type == NPC_DESTROYED_ARTIFACT,
         )
         .await;
     }
@@ -6765,6 +6781,9 @@ async fn apply_skill_damage_to_npc(
         -(damage as i32),
     );
     world.send_to_session_owned(caster_sid, hp_pkt);
+    if new_hp <= 0 && tmpl.npc_type == NPC_DESTROYED_ARTIFACT {
+        super::attack::broadcast_npc_death(world, caster_sid, npc_id);
+    }
     if tmpl.s_sid == crate::systems::manes_survival::DARK_DRAGON_SID as u16 {
         world.manes_survival_manager.broadcast_dark_dragon_status(
             world,
