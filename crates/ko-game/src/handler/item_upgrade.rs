@@ -1063,6 +1063,7 @@ async fn item_upgrade(
                 update.write_u16(slot.durability as u16);
                 update.write_u32(0);
                 update.write_u32(slot.expire_time);
+                update.write_u16(0); // v2625 SendStackChange trailing field
                 session.send_packet(&update).await?;
             }
         }
@@ -2629,6 +2630,7 @@ async fn bifrost_piece_exchange(
         count_pkt.write_u16(durability);
         count_pkt.write_u32(0); // reserved
         count_pkt.write_u32(0); // expiration
+        count_pkt.write_u16(0); // v2625 SendStackChange trailing field
         world.send_to_session_owned(sid, count_pkt);
     }
 
@@ -3512,6 +3514,7 @@ async fn pet_image_transform(
         pkt.write_u16(catalyst_info.durability as u16);
         pkt.write_u32(0); // reserved
         pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
         session.send_packet(&pkt).await?;
     }
 

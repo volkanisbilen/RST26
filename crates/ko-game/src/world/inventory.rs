@@ -1269,6 +1269,10 @@ impl WorldState {
                 pkt.write_u16(durability);
                 pkt.write_u32(0); // reserved
                 pkt.write_u32(0); // expiration
+                // v2625 SendStackChange has a trailing u16 after expiration.
+                // Omitting it leaves the client packet reader misaligned and can
+                // leave a consumed stack visible as "0" until a full refresh.
+                pkt.write_u16(0);
                 self.send_to_session_owned(sid, pkt);
 
                 // C++ SendStackChange calls SetUserAbility(false) + SendItemWeight()
@@ -1358,6 +1362,7 @@ impl WorldState {
                 pkt.write_u16(durability);
                 pkt.write_u32(0);
                 pkt.write_u32(exp);
+                pkt.write_u16(0); // v2625 SendStackChange trailing field
                 self.send_to_session_owned(sid, pkt);
 
                 // Weight notification is now integrated into set_user_ability().
@@ -1520,6 +1525,7 @@ impl WorldState {
                 pkt.write_u16(durability);
                 pkt.write_u32(0); // reserved
                 pkt.write_u32(0); // expiration
+                pkt.write_u16(0); // v2625 SendStackChange trailing field
                 self.send_to_session_owned(sid, pkt);
 
                 // Weight notification is now integrated into set_user_ability().
@@ -1564,6 +1570,7 @@ impl WorldState {
                 pkt.write_u16(0);
                 pkt.write_u32(0);
                 pkt.write_u32(0);
+                pkt.write_u16(0); // v2625 SendStackChange trailing field
                 self.send_to_session_owned(sid, pkt);
             }
             // Weight notification is now integrated into set_user_ability().

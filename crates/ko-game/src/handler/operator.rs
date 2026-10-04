@@ -3751,6 +3751,10 @@ fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow
         if state.is_war_open() {
             war::reset_battle_zone(state);
         }
+        // GM opens are not scheduled events. Always initialize a full one-hour
+        // duration instead of carrying a stale/zero value from the last war.
+        state.battle_time = 3600;
+        state.battle_remaining_time = 3600;
         war::battle_zone_open(state, war::BATTLEZONE_OPEN, zone_index, now_unix)
     });
 
@@ -3776,7 +3780,13 @@ fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow
         }
 
         send_help(session, &format!("Nation war zone {zone_index} opened"));
-        tracing::info!("GM +open{zone_index}: Nation war opened");
+        let state = world.get_battle_state();
+        tracing::info!(
+            zone = zone_index,
+            battle_time = state.battle_time,
+            remaining_time = state.battle_remaining_time,
+            "GM nation war opened"
+        );
     } else {
         send_help(session, "War is already open or invalid zone");
     }

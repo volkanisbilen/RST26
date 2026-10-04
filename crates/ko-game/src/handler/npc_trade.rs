@@ -1314,6 +1314,7 @@ async fn send_stack_change(
     } else {
         pkt.write_u32(0);
     }
+    pkt.write_u16(0); // v2625 SendStackChange trailing field
     session.send_packet(&pkt).await
 }
 

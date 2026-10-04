@@ -352,6 +352,7 @@ async fn handle_item_return(
         sc_pkt.write_u16(0); // durability = 0
         sc_pkt.write_u32(0); // reserved
         sc_pkt.write_u32(0); // expire_time = 0
+        sc_pkt.write_u16(0); // v2625 SendStackChange trailing field
         session.send_packet(&sc_pkt).await?;
     }
 

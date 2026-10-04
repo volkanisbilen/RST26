@@ -362,6 +362,7 @@ fn build_item_removal_packet(absolute_idx: usize) -> Packet {
     pkt.write_u16(0); // durability = 0
     pkt.write_u32(0); // reserved
     pkt.write_u32(0); // expiration = 0
+    pkt.write_u16(0); // v2625 SendStackChange trailing field
     pkt
 }
 

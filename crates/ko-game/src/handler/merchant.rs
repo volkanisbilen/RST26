@@ -999,6 +999,7 @@ async fn merchant_item_buy(
         stack_pkt.write_u16(seller_slot_data.durability as u16);
         stack_pkt.write_u32(0); // reserved
         stack_pkt.write_u32(0); // expire_time
+        stack_pkt.write_u16(0); // v2625 SendStackChange trailing field
         world.send_to_session_owned(merchant_sid, stack_pkt);
     }
 
@@ -1544,6 +1545,7 @@ async fn buying_merchant_buy(
         sc.write_u16(seller_item.durability as u16);
         sc.write_u32(0);
         sc.write_u32(0); // time
+        sc.write_u16(0); // v2625 SendStackChange trailing field
         session.send_packet(&sc).await?;
     }
     // Send WIZ_ITEM_COUNT_CHANGE to merchant (inventory update)
@@ -1567,6 +1569,7 @@ async fn buying_merchant_buy(
         sc.write_u16(seller_item.durability as u16);
         sc.write_u32(0);
         sc.write_u32(0); // time
+        sc.write_u16(0); // v2625 SendStackChange trailing field
         world.send_to_session_owned(merchant_sid, sc);
     }
 
