@@ -220,7 +220,7 @@ fn reduce_righthand_durability(world: &WorldState, sid: SessionId, amount: i16) 
     });
     if let Some(durability) = new_durability {
         let mut pkt = Packet::new(Opcode::WizDuration as u8);
-        pkt.write_u8(RIGHTHAND);
+        pkt.write_u8(RIGHTHAND as u8);
         pkt.write_u16(durability);
         world.send_to_session_owned(sid, pkt);
     }
