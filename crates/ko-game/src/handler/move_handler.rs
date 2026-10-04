@@ -34,6 +34,16 @@ const MAX_CAUGHT_COUNT: u8 = 3;
 /// Time window (ms) for echo anomaly detection.
 const CAUGHT_TIME_WINDOW_MS: u64 = 1100;
 
+/// Average two packed movement coordinates without overflowing `u16`.
+///
+/// The client can use `u16::MAX` as the terrain-Y sentinel immediately after
+/// a zone change. Adding two packed coordinates as `u16` therefore panics in
+/// debug builds before the division can bring the result back into range.
+#[inline]
+fn average_packed_coord(a: u16, b: u16) -> u16 {
+    ((a as u32 + b as u32) / 2) as u16
+}
+
 /// Handle WIZ_MOVE from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
@@ -223,9 +233,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     // ── Position correction based on distance/speed ratio ────────────
     if snap.old_speed == 0 && echo == ECHO_START {
-        will_x = (will_x + cur_x) / 2;
-        will_y = (will_y + cur_y) / 2;
-        will_z = (will_z + cur_z) / 2;
+        will_x = average_packed_coord(will_x, cur_x);
+        will_y = average_packed_coord(will_y, cur_y);
+        will_z = average_packed_coord(will_z, cur_z);
     } else if speed != 0 {
         // GetDistance returns squared distance (no sqrt)
         let dist = get_distance_scaled(f_will_x, f_will_z, will_x, will_z);
@@ -233,9 +243,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
         if ratio > 8.0 && ratio < 10.0 {
             // Average with current position
-            will_x = (will_x + cur_x) / 2;
-            will_y = (will_y + cur_y) / 2;
-            will_z = (will_z + cur_z) / 2;
+            will_x = average_packed_coord(will_x, cur_x);
+            will_y = average_packed_coord(will_y, cur_y);
+            will_z = average_packed_coord(will_z, cur_z);
         } else if ratio >= 12.0 {
             // Snap to current position
             will_x = cur_x;
@@ -804,6 +814,13 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_average_packed_coord_handles_zone_change_y_sentinel() {
+        assert_eq!(average_packed_coord(u16::MAX, u16::MAX), u16::MAX);
+        assert_eq!(average_packed_coord(u16::MAX, 0), 32_767);
+        assert_eq!(average_packed_coord(2_000, 4_000), 3_000);
+    }
 
     #[test]
     fn test_echo_validation() {

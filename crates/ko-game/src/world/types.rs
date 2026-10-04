@@ -1211,7 +1211,12 @@ pub struct PetState {
     /// Whether the pet is actively attacking a target.
     pub attack_started: bool,
     /// Target NPC ID for auto-attack (-1 = none).
-    pub attack_target_id: i16,
+    ///
+    /// v2615 runtime NPC IDs are 32-bit on the wire and commonly exceed
+    /// `i16::MAX` (for example 49886).  Keeping this as `i16` turns those IDs
+    /// negative and makes the pet attack tick discard an otherwise valid
+    /// target.
+    pub attack_target_id: i32,
 }
 
 /// Number of item slots in a pet's inventory.

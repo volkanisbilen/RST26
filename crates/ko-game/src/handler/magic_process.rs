@@ -162,7 +162,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // v2600: target_id is u32 (NOT truncated to i16 like old C++ server).
     // PCAP verified: NPC target IDs like 49886 exceed i16 range.
     // -1 (no target) is sent as 0xFFFFFFFF which maps to -1 as i32.
-    let target_id = target_id_raw;
+    let mut target_id = target_id_raw;
 
     // ── Special skill target validation ──────────────────────────────
     // Skills 109035/110035/209035/210035 must have target=-1 (no target).
@@ -186,6 +186,18 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             return Ok(());
         }
     };
+
+    // Ground-target AOE packets from v2615 may encode "no entity target" as
+    // 0 instead of -1.  Entity validation below would otherwise interpret 0
+    // as a player session and reject Inferno/Nova before Type3 execution.
+    if target_id == 0
+        && matches!(
+            skill.moral.unwrap_or(0),
+            MORAL_AREA_ENEMY | MORAL_AREA_FRIEND | MORAL_AREA_ALL
+        )
+    {
+        target_id = -1;
+    }
 
     let mut instance = MagicInstance {
         opcode: b_opcode,
@@ -2040,6 +2052,49 @@ async fn execute_type2(
 
 // ── Type 3: Magic attack / heal / DOT ─────────────────────────────────────
 
+/// Resolve ground-target coordinates across the v2603 and v2615 layouts.
+///
+/// Older packets encode X/Z in tenths of a world unit.  The v2615 client can
+/// send the same fields as direct world units.  Both representations are
+/// unambiguous in normal play because the valid cast point is the candidate
+/// nearest to the caster.
+fn resolve_aoe_center(
+    raw_x: i32,
+    raw_z: i32,
+    caster_x: f32,
+    caster_z: f32,
+) -> (f32, f32) {
+    if raw_x == 0 && raw_z == 0 {
+        return (caster_x, caster_z);
+    }
+
+    let direct = (
+        if raw_x == 0 { caster_x } else { raw_x as f32 },
+        if raw_z == 0 { caster_z } else { raw_z as f32 },
+    );
+    let tenths = (
+        if raw_x == 0 {
+            caster_x
+        } else {
+            raw_x as f32 / 10.0
+        },
+        if raw_z == 0 {
+            caster_z
+        } else {
+            raw_z as f32 / 10.0
+        },
+    );
+
+    let direct_dist = (direct.0 - caster_x).powi(2) + (direct.1 - caster_z).powi(2);
+    let tenths_dist = (tenths.0 - caster_x).powi(2) + (tenths.1 - caster_z).powi(2);
+
+    if direct_dist < tenths_dist {
+        direct
+    } else {
+        tenths
+    }
+}
+
 /// Execute Type 3 skill — magical damage, healing, or DOT/HOT.
 /// Handles direct damage, healing, and durational (DOT/HOT) effects.
 /// DOT effects are registered via `world.add_durational_skill()` and
@@ -2658,17 +2713,16 @@ async fn execute_type3(
             && (direct_type == 1 || direct_type == 8)
             && instance.skill_id < 400000;
 
-        // AOE center: use sData[0]/sData[2] as X/Z if provided, else caster position
-        let aoe_x = if instance.data[0] != 0 {
-            instance.data[0] as f32 / 10.0
-        } else {
-            caster_pos.x
-        };
-        let aoe_z = if instance.data[2] != 0 {
-            instance.data[2] as f32 / 10.0
-        } else {
-            caster_pos.z
-        };
+        // v2603 packets use tenths of a world unit while v2615 ground-target
+        // packets can carry world units directly.  Select the representation
+        // that resolves closest to the caster, instead of always dividing by
+        // ten and moving the damage area to an unrelated map coordinate.
+        let (aoe_x, aoe_z) = resolve_aoe_center(
+            instance.data[0],
+            instance.data[2],
+            caster_pos.x,
+            caster_pos.z,
+        );
 
         let radius_sq = radius * radius;
 
@@ -4021,16 +4075,12 @@ fn execute_type4(
             }
         }
 
-        let aoe_x = if instance.data[0] != 0 {
-            instance.data[0] as f32 / 10.0
-        } else {
-            caster_pos.x
-        };
-        let aoe_z = if instance.data[2] != 0 {
-            instance.data[2] as f32 / 10.0
-        } else {
-            caster_pos.z
-        };
+        let (aoe_x, aoe_z) = resolve_aoe_center(
+            instance.data[0],
+            instance.data[2],
+            caster_pos.x,
+            caster_pos.z,
+        );
 
         for target_sid in nearby {
             let target = match world.get_character_info(target_sid) {
@@ -10239,6 +10289,24 @@ mod tests {
         let dist_sq = dx * dx + dz * dz;
 
         assert!(dist_sq <= radius_sq); // 100 <= 225
+    }
+
+    #[test]
+    fn test_aoe_center_accepts_v2603_tenths() {
+        let center = resolve_aoe_center(1_050, 2_050, 100.0, 200.0);
+        assert_eq!(center, (105.0, 205.0));
+    }
+
+    #[test]
+    fn test_aoe_center_accepts_v2615_world_units() {
+        let center = resolve_aoe_center(105, 205, 100.0, 200.0);
+        assert_eq!(center, (105.0, 205.0));
+    }
+
+    #[test]
+    fn test_aoe_center_zero_data_falls_back_to_caster() {
+        let center = resolve_aoe_center(0, 0, 100.0, 200.0);
+        assert_eq!(center, (100.0, 200.0));
     }
 
     #[test]
