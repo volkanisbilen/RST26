@@ -1,7 +1,7 @@
 # Knight Online Rust Server
 
 A clean-room game server implementation written in Rust, designed to be
-compatible with the v2603 Knight Online client. Built entirely from protocol
+compatible with the v2625 Knight Online client. Built entirely from protocol
 analysis and publicly available documentation, without using any original
 server source code. The server maintains byte-perfect protocol compatibility
 with the unmodified game client.
@@ -86,7 +86,7 @@ with the unmodified game client.
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/derdems44/KORustGameServer.git
+git clone https://github.com/volkanisbilen/RST26.git
 cd KORustGameServer
 ```
 
