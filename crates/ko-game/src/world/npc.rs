@@ -452,6 +452,68 @@ impl WorldState {
             ai.delay_ms = 0;
         }
     }
+/// Ensure a dead static objective participates in the normal timed NPC respawn loop.
+    pub(crate) fn schedule_npc_respawn(&self, nid: NpcId, regen_time_ms: u64) -> bool {
+        if let Some(mut ai) = self.npc_ai.get_mut(&nid) {
+            ai.state = NpcState::Dead;
+            ai.regen_time_ms = regen_time_ms;
+            ai.delay_ms = 0;
+            ai.last_tick_ms = 0;
+            ai.target_id = None;
+            ai.npc_target_id = None;
+            return true;
+        }
+
+        let npc = match self.get_npc_instance(nid) {
+            Some(npc) => npc,
+            None => return false,
+        };
+        let region_x = calc_region(npc.x);
+        let region_z = calc_region(npc.z);
+        self.npc_ai.insert(nid, NpcAiState {
+            state: NpcState::Dead,
+            spawn_x: npc.x,
+            spawn_z: npc.z,
+            cur_x: npc.x,
+            cur_z: npc.z,
+            target_id: None,
+            npc_target_id: None,
+            delay_ms: 0,
+            last_tick_ms: 0,
+            regen_time_ms,
+            is_aggressive: false,
+            zone_id: npc.zone_id,
+            region_x,
+            region_z,
+            fainting_until_ms: 0,
+            old_state: NpcState::Standing,
+            active_skill_id: 0,
+            active_target_id: -1,
+            active_cast_time_ms: 0,
+            has_friends: false,
+            family_type: 0,
+            skill_cooldown_ms: 0,
+            nation: npc.nation,
+            is_tower_owner: false,
+            attack_type: 0,
+            last_combat_time_ms: 0,
+            duration_secs: 0,
+            spawned_at_ms: 0,
+            last_hp_regen_ms: 0,
+            gate_open: 0,
+            wood_cooldown_count: 0,
+            utc_second: 0,
+            path_waypoints: Vec::new(),
+            path_index: 0,
+            path_target_x: 0.0,
+            path_target_z: 0.0,
+            path_is_direct: false,
+            dest_x: 0.0,
+            dest_z: 0.0,
+            pattern_frame: 0,
+        });
+        true
+    }
     /// Get a snapshot of an NPC's AI state.
     pub fn get_npc_ai(&self, nid: NpcId) -> Option<NpcAiState> {
         self.npc_ai.get(&nid).map(|v| v.clone())

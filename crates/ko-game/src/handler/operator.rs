@@ -288,6 +288,7 @@ pub async fn process_chat_command(
         "tournamentstart" => handle_tournament_start(session, &args)?,
         "tournamentclose" => handle_tournament_close(session, &args)?,
         "cswstart" => handle_csw_start(session, &args).await?,
+        "cswfast" => handle_csw_fast(session).await?,
         "cswclose" => handle_csw_close(session).await?,
         "bifroststart" => handle_bifrost_start(session, &args)?,
         "bifrostclose" => handle_bifrost_close(session)?,
@@ -1772,7 +1773,7 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "war_open/close Type - War event",
         "open1-6 / close - Nation war gates",
         "snow - Snow war | bifroststart/close",
-        "cswstart/close - Castle siege",
+        "cswstart/close/fast - Castle siege",
         "csw - Castle siege status/control",
         "tournamentstart/close - Tournament",
         "funclass_open/close - Fun class event",
@@ -2772,6 +2773,23 @@ async fn handle_csw_start(session: &mut ClientSession, args: &[&str]) -> anyhow:
     Ok(())
 }
 
+/// GM test command: `+cswfast` skips preparation and opens the siege immediately.
+async fn handle_csw_fast(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let wartime = world.get_csw_opt().map(|o| o.war_time as u32).unwrap_or(40);
+    {
+        let mut state = world.csw_event().write().await;
+        super::siege::csw_prepare_open(&mut state, 0, now);
+        super::siege::csw_war_open(&mut state, wartime, now);
+    }
+    world.update_battle_state(|s| s.battle_open = crate::systems::war::SIEGE_BATTLE);
+    world.broadcast_to_all(Arc::new(super::siege::build_csw_notice(crate::world::types::CswNotice::War)), None);
+    send_help(session, "CSW hızlı test: savaş fazı hemen açıldı.");
+    Ok(())
+}
+
 /// GM command: `+cswclose`
 /// Immediately closes Castle Siege War and resets all state.
 async fn handle_csw_close(session: &mut ClientSession) -> anyhow::Result<()> {
@@ -2796,15 +2814,28 @@ async fn handle_csw_close(session: &mut ClientSession) -> anyhow::Result<()> {
         s.battle_open = NO_BATTLE;
     });
 
+    evacuate_csw_players(&world);
+
     // Broadcast finish notice
     let pkt = super::siege::build_csw_notice(crate::world::types::CswNotice::CswFinish);
     world.broadcast_to_all(Arc::new(pkt), None);
 
-    send_help(session, "CSW closed.");
+    let winner = world.get_csw_master_knights();
+    send_help(session, &format!("CSW kapatıldı. Kazanan klan: {}. Oyuncular Moradon'a gönderildi.", winner));
 
     tracing::info!("CSW: closed via GM command");
 
     Ok(())
+}
+
+fn evacuate_csw_players(world: &crate::world::WorldState) {
+    for zone in [crate::world::types::ZONE_DELOS, 35u16, 32u16, 33u16] {
+        for sid in world.sessions_in_zone(zone) {
+            crate::handler::zone_change::server_teleport_to_zone(
+                world, sid, crate::world::types::ZONE_MORADON, 816.0, 496.0,
+            );
+        }
+    }
 }
 
 /// Handle `+bifroststart [minutes]` GM command.
@@ -9172,6 +9203,7 @@ mod tests {
             "tournamentstart",
             "tournamentclose",
             "cswstart",
+            "cswfast",
             "cswclose",
             "bifroststart",
             "bifrostclose",
@@ -9450,6 +9482,7 @@ mod tests {
             "tournamentstart",
             "tournamentclose",
             "cswstart",
+            "cswfast",
             "cswclose",
             "bifroststart",
             "bifrostclose",

@@ -1084,6 +1084,16 @@ async fn csw_tick_world(world: &WorldState) {
                 s.battle_open = NO_BATTLE;
             });
 
+            // Never leave users in a closed CSW instance; return them to Moradon
+            // using the same forced zone-change path as the GM close command.
+            for zone in [crate::world::types::ZONE_DELOS, crate::world::types::ZONE_DELOS_CASTELLAN, 32u16, 33u16] {
+                for sid in world.sessions_in_zone(zone) {
+                    crate::handler::zone_change::server_teleport_to_zone(
+                        world, sid, crate::world::types::ZONE_MORADON, 816.0, 496.0,
+                    );
+                }
+            }
+
             // Broadcast finish notice
             let pkt = build_csw_notice(CswNotice::CswFinish);
             world.broadcast_to_all(Arc::new(pkt), None);

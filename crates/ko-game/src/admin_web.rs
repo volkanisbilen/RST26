@@ -91,6 +91,10 @@ pub fn start(world: Arc<WorldState>, pool: DbPool, bind: String) -> tokio::task:
                 "/jstkoadminpanel/api/characters/{name}",
                 post(edit_character),
             )
+            .route(
+                "/jstkoadminpanel/api/characters/{name}/force-logout",
+                post(force_logout_character),
+            )
             .route("/jstkoadminpanel/api/items", get(items))
             .route(
                 "/jstkoadminpanel/api/quest-studio/npcs",
@@ -657,6 +661,46 @@ async fn edit_character(
     Ok(Json(
         json!({"ok":true,"name":r.try_get::<String,_>("str_user_id").unwrap_or_default()}),
     ))
+}
+
+async fn force_logout_character(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (_, admin) = auth(&headers, true)?;
+    let canonical = sqlx::query_scalar::<_, String>(
+        "SELECT str_user_id FROM userdata WHERE lower(str_user_id)=lower($1)",
+    )
+    .bind(&name)
+    .fetch_optional(&app.pool)
+    .await
+    .map_err(|_| ApiError::Internal)?
+    .ok_or(ApiError::NotFound)?;
+
+    let session_id = app.world.find_session_by_name(&canonical);
+    if let Some(id) = session_id {
+        app.world.kick_session_for_duplicate(id).await;
+    }
+
+    let mut tx = app.pool.begin().await.map_err(|_| ApiError::Internal)?;
+    sqlx::query("DELETE FROM currentuser WHERE lower(str_char_id)=lower($1)")
+        .bind(&canonical)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::Internal)?;
+    audit(
+        &mut tx,
+        &admin.actor,
+        "character.force_logout",
+        &canonical,
+        json!({"live_session": session_id.is_some()}),
+        peer.ip(),
+    )
+    .await?;
+    tx.commit().await.map_err(|_| ApiError::Internal)?;
+    Ok(Json(json!({"ok": true, "name": canonical, "online": false})))
 }
 
 async fn items(

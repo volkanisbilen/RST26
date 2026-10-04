@@ -3822,38 +3822,26 @@ fn lua_get_max_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResult<
 }
 
 /// isCswWinnerNembers(uid) -> bool
-/// knights. If so, zone-changes them to Delos Castellan. Always returns false.
+/// knights. Winners are transitioned to the configured Castellan dungeon zone.
 fn lua_is_csw_winner_members(lua: &Lua, uid: i32) -> LuaResult<bool> {
-    use crate::world::ZONE_DELOS_CASTELLAN;
-
-    let w = get_world(lua)?;
+    let world = get_world(lua)?;
     let sid = uid as SessionId;
-    let master_clan = w.get_csw_master_knights();
-    if master_clan == 0 {
+    let master_clan = world.get_csw_master_knights();
+    if master_clan == 0 || world.get_knights(master_clan).is_none() {
+        tracing::warn!(sid, master_clan, "CSW winner check failed: no valid owner clan");
         return Ok(false);
     }
 
-    let (clan_id, _) = w
-        .with_session(sid, |h| {
-            h.character
-                .as_ref()
-                .map(|c| (c.knights_id, c.nation))
-                .unwrap_or((0, 0))
-        })
-        .unwrap_or((0, 0));
-
+    let clan_id = world.get_session_clan_id(sid);
     if clan_id == 0 {
         return Ok(false);
     }
 
-    // Check if clan matches master_knights directly
     let mut is_member = clan_id == master_clan;
-
-    // Check alliance: get the clan's alliance id, then check if any clan in that alliance is master
     if !is_member {
-        if let Some(knights) = w.get_knights(clan_id) {
-            if knights.alliance != 0 {
-                if let Some(alliance) = w.get_alliance(knights.alliance) {
+        if let Some(clan) = world.get_knights(clan_id) {
+            if clan.alliance != 0 {
+                if let Some(alliance) = world.get_alliance(clan.alliance) {
                     is_member = alliance.main_clan == master_clan
                         || alliance.sub_clan == master_clan
                         || alliance.mercenary_1 == master_clan
@@ -3863,26 +3851,24 @@ fn lua_is_csw_winner_members(lua: &Lua, uid: i32) -> LuaResult<bool> {
         }
     }
 
-    if is_member {
-        // Zone change to Delos Castellan at fixed coords (458, 113)
-        let mut pkt = Packet::new(Opcode::WizZoneChange as u8);
-        pkt.write_u8(2);
-        pkt.write_u16(ZONE_DELOS_CASTELLAN);
-        pkt.write_f32(458.0);
-        pkt.write_f32(0.0);
-        pkt.write_f32(113.0);
-        pkt.write_u8(0);
-        w.send_to_session_owned(sid, pkt);
-        w.update_session(sid, |h| {
-            h.position.zone_id = ZONE_DELOS_CASTELLAN;
-            h.position.x = 458.0;
-            h.position.z = 113.0;
-        });
+    if !is_member {
+        tracing::info!(sid, clan_id, master_clan, "CSW winner check denied");
+        return Ok(false);
     }
 
-    Ok(false) // Always returns false per C++
+    // The local Maria NPC routes eligible winners to the Castellan dungeon zone.
+    // Return true as the reference Lua contract expects and perform the transition
+    // through the shared region-aware zone-change path.
+    tracing::info!(sid, clan_id, master_clan, "CSW winner accepted for Castellan");
+    crate::handler::zone_change::server_teleport_to_zone(
+        &world,
+        sid,
+        crate::world::ZONE_DELOS_CASTELLAN,
+        458.0,
+        113.0,
+    );
+    Ok(true)
 }
-
 /// CSW deathmatch minimum level requirement.
 const CSW_DEATHMATCH_MIN_LEVEL: u8 = 35;
 
@@ -3912,7 +3898,7 @@ fn lua_csw_deathmatch_register(lua: &Lua, uid: i32) -> LuaResult<u16> {
         return Ok(6);
     }
 
-    let csw = w.csw_event().blocking_read();
+    let csw = w.csw_event().try_read().map_err(|_| LuaError::external("CSW state busy"))?;
     if !csw.is_active() {
         return Ok(2);
     }
@@ -3931,7 +3917,7 @@ fn lua_csw_deathmatch_register(lua: &Lua, uid: i32) -> LuaResult<u16> {
     drop(csw);
 
     // Register the player.
-    let mut csw = w.csw_event().blocking_write();
+    let mut csw = w.csw_event().try_write().map_err(|_| LuaError::external("CSW state busy"))?;
     csw.deathmatch_players.insert(sid);
 
     Ok(1)
@@ -3955,7 +3941,7 @@ fn lua_csw_deathmatch_cancel_register(lua: &Lua, uid: i32) -> LuaResult<u16> {
         return Ok(6);
     }
 
-    let csw = w.csw_event().blocking_read();
+    let csw = w.csw_event().try_read().map_err(|_| LuaError::external("CSW state busy"))?;
     if !csw.is_active() {
         return Ok(2);
     }
@@ -3966,7 +3952,7 @@ fn lua_csw_deathmatch_cancel_register(lua: &Lua, uid: i32) -> LuaResult<u16> {
     drop(csw);
 
     // Remove the player.
-    let mut csw = w.csw_event().blocking_write();
+    let mut csw = w.csw_event().try_write().map_err(|_| LuaError::external("CSW state busy"))?;
     csw.deathmatch_players.remove(&sid);
 
     Ok(1)
@@ -7681,7 +7667,7 @@ mod tests {
         });
 
         let result: bool = lua.load("return isCswWinnerNembers(1)").eval().unwrap();
-        assert!(!result); // Always returns false
+        assert!(result); // Winner eligibility gates the Lua success branch
 
         // But player should have been warped to Delos Castellan
         let pos = world.get_position(1).unwrap();
@@ -7746,7 +7732,7 @@ mod tests {
         });
 
         let result: bool = lua.load("return isCswWinnerNembers(1)").eval().unwrap();
-        assert!(!result); // Always returns false
+        assert!(result); // Winner eligibility gates the Lua success branch
 
         // Player warped to Delos Castellan
         let pos = world.get_position(1).unwrap();

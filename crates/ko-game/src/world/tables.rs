@@ -1947,7 +1947,7 @@ impl WorldState {
     /// Get the CSW (Castle Siege War) master knights clan ID.
     ///
     pub(crate) fn get_csw_master_knights(&self) -> u16 {
-        self.siege_war.blocking_read().master_knights
+        self.siege_war.try_read().map(|state| state.master_knights).unwrap_or(0)
     }
 
     /// Get a player's rebirth level from session.

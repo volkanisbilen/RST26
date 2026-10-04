@@ -78,7 +78,7 @@ pub(super) async fn monument_death_dispatch(
             karus_nation_monument_process(world, tmpl, killer_nation);
         }
         NPC_DESTROYED_ARTIFACT => {
-            csw_monument_process(world, killer_clan_id).await;
+            csw_monument_process(world, npc, killer_clan_id).await;
         }
         NPC_CLAN_WAR_MONUMENT => {
             // Score the monument kill: losing clan gets half the score gap bonus.
@@ -409,30 +409,50 @@ fn bifrost_monument_process(world: &WorldState, killer_nation: u8) {
 
 /// Process Castle Siege Warfare monument destruction.
 /// Delegates to the existing `siege::monument_capture()` implementation.
-async fn csw_monument_process(world: &WorldState, killer_clan_id: u16) {
-    // CSW monument is already fully handled by siege.rs::monument_capture.
-    // We just need to check prerequisites here before delegating.
+async fn csw_monument_process(world: &WorldState, npc: &NpcInstance, killer_clan_id: u16) {
     if killer_clan_id == 0 {
+        tracing::warn!(npc_id = npc.nid, "CSW artifact died without a clan killer");
         return;
     }
 
-    // Check CSW is active
-    {
-        let csw = world.csw_event().read().await;
-        if !csw.is_war_active() {
-            return;
+    let war_active = world.csw_event().read().await.is_war_active();
+    if !war_active {
+        tracing::warn!(npc_id = npc.nid, killer_clan_id, "CSW artifact died while CSW war was inactive");
+        return;
+    }
+
+    // Ensure this NPC is in the AI lifecycle even when it came from an object or
+    // event spawn path, which does not normally allocate AI state for static NPCs.
+    let respawn_scheduled = world.schedule_npc_respawn(npc.nid, 30_000);
+    tracing::info!(
+        npc_id = npc.nid,
+        zone_id = npc.zone_id,
+        respawn_scheduled,
+        "CSW artifact respawn scheduled"
+    );
+
+    let captured = match world.db_pool() {
+        Some(pool) => crate::handler::siege::monument_capture(world, killer_clan_id, pool).await,
+        None => {
+            tracing::error!(killer_clan_id, "CSW capture failed: database pool unavailable");
+            false
         }
+    };
+    if !captured {
+        return;
     }
 
-    // Update master knights in siege warfare state
-    {
-        let mut sw = world.siege_war().write().await;
-        sw.master_knights = killer_clan_id;
-    }
-
-    debug!("CSW monument captured by clan_id={}", killer_clan_id);
+    let clan_name = world
+        .get_knights(killer_clan_id)
+        .map(|clan| clan.name.clone())
+        .unwrap_or_else(|| format!("Clan #{}", killer_clan_id));
+    let message = format!(
+        "CSW: {} artifacti ele geçirdi. Artifact 30 saniye içinde yeniden doğacak.",
+        clan_name
+    );
+    let packet = crate::handler::chat::build_chat_packet(8, 1, 0xFFFF, "", &message, 0, 0, 0);
+    world.broadcast_to_zone(crate::world::ZONE_DELOS, Arc::new(packet), None);
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

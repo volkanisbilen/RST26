@@ -16,6 +16,7 @@ use crate::session::{ClientSession, SessionState};
 use crate::world::{
     CharacterInfo, Position, UserItemSlot, ZONE_ARDREAM, ZONE_BIFROST, ZONE_DELOS, ZONE_ELMORAD,
     ZONE_KARUS, ZONE_KROWAZ_DOMINION, ZONE_MORADON, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+    ZONE_DELOS_CASTELLAN, ZONE_DESPERATION_ABYSS, ZONE_HELL_ABYSS,
 };
 use crate::zone::calc_region;
 
@@ -2269,6 +2270,15 @@ fn check_ishome_relocation(
     // 12. Delos but can't enter (no clan/loyalty/grade check)
     // C++ line 722: ZONE_DELOS && !CastleSiegeWarfareCanenterDelos()
     if !ishome && zone_id == ZONE_DELOS && !world.can_enter_delos(clan_id, loyalty) {
+        ishome = true;
+    }
+
+    // CSW instance zones are never valid as a persistent login location.
+    // If a disconnect or crash leaves a character there, recover them on the
+    // next login instead of re-entering a stale map and getting stuck.
+    if !ishome && matches!(zone_id, ZONE_DELOS_CASTELLAN | ZONE_DESPERATION_ABYSS | ZONE_HELL_ABYSS)
+        && !world.csw_event().try_read().map(|s| s.is_active()).unwrap_or(true)
+    {
         ishome = true;
     }
 

@@ -6629,8 +6629,10 @@ async fn apply_skill_damage_to_npc(
         let is_csw_door = tmpl.npc_type == NPC_GATE && matches!(npc.proto_id, 561..=563);
 
         if tmpl.npc_type == NPC_DESTROYED_ARTIFACT || is_csw_door {
-            let csw = world.csw_event().blocking_read();
-            let siege = world.siege_war().blocking_read();
+            // This path runs inside the async skill handler. Blocking an
+            // Tokio worker here panics exactly when Center Artifact is hit.
+            let csw = world.csw_event().read().await;
+            let siege = world.siege_war().read().await;
             let caster_clan = world
                 .get_character_info(caster_sid)
                 .map(|ch| ch.knights_id)

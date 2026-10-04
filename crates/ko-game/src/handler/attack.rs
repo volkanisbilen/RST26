@@ -1889,8 +1889,10 @@ async fn handle_npc_attack(
             // Destroyed artifacts require active CSW war + attacker must be in a clan
             // + attacker's clan must NOT be the castle owner
             if npc_type == NPC_DESTROYED_ARTIFACT {
-                let csw = world.csw_event().blocking_read();
-                let siege = world.siege_war().blocking_read();
+                // This handler is async; blocking_read panics on the Tokio worker
+                // exactly when the artifact reaches its death path.
+                let csw = world.csw_event().read().await;
+                let siege = world.siege_war().read().await;
                 let attacker_clan = world
                     .get_character_info(attacker_sid)
                     .map(|ch| ch.knights_id)
@@ -1908,8 +1910,8 @@ async fn handle_npc_attack(
 
         // CSW doors (proto_id 561/562/563 with NPC_GATE type) follow same rules as artifacts
         if npc_type == NPC_GATE && matches!(npc.proto_id, 561..=563) {
-            let csw = world.csw_event().blocking_read();
-            let siege = world.siege_war().blocking_read();
+            let csw = world.csw_event().read().await;
+            let siege = world.siege_war().read().await;
             let attacker_clan = world
                 .get_character_info(attacker_sid)
                 .map(|ch| ch.knights_id)

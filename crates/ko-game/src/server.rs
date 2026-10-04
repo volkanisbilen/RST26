@@ -328,7 +328,10 @@ impl GameServer {
                             // allocate_session_id() internally registers in the rate limiter
                             let session_id = world.allocate_session_id();
                             tokio::spawn(async move {
+                                let stale_pool = pool.clone();
                                 let session = ClientSession::new(stream, addr, pool, session_id, world.clone());
+                                let stale_account = session.account_id().map(str::to_owned);
+                                let stale_character = session.character_id().map(str::to_owned);
                                 // Run in a nested spawn so panics are caught and
                                 // cleanup is guaranteed even if run() panics.
                                 let run_handle = tokio::spawn(async move {
@@ -344,8 +347,22 @@ impl GameServer {
                                         s.cleanup().await;
                                     }
                                     Err(join_err) => {
-                                        // Panic: session object lost — do minimal cleanup.
                                         error!("[{}] Session panicked: {}", addr, join_err);
+                                        if let Some(account_id) = stale_account.as_deref() {
+                                            let repo = ko_db::repositories::account::AccountRepository::new(&stale_pool);
+                                            if let Err(e) = repo.set_offline(account_id).await {
+                                                warn!("[{}] Failed to clear account after panic: {}", addr, e);
+                                            }
+                                        }
+                                        if let Some(character_id) = stale_character.as_deref() {
+                                            if let Err(e) = sqlx::query("DELETE FROM currentuser WHERE lower(str_char_id)=lower($1)")
+                                                .bind(character_id)
+                                                .execute(&stale_pool)
+                                                .await
+                                            {
+                                                warn!("[{}] Failed to clear currentuser after panic: {}", addr, e);
+                                            }
+                                        }
                                         world.unregister_session(session_id);
                                     }
                                 }

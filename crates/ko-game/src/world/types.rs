@@ -223,7 +223,8 @@ pub(crate) fn map_act_type(act_type: u8) -> u8 {
     }
 }
 
-/// Check if an NPC type is a gate/object type that needs gate AI logic.
+/// Check if an NPC type is a static gate/object objective that needs AI lifecycle logic.
+/// Includes CSW artifact (61), which must be ticked to respawn after capture.
 /// Gate types: NPC_GATE(50), NPC_PHOENIX_GATE(51), NPC_SPECIAL_GATE(52),
 /// NPC_VICTORY_GATE(53), NPC_OBJECT_WOOD(54), NPC_GATE_LEVER(55),
 /// NPC_KARUS_MONUMENT(121), NPC_HUMAN_MONUMENT(122), NPC_GATE2(150),
@@ -2682,7 +2683,7 @@ pub enum CswNotice {
 /// Tracks the live war lifecycle, timers, and per-clan kill counts.
 #[derive(Debug, Clone)]
 pub struct CswEventState {
-    /// Current operational status.
+/// Current operational status.
     pub status: CswOpStatus,
     /// Unix timestamp when current phase ends.
     pub csw_time: u64,

@@ -200,7 +200,7 @@ fn validate_zone_entry(world: &WorldState, sid: SessionId, dest_zone: u16) -> Re
         // Delos — CSW clan/grade check + loyalty requirement
         ZONE_DELOS => {
             // During CSW: must be in a real clan (not auto-clan) with grade <= 3
-            let csw = world.csw_event().blocking_read();
+            let csw = world.csw_event().try_read().map_err(|_| (WARP_NOT_DURING_CSW, 0))?;
             let csw_active = csw.is_active();
             drop(csw);
 
@@ -1128,25 +1128,11 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
             drop(csw_state);
             send_delos_siege_packets(session, remaining).await?;
 
-            // CSW ext_hook timer packet
-            let owner_name = {
-                let mk = world.get_csw_master_knights();
-                if mk != 0 {
-                    world
-                        .get_knights(mk)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                }
-            };
-            let csw_pkt = super::ext_hook::build_csw_timer_packet(
-                remaining,
-                &owner_name,
-                csw_status,
-                phase_mins,
-            );
-            session.send_packet(&csw_pkt).await?;
+            // The proprietary ext-hook timer packet is not part of the 2625
+            // client protocol and causes a disconnect during Delos loading.
+            // The standard siege packets above are sufficient for the client;
+            // keep the server-side timer state authoritative.
+            let _ = (remaining, csw_status, phase_mins);
         }
     }
 
