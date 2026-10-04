@@ -360,7 +360,16 @@ impl WorldState {
     pub fn get_party_id(&self, sid: SessionId) -> Option<u16> {
         if let Some(handle) = self.sessions.get(&sid) {
             if let Some(party_id) = handle.character.as_ref().and_then(|ch| ch.party_id) {
-                return Some(party_id);
+                // CharacterInfo can briefly retain a stale party ID during
+                // roster changes. Trust the live roster only when it contains
+                // this session; otherwise resolve from the party maps below.
+                if self
+                    .parties
+                    .get(&party_id)
+                    .is_some_and(|party| party.contains(sid))
+                {
+                    return Some(party_id);
+                }
             }
         }
 

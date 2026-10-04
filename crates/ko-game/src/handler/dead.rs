@@ -935,7 +935,18 @@ pub fn pvp_loyalty_on_death(world: &WorldState, killer_sid: SessionId, victim_si
         let party_id = world.get_party_id(killer_sid);
         if let Some(pid) = party_id {
             if let Some(party) = world.get_party(pid) {
-                let members: Vec<SessionId> = party.members.iter().filter_map(|&m| m).collect();
+                // Merge the live roster with online characters whose cached
+                // party_id still points at this party. This covers the brief
+                // roster/cache skew seen during party create/rejoin updates.
+                let mut members = party.active_members();
+                for sid in world.get_in_game_session_ids() {
+                    if world.get_party_id(sid) == Some(pid) && !members.contains(&sid) {
+                        members.push(sid);
+                    }
+                }
+                if !members.contains(&killer_sid) {
+                    members.push(killer_sid);
+                }
                 loyalty::loyalty_divide(world, killer_sid, victim_sid, &members, &rates);
             }
         }
