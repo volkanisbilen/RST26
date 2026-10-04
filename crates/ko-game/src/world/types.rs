@@ -494,6 +494,9 @@ pub struct SessionHandle {
     /// Whether the player is currently mining.
     ///
     pub is_mining: bool,
+    /// Fractional mining wear accumulator. The client stores durability as an
+    /// integer, while mining consumes 0.5 durability per successful attempt.
+    pub mining_half_wear_pending: bool,
     /// Whether the player is currently fishing.
     ///
     pub is_fishing: bool,

@@ -168,6 +168,7 @@ impl WorldState {
                     .checked_sub(std::time::Duration::from_secs(601))
                     .unwrap_or(Instant::now()),
                 is_mining: false,
+                mining_half_wear_pending: false,
                 is_fishing: false,
                 auto_mining_time: 0,
                 auto_fishing_time: 0,
