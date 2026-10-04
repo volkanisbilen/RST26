@@ -7,7 +7,8 @@ local NPC = 31524;
 
 -- ROOT: header=21215 flag=3
 if (EVENT == 100) then
-	SelectMsg(UID, 3, 1745, 21215, NPC, 7494, 3001, 8351, 101, 8788, 102, 45307, 101);
+	-- Route the old-man item-disassembly option to the native client window.
+	SelectMsg(UID, 3, 1745, 21215, NPC, 7494, 104, 8351, 101, 8788, 102, 45307, 101);
 end
 
 -- header=21215 flag=70
@@ -23,6 +24,17 @@ end
 -- header=12248 flag=2
 if (EVENT == 103) then
 	SelectMsg(UID, 2, 1745, 12248, NPC, 8787, 3001);
+end
+
+-- Native item disassembly window (same flag 27 flow used by the reference Lua).
+if (EVENT == 104) then
+	SelectMsg(UID, 27, -1, -1, NPC);
+end
+
+-- Open the client's item-smash/disassembly window at Mysterious Narki.
+-- The server validates the selected item, Moradon location, fee and reward.
+if (EVENT == 200) then
+	SelectMsg(UID, 53, -1, NPC);
 end
 
 -- Close dialog
@@ -107,4 +119,3 @@ if (EVENT == 1106) then
 		end
 	end
 end
-

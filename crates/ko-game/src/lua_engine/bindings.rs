@@ -2442,6 +2442,32 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         if item_id as u32 == ITEM_EXP && count != 0 {
             exchange_list.push((item_id as u32, count as u32));
         }
+    } else if exchange.random_flag == 101 {
+        // The five exchange_item_count fields are weights (not quantities) for
+        // random_flag 101. Match the regular RunExchange path: choose exactly
+        // one non-empty reward and grant one copy. Moira's box exchanges use
+        // this format, so treating all five weighted rows as rewards duplicated
+        // the intended single box drop into five items.
+        use rand::Rng;
+        let total_weight: u32 = outputs
+            .iter()
+            .filter(|(item_id, weight)| *item_id > 0 && *weight > 0)
+            .map(|(_, weight)| *weight as u32)
+            .sum();
+        if total_weight > 0 {
+            let roll = rand::thread_rng().gen_range(0..total_weight);
+            let mut cumulative = 0u32;
+            for &(item_id, weight) in &outputs {
+                if item_id <= 0 || weight <= 0 {
+                    continue;
+                }
+                cumulative += weight as u32;
+                if roll < cumulative {
+                    exchange_list.push((item_id as u32, 1));
+                    break;
+                }
+            }
+        }
     } else {
         // Give ALL output items
         for &(item_id, count) in &outputs {
@@ -4817,9 +4843,11 @@ fn lua_delos_castellan_zone_out(lua: &Lua, _uid: i32) -> LuaResult<()> {
 }
 
 /// CheckBeefEventLogin(uid) -> i32
-fn lua_check_beef_event_login(lua: &Lua, _uid: i32) -> LuaResult<i32> {
+fn lua_check_beef_event_login(lua: &Lua, uid: i32) -> LuaResult<i32> {
     let w = get_world(lua)?;
-    Ok(if w.is_beef_event_farming() { 1 } else { 0 })
+    let allowed = w.is_beef_event_farming() && w.get_character_info(uid as SessionId)
+        .is_some_and(|ch| !crate::handler::bifrost::should_redirect_from_bifrost(&w, ch.nation));
+    Ok(i32::from(allowed))
 }
 
 /// CheckMonsterChallengeTime(uid) -> i32

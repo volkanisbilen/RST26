@@ -778,7 +778,8 @@ mod tests {
     fn test_opcode_roundtrip() {
         assert_eq!(Opcode::from_byte(0x01), Some(Opcode::WizLogin));
         assert_eq!(Opcode::from_byte(0x2C), Some(Opcode::WizCryption));
-        assert_eq!(Opcode::from_byte(0xD0), Some(Opcode::WizSurvival));
+        // The enum uses the v2525 name for the shared, version-dependent byte.
+        assert_eq!(Opcode::from_byte(0xD0), Some(Opcode::WizGuildBank));
         assert_eq!(Opcode::from_byte(0xFF), None);
     }
 

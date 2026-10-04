@@ -871,7 +871,9 @@ impl WorldState {
             } else {
                 false
             }
-        } else { false };
+        } else {
+            false
+        };
         if changed {
             crate::handler::party::broadcast_party_hp(self, id);
         }
@@ -886,7 +888,9 @@ impl WorldState {
             } else {
                 false
             }
-        } else { false };
+        } else {
+            false
+        };
         if changed {
             crate::handler::party::broadcast_party_hp(self, id);
         }
@@ -2126,8 +2130,12 @@ impl WorldState {
             if let Some(ref mut pet) = h.pet_data {
                 pet.satisfaction = (pet.satisfaction + amount).clamp(0, 10000);
                 if pet.satisfaction <= 0 {
-                    // Pet dies — remove pet data
-                    h.pet_data = None;
+                    // Despawn the runtime companion but retain persistent pet
+                    // data and equipment. A familiar must not lose its items
+                    // merely because its satisfaction reached zero.
+                    pet.nid = 0;
+                    pet.attack_started = false;
+                    pet.attack_target_id = -1;
                     result = None;
                 } else {
                     result = Some(pet.satisfaction);
@@ -2144,6 +2152,7 @@ impl WorldState {
         self.with_session(sid, |h| {
             h.pet_data
                 .as_ref()
+                .filter(|pet| pet.nid != 0)
                 .map(|p| (p.nid, p.index, p.satisfaction))
         })
         .flatten()
@@ -2190,7 +2199,9 @@ impl WorldState {
                 data.push(PetAttackData {
                     session_id: sid,
                     pet_nid: pet.nid,
+                    pet_level: pet.level.clamp(1, 60),
                     target_npc_id: pet.attack_target_id as u32,
+                    attack_skill_id: pet.pending_attack_skill_id,
                     owner_zone_id: zone_id,
                     owner_dead: is_dead,
                 });

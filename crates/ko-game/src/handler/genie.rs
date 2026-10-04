@@ -520,6 +520,11 @@ async fn handle_genie_start(session: &mut ClientSession) -> anyhow::Result<()> {
             event_room,
         );
     }
+    // `isInGenie()` is also carried in the UserInOut appearance block. The
+    // native server updates it via GenieActivated; send the current appearance
+    // once as well so nearby clients that missed/ignored that state packet
+    // immediately render the Genie marker above this player.
+    super::region::broadcast_user_appearance_update(&world, sid);
 
     debug!(
         "[{}] WIZ_GENIE: Started (remaining={})",
@@ -572,6 +577,7 @@ pub(crate) async fn handle_genie_stop(session: &mut ClientSession) -> anyhow::Re
             event_room,
         );
     }
+    super::region::broadcast_user_appearance_update(&world, sid);
 
     // Persist genie time to DB on stop to prevent data loss on crash.
     {
@@ -655,6 +661,7 @@ pub fn check_genie_time_tick(
             if let Some(pos) = world.get_position(sid) {
                 world.broadcast_to_zone(pos.zone_id, Arc::new(region_pkt), None);
             }
+            super::region::broadcast_user_appearance_update(world, sid);
         }
         return;
     }

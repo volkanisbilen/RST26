@@ -97,6 +97,46 @@ fn snapshot_broadcast_info(world: &WorldState, sid: SessionId) -> Option<Broadca
     })
 }
 
+/// Re-send a player's full appearance to nearby clients after a runtime visual
+/// flag changes (for example Genie activation). This is event-driven only; it
+/// is not part of the periodic NPC/player refresh path.
+pub(crate) fn broadcast_user_appearance_update(world: &WorldState, sid: SessionId) {
+    let Some(snap) = snapshot_broadcast_info(world, sid) else {
+        return;
+    };
+    let Some(character) = snap.character.as_ref() else {
+        return;
+    };
+    let clan = (character.knights_id > 0)
+        .then(|| world.get_knights(character.knights_id))
+        .flatten();
+    let cape = clan
+        .as_ref()
+        .and_then(|clan| resolve_alliance_cape(clan, world));
+    let is_king = world.is_king(character.nation, &character.name);
+    let packet = build_user_inout_with_clan(
+        INOUT_WARP,
+        sid,
+        Some(character),
+        &snap.position,
+        clan.as_ref(),
+        cape,
+        is_king,
+        snap.invisibility_type,
+        snap.abnormal_type,
+        &snap.broadcast_state,
+        &snap.equip_visual,
+    );
+    world.broadcast_to_3x3(
+        snap.position.zone_id,
+        snap.position.region_x,
+        snap.position.region_z,
+        Arc::new(packet),
+        Some(sid),
+        world.with_session(sid, |h| h.event_room).unwrap_or(0),
+    );
+}
+
 /// Visual broadcast slot order — inventory slot indices for the 17 equipment visual slots.
 /// Order: BREAST(4), LEG(10), HEAD(1), GLOVE(12), FOOT(13), SHOULDER(5),
 ///   RIGHTHAND(6), LEFTHAND(8), CWING(42), CHELMET(43), CLEFT(44), CRIGHT(45),
@@ -797,6 +837,166 @@ pub async fn broadcast_user_in_with_type(
     }
 
     Ok(())
+}
+
+/// Move an in-game user within the same zone and immediately synchronize the
+/// region grid and all visibility packets. WIZ_WARP alone only moves the local
+/// client; without the matching INOUT/region updates other clients keep the
+/// old entity until their next region refresh.
+pub fn relocate_user_within_zone(
+    world: &WorldState,
+    sid: SessionId,
+    dest_x: f32,
+    dest_y: f32,
+    dest_z: f32,
+) -> bool {
+    let Some(old_pos) = world.get_position(sid) else {
+        return false;
+    };
+    let Some(zone) = world.get_zone(old_pos.zone_id) else {
+        return false;
+    };
+    if !zone.is_valid_position(dest_x, dest_z) {
+        return false;
+    }
+
+    let (event_room, abnormal_type) = world
+        .with_session(sid, |h| (h.event_room, h.abnormal_type))
+        .unwrap_or((0, 1));
+    let is_gm = world.is_gm(sid);
+
+    // Remove the stale in-region entity first, even when source and target are
+    // in the same cell. This guarantees a fresh INOUT_WARP at the destination.
+    let out = build_user_inout(INOUT_OUT, sid, None, &old_pos);
+    world.broadcast_to_3x3(
+        old_pos.zone_id,
+        old_pos.region_x,
+        old_pos.region_z,
+        Arc::new(out),
+        Some(sid),
+        event_room,
+    );
+    zone.remove_user(old_pos.region_x, old_pos.region_z, sid);
+
+    world.update_position(sid, old_pos.zone_id, dest_x, dest_y, dest_z);
+    let Some(new_pos) = world.get_position(sid) else {
+        zone.add_user(old_pos.region_x, old_pos.region_z, sid);
+        return false;
+    };
+    zone.add_user(new_pos.region_x, new_pos.region_z, sid);
+
+    // Keep the server-side region grid and client position change atomic from
+    // the client perspective: WIZ_WARP, then refresh nearby entities.
+    let mut warp = Packet::new(Opcode::WizWarp as u8);
+    warp.write_u16((dest_x * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+    warp.write_u16((dest_z * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
+    warp.write_i16(-1);
+    world.send_to_session_owned(sid, warp);
+
+    let own_inout = snapshot_broadcast_info(world, sid).and_then(|snap| {
+        let ch = snap.character.as_ref()?;
+        let clan = (ch.knights_id > 0)
+            .then(|| world.get_knights(ch.knights_id))
+            .flatten();
+        let cape = clan
+            .as_ref()
+            .and_then(|knights| resolve_alliance_cape(knights, world));
+        let is_king = world.is_king(ch.nation, &ch.name);
+        Some(build_user_inout_with_clan(
+            INOUT_WARP,
+            sid,
+            Some(ch),
+            &snap.position,
+            clan.as_ref(),
+            cape,
+            is_king,
+            snap.invisibility_type,
+            snap.abnormal_type,
+            &snap.broadcast_state,
+            &snap.equip_visual,
+        ))
+    });
+    if let Some(inout) = own_inout {
+        // Do not reveal an invisible GM, matching normal movement behavior.
+        if !is_gm || abnormal_type != 0 {
+            world.broadcast_to_3x3(
+                new_pos.zone_id,
+                new_pos.region_x,
+                new_pos.region_z,
+                Arc::new(inout),
+                Some(sid),
+                event_room,
+            );
+        }
+    }
+
+    // Rebuild the nearby-user ID set and appearance packets for the moved user.
+    let nearby = world.get_nearby_session_ids(
+        new_pos.zone_id,
+        new_pos.region_x,
+        new_pos.region_z,
+        Some(sid),
+        event_room,
+    );
+    let bots = world.get_bots_in_zone_live(new_pos.zone_id);
+    let nearby_bots: Vec<_> = bots
+        .into_iter()
+        .filter(|bot| {
+            (bot.region_x as i32 - new_pos.region_x as i32).unsigned_abs() <= 1
+                && (bot.region_z as i32 - new_pos.region_z as i32).unsigned_abs() <= 1
+        })
+        .collect();
+    let mut start = Packet::new(Opcode::WizRegionChange as u8);
+    start.write_u8(0);
+    world.send_to_session_owned(sid, start);
+    let mut users = Packet::new(Opcode::WizRegionChange as u8);
+    users.write_u8(1);
+    users.write_u16((nearby.len() + nearby_bots.len()).min(u16::MAX as usize) as u16);
+    for other_id in &nearby {
+        users.write_u32(*other_id as u32);
+    }
+    for bot in &nearby_bots {
+        users.write_u32(bot.id);
+    }
+    let users = users.to_compressed().unwrap_or(users);
+    world.send_to_session_owned(sid, users);
+    let mut end = Packet::new(Opcode::WizRegionChange as u8);
+    end.write_u8(2);
+    world.send_to_session_owned(sid, end);
+
+    for other_id in nearby {
+        let Some(snap) = snapshot_broadcast_info(world, other_id) else {
+            continue;
+        };
+        let clan = snap.character.as_ref().and_then(|ch| {
+            (ch.knights_id > 0)
+                .then(|| world.get_knights(ch.knights_id))
+                .flatten()
+        });
+        let cape = clan
+            .as_ref()
+            .and_then(|knights| resolve_alliance_cape(knights, world));
+        let is_king = snap
+            .character
+            .as_ref()
+            .is_some_and(|ch| world.is_king(ch.nation, &ch.name));
+        let inout = build_user_inout_with_clan(
+            INOUT_IN,
+            other_id,
+            snap.character.as_ref(),
+            &snap.position,
+            clan.as_ref(),
+            cape,
+            is_king,
+            snap.invisibility_type,
+            snap.abnormal_type,
+            &snap.broadcast_state,
+            &snap.equip_visual,
+        );
+        world.send_to_session_owned(sid, inout);
+    }
+
+    true
 }
 
 /// Send the NPC region list to a player — WIZ_NPC_REGION (0x1C) compressed.

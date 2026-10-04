@@ -48,6 +48,25 @@ pub struct PetUserDataRow {
     pub s_size: i16,
 }
 
+/// One of the four persistent equipment slots belonging to a pet.
+///
+/// The original server stores these with the pet record rather than in the
+/// character inventory. Keeping them separate prevents an equipped auto-loot
+/// item from disappearing when the pet is dismissed, re-summoned or the owner
+/// reconnects.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PetUserItemRow {
+    pub n_pet_serial_id: i64,
+    pub slot_index: i16,
+    pub item_id: i32,
+    pub durability: i16,
+    pub count: i16,
+    pub flag: i16,
+    pub original_flag: i16,
+    pub serial_num: i64,
+    pub expire_time: i32,
+}
+
 /// Pet image transform recipe from the `pet_image_change` table.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PetImageChangeRow {

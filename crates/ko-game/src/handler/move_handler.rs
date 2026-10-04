@@ -422,6 +422,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             //   NpcInOutForMe() is COMMENTED OUT in C++ (User.h:886) — client reconstructs
             //   NPC details from local data after receiving NPC_REGION ID list.
             region::send_region_npc_info_for_me(session).await?;
+            // Resend the visible NPC records with the region ID list. Some
+            // client builds do not instantiate every cached NPC from the ID
+            // list alone, leaving town NPCs invisible until the next refresh.
+            region::send_nearby_npc_inouts(session).await?;
             region::send_region_user_in_out_for_me(session).await?;
             region::send_merchant_user_in_out_for_me(session).await?;
 
@@ -806,6 +810,7 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
             if let Some(ref mut pet) = h.pet_data {
                 pet.attack_started = false;
                 pet.attack_target_id = -1;
+                pet.pending_attack_skill_id = 0;
             }
         });
     }
@@ -820,7 +825,7 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
     let new_z = old_z + dir_z * 2.0;
 
     // Update pet NPC position
-    world.update_npc_position(pet_nid as u32, new_x, new_z);
+    world.move_runtime_npc(pet_nid as u32, new_x, new_z);
 
     // Broadcast pet move: WIZ_NPC_MOVE
     let mut move_pkt = Packet::new(Opcode::WizNpcMove as u8);
@@ -828,18 +833,30 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
     move_pkt.write_u32(pet_nid as u32);
     move_pkt.write_u16((new_x * 10.0) as u16);
     move_pkt.write_u16((new_z * 10.0) as u16);
-    move_pkt.write_u16(0); // y * 10
+    move_pkt.write_u16((pet_npc.y.max(0.0) * 10.0) as u16);
     move_pkt.write_u16((distance * 10.0) as u16); // speed
 
     let event_room = world.get_event_room(sid);
     world.broadcast_to_3x3(
-        player_pos.zone_id,
-        player_pos.region_x,
-        player_pos.region_z,
-        Arc::new(move_pkt),
+        pet_npc.zone_id,
+        pet_npc.region_x,
+        pet_npc.region_z,
+        Arc::new(move_pkt.clone()),
         None,
         event_room,
     );
+    if let Some(updated) = world.get_npc_instance(pet_nid as u32) {
+        if updated.region_x != pet_npc.region_x || updated.region_z != pet_npc.region_z {
+            world.broadcast_to_3x3(
+                updated.zone_id,
+                updated.region_x,
+                updated.region_z,
+                Arc::new(move_pkt),
+                None,
+                event_room,
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1262,6 +1279,7 @@ mod tests {
                 if let Some(ref mut pet) = h.pet_data {
                     pet.attack_started = false;
                     pet.attack_target_id = -1;
+                    pet.pending_attack_skill_id = 0;
                 }
             });
         }

@@ -379,8 +379,16 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     // Check if the player is muted — silently drop their chat messages
     {
-        let is_muted = world.with_session(sid, |h| h.is_muted).unwrap_or(false);
-        if is_muted {
+        let (is_muted, is_gm) = world
+            .with_session(sid, |h| {
+                let is_gm = h
+                    .character
+                    .as_ref()
+                    .is_some_and(|ch| ch.authority == 0 || ch.authority == 2);
+                (h.is_muted, is_gm)
+            })
+            .unwrap_or((false, false));
+        if is_muted && !is_gm {
             return Ok(());
         }
     }
@@ -461,7 +469,30 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Route based on chat type
     match chat_type {
         Some(ChatType::General) => {
-            // Broadcast to 3x3 region (nearby players)
+            // GM general chat is server-wide: GM text must reach every nation
+            // and zone, not just the sender's nearby region. Keep the GM chat
+            // packet type so the client renders it with its normal GM styling.
+            if is_gm {
+                // The client filters public chat by the packet's nation field.
+                // Sending one packet stamped with the GM's nation while
+                // broadcasting globally hides it from the other nation.
+                for recipient_nation in [1, 2] {
+                    let nation_broadcast = build_chat_packet(
+                        out_type,
+                        recipient_nation,
+                        sid,
+                        &sender_name,
+                        &message,
+                        personal_rank,
+                        authority,
+                        system_msg,
+                    );
+                    world.broadcast_to_nation(recipient_nation, Arc::new(nation_broadcast), None);
+                }
+                return Ok(());
+            }
+
+            // Broadcast normal player chat to 3x3 region (nearby players)
             if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room))
             {
                 world.broadcast_to_3x3(

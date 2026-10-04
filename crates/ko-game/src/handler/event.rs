@@ -836,6 +836,21 @@ async fn handle_draki_enter(
         return Ok(());
     }
 
+    let (spawn_x, spawn_z) = draki_tower::dungeon_spawn_position(enter_dungeon);
+    if !super::zone_change::can_trigger_zone_change(
+        &world,
+        sid,
+        draki_tower::ZONE_DRAKI_TOWER,
+        spawn_x as f32,
+        spawn_z as f32,
+    ) {
+        tracing::warn!(user = %ch.name, room_zone = draki_tower::ZONE_DRAKI_TOWER, "Draki Tower entry rejected before consuming the entrance: destination warp is unavailable");
+        session
+            .send_packet(&send_err(draki_tower::ENTER_ERR_INTERNAL))
+            .await?;
+        return Ok(());
+    }
+
     // ── Find a free room ───────────────────────────────────────────────
     let room_id = {
         let rooms = world.draki_tower_rooms_read();
@@ -849,34 +864,6 @@ async fn handle_draki_enter(
             return Ok(());
         }
     };
-
-    // ── Consume entrance: decrement limit or remove certificate ────────
-    if entrance_limit > 0 {
-        let new_limit = entrance_limit.saturating_sub(1);
-        world.update_session(sid, |h| {
-            h.draki_entrance_limit = new_limit;
-        });
-        // Persist to DB (C++ UpdateDrakiTowerLimitLastUpdate)
-        let repo = ko_db::repositories::draki_tower::DrakiTowerRepository::new(session.pool());
-        if let Err(e) = repo.update_entrance_limit(&ch.name, new_limit as i16).await {
-            tracing::warn!("Failed to update Draki entrance limit for {}: {e}", ch.name);
-        }
-    } else {
-        // Remove one certificate item
-        world.update_session(sid, |h| {
-            if let Some(slot) = h
-                .inventory
-                .iter_mut()
-                .find(|s| s.item_id == draki_tower::CERTIFIKAOFDRAKI && s.count > 0)
-            {
-                slot.count -= 1;
-                if slot.count == 0 {
-                    slot.item_id = 0;
-                    slot.durability = 0;
-                }
-            }
-        });
-    }
 
     // ── Initialize room ────────────────────────────────────────────────
     let user_name = ch.name.clone();
@@ -950,7 +937,6 @@ async fn handle_draki_enter(
     }
 
     // ── Zone change to Draki Tower ─────────────────────────────────────
-    let (spawn_x, spawn_z) = draki_tower::dungeon_spawn_position(enter_dungeon);
     super::zone_change::trigger_zone_change(
         session,
         draki_tower::ZONE_DRAKI_TOWER,
@@ -958,6 +944,49 @@ async fn handle_draki_enter(
         spawn_z as f32,
     )
     .await?;
+
+    // trigger_zone_change intentionally treats blocked/unknown destination
+    // zones as a no-op. Never start the tower UI, reserve the room, or charge
+    // an entry unless the server actually moved this session into zone 95.
+    if world.get_position(sid).map(|p| p.zone_id) != Some(draki_tower::ZONE_DRAKI_TOWER) {
+        world.despawn_room_npcs(draki_tower::ZONE_DRAKI_TOWER, room_id);
+        world.update_session(sid, |h| {
+            h.event_room = 0;
+            h.draki_room_id = 0;
+        });
+        if let Some(room) = world.draki_tower_rooms_write().get_mut(&room_id) {
+            room.reset();
+        }
+        session
+            .send_packet(&send_err(draki_tower::ENTER_ERR_INTERNAL))
+            .await?;
+        tracing::warn!(user = %ch.name, room_id, "Draki Tower zone transition did not complete; room released without charging the entry");
+        return Ok(());
+    }
+
+    // Only charge after the zone transition succeeds.
+    if entrance_limit > 0 {
+        let new_limit = entrance_limit.saturating_sub(1);
+        world.update_session(sid, |h| h.draki_entrance_limit = new_limit);
+        let repo = ko_db::repositories::draki_tower::DrakiTowerRepository::new(session.pool());
+        if let Err(e) = repo.update_entrance_limit(&ch.name, new_limit as i16).await {
+            tracing::warn!("Failed to update Draki entrance limit for {}: {e}", ch.name);
+        }
+    } else {
+        world.update_session(sid, |h| {
+            if let Some(slot) = h
+                .inventory
+                .iter_mut()
+                .find(|s| s.item_id == draki_tower::CERTIFIKAOFDRAKI && s.count > 0)
+            {
+                slot.count -= 1;
+                if slot.count == 0 {
+                    slot.item_id = 0;
+                    slot.durability = 0;
+                }
+            }
+        });
+    }
 
     // ── Send timer packets (BUG-9 fix: match C++ SendDrakiTempleDetail format) ──
     {

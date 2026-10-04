@@ -2810,7 +2810,8 @@ pub(crate) fn build_death_notice(
 /// `[0xE9][0xD7][u8 kill_type][SByte killer][SByte victim][u16 x][u16 z]`.
 ///
 /// kill_type: 1 = killer/victim, 2 = killer party, 3 = other observer.
-pub(crate) fn build_new_death_narration(
+#[cfg(test)]
+fn build_new_death_narration(
     kill_type: u8,
     killer_name: &str,
     victim_name: &str,

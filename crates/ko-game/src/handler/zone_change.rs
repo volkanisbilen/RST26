@@ -596,15 +596,25 @@ pub async fn trigger_zone_change(
         }
     }
 
-    // 1b. Dismiss active pet on cross-zone change
+    // 1b. Despawn an active pet on cross-zone change without discarding its
+    // session state. Taking pet_data here lost its equipped items/transform and
+    // made the next summon fail until a full relog. Persist the equipment before
+    // moving zones, then let the same pet be summoned in the destination zone.
     {
-        let mut pet_index: Option<u32> = None;
+        let mut pet_info: Option<(u32, u16)> = None;
         world.update_session(sid, |h| {
-            if let Some(pet) = h.pet_data.take() {
-                pet_index = Some(pet.index);
+            if let Some(pet) = h.pet_data.as_mut() {
+                pet_info = Some((pet.index, pet.nid));
+                pet.nid = 0;
+                pet.attack_started = false;
+                pet.attack_target_id = -1;
             }
         });
-        if let Some(index) = pet_index {
+        if let Some((index, nid)) = pet_info {
+            super::pet::save_pet_items(session).await;
+            if nid != 0 {
+                world.kill_npc(nid as u32);
+            }
             let mut resp = Packet::new(Opcode::WizPet as u8);
             resp.write_u8(1); // PET_MODE_FUNCTION
             resp.write_u8(5); // NORMAL_MODE
@@ -865,6 +875,39 @@ pub async fn trigger_zone_change(
 
     let _ = new_pos; // used above via update_position
     Ok(())
+}
+
+/// Side-effect-free preflight used by event handlers that must not consume an
+/// entry/item or start a client countdown unless the requested warp can run.
+pub(crate) fn can_trigger_zone_change(
+    world: &WorldState,
+    sid: SessionId,
+    dest_zone: u16,
+    dest_x: f32,
+    dest_z: f32,
+) -> bool {
+    if world.is_zone_changing(sid) || !world.can_teleport(sid) {
+        return false;
+    }
+    let Some(pos) = world.get_position(sid) else {
+        return false;
+    };
+    if pos.zone_id == dest_zone {
+        return true;
+    }
+    let Some(zone) = world.get_zone(dest_zone) else {
+        return false;
+    };
+    let status = zone.zone_info.as_ref().map(|info| info.status).unwrap_or(1);
+    if status != 1 {
+        return false;
+    }
+    let (x, z) = if dest_x == 0.0 && dest_z == 0.0 {
+        resolve_zero_coords(dest_zone, sid, world)
+    } else {
+        (dest_x, dest_z)
+    };
+    zone.is_valid_position(x, z) && validate_zone_entry(world, sid, dest_zone).is_ok()
 }
 
 /// Same-zone warp — teleport within the current zone.

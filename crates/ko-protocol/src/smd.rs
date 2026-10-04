@@ -27,6 +27,9 @@ pub struct SmdFile {
     /// Event tile grid — `map_size × map_size` entries.
     /// 0 = walkable, nonzero = blocked or event trigger.
     pub event_grid: Vec<i16>,
+    /// Terrain heights and conservative bot navigation mask, in x-major order.
+    pub heights: Vec<f32>,
+    pub bot_blocked: Vec<bool>,
     /// Warp gates loaded from the file.
     pub warps: Vec<WarpInfo>,
     /// NPC/monster spawn points.
@@ -130,9 +133,22 @@ impl SmdFile {
             ));
         }
 
-        // Skip height array: f32[map_size * map_size]
-        let height_bytes = (map_size as i64) * (map_size as i64) * 4;
-        reader.seek(SeekFrom::Current(height_bytes))?;
+        if !unit_dist.is_finite() || unit_dist <= 0.0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid terrain unit"));
+        }
+        let heights = (0..map_size as usize * map_size as usize)
+            .map(|_| read_f32(reader)).collect::<io::Result<Vec<_>>>()?;
+        let mut bot_blocked = vec![true; heights.len()];
+        for x in 0..map_size - 1 {
+            for z in 0..map_size - 1 {
+                let i = (x * map_size + z) as usize;
+                let h = [heights[i], heights[i + 1], heights[i + map_size as usize], heights[i + map_size as usize + 1]];
+                // Both terrain triangles must have a gradient <= 45 degrees.
+                let slope1 = (h[2] - h[0]).hypot(h[1] - h[0]) / unit_dist;
+                let slope2 = (h[3] - h[1]).hypot(h[3] - h[2]) / unit_dist;
+                bot_blocked[i] = h.iter().any(|v| !v.is_finite()) || slope1 > 1.0 || slope2 > 1.0;
+            }
+        }
 
         let pos_after_terrain = reader.stream_position()?;
         tracing::debug!(
@@ -143,7 +159,7 @@ impl SmdFile {
         );
 
         // 2. LoadCollisionData (CN3ShapeMgr)
-        let (map_width, map_height) = Self::skip_collision_data(reader)?;
+        let (map_width, map_height) = Self::skip_collision_data(reader, map_size, unit_dist, &heights, &mut bot_blocked)?;
         let pos_after_collision = reader.stream_position()?;
         tracing::debug!(
             map_width,
@@ -237,6 +253,8 @@ impl SmdFile {
             map_width,
             map_height,
             event_grid,
+            heights,
+            bot_blocked,
             warps,
             regene_events,
         })
@@ -280,7 +298,7 @@ impl SmdFile {
 
     /// Skip collision data (CN3ShapeMgr::LoadCollisionData), extracting map dimensions.
     ///
-    fn skip_collision_data<R: Read + Seek>(reader: &mut R) -> io::Result<(f32, f32)> {
+    fn skip_collision_data<R: Read + Seek>(reader: &mut R, size: i32, unit: f32, heights: &[f32], blocked: &mut [bool]) -> io::Result<(f32, f32)> {
         let map_width = read_f32(reader)?;
         let map_length = read_f32(reader)?;
 
@@ -293,8 +311,45 @@ impl SmdFile {
             ));
         }
         // Each face = 3 vertices, each vertex = 3 floats (12 bytes)
-        let vertex_bytes = face_count as i64 * 3 * 12;
-        reader.seek(SeekFrom::Current(vertex_bytes))?;
+        for _ in 0..face_count {
+            let mut v = [[0.0f32; 3]; 3];
+            for vertex in &mut v {
+                for coordinate in vertex { *coordinate = read_f32(reader)?; }
+            }
+            if v.iter().flatten().any(|c| !c.is_finite()) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid collision vertex"));
+            }
+            let a = [v[1][0]-v[0][0], v[1][1]-v[0][1], v[1][2]-v[0][2]];
+            let b = [v[2][0]-v[0][0], v[2][1]-v[0][1], v[2][2]-v[0][2]];
+            let n = [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+            // Floors/bridges do not form walls; retain steep collision faces.
+            if n[1].abs() >= n[0].hypot(n[2]) { continue; }
+            let min = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::INFINITY, f32::min);
+            let max = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::NEG_INFINITY, f32::max);
+            for x in ((min(0) / unit).floor() as i32).max(0)..=((max(0) / unit).floor() as i32).min(size-2) {
+                for z in ((min(2) / unit).floor() as i32).max(0)..=((max(2) / unit).floor() as i32).min(size-2) {
+                    // Separating-axis test: do not block the empty corners of a
+                    // long diagonal wall's bounding rectangle.
+                    let center = [(x as f32 + 0.5) * unit, (z as f32 + 0.5) * unit];
+                    let half = unit * 0.5 + 0.2;
+                    let separated = (0..3).any(|edge| {
+                        let next = (edge + 1) % 3;
+                        let axis = [v[next][2] - v[edge][2], v[edge][0] - v[next][0]];
+                        let lo = v.iter().map(|p| p[0]*axis[0] + p[2]*axis[1]).fold(f32::INFINITY, f32::min);
+                        let hi = v.iter().map(|p| p[0]*axis[0] + p[2]*axis[1]).fold(f32::NEG_INFINITY, f32::max);
+                        let c = center[0]*axis[0] + center[1]*axis[1];
+                        let r = half * (axis[0].abs() + axis[1].abs());
+                        hi < c-r || lo > c+r
+                    });
+                    if separated { continue; }
+                    let i = (x * size + z) as usize;
+                    let h = [heights[i], heights[i+1], heights[i+size as usize], heights[i+size as usize+1]];
+                    let low = h.iter().copied().fold(f32::INFINITY, f32::min);
+                    let high = h.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    if max(1) > low + 0.4 && min(1) < high + 2.0 { blocked[i] = true; }
+                }
+            }
+        }
 
         // Cell grid: iterate over map_width/16 × map_length/16 cells
         let cells_x = (map_width / CELL_MAIN_SIZE as f32).ceil() as i32;
@@ -443,6 +498,8 @@ mod tests {
     #[test]
     fn test_is_valid_position() {
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: 1025,
             unit_dist: 4.0,
             map_width: 4096.0,
@@ -470,6 +527,8 @@ mod tests {
         grid[0] = 1;
 
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size,
             unit_dist: 4.0,
             map_width: 36.0,
@@ -493,6 +552,8 @@ mod tests {
         grid[2 * 5 + 3] = 1; // blocked tile at (2, 3)
 
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size,
             unit_dist: 4.0,
             map_width: 16.0,
@@ -514,6 +575,8 @@ mod tests {
         grid[2 * 10 + 3] = 99; // grid (2, 3)
 
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size,
             unit_dist: 4.0,
             map_width: 36.0,

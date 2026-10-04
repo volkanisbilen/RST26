@@ -8,6 +8,7 @@ description = "Game logic, session management, and packet handlers for the Knigh
 ko-core = { workspace = true }
 ko-protocol = { workspace = true }
 ko-db = { workspace = true }
+ko-tbl-import = { path = "../ko-tbl-import" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
@@ -23,3 +24,6 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 sqlx = { workspace = true }
 axum = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }

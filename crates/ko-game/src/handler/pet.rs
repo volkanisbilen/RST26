@@ -24,10 +24,11 @@
 
 use ko_protocol::{Opcode, Packet, PacketReader};
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::npc::{build_npc_inout, NpcInstance, NPC_IN};
 use crate::session::{ClientSession, SessionState};
+use crate::world::{PetState, UserItemSlot};
 
 /// Pet mode constants — `GameDefine.h:1153-1158`.
 const MODE_SUMMON: u8 = 2;
@@ -93,6 +94,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         Some(v) => v,
         None => return Ok(()),
     };
+    info!(
+        sid = session.session_id(),
+        sub_opcode = opcode,
+        remaining_bytes = r.remaining(),
+        "PET_EVENT client_packet"
+    );
 
     match opcode {
         PET_MODE_FUNCTION => handle_mode_function(session, &mut r).await,
@@ -125,29 +132,36 @@ async fn handle_pet_use_skill(
 
     let (pet_nid, pet_mode) = match pet_info {
         Some(Some((nid, mode))) => (nid, mode),
-        _ => return Ok(()),
+        _ => {
+            info!(sid, "PET_SKILL rejected reason=no_pet_state");
+            return Ok(());
+        }
     };
 
     // A pet must be spawned before it can cast or begin a family attack.
     if pet_nid == 0 || world.get_npc_instance(pet_nid as u32).is_none() {
+        info!(sid, pet_nid, "PET_SKILL rejected reason=pet_not_spawned");
         return Ok(());
     }
 
-    let sub_code = match r.read_u8() {
-        Some(v) => v,
-        None => return Ok(()),
+    // The supplied 2625 decompilation's PetMagicMng.cpp:156 builds WIZ_PET
+    // subcommand 2 as one byte plus nine dwords. The first three dwords after
+    // that byte are skill, caster and target IDs.
+    let Some(request) = read_pet_skill_request(r) else {
+        info!(sid, "PET_SKILL rejected reason=malformed_request");
+        return Ok(());
     };
-    let skill_id = match r.read_u32() {
-        Some(v) => v,
-        None => return Ok(()),
-    };
+    let sub_code = request.sub_code;
+    let skill_id = request.skill_id;
 
     if skill_id < 300000 {
+        info!(sid, skill_id, "PET_SKILL rejected reason=invalid_skill_id");
         return Ok(());
     }
 
-    let caster_id = r.read_u32().unwrap_or(0);
-    let target_id = r.read_u32().unwrap_or(0);
+    // Keep IDs full width: truncating either one drops runtime NPC targets.
+    let caster_id = request.caster_id;
+    let target_id = request.target_id;
 
     debug!(
         "[{}] WIZ_PET: PetUseSkill received sub_code={} skill_id={} caster={} target={} pet_nid={} mode={}",
@@ -159,14 +173,105 @@ async fn handle_pet_use_skill(
         pet_nid,
         pet_mode
     );
+    info!(
+        sid,
+        pet_nid,
+        pet_mode,
+        skill_id,
+        caster_id,
+        target_id,
+        sub_code,
+        "PET_SKILL request"
+    );
 
-    // v2615 uses the full 32-bit runtime NPC ID here.  Validate the target
-    // before arming the background attack tick; player IDs and dead/missing
-    // NPCs are not valid pet attack targets.
+    // Pet window recovery skills are intentionally targeted at the owner's
+    // own pet. The reference server sends these through MagicPacketNpc(),
+    // while the old Rust path rejected them because it only accepted monster
+    // targets. Consume the matching pet-slot potion and update the authoritative
+    // HP/MP state before sending the normal client packets.
+    if let Some((hp_restore, mp_restore, required_item)) = pet_recovery_skill(skill_id) {
+        if target_id != pet_nid as u32 {
+            return Ok(());
+        }
+        let level = world
+            .with_session(sid, |h| h.pet_data.as_ref().map(|p| p.level))
+            .flatten()
+            .unwrap_or(1);
+        let Some(stats) = world.get_pet_stats_info(level.clamp(1, 60)) else {
+            return Ok(());
+        };
+        let mut consumed = false;
+        let mut current_hp = 0u16;
+        let mut current_mp = 0u16;
+        world.update_session(sid, |h| {
+            let Some(pet) = h.pet_data.as_mut() else {
+                return;
+            };
+            let Some(slot) = pet
+                .items
+                .iter_mut()
+                .find(|item| item.item_id == required_item && item.count > 0)
+            else {
+                return;
+            };
+            slot.count -= 1;
+            if slot.count == 0 {
+                *slot = UserItemSlot::default();
+            }
+            pet.hp = (pet.hp as u32 + hp_restore as u32).min(stats.pet_max_hp.max(1) as u32) as u16;
+            pet.mp = (pet.mp as u32 + mp_restore as u32).min(stats.pet_max_sp.max(0) as u32) as u16;
+            current_hp = pet.hp;
+            current_mp = pet.mp;
+            consumed = true;
+        });
+        if !consumed {
+            return Ok(());
+        }
+        world.update_npc_hp(pet_nid as u32, current_hp as i32);
+        let mut magic_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        magic_pkt.write_u8(MAGIC_EFFECTING_SUBCODE);
+        magic_pkt.write_u32(skill_id);
+        magic_pkt.write_u32(pet_nid as u32);
+        magic_pkt.write_u32(pet_nid as u32);
+        magic_pkt.write_u16(0); // pet x (int16, reference MagicPacketNpc layout)
+        magic_pkt.write_u16(0); // pet y
+        magic_pkt.write_u16(0); // pet z
+        if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+            world.broadcast_to_3x3(
+                pos.zone_id,
+                pos.region_x,
+                pos.region_z,
+                Arc::new(magic_pkt),
+                None,
+                event_room,
+            );
+        }
+        session
+            .send_packet(&build_pet_hp_change_packet(
+                stats.pet_max_hp.max(1) as u16,
+                current_hp,
+                pet_nid as u32,
+            ))
+            .await?;
+        session
+            .send_packet(&build_pet_mp_change_packet(
+                stats.pet_max_sp.max(0) as u16,
+                current_mp,
+                pet_nid,
+            ))
+            .await?;
+        save_pet_items(session).await;
+        pet_satisfaction_update(session, -10).await;
+        return Ok(());
+    }
+
+    // Validate the full-width runtime NPC target before arming the background
+    // attack tick; player IDs and dead/missing NPCs are not valid here.
     if target_id < crate::npc::NPC_BAND
         || world.get_npc_instance(target_id).is_none()
         || world.is_npc_dead(target_id)
     {
+        info!(sid, pet_nid, skill_id, target_id, "PET_SKILL rejected reason=invalid_or_dead_npc_target");
         return Ok(());
     }
 
@@ -175,14 +280,18 @@ async fn handle_pet_use_skill(
     let mut magic_pkt = Packet::new(Opcode::WizMagicProcess as u8);
     magic_pkt.write_u8(MAGIC_EFFECTING_SUBCODE);
     magic_pkt.write_u32(skill_id);
-    magic_pkt.write_u32(pet_nid as u32);
-    magic_pkt.write_u32(target_id);
-    magic_pkt.write_u16(0); // data[0]
-    magic_pkt.write_u16(0); // data[1]
-    magic_pkt.write_u16(0); // data[2]
-    magic_pkt.write_u16(0); // data[3]
-    magic_pkt.write_u16(0); // data[4]
-    magic_pkt.write_u16(0); // data[5]
+    // Match PetMainHandler.cpp's MagicPacketNpc payload exactly: two signed
+    // 16-bit unit IDs followed by the pet's three 16-bit coordinates. The old
+    // Rust packet used 32-bit IDs plus six zero words, corrupting the client
+    // magic-process decode and suppressing pet skill effects.
+    let Some(pet_instance) = world.get_npc_instance(pet_nid as u32) else {
+        return Ok(());
+    };
+    magic_pkt.write_u16(pet_nid);
+    magic_pkt.write_u16(target_id as u16);
+    magic_pkt.write_u16(pet_instance.x.max(0.0) as u16);
+    magic_pkt.write_u16(pet_instance.y.max(0.0) as u16);
+    magic_pkt.write_u16(pet_instance.z.max(0.0) as u16);
 
     if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
         world.broadcast_to_3x3(
@@ -204,10 +313,15 @@ async fn handle_pet_use_skill(
             pet.state_change = MODE_ATTACK;
             pet.attack_started = true;
             pet.attack_target_id = target_id as i32;
+            pet.pending_attack_skill_id = if (301_001..=301_006).contains(&skill_id) {
+                skill_id
+            } else {
+                0
+            };
         }
     });
 
-    // The v2615 client keeps its own copy of the pet mode.  The reference
+    // The v2625 client keeps its own copy of the pet mode. The reference
     // server acknowledges the automatic DEFENCE -> ATTACK transition after
     // Designated Pet Attack.  Without this packet the server attacks, but the
     // client still considers the pet defensive and suppresses the remaining
@@ -230,7 +344,46 @@ async fn handle_pet_use_skill(
     Ok(())
 }
 
-/// Build the v2615 acknowledgement that synchronizes the pet mode in the
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PetSkillRequest {
+    sub_code: u8,
+    skill_id: u32,
+    caster_id: u32,
+    target_id: u32,
+}
+
+/// Decode the fixed prefix of the v2625 PetMagicMng.cpp WIZ_PET skill packet.
+/// Its trailing coordinate and auxiliary dwords are not needed by this handler.
+fn read_pet_skill_request(reader: &mut PacketReader<'_>) -> Option<PetSkillRequest> {
+    Some(PetSkillRequest {
+        sub_code: reader.read_u8()?,
+        skill_id: reader.read_u32()?,
+        caster_id: reader.read_u32()?,
+        target_id: reader.read_u32()?,
+    })
+}
+
+/// Recovery skills and their backing pet-inventory item. These IDs are the
+/// exact allow-list in the reference PetMainHandler.cpp.
+fn pet_recovery_skill(skill_id: u32) -> Option<(u16, u16, u32)> {
+    Some(match skill_id {
+        490010 => (45, 0, 389_010_000),
+        490011 => (90, 0, 389_011_000),
+        490012 => (180, 0, 389_012_000),
+        490013 => (360, 0, 389_013_000),
+        490014 => (720, 0, 389_014_000),
+        500145 => (720, 0, 389_390_000),
+        490016 => (0, 120, 389_016_000),
+        490017 => (0, 240, 389_017_000),
+        490018 => (0, 480, 389_018_000),
+        490019 => (0, 960, 389_019_000),
+        490020 => (0, 1920, 389_020_000),
+        500146 => (0, 1920, 389_400_000),
+        _ => return None,
+    })
+}
+
+/// Build the v2625 acknowledgement that synchronizes the pet mode in the
 /// client UI with the authoritative server-side state.
 fn build_pet_mode_change_packet(mode: u8) -> Packet {
     let mut resp = Packet::new(Opcode::WizPet as u8);
@@ -315,7 +468,11 @@ pub(crate) async fn handle_normal_mode(
                             if let Some(item) = pet_item {
                                 match pet_repo.load_pet_data(item.serial_num).await {
                                     Ok(Some(row)) => {
-                                        let restored = crate::world::PetState {
+                                        let pet_items = pet_repo.load_pet_items(row.n_serial_id).await.unwrap_or_else(|e| {
+                                            tracing::warn!("[sid={}] WIZ_PET: pet item DB load failed serial={}: {}", sid, row.n_serial_id, e);
+                                            Vec::new()
+                                        });
+                                        let restored = PetState {
                                             serial_id: row.n_serial_id.max(0) as u64,
                                             level: row.b_level.clamp(1, 60) as u8,
                                             satisfaction: row.s_satisfaction.clamp(0, 10_000),
@@ -333,16 +490,24 @@ pub(crate) async fn handle_normal_mode(
                                             ..Default::default()
                                         };
 
+                                        let mut restored = restored;
+                                        apply_persistent_pet_items(&mut restored, pet_items);
+                                        let equipment = restored.items.iter().enumerate()
+                                            .filter(|(_, item)| item.item_id != 0 || item.count != 0)
+                                            .map(|(slot, item)| format!("{}:{}x{}", slot, item.item_id, item.count))
+                                            .collect::<Vec<_>>().join(",");
+
                                         world.update_session(sid, |h| {
                                             h.pet_data = Some(restored);
                                         });
 
                                         tracing::info!(
-                                            "[sid={}] WIZ_PET: lazily restored pet serial={} index={} pid={}",
+                                            "[sid={}] PET_LOAD source=lazy serial={} index={} pid={} equipment=[{}]",
                                             sid,
                                             row.n_serial_id,
                                             row.n_index,
-                                            row.s_pid
+                                            row.s_pid,
+                                            equipment
                                         );
                                     }
                                     Ok(None) => {
@@ -390,7 +555,7 @@ pub(crate) async fn handle_normal_mode(
                 )
             });
 
-            let (pos, event_room, owner, pet) = match snapshot {
+            let (pos, event_room, owner, mut pet) = match snapshot {
                 Some((pos, event_room, Some(owner), Some(pet))) => (pos, event_room, owner, pet),
                 _ => {
                     debug!(
@@ -401,14 +566,76 @@ pub(crate) async fn handle_normal_mode(
                 }
             };
 
-            // Zaten dünyada kayıtlıysa ikinci kez NPC oluşturma.
-            if pet.nid != 0 && world.get_npc_instance(pet.nid as u32).is_some() {
-                debug!(
-                    "[{}] WIZ_PET: summon ignored, pet already spawned nid={}",
-                    session.addr(),
-                    pet.nid
-                );
-                return Ok(());
+            // If a stale runtime pet exists, move it beside the owner instead
+            // of silently ignoring the summon. Clients require an OUT/IN pair
+            // to reliably refresh a familiar's position and transformed PID.
+            if pet.nid != 0 {
+                if let Some(existing) = world.get_npc_instance(pet.nid as u32) {
+                    if existing.zone_id == pos.zone_id {
+                        let Some(existing_template) =
+                            world.get_npc_template(existing.proto_id, existing.is_monster)
+                        else {
+                            return Ok(());
+                        };
+                        let mut appearance = existing_template.as_ref().clone();
+                        appearance.pid = pet.pid.max(1);
+                        appearance.size = pet.size.max(1);
+                        let out =
+                            build_npc_inout(crate::npc::NPC_OUT, &existing, &existing_template);
+                        world.broadcast_to_3x3(
+                            existing.zone_id,
+                            existing.region_x,
+                            existing.region_z,
+                            Arc::new(out),
+                            None,
+                            event_room,
+                        );
+                        let near_x = pos.x + 1.0;
+                        let near_z = pos.z + 1.0;
+                        world.update_npc_position(pet.nid as u32, near_x, near_z);
+                        if let Some(updated) = world.get_npc_instance(pet.nid as u32) {
+                            let input = build_npc_inout(NPC_IN, &updated, &appearance);
+                            world.broadcast_to_3x3(
+                                updated.zone_id,
+                                updated.region_x,
+                                updated.region_z,
+                                Arc::new(input),
+                                None,
+                                event_room,
+                            );
+                            let mut object_event = Packet::new(Opcode::WizObjectEvent as u8);
+                            object_event.write_u8(0x0b);
+                            object_event.write_u8(0x01);
+                            object_event.write_u16(pet.nid);
+                            object_event.write_u8(0xc3);
+                            object_event.write_u8(0x76);
+                            object_event.write_u16(0);
+                            world.broadcast_to_3x3(
+                                updated.zone_id,
+                                updated.region_x,
+                                updated.region_z,
+                                Arc::new(object_event),
+                                None,
+                                event_room,
+                            );
+                        }
+                        debug!(
+                            "[{}] WIZ_PET: existing familiar moved beside owner nid={} zone={} x={:.1} z={:.1}",
+                            session.addr(), pet.nid, pos.zone_id, near_x, near_z
+                        );
+                        return Ok(());
+                    }
+
+                    // A runtime from another zone is invalid; remove it while
+                    // keeping PetState and its four equipment slots intact.
+                    world.kill_npc(pet.nid as u32);
+                    world.update_session(sid, |h| {
+                        if let Some(active_pet) = h.pet_data.as_mut() {
+                            active_pet.nid = 0;
+                        }
+                    });
+                    pet.nid = 0;
+                }
             }
 
             // pet.pid is the client model/SPID (25500), not npc_template.s_sid.
@@ -425,11 +652,27 @@ pub(crate) async fn handle_normal_mode(
                 }
             };
 
+            // C++ PetSpawnProcess restores a familiar at its level's full
+            // health and mana. Old persisted rows often contain zero here,
+            // which made the runtime NPC immediately invisible/dead despite a
+            // successful summon packet.
+            let stats = world.get_pet_stats_info(pet.level.clamp(1, 60));
+            let max_hp = stats
+                .as_ref()
+                .map(|v| v.pet_max_hp.max(1) as u16)
+                .unwrap_or(pet.hp.max(1));
+            let max_mp = stats
+                .as_ref()
+                .map(|v| v.pet_max_sp.max(0) as u16)
+                .unwrap_or(pet.mp);
+            pet.hp = max_hp;
+            pet.mp = max_mp;
+
             let runtime_nid = world.allocate_npc_id();
 
             // Sahibin hemen yanında doğur.
-            let spawn_x = pos.x + 1.5;
-            let spawn_z = pos.z + 1.5;
+            let spawn_x = pos.x + 1.0;
+            let spawn_z = pos.z + 1.0;
 
             let instance = NpcInstance {
                 nid: runtime_nid,
@@ -440,8 +683,8 @@ pub(crate) async fn handle_normal_mode(
                 y: pos.y,
                 z: spawn_z,
                 direction: 0,
-                region_x: pos.region_x,
-                region_z: pos.region_z,
+                region_x: crate::zone::calc_region(spawn_x),
+                region_z: crate::zone::calc_region(spawn_z),
                 gate_open: 0,
                 object_type: 0,
                 nation: owner.nation,
@@ -462,55 +705,81 @@ pub(crate) async fn handle_normal_mode(
 
             world.update_session(sid, |h| {
                 if let Some(ref mut active_pet) = h.pet_data {
+                    active_pet.hp = max_hp;
+                    active_pet.mp = max_mp;
                     active_pet.nid = runtime_nid as u16;
                     active_pet.state_change = MODE_DEFENCE;
                     active_pet.attack_started = false;
                     active_pet.attack_target_id = -1;
+                    active_pet.pending_attack_skill_id = 0;
                 }
             });
 
-            let npc_in = build_npc_inout(NPC_IN, &instance, &template);
+            // The client renders type-15 pets from the PID and size included
+            // in the NPC-IN packet. The runtime template is only a carrier;
+            // override its appearance with the pet's persisted transform.
+            let mut visual_template = template.as_ref().clone();
+            visual_template.pid = pet.pid.max(1);
+            visual_template.size = pet.size.max(1);
+            let npc_in = build_npc_inout(NPC_IN, &instance, &visual_template);
             world.broadcast_to_3x3(
-                pos.zone_id,
-                pos.region_x,
-                pos.region_z,
+                instance.zone_id,
+                instance.region_x,
+                instance.region_z,
                 Arc::new(npc_in),
                 None,
                 event_room,
             );
 
-            let stats = world.get_pet_stats_info(pet.level);
+            // PetSpawnProcess follows the NPC-IN with this object event. Some
+            // client builds do not instantiate the familiar model reliably
+            // from NPC-IN alone; omitting this event causes the model to blink
+            // or remain invisible for nearby players.
+            let mut object_event = Packet::new(Opcode::WizObjectEvent as u8);
+            object_event.write_u8(0x0b);
+            object_event.write_u8(0x01);
+            object_event.write_u16(runtime_nid as u16);
+            object_event.write_u8(0xc3);
+            object_event.write_u8(0x76);
+            object_event.write_u16(0);
+            world.broadcast_to_3x3(
+                instance.zone_id,
+                instance.region_x,
+                instance.region_z,
+                Arc::new(object_event),
+                None,
+                event_room,
+            );
 
             let spawn_info = PetSpawnInfo {
                 index: pet.index,
                 name: pet.name.clone(),
                 level: pet.level,
                 exp_percent: 0,
-                max_hp: stats
-                    .as_ref()
-                    .map(|v| v.pet_max_hp as u16)
-                    .unwrap_or(pet.hp),
+                max_hp,
                 hp: pet.hp,
-                max_mp: stats
-                    .as_ref()
-                    .map(|v| v.pet_max_sp as u16)
-                    .unwrap_or(pet.mp),
+                max_mp,
                 mp: pet.mp,
                 satisfaction: pet.satisfaction.max(0) as u16,
                 attack: stats.as_ref().map(|v| v.pet_attack as u16).unwrap_or(0),
                 defence: stats.as_ref().map(|v| v.pet_defence as u16).unwrap_or(0),
                 resistance: stats.as_ref().map(|v| v.pet_res as u16).unwrap_or(0),
+                items: pet.items.clone(),
             };
 
             let pet_ui = build_pet_spawn_packet(&spawn_info);
             session.send_packet(&pet_ui).await?;
 
             tracing::info!(
-                "[sid={}] WIZ_PET: summoned nid={} template_sid={} model_spid={} name={} zone={} pos={:.1}/{:.1}/{:.1}",
+                "[sid={}] PET_SPAWN nid={} template_sid={} model_spid={} template_type={} template_is_monster={} nation={} size={} name={} zone={} pos={:.1}/{:.1}/{:.1}",
                 sid,
                 runtime_nid,
                 PET_RUNTIME_TEMPLATE_SID,
                 pet.pid,
+                visual_template.npc_type,
+                visual_template.is_monster,
+                instance.nation,
+                pet.size,
                 pet.name,
                 pos.zone_id,
                 spawn_x,
@@ -529,6 +798,7 @@ pub(crate) async fn handle_normal_mode(
                     if mode == MODE_DEFENCE {
                         pet.attack_started = false;
                         pet.attack_target_id = -1;
+                        pet.pending_attack_skill_id = 0;
                     }
                 }
             });
@@ -537,7 +807,11 @@ pub(crate) async fn handle_normal_mode(
             let resp = build_pet_mode_change_packet(mode);
             session.send_packet(&resp).await?;
 
-            debug!("[{}] WIZ_PET: NormalMode set to {}", session.addr(), mode);
+            info!(
+                sid = session.session_id(),
+                mode,
+                "PET_EVENT mode_changed"
+            );
         }
         MODE_CHAT => {
             // Read chat message (DByte-prefixed string in C++)
@@ -734,15 +1008,22 @@ async fn pet_on_death(session: &mut ClientSession) {
     let sid = session.session_id();
     let world = session.world();
 
-    let mut pet_index: Option<u32> = None;
+    let mut pet_data: Option<(u32, u16)> = None;
 
     world.update_session(sid, |h| {
-        if let Some(pet) = h.pet_data.take() {
-            pet_index = Some(pet.index);
+        if let Some(pet) = h.pet_data.as_mut() {
+            pet_data = Some((pet.index, pet.nid));
+            pet.nid = 0;
+            pet.attack_started = false;
+            pet.attack_target_id = -1;
+            pet.pending_attack_skill_id = 0;
         }
     });
 
-    if let Some(index) = pet_index {
+    if let Some((index, nid)) = pet_data {
+        if nid != 0 {
+            world.kill_npc(nid as u32);
+        }
         // Send death notification
         //                       << m_PettingOn->nIndex;
         let mut resp = Packet::new(Opcode::WizPet as u8);
@@ -792,6 +1073,8 @@ pub struct PetSpawnInfo {
     pub defence: u16,
     /// Resistance (used for all 6 resistance slots).
     pub resistance: u16,
+    /// Persisted pet equipment slots sent with the pet window.
+    pub items: [UserItemSlot; PET_INVENTORY_TOTAL as usize],
 }
 
 /// Build and send the pet spawn info packet.
@@ -831,19 +1114,142 @@ pub fn build_pet_spawn_packet(info: &PetSpawnInfo) -> Packet {
         resp.write_u16(info.resistance);
     }
 
-    // Pet inventory: PET_INVENTORY_TOTAL (4) empty slots
+    // Pet inventory: the four persistent equipment slots.
     //      + sRemainingRentalTime(u16) + u32(0) + nExpirationTime(u32)
-    for _ in 0..PET_INVENTORY_TOTAL {
-        resp.write_u32(0); // nNum
-        resp.write_u16(0); // sDuration
-        resp.write_u16(0); // sCount
-        resp.write_u8(0); // bFlag
-        resp.write_u16(0); // sRemainingRentalTime
+    for item in &info.items {
+        resp.write_u32(item.item_id); // nNum
+        resp.write_u16(item.durability.max(0) as u16); // sDuration
+        resp.write_u16(item.count); // sCount
+        resp.write_u8(item.flag); // bFlag
+        resp.write_u16(item.remaining_rental_minutes()); // sRemainingRentalTime
         resp.write_u32(0); // padding
-        resp.write_u32(0); // nExpirationTime
+        resp.write_u32(item.expire_time); // nExpirationTime
     }
 
     resp
+}
+
+/// Apply database rows to the four runtime pet slots. Invalid/duplicate slot
+/// indexes are ignored so malformed old rows cannot corrupt a summon packet.
+pub(crate) fn apply_persistent_pet_items(
+    pet: &mut PetState,
+    rows: Vec<ko_db::models::PetUserItemRow>,
+) {
+    for row in rows {
+        let Ok(slot) = usize::try_from(row.slot_index) else {
+            continue;
+        };
+        if slot >= pet.items.len() || row.item_id <= 0 || row.count <= 0 {
+            continue;
+        }
+        pet.items[slot] = UserItemSlot {
+            item_id: row.item_id as u32,
+            durability: row.durability,
+            count: row.count as u16,
+            flag: row.flag.clamp(0, u8::MAX as i16) as u8,
+            original_flag: row.original_flag.clamp(0, u8::MAX as i16) as u8,
+            serial_num: row.serial_num.max(0) as u64,
+            expire_time: row.expire_time.max(0) as u32,
+        };
+    }
+}
+
+/// Persist the currently equipped pet items immediately after a pet inventory
+/// movement. This is intentionally independent of the character logout path.
+pub(crate) async fn save_pet_items(session: &ClientSession) {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let pool = session.pool().clone();
+    let snapshot = world
+        .with_session(sid, |h| {
+            h.pet_data
+                .as_ref()
+                .map(|pet| (pet.serial_id, pet.items.clone()))
+        })
+        .flatten();
+    let Some((serial_id, items)) = snapshot else {
+        return;
+    };
+    if serial_id == 0 {
+        return;
+    }
+    let rows: Vec<ko_db::models::PetUserItemRow> = items
+        .iter()
+        .enumerate()
+        .map(|(slot, item)| ko_db::models::PetUserItemRow {
+            n_pet_serial_id: serial_id as i64,
+            slot_index: slot as i16,
+            item_id: item.item_id as i32,
+            durability: item.durability,
+            count: item.count as i16,
+            flag: item.flag as i16,
+            original_flag: item.original_flag as i16,
+            serial_num: item.serial_num as i64,
+            expire_time: item.expire_time as i32,
+        })
+        .collect();
+    let repo = ko_db::repositories::pet::PetRepository::new(&pool);
+    match repo.save_pet_items(serial_id as i64, &rows).await {
+        Ok(()) => {
+            let saved: Vec<String> = items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.item_id != 0 && item.count > 0)
+                .map(|(slot, item)| format!("{}:{}x{}", slot, item.item_id, item.count))
+                .collect();
+            tracing::info!(
+                "PET_EQUIPMENT_SAVE serial={} items=[{}]",
+                serial_id,
+                saved.join(",")
+            );
+        }
+        Err(e) => tracing::warn!("pet item save failed serial={}: {}", serial_id, e),
+    }
+}
+
+/// Re-send a spawned pet using its current persisted appearance. Transform
+/// recipes change PID/size, which cannot be applied to an existing client NPC
+/// without an OUT/IN refresh.
+pub(crate) fn refresh_pet_appearance(
+    world: &crate::world::WorldState,
+    sid: crate::zone::SessionId,
+) {
+    let Some((pet, event_room)) = world
+        .with_session(sid, |h| h.pet_data.clone().map(|p| (p, h.event_room)))
+        .flatten()
+    else {
+        return;
+    };
+    if pet.nid == 0 {
+        return;
+    }
+    let Some(instance) = world.get_npc_instance(pet.nid as u32) else {
+        return;
+    };
+    let Some(template) = world.get_npc_template(instance.proto_id, instance.is_monster) else {
+        return;
+    };
+    let out = build_npc_inout(crate::npc::NPC_OUT, &instance, &template);
+    let mut appearance = template.as_ref().clone();
+    appearance.pid = pet.pid.max(1);
+    appearance.size = pet.size.max(1);
+    let input = build_npc_inout(NPC_IN, &instance, &appearance);
+    world.broadcast_to_3x3(
+        instance.zone_id,
+        instance.region_x,
+        instance.region_z,
+        Arc::new(out),
+        None,
+        event_room,
+    );
+    world.broadcast_to_3x3(
+        instance.zone_id,
+        instance.region_x,
+        instance.region_z,
+        Arc::new(input),
+        None,
+        event_room,
+    );
 }
 
 /// Build and send the pet HP change packet.
@@ -977,6 +1383,7 @@ mod tests {
             attack: 36,
             defence: 90,
             resistance: 18,
+            items: Default::default(),
         };
 
         let pkt = build_pet_spawn_packet(&info);
@@ -1271,13 +1678,27 @@ mod tests {
     }
 
     #[test]
-    fn test_v2615_pet_target_id_keeps_full_width() {
-        let target_id = 49_886u32;
-        let stored = target_id as i32;
+    fn test_2625_pet_skill_request_reads_full_width_unit_ids() {
+        let mut packet = Packet::new(Opcode::WizPet as u8);
+        packet.write_u8(PET_USE_SKILL);
+        packet.write_u8(1); // PetMagicMng mode
+        packet.write_u32(490_321);
+        packet.write_u32(105_001);
+        packet.write_u32(106_777);
+        // PetMagicMng.cpp:156 appends six more dwords after the IDs.
+        for value in [0, 0, 0, 0, 0, 0] {
+            packet.write_u32(value);
+        }
 
-        assert!(stored >= crate::npc::NPC_BAND as i32);
-        assert_eq!(stored as u32, target_id);
-        assert!(target_id > i16::MAX as u32);
+        let mut reader = PacketReader::new(&packet.data);
+        assert_eq!(reader.read_u8(), Some(PET_USE_SKILL));
+        let request = read_pet_skill_request(&mut reader).unwrap();
+        assert_eq!(request.sub_code, 1);
+        assert_eq!(request.skill_id, 490_321);
+        assert_eq!(request.caster_id, 105_001);
+        assert_eq!(request.target_id, 106_777);
+        assert!(request.target_id > u16::MAX as u32);
+        assert_eq!(reader.remaining(), 24);
     }
 
     // ── Sprint 955: Additional coverage ──────────────────────────────

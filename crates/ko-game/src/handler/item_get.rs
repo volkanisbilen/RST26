@@ -26,6 +26,7 @@ const LOOT_PARTY_NOTIFICATION: u8 = 3;
 const LOOT_PARTY_ITEM_GIVEN_AWAY: u8 = 4;
 const LOOT_NO_WEIGHT: u8 = 6;
 
+use super::npc_loot::get_item_routing_user;
 use super::{INVENTORY_TOTAL, SLOT_MAX};
 
 /// Handle WIZ_ITEM_GET from the client.
@@ -211,15 +212,23 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         return Ok(());
     }
 
-    // Non-gold item: check weight and find slot
-    if !world.check_weight(sid, taken_id, taken_count) {
+    // Non-gold party loot uses the same rotating receiver selection as auto-loot.
+    // The character who clicked the bundle only initiates the pickup; ownership
+    // is assigned to the next eligible nearby party member.
+    let party_id = world.get_party_id(sid);
+    let receiver = party_id
+        .and_then(|pid| get_item_routing_user(&world, pid, sid, taken_id, taken_count))
+        .unwrap_or(sid);
+
+    // Non-gold item: check weight and find a slot on the actual receiver.
+    if !world.check_weight(receiver, taken_id, taken_count) {
         // Put item back into bundle since we can't carry it
         world.restore_bundle_item(bundle_id, slot_id, taken_id, taken_count);
         result.write_u8(LOOT_NO_WEIGHT);
         return session.send_packet(&result).await;
     }
 
-    let dst_pos = match world.find_slot_for_item(sid, taken_id, taken_count) {
+    let dst_pos = match world.find_slot_for_item(receiver, taken_id, taken_count) {
         Some(p) if p < INVENTORY_TOTAL => p,
         _ => {
             // No space — put item back
@@ -242,7 +251,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Add item to inventory — capture total count for the response packet
     let mut new_total_count: u16 = 0;
     let serial = world.generate_item_serial();
-    let success = world.update_inventory(sid, |inv| {
+    let success = world.update_inventory(receiver, |inv| {
         if dst_pos >= inv.len() {
             return false;
         }
@@ -266,9 +275,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 
     // Recalculate ability and weight (weight notification is integrated into set_user_ability)
-    world.set_user_ability(sid);
+    world.set_user_ability(receiver);
 
-    let gold = world.get_character_info(sid).map(|ch| ch.gold).unwrap_or(0);
+    let gold = world
+        .get_character_info(receiver)
+        .map(|ch| ch.gold)
+        .unwrap_or(0);
 
     let inv_pos = (dst_pos - SLOT_MAX) as u8;
 
@@ -280,17 +292,23 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     result.write_u32(gold);
     // v2600: no trailing u16 slot_id (sniff verified — 16 bytes, not 18)
 
-    session.send_packet(&result).await?;
+    if receiver == sid {
+        session.send_packet(&result).await?;
+    } else {
+        world.send_to_session_owned(receiver, result);
+        let mut away = Packet::new(Opcode::WizItemGet as u8);
+        away.write_u8(LOOT_PARTY_ITEM_GIVEN_AWAY);
+        session.send_packet(&away).await?;
+    }
 
     // ── Party notification for non-gold item pickup ────────────────
     //   if (isInParty()) {
     //     result << LootPartyNotification << nBundleID << nItemID << pReceiver->GetName() << SlotID;
     //     g_pMain->Send_PartyMember(GetPartyID(), &result);
     //   }
-    let party_id = world.get_character_info(sid).and_then(|ch| ch.party_id);
     if let Some(pid) = party_id {
         let receiver_name = world
-            .get_character_info(sid)
+            .get_character_info(receiver)
             .map(|ch| ch.name.clone())
             .unwrap_or_default();
         let mut notify = Packet::new(Opcode::WizItemGet as u8);
@@ -305,27 +323,29 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // ── Drop Notice: server-wide broadcast for rare items ─────────────
     //   if (pTable.m_isDropNotice && g_pMain->pServerSetting.DropNotice && !isGM())
     //     Send_All(WIZ_LOGOSSHOUT, 0x02, 0x04, name, item_num, rank)
-    if item_def.drop_notice.unwrap_or(0) != 0 && !world.is_gm(sid) {
+    if item_def.drop_notice.unwrap_or(0) != 0 && !world.is_gm(receiver) {
         let drop_notice_enabled = world
             .get_server_settings()
             .map(|s| s.drop_notice != 0)
             .unwrap_or(false);
         if drop_notice_enabled {
-            let receiver_name = world.get_session_name(sid).unwrap_or_default();
-            let rank = world.with_session(sid, |h| h.personal_rank).unwrap_or(0);
+            let receiver_name = world.get_session_name(receiver).unwrap_or_default();
+            let rank = world
+                .with_session(receiver, |h| h.personal_rank)
+                .unwrap_or(0);
             let notice = super::logosshout::build_drop_notice(&receiver_name, taken_id, rank);
             world.broadcast_to_all(Arc::new(notice), None);
         }
     }
 
     // v2525: Collection item notification (0xA9 sub=2)
-    super::collection::notify_item_collected(&world, sid, taken_id, new_total_count);
+    super::collection::notify_item_collected(&world, receiver, taken_id, new_total_count);
 
     // FerihaLog: NpcDropReceivedInsertLog
     super::audit_log::log_npc_drop(
         session.pool(),
         session.account_id().unwrap_or(""),
-        &world.get_session_name(sid).unwrap_or_default(),
+        &world.get_session_name(receiver).unwrap_or_default(),
         pos.zone_id as i16,
         pos.x as i16,
         pos.z as i16,

@@ -8,6 +8,7 @@
 //! - Login Server: LS_* packet handlers, login sessions (port 15100)
 //! - Shared packet I/O (framing, encryption)
 
+pub mod admin_web;
 pub mod attack_constants;
 pub mod buff_constants;
 pub mod clan_constants;

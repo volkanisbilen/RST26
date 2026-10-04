@@ -31,7 +31,7 @@ const COST_DIAGONAL: i32 = 11;
 
 /// Absolute ceiling for A* iterations — prevents runaway searches on huge maps.
 /// The actual per-search limit is computed dynamically via `calc_max_iterations()`.
-const MAX_ITERATIONS_CAP: u32 = 50_000;
+const MAX_ITERATIONS_CAP: u32 = 250_000;
 
 /// 8-directional neighbor offsets: (dx, dz, cost).
 /// Matches C++ FindChildPath ordering: UL, U, UR, R, LR, L(ower), LL, L(eft).
@@ -125,6 +125,18 @@ pub fn find_path(
     goal_x: f32,
     goal_z: f32,
 ) -> PathResult {
+    find_path_impl(map, start_x, start_z, goal_x, goal_z, false)
+}
+
+pub fn find_bot_path(map: &MapData, start_x: f32, start_z: f32, goal_x: f32, goal_z: f32) -> PathResult {
+    find_path_impl(map, start_x, start_z, goal_x, goal_z, true)
+}
+
+fn find_path_impl(map: &MapData, start_x: f32, start_z: f32, goal_x: f32, goal_z: f32, bot: bool) -> PathResult {
+    let is_walkable = |map: &MapData, x, z, size| {
+        if bot { x >= 0 && z >= 0 && x < size && z < size && map.is_bot_movable_grid(x, z) }
+        else { is_walkable(map, x, z, size) }
+    };
     let unit_dist = map.unit_dist();
     if unit_dist <= 0.0 {
         return PathResult {
@@ -208,6 +220,17 @@ pub fn find_path(
                 continue;
             }
 
+            // A diagonal is legal only when both adjacent orthogonal cells
+            // are open. Without this, paths can squeeze through blocked SMD
+            // corners even though every emitted waypoint itself is walkable.
+            if dx != 0
+                && dz != 0
+                && (!is_walkable(map, cx + dx, cz, map_grid_size)
+                    || !is_walkable(map, cx, cz + dz, map_grid_size))
+            {
+                continue;
+            }
+
             let new_g = current.g + cost;
 
             if let Some(&existing_g) = g_scores.get(&(nx, nz)) {
@@ -232,6 +255,59 @@ pub fn find_path(
         waypoints: Vec::new(),
         found: false,
     }
+}
+
+/// Snap a blocked/out-of-grid destination to the closest walkable SMD tile.
+/// The returned coordinates are the tile centre so path segments stay inside
+/// the nav grid rather than aiming at a wall, cliff, or event trigger.
+pub fn nearest_walkable_point(
+    map: &MapData,
+    world_x: f32,
+    world_z: f32,
+    max_grid_radius: i32,
+) -> Option<(f32, f32)> {
+    nearest_point_impl(map, world_x, world_z, max_grid_radius, false)
+}
+
+pub fn nearest_bot_point(map: &MapData, world_x: f32, world_z: f32, max_grid_radius: i32) -> Option<(f32, f32)> {
+    nearest_point_impl(map, world_x, world_z, max_grid_radius, true)
+}
+
+fn nearest_point_impl(map: &MapData, world_x: f32, world_z: f32, max_grid_radius: i32, bot: bool) -> Option<(f32, f32)> {
+    let movable = |x, z| if bot { map.is_bot_movable(x, z) } else { map.is_movable(x, z) };
+    let unit = map.unit_dist();
+    if unit <= 0.0 || max_grid_radius < 0 {
+        return None;
+    }
+    if map.is_valid_position(world_x, world_z) && movable(world_x, world_z) {
+        return Some((world_x, world_z));
+    }
+
+    let origin_x = (world_x / unit) as i32;
+    let origin_z = (world_z / unit) as i32;
+    for radius in 1..=max_grid_radius {
+        let mut nearest: Option<(f32, f32, f32)> = None;
+        for dx in -radius..=radius {
+            for dz in -radius..=radius {
+                if dx.abs().max(dz.abs()) != radius {
+                    continue;
+                }
+                let x = (origin_x + dx) as f32 * unit + unit * 0.5;
+                let z = (origin_z + dz) as f32 * unit + unit * 0.5;
+                if !map.is_valid_position(x, z) || !movable(x, z) {
+                    continue;
+                }
+                let distance_sq = (x - world_x).powi(2) + (z - world_z).powi(2);
+                if nearest.is_none_or(|(_, _, best)| distance_sq < best) {
+                    nearest = Some((x, z, distance_sq));
+                }
+            }
+        }
+        if let Some((x, z, _)) = nearest {
+            return Some((x, z));
+        }
+    }
+    None
 }
 
 /// Check if a grid cell is walkable and in-bounds.
@@ -264,8 +340,13 @@ fn reconstruct_path(
 
     path.reverse();
 
-    // Cap at MAX_PATH_LINE
-    if path.len() > MAX_PATH_LINE {
+    // A* found the complete route, but the wire/runtime path list is capped.
+    // Keep this as a true path prefix: marking the final prefix node as the
+    // distant destination makes movement cut straight across the remaining
+    // terrain, where the segment validator then rejects it and leaves bots
+    // stationary at the cap boundary.
+    let complete_path_fits = path.len() <= MAX_PATH_LINE;
+    if !complete_path_fits {
         path.truncate(MAX_PATH_LINE);
     }
 
@@ -275,7 +356,7 @@ fn reconstruct_path(
     path.iter()
         .enumerate()
         .map(|(i, &(gx, gz))| {
-            if i == len - 1 {
+            if complete_path_fits && i == len - 1 {
                 // Last waypoint = exact goal position
                 (goal_world_x, goal_world_z)
             } else {
@@ -446,6 +527,8 @@ mod tests {
         let unit_dist = 4.0;
         let map_width = (size - 1) as f32 * unit_dist;
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: size,
             unit_dist,
             map_width,
@@ -498,6 +581,19 @@ mod tests {
         let result = find_path(&map, 20.0, 40.0, 60.0, 40.0);
         assert!(result.found, "should find path around obstacle");
         assert!(result.waypoints.len() > 2, "path should go around");
+    }
+
+    #[test]
+    fn test_find_path_does_not_cut_blocked_diagonal_corner() {
+        // Start (0,0) and goal (1,1) are open, but both orthogonal cells
+        // touching their diagonal are blocked. A legal route must not squeeze
+        // through that corner.
+        let map = make_test_map(3, &[(1, 0), (0, 1)]);
+        let result = find_path(&map, 1.0, 1.0, 5.0, 5.0);
+        assert!(
+            !result.found,
+            "diagonal corner cutting through blocked SMD cells is not walkable"
+        );
     }
 
     #[test]
@@ -667,6 +763,12 @@ mod tests {
             result.waypoints.len() <= MAX_PATH_LINE,
             "path should be capped at MAX_PATH_LINE, got {}",
             result.waypoints.len()
+        );
+        let (last_x, last_z) = result.waypoints.last().copied().unwrap();
+        assert_ne!(
+            (last_x, last_z),
+            (1980.0, 4.0),
+            "truncated path must end at its safe prefix, not jump to the distant goal"
         );
     }
 

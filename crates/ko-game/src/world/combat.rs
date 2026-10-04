@@ -219,6 +219,22 @@ impl WorldState {
             171 // BUFF_TYPE_BATTLE_CRY
         )
     }
+    /// Whether a currently saved item-scroll occupies this buff slot.
+    /// The legacy hard-coded lockable list covers stock scrolls, but custom
+    /// and newer item-group scrolls must receive the same debuff recovery.
+    pub fn has_saved_scroll_for_buff_type(&self, sid: SessionId, buff_type: i32) -> bool {
+        let Some(handle) = self.sessions.get(&sid) else {
+            return false;
+        };
+        handle.saved_magic_map.keys().any(|skill_id| {
+            self.get_magic(*skill_id as i32).is_some_and(|skill| {
+                crate::handler::magic_process::is_item_type4_scroll(&skill, *skill_id)
+                    && self
+                        .get_magic_type4(*skill_id as i32)
+                        .is_some_and(|t4| t4.buff_type.unwrap_or(0) == buff_type)
+            })
+        })
+    }
     /// Check if the player currently has a debuff on the given buff type slot.
     ///
     pub fn has_debuff_on_slot(&self, sid: SessionId, buff_type: i32) -> bool {
@@ -3005,7 +3021,7 @@ mod blink_duration_tests {
         // pct=0 → formula yields 0 (multiplicative)
         assert_eq!(snap.total_resistance(1), 0);
         // With pct=100: (10+100)*100/100 + 5*100/100 = 115
-        let mut snap2 = CombatSnapshot {
+        let snap2 = CombatSnapshot {
             equipped_stats: EquippedStats {
                 fire_r: 10,
                 resistance_bonus: 5,

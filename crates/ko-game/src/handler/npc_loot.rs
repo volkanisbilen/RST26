@@ -42,6 +42,17 @@ fn boosted_drop_chance(base: i32, monster: bool, collection: bool) -> i32 {
     ((base.max(0) * multiplier + 50) / 100).min(10_000)
 }
 
+/// Draki Tower applies a zone-local 55% multiplicative bonus. Keep this in
+/// the loot roll (rather than editing shared monster drop rows), so those
+/// same prototypes retain their normal drops outside the Tower instance.
+fn draki_tower_drop_chance(base: i32, zone_id: u16) -> i32 {
+    if zone_id == crate::world::types::ZONE_DRAKI_TOWER {
+        ((base.max(0) * 155 + 50) / 100).min(10_000)
+    } else {
+        base.max(0).min(10_000)
+    }
+}
+
 fn resolve_drop_item(
     world: &WorldState,
     code: i32,
@@ -54,10 +65,18 @@ fn resolve_drop_item(
     } else if code < 100 {
         super::item_production::item_production(world, code, level, nation)
     } else if let Some(group) = world.get_make_item_group(code) {
-        if group.items.is_empty() {
+        // MAKE_ITEM_GROUP is imported from a fixed-width table; unused
+        // columns are retained as zeroes. Never include those placeholders in
+        // the random selection or a valid group drop can resolve to no item.
+        let items: Vec<i32> = group
+            .items
+            .into_iter()
+            .filter(|item_id| *item_id > 0)
+            .collect();
+        if items.is_empty() {
             0
         } else {
-            group.items[rng.gen_range(0..group.items.len())] as u32
+            items[rng.gen_range(0..items.len())] as u32
         }
     } else {
         0
@@ -276,6 +295,7 @@ pub fn simulate_npc_drops(
                 tmpl.is_monster,
                 world.is_boosted_collection_drop(npc.zone_id, resolved),
             );
+            chance = draki_tower_drop_chance(chance, npc.zone_id);
             if premium > 0 {
                 chance += chance * premium / 100;
             }
@@ -445,6 +465,7 @@ pub fn generate_npc_loot(
                 tmpl.is_monster,
                 world.is_boosted_collection_drop(npc.zone_id, resolved_id),
             );
+            adjusted_percent = draki_tower_drop_chance(adjusted_percent, npc.zone_id);
 
             // 1) Premium drop (additive): iPer += iPer * pers1 / 100
             let prem_drop = world.get_premium_property(killer_sid, PremiumProperty::DropPercent)
@@ -671,7 +692,7 @@ fn generate_manes_survival_loot(
 /// Uses the party's `item_routing` cursor to find the next eligible member
 /// who is alive, in range, and has weight/slot capacity.
 /// Cursor increments BEFORE filtering (load balancing over time).
-fn get_item_routing_user(
+pub(super) fn get_item_routing_user(
     world: &WorldState,
     party_id: u16,
     sender_sid: SessionId,
@@ -745,8 +766,19 @@ fn get_item_routing_user(
 /// Try to auto-loot a ground bundle for the killer or their party.
 /// Checks killer and party members for `auto_loot` flag, then picks up all
 /// items in the bundle automatically. `fairy_check` blocks auto-loot.
-const PET_AUTO_LOOT_ITEM_ID: u32 = 850_680_000;
-const PET_LOOT_MODE: u8 = 8;
+// The familiar equipment item in the 2625 item table is 700012000. The two
+// 850/950 variants are also valid automatic-loot items on this server.
+const PET_AUTO_LOOT_ITEM_IDS: [u32; 3] = [700_012_000, 850_680_000, 950_680_000];
+
+fn pet_auto_loot_enabled(pet: Option<&crate::world::PetState>) -> bool {
+    pet.is_some_and(|pet| {
+        pet.nid != 0
+            && pet
+                .items
+                .iter()
+                .any(|slot| PET_AUTO_LOOT_ITEM_IDS.contains(&slot.item_id) && slot.count > 0)
+    })
+}
 
 fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc: &NpcInstance) {
     use super::{INVENTORY_TOTAL, SLOT_MAX};
@@ -756,23 +788,61 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
     let party_id = world.get_party_id(killer_sid);
     let party = party_id.and_then(|pid| world.get_party(pid));
 
+    // Emit the complete pet-side facts for the next live attempt: this lets us
+    // see whether the item/mode/range/zone/bundle is the failing condition.
+    let diagnostic_members = party
+        .as_ref()
+        .map(|p| p.active_members())
+        .unwrap_or_else(|| vec![killer_sid]);
+    for member_sid in diagnostic_members {
+        if let Some((name, pos, pet)) = world
+            .with_session(member_sid, |h| {
+                Some((
+                    h.character.as_ref()?.name.clone(),
+                    h.position,
+                    h.pet_data.clone()?,
+                ))
+            })
+            .flatten()
+        {
+            let items = pet
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.item_id != 0 || item.count != 0)
+                .map(|(slot, item)| format!("{slot}:{}x{}", item.item_id, item.count))
+                .collect::<Vec<_>>()
+                .join(",");
+            let dx = pos.x - npc.x;
+            let dz = pos.z - npc.z;
+            tracing::info!(
+                "PET_LOOT_CHECK owner_sid={} owner={} pet_serial={} pet_nid={} pet_mode={} zone={} npc_proto={} npc_nid={} bundle={} distance={:.1} eligible_item={} slots=[{}]",
+                member_sid,
+                name,
+                pet.serial_id,
+                pet.nid,
+                pet.state_change,
+                npc.zone_id,
+                npc.proto_id,
+                npc.nid,
+                bundle_id,
+                (dx * dx + dz * dz).sqrt(),
+                pet_auto_loot_enabled(Some(&pet)),
+                items
+            );
+        }
+    }
+
     // C++ Npc.cpp:7934-7982 — party scan checks ONLY m_bAutoLoot (NOT fairy_check).
     // fairy_check is checked later inside auto-loot bundle pickup (BundleSystem.cpp:43).
     let is_pet_loot_eligible = |member_sid: SessionId| -> bool {
         world
             .with_session(member_sid, |h| {
-                let pet_ok = h
-                    .pet_data
-                    .as_ref()
-                    .map(|pet| {
-                        pet.nid != 0
-                            && pet.state_change == PET_LOOT_MODE
-                            && pet
-                                .items
-                                .iter()
-                                .any(|slot| slot.item_id == PET_AUTO_LOOT_ITEM_ID)
-                    })
-                    .unwrap_or(false);
+                // The item itself enables the familiar's looting. Requiring
+                // the pet to stay in mode 8 made this stop as soon as it
+                // changed to attack/defence; checking slot count also avoids
+                // treating stale/empty persisted rows as equipped gear.
+                let pet_ok = pet_auto_loot_enabled(h.pet_data.as_ref());
 
                 let dx = h.position.x - npc.x;
                 let dz = h.position.z - npc.z;
@@ -819,30 +889,43 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
 
     let looter_sid = match auto_loot_user {
         Some(sid) => sid,
-        None => return, // No eligible auto-loot user
+        None => {
+            tracing::info!(
+                "PET_LOOT_RESULT bundle={} npc_proto={} npc_nid={} result=no_eligible_owner",
+                bundle_id, npc.proto_id, npc.nid
+            );
+            return;
+        } // No eligible auto-loot user
     };
 
     // C++ BundleSystem.cpp:43 — fairy_check blocks auto-loot inside bundle pickup
     let (fairy_blocks, pet_loot_active) = world
         .with_session(looter_sid, |h| {
-            let pet_loot_active = h
-                .pet_data
-                .as_ref()
-                .map(|pet| {
-                    pet.nid != 0
-                        && pet.state_change == PET_LOOT_MODE
-                        && pet
-                            .items
-                            .iter()
-                            .any(|slot| slot.item_id == PET_AUTO_LOOT_ITEM_ID)
-                })
-                .unwrap_or(false);
+            let pet_loot_active = pet_auto_loot_enabled(h.pet_data.as_ref());
 
             (h.fairy_check, pet_loot_active)
         })
         .unwrap_or((false, false));
 
+    if pet_loot_active {
+        tracing::info!(
+            "Pet auto-loot eligible: owner={} pet_nid={} npc={} zone={} bundle={}",
+            looter_sid,
+            world
+                .with_session(looter_sid, |h| h.pet_data.as_ref().map(|pet| pet.nid))
+                .flatten()
+                .unwrap_or(0),
+            npc.proto_id,
+            npc.zone_id,
+            bundle_id
+        );
+    }
+
     if fairy_blocks && !pet_loot_active {
+        tracing::info!(
+            "PET_LOOT_RESULT bundle={} owner_sid={} result=blocked_by_fairy",
+            bundle_id, looter_sid
+        );
         return;
     }
 
@@ -851,17 +934,31 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
         .get_zone(npc.zone_id)
         .and_then(|z| z.zone_info.as_ref().map(|zi| zi.abilities.auto_loot))
         .unwrap_or(false);
-    if !zone_allows {
+    // Automatic Loot's item definition explicitly excludes Moradon. Elsewhere
+    // its own entitlement is sufficient; the zone-wide flag is for generic
+    // server auto-loot, not for a player who has equipped the pet item.
+    let pet_zone_allowed = npc.zone_id != crate::world::ZONE_MORADON;
+    if !(pet_loot_active && pet_zone_allowed) && !zone_allows {
+        tracing::info!(
+            "PET_LOOT_RESULT bundle={} owner_sid={} result=zone_denied zone={} pet_entitled={} zone_auto_loot={}",
+            bundle_id, looter_sid, npc.zone_id, pet_loot_active, zone_allows
+        );
         return;
     }
 
     // Pick up each item in the bundle
+    let mut picked_up = 0u16;
+    let mut rejected = 0u16;
     for slot_id in 0..NPC_HAVE_ITEM_LIST as u16 {
         let taken = world.try_take_bundle_item(bundle_id, slot_id);
         let (item_id, count) = match taken {
             Some((id, cnt)) if id != 0 => (id, cnt),
             _ => continue,
         };
+        tracing::info!(
+            "PET_LOOT_ITEM bundle={} owner_sid={} npc_proto={} slot={} item={} count={}",
+            bundle_id, looter_sid, npc.proto_id, slot_id, item_id, count
+        );
 
         if item_id == ITEM_GOLD {
             // Gold: distribute to party or give to looter
@@ -913,6 +1010,7 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
                     .unwrap_or(0);
                 if current as u64 + count as u64 > COIN_MAX as u64 {
                     world.restore_bundle_item(bundle_id, slot_id, item_id, count);
+                    rejected += 1;
                     continue;
                 }
                 if !world.try_jackpot_noah(looter_sid, count as u32) {
@@ -946,6 +1044,7 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
 
         if !world.check_weight(receiver, item_id, count) {
             world.restore_bundle_item(bundle_id, slot_id, item_id, count);
+            rejected += 1;
             continue;
         }
 
@@ -953,6 +1052,7 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
             Some(p) if p < INVENTORY_TOTAL => p,
             _ => {
                 world.restore_bundle_item(bundle_id, slot_id, item_id, count);
+                rejected += 1;
                 continue;
             }
         };
@@ -961,6 +1061,7 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
             Some(i) => i,
             None => {
                 world.restore_bundle_item(bundle_id, slot_id, item_id, count);
+                rejected += 1;
                 continue;
             }
         };
@@ -985,8 +1086,10 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
 
         if !ok {
             world.restore_bundle_item(bundle_id, slot_id, item_id, count);
+            rejected += 1;
             continue;
         }
+        picked_up += 1;
 
         world.set_user_ability(receiver);
         let gold = world
@@ -1047,11 +1150,13 @@ fn try_auto_loot(world: &WorldState, killer_sid: SessionId, bundle_id: u32, npc:
         }
     }
 
-    tracing::debug!(
-        "Auto-loot: bundle_id={} looter={} pet_loot={}",
+    tracing::info!(
+        "PET_LOOT_RESULT bundle={} owner_sid={} npc_proto={} result=complete picked_up={} rejected={}",
         bundle_id,
         looter_sid,
-        pet_loot_active
+        npc.proto_id,
+        picked_up,
+        rejected
     );
 }
 
@@ -1067,6 +1172,19 @@ mod tests {
         assert_eq!(boosted_drop_chance(10000, true, false), 10000);
         assert_eq!(boosted_drop_chance(0, true, true), 0);
         assert_eq!(boosted_drop_chance(2000, false, false), 2000);
+    }
+
+    #[test]
+    fn draki_bonus_is_zone_scoped_and_capped() {
+        assert_eq!(
+            draki_tower_drop_chance(2000, crate::world::types::ZONE_DRAKI_TOWER),
+            3100
+        );
+        assert_eq!(draki_tower_drop_chance(2000, 21), 2000);
+        assert_eq!(
+            draki_tower_drop_chance(9000, crate::world::types::ZONE_DRAKI_TOWER),
+            10_000
+        );
     }
 
     #[test]
@@ -1351,5 +1469,27 @@ mod tests {
         // 5) event = 0 (skip)
 
         assert_eq!(adjusted, 1320);
+    }
+
+    #[test]
+    fn pet_loot_recognizes_2625_familiar_equipment_and_loot_variants() {
+        let mut pet = crate::world::PetState::default();
+        pet.nid = 12_345;
+        pet.state_change = 3; // attack mode must not disable equipped auto-loot
+        pet.items[0].item_id = 700_012_000;
+        pet.items[0].count = 1;
+        assert!(pet_auto_loot_enabled(Some(&pet)));
+
+        pet.items[0].item_id = 850_680_000;
+        assert!(pet_auto_loot_enabled(Some(&pet)));
+        pet.items[0].item_id = 950_680_000;
+        assert!(pet_auto_loot_enabled(Some(&pet)));
+
+        pet.items[0].count = 0;
+        assert!(!pet_auto_loot_enabled(Some(&pet)));
+        pet.items[0].count = 1;
+        pet.nid = 0;
+        assert!(!pet_auto_loot_enabled(Some(&pet)));
+        assert!(!pet_auto_loot_enabled(None));
     }
 }

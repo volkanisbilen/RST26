@@ -490,6 +490,11 @@ fn npc_live(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, tmpl: &NpcTempla
         }
     }
 
+    // NPC_IN serializes the canonical NpcInstance, not just the AI state.
+    // Keep it at the spawn point before publishing the respawn packet, or the
+    // client will recreate the monster at its previous/death position.
+    world.update_npc_position(npc_id, spawn_x, spawn_z);
+
     // Send NPC_IN to region so clients see it again
     send_npc_respawn(world, npc_id, ai.zone_id, region_x, region_z, tmpl);
 
@@ -581,24 +586,6 @@ fn npc_standing(
             return Some(tmpl.stand_time as u64);
         }
 
-        // Packet speed = actual_distance / (MONSTER_SPEED/1000)
-        let dx = dest_x - ai.cur_x;
-        let dz = dest_z - ai.cur_z;
-        let dist = (dx * dx + dz * dz).sqrt();
-        let pkt_speed = dist / (MONSTER_SPEED as f32 / 1000.0);
-
-        // Send initial move packet to broadcast the movement
-        send_npc_move(
-            world,
-            npc_id,
-            ai.zone_id,
-            ai.region_x,
-            ai.region_z,
-            dest_x,
-            dest_z,
-            pkt_speed,
-        );
-
         world.update_npc_ai(npc_id, |s| {
             s.dest_x = dest_x;
             s.dest_z = dest_z;
@@ -606,7 +593,11 @@ fn npc_standing(
             s.pattern_frame = (pattern + 1) % 3;
         });
 
-        return Some(tmpl.stand_time.max(1000) as u64);
+        // npc_moving broadcasts each incremental step and advances the server
+        // position by the same amount. Sending the full destination here made
+        // clients run ahead of the server, then snap back on the next update.
+        // The standing delay has already elapsed before this handler runs.
+        return Some(0);
     }
 
     // ── Gate NPC Logic ──────────────────────────────────────────────────
@@ -663,6 +654,22 @@ fn npc_moving(
             s.region_z = new_rz;
             s.state = NpcState::Standing;
         });
+        // Keep the canonical NPC record in sync with the AI position. Region
+        // snapshots and INOUT packets read NpcInstance, not NpcAiState.
+        world.update_npc_position(npc_id, ai.dest_x, ai.dest_z);
+        // Publish the final short step too; otherwise clients stop at the prior
+        // interpolation target while the server has already reached dest_x/z.
+        let final_speed = step_dist / (MONSTER_SPEED as f32 / 1000.0);
+        send_npc_move(
+            world,
+            npc_id,
+            ai.zone_id,
+            new_rx,
+            new_rz,
+            ai.dest_x,
+            ai.dest_z,
+            final_speed,
+        );
         return Some(tmpl.stand_time as u64);
     }
 
@@ -701,6 +708,7 @@ fn npc_moving(
         s.region_x = new_rx;
         s.region_z = new_rz;
     });
+    world.update_npc_position(npc_id, new_x, new_z);
 
     // C++ returns m_sSpeed (1500ms) between each step
     Some(MONSTER_SPEED)
@@ -859,6 +867,7 @@ fn npc_attacking_npc(
             s.region_x = new_rx;
             s.region_z = new_rz;
         });
+        world.update_npc_position(npc_id, new_x, new_z);
 
         Some((dist / speed * 1000.0) as u64)
     }
@@ -946,6 +955,10 @@ fn npc_tracing(
                 zone.add_npc(new_region_x, new_region_z, npc_id);
             }
         }
+
+        // The following INOUT_IN packet serializes NpcInstance. Update that
+        // source of truth before broadcasting the monster at its home point.
+        world.update_npc_position(npc_id, spawn_x, spawn_z);
 
         world.update_npc_ai(npc_id, |s| {
             s.state = NpcState::Standing;
@@ -1092,6 +1105,7 @@ fn npc_tracing(
         s.path_target_z = new_target_z;
         s.path_is_direct = new_is_direct;
     });
+    world.update_npc_position(npc_id, new_x, new_z);
 
     // C++ returns m_sSpeed (1500ms) between each chase step
     Some(MONSTER_SPEED)
@@ -1651,14 +1665,25 @@ fn npc_back(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, tmpl: &NpcTempla
 
     if dist <= 2.0 {
         // Arrived at spawn
+        let spawn_rx = calc_region(ai.spawn_x);
+        let spawn_rz = calc_region(ai.spawn_z);
+        if spawn_rx != ai.region_x || spawn_rz != ai.region_z {
+            if let Some(zone) = world.get_zone(ai.zone_id) {
+                zone.remove_npc(ai.region_x, ai.region_z, npc_id);
+                zone.add_npc(spawn_rx, spawn_rz, npc_id);
+            }
+        }
         world.update_npc_ai(npc_id, |s| {
             s.state = NpcState::Standing;
             s.cur_x = s.spawn_x;
             s.cur_z = s.spawn_z;
+            s.region_x = spawn_rx;
+            s.region_z = spawn_rz;
             s.target_id = None;
             s.path_waypoints.clear();
             s.path_index = 0;
         });
+        world.update_npc_position(npc_id, ai.spawn_x, ai.spawn_z);
         send_npc_move(
             world,
             npc_id,
@@ -1751,6 +1776,7 @@ fn npc_back(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, tmpl: &NpcTempla
         s.path_waypoints = new_waypoints;
         s.path_index = new_index;
     });
+    world.update_npc_position(npc_id, new_x, new_z);
 
     // C++ returns m_sSpeed (1500ms) between each return step
     Some(MONSTER_SPEED)
@@ -5979,6 +6005,8 @@ mod tests {
         let unit_dist = 4.0;
         let map_width = (size - 1) as f32 * unit_dist;
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: size,
             unit_dist,
             map_width,
@@ -6013,6 +6041,8 @@ mod tests {
         let unit_dist = 4.0;
         let map_width = (size - 1) as f32 * unit_dist;
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: size,
             unit_dist,
             map_width,
@@ -6042,6 +6072,8 @@ mod tests {
         let unit_dist = 4.0;
         let map_width = (size - 1) as f32 * unit_dist;
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: size,
             unit_dist,
             map_width,
@@ -8334,9 +8366,11 @@ mod tests {
         let result2 = world.apply_pet_decay(sid2, -(PET_DECAY_AMOUNT), now);
         assert!(result2.is_none(), "Pet with 50 sat should die");
 
-        // Verify sid2's pet is gone
-        let has_pet = world.with_session(sid2, |h| h.pet_data.is_some()).unwrap();
-        assert!(!has_pet);
+        // Satisfaction zero despawns the pet but keeps its persisted record
+        // and equipment so it can be summoned again after feeding it.
+        let pet = world.with_session(sid2, |h| h.pet_data.clone()).unwrap();
+        assert!(pet.is_some());
+        assert_eq!(pet.unwrap().nid, 0);
     }
 
     /// Integration: Pet decay respects the 60-second interval timer.
@@ -8409,9 +8443,9 @@ mod tests {
         let result = world.apply_pet_decay(sid, -100, 100);
         assert!(result.is_none(), "Pet should be dead at 0");
 
-        // Verify pet data is completely removed
+        // Verify the runtime pet is gone, while persistent pet data remains.
         let pet_data = world.with_session(sid, |h| h.pet_data.clone()).unwrap();
-        assert!(pet_data.is_none(), "Pet data should be None after death");
+        assert_eq!(pet_data.as_ref().map(|pet| pet.nid), Some(0));
 
         // Verify get_pet_packet_data also returns None
         let pkt_data = world.get_pet_packet_data(sid);
@@ -9173,11 +9207,11 @@ mod tests {
             }
         }
 
-        // Verify pet is gone from session
-        let has_pet = world.with_session(sid, |h| h.pet_data.is_some()).unwrap();
+        // Verify the pet is de-summoned but its record remains equipped.
+        let pet = world.with_session(sid, |h| h.pet_data.clone()).unwrap();
         assert!(
-            !has_pet,
-            "Pet should be de-summoned after satisfaction hits 0"
+            pet.is_some_and(|pet| pet.nid == 0),
+            "Pet should be de-summoned after satisfaction hits 0 while keeping its record"
         );
 
         // Should have taken ceil(250 / PET_DECAY_AMOUNT) ticks

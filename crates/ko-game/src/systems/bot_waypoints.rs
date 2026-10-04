@@ -685,6 +685,39 @@ use rand::Rng;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::pathfind::find_bot_path;
+    use crate::zone::MapData;
+    use ko_protocol::smd::SmdFile;
+    use std::path::Path;
+
+    #[test]
+    fn ronark_pk_patrol_points_can_be_projected_to_safe_reachable_tiles() {
+        let smd_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_b.smd");
+        let map = MapData::new(SmdFile::load(&smd_path).expect("load Ronark Land SMD"));
+        let starts = [(1050.0, 842.0), (886.0, 1102.0)];
+        for (x, z) in starts {
+            let (mut from_x, mut from_z) =
+                crate::systems::pathfind::nearest_bot_point(&map, x, z, 8)
+                    .expect("find a walkable Ronark bowl spawn tile");
+            let mut reachable_points = 0;
+            for &(raw_x, raw_z) in &RONARK_BOWL {
+                let (goal_x, goal_z) = crate::systems::pathfind::nearest_bot_point(
+                    &map,
+                    raw_x as f32,
+                    raw_z as f32,
+                    8,
+                )
+                .expect("find a safe tile near every patrol point");
+                let result = find_bot_path(&map, from_x, from_z, goal_x, goal_z);
+                if result.found {
+                    reachable_points += 1;
+                    from_x = goal_x;
+                    from_z = goal_z;
+                }
+            }
+            assert!(reachable_points >= 4, "only {reachable_points} Ronark patrol destinations are reachable from spawn ({x},{z})");
+        }
+    }
 
     #[test]
     fn test_random_route_ronark() {

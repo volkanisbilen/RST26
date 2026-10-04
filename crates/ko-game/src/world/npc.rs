@@ -15,6 +15,22 @@ impl WorldState {
             .get(&(s_sid, is_monster))
             .map(|t| t.clone())
     }
+
+    /// Update one monster template's drop-table index in the live template map.
+    pub fn set_monster_drop_table(&self, proto_id: u16, item_table: i16) -> bool {
+        let updated = self.npc_templates.get(&(proto_id, true)).map(|old| {
+            let mut template = (**old).clone();
+            template.item_table = item_table;
+            template
+        });
+        if let Some(template) = updated {
+            self.npc_templates
+                .insert((proto_id, true), Arc::new(template));
+            true
+        } else {
+            false
+        }
+    }
     /// Update an NPC template's group (nation) and optionally PID (model).
     ///
     ///
@@ -510,6 +526,27 @@ impl WorldState {
             ai.region_x = crate::zone::calc_region(new_x);
             ai.region_z = crate::zone::calc_region(new_z);
         });
+    }
+
+    /// Move a runtime NPC and keep the zone's region index in sync.
+    ///
+    /// Ordinary NPC AI owns its own region bookkeeping. Runtime pets do not
+    /// have an AI entry, so calling `update_npc_position` alone leaves them
+    /// registered in their spawn region; clients then stop seeing them after
+    /// they cross a region boundary even though the server still attacks.
+    pub(crate) fn move_runtime_npc(&self, nid: NpcId, new_x: f32, new_z: f32) {
+        let Some(old) = self.get_npc_instance(nid) else {
+            return;
+        };
+        let new_rx = crate::zone::calc_region(new_x);
+        let new_rz = crate::zone::calc_region(new_z);
+        if old.region_x != new_rx || old.region_z != new_rz {
+            if let Some(zone) = self.get_zone(old.zone_id) {
+                zone.remove_npc(old.region_x, old.region_z, nid);
+                zone.add_npc(new_rx, new_rz, nid);
+            }
+        }
+        self.update_npc_position(nid, new_x, new_z);
     }
     /// Toggle a gate NPC's open/close state and broadcast to nearby players.
     ///

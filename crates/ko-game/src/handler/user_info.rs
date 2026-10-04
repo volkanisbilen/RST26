@@ -4,15 +4,62 @@
 //! - 2 = UserInfoDetail (inspect player equipment/stats)
 //! - 3 = UserList (refresh, lower bandwidth)
 //! - 4 = RegionDelete (logout notification to nearby players)
+//! - 5 = User info view (equipment preview)
 
 use std::sync::Arc;
 
 use ko_protocol::{Opcode, Packet, PacketReader};
 
-use crate::handler::region;
 use crate::session::{ClientSession, SessionState};
 
-use super::{HAVE_MAX, SLOT_MAX};
+use super::{HAVE_MAX, INVENTORY_COSP, SLOT_MAX};
+
+fn build_user_list_header(sub_opcode: u8, zone_id: u16, count: u16) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizUserInfo as u8);
+    pkt.write_u8(sub_opcode);
+    pkt.write_u8(1);
+    pkt.write_u16(zone_id);
+    pkt.write_u8(0);
+    pkt.write_u16(count);
+    pkt
+}
+
+fn build_user_list_entry(
+    name: &str,
+    nation: u8,
+    x: f32,
+    z: f32,
+    clan_id: u16,
+    mark_version: Option<u16>,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizUserInfo as u8);
+    // These bytes are concatenated into the parent packet; the packet opcode
+    // is intentionally discarded by the caller.
+    pkt.write_sbyte_string(name);
+    pkt.write_u8(nation);
+    pkt.write_u16(1);
+    pkt.write_u16(world_coord_to_short(x));
+    pkt.write_u16(world_coord_to_short(z));
+    pkt.write_u16(clan_id);
+    if clan_id != 0 {
+        pkt.write_u16(mark_version.unwrap_or(0));
+        pkt.write_u8(0);
+        pkt.write_u8(0);
+    } else {
+        pkt.write_u16(0);
+        pkt.write_u16(0);
+    }
+    pkt.write_u16(1);
+    pkt
+}
+
+fn world_coord_to_short(coord: f32) -> u16 {
+    (coord * 10.0).round().clamp(0.0, u16::MAX as f32) as u16
+}
+
+fn distance_squared(ax: f32, az: f32, bx: f32, bz: f32) -> f32 {
+    (ax - bx).powi(2) + (az - bz).powi(2)
+}
 
 /// Handle WIZ_USER_INFORMATIN from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
@@ -26,52 +73,105 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     match sub_opcode {
         1 | 3 => {
-            // Sign (initial) or UserList (refresh)
-            // Response: [sub=1 or 3] [u8(1)] [u16 zone_id] [u8(0)] [u16 count] [per-user data]
+            // Sign (initial) or UserList (refresh). The client expects two
+            // packets: an empty sub=1 header, then a compressed record list.
             let response_sub = if sub_opcode == 1 { 1u8 } else { 3u8 };
 
             let world = session.world().clone();
             let sid = session.session_id();
-            let (pos, my_event_room) = world
-                .with_session(sid, |h| (h.position, h.event_room))
+            let (pos, my_event_room, my_authority) = world
+                .with_session(sid, |h| {
+                    (
+                        h.position,
+                        h.event_room,
+                        h.character.as_ref().map(|c| c.authority),
+                    )
+                })
                 .unwrap_or_default();
+            let Some(my_authority) = my_authority else {
+                return Ok(());
+            };
 
-            // Get nearby session IDs (event_room filtered)
-            let nearby = world.get_nearby_session_ids(
-                pos.zone_id,
-                pos.region_x,
-                pos.region_z,
-                Some(sid),
-                my_event_room,
-            );
+            // Match the native client/server flow: initialize with an empty
+            // Sign packet, then send the actual names/positions in one list.
+            session
+                .send_packet(&build_user_list_header(1, pos.zone_id, 0))
+                .await?;
 
-            let mut response = Packet::new(Opcode::WizUserInfo as u8);
-            response.write_u8(response_sub);
-            response.write_u8(1); // reserved
-            response.write_u16(pos.zone_id);
-            response.write_u8(0); // reserved
-            response.write_u16(nearby.len() as u16);
+            let excluded_zone = matches!(pos.zone_id, 85 | 92 | 76 | 89);
+            let is_gm = my_authority == 0;
+            let mut entries: Vec<(f32, Packet)> = Vec::new();
+            if !excluded_zone {
+                for other_id in world.sessions_in_zone(pos.zone_id) {
+                    let Some((other_pos, event_room, other_char)) = world
+                        .with_session(other_id, |h| {
+                            (h.position, h.event_room, h.character.clone())
+                        })
+                    else {
+                        continue;
+                    };
+                    let Some(other_char) = other_char else {
+                        continue;
+                    };
+                    if event_room != my_event_room
+                        || (!is_gm && other_char.authority == 0)
+                        || (other_id != sid
+                            && !is_gm
+                            && distance_squared(pos.x, pos.z, other_pos.x, other_pos.z)
+                                > 300.0 * 300.0)
+                    {
+                        continue;
+                    }
+                    let distance = distance_squared(pos.x, pos.z, other_pos.x, other_pos.z).sqrt();
+                    let mark_version = if other_char.knights_id == 0 {
+                        0
+                    } else {
+                        world
+                            .get_knights(other_char.knights_id)
+                            .map(|clan| clan.mark_version)
+                            .unwrap_or(0)
+                    };
+                    entries.push((
+                        distance,
+                        build_user_list_entry(
+                            &other_char.name,
+                            other_char.nation,
+                            other_pos.x,
+                            other_pos.z,
+                            other_char.knights_id,
+                            Some(mark_version),
+                        ),
+                    ));
+                }
 
-            // For each nearby user, send a WIZ_USER_INOUT(INOUT_IN) packet
-            // so the client adds them to the visible player list
-            for &other_id in &nearby {
-                let other_char = world.get_character_info(other_id);
-                let other_pos = world.get_position(other_id).unwrap_or_default();
-                let other_invis = world.get_invisibility_type(other_id);
-                let other_abnormal = world.get_abnormal_type(other_id);
-                let other_equip = region::get_equipped_visual(&world, other_id);
-                let inout = region::build_user_inout_with_invis(
-                    region::INOUT_IN,
-                    other_id,
-                    other_char.as_ref(),
-                    &other_pos,
-                    other_invis,
-                    other_abnormal,
-                    &other_equip,
-                );
-                session.send_packet(&inout).await?;
+                // Bots are included by the original bottom-left list protocol.
+                for bot in world.get_bots_in_zone_live(pos.zone_id) {
+                    if !bot.in_game {
+                        continue;
+                    }
+                    let distance = distance_squared(pos.x, pos.z, bot.x, bot.z).sqrt();
+                    entries.push((
+                        distance,
+                        build_user_list_entry(
+                            &bot.name,
+                            bot.nation,
+                            bot.x,
+                            bot.z,
+                            bot.knights_id,
+                            Some(0),
+                        ),
+                    ));
+                }
             }
+            entries.sort_by(|a, b| a.0.total_cmp(&b.0));
+            entries.truncate(800);
 
+            let mut response = build_user_list_header(response_sub, pos.zone_id, 0);
+            for (_, entry) in &entries {
+                response.data.extend_from_slice(&entry.data);
+            }
+            response.put_u16_at(5, entries.len() as u16);
+            let response = response.to_compressed().unwrap_or(response);
             session.send_packet(&response).await?;
         }
         2 => {
@@ -82,6 +182,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // RegionDelete — logout notification to nearby players
             handle_region_delete(session)?;
         }
+        5 => {
+            // Right-click equipment view request: client sends the target
+            // character's socket ID, not a character name.
+            handle_get_user_info_view(session, &mut reader).await?;
+        }
         _ => {
             tracing::trace!(
                 "[{}] Unknown user_info sub-opcode: {}",
@@ -91,6 +196,67 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
+    Ok(())
+}
+
+/// Handle the client's bottom-list right-click (equipment view) request.
+/// Native `HandleGetUserInfoView()` responds with the Character Seal preview
+/// packet layout, populated from the live character's current equipment.
+async fn handle_get_user_info_view(
+    session: &mut ClientSession,
+    reader: &mut PacketReader<'_>,
+) -> anyhow::Result<()> {
+    let Some(target_sid) = reader.read_u16() else {
+        return Ok(());
+    };
+    let world = session.world().clone();
+    let Some(target) = world.get_character_info(target_sid) else {
+        return Ok(());
+    };
+    let (inventory, skill_points) = world
+        .with_session(target_sid, |h| {
+            (
+                h.inventory.clone(),
+                h.character.as_ref().map(|c| c.skill_points.clone()),
+            )
+        })
+        .unwrap_or_default();
+    let skill_points = skill_points.unwrap_or_default();
+
+    let mut result = Packet::new(Opcode::WizItemUpgrade as u8);
+    result.write_u8(9); // ITEM_CHARACTER_SEAL
+    result.write_u8(4); // CharacterSealOpcodes::Preview
+    result.write_u8(1); // success
+    result.write_sbyte_string(&target.name);
+    result.write_u8(target.nation);
+    result.write_u8(target.race);
+    result.write_u16(target.class);
+    result.write_u8(target.level);
+    result.write_u32(target.loyalty);
+    for stat in [target.str, target.sta, target.dex, target.intel, target.cha] {
+        result.write_u8(stat as u8);
+    }
+    result.write_u32(target.gold);
+    result.write_u8(target.free_points as u8);
+    result.write_u8(skill_points.first().copied().unwrap_or(0)); // free skill points
+    result.write_u32(1); // skill flag, same as native HandleGetUserInfoView
+    for idx in [5usize, 6, 7, 8] {
+        result.write_u8(skill_points.get(idx).copied().unwrap_or(0));
+    }
+    for idx in 0..INVENTORY_COSP {
+        if let Some(item) = inventory.get(idx) {
+            result.write_u32(item.item_id);
+            result.write_i16(item.durability);
+            result.write_u16(item.count);
+            result.write_u8(item.flag);
+        } else {
+            result.write_u32(0);
+            result.write_i16(0);
+            result.write_u16(0);
+            result.write_u8(0);
+        }
+    }
+    session.send_packet(&result).await?;
     Ok(())
 }
 
@@ -469,6 +635,38 @@ mod tests {
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u8(), Some(2));
         assert_eq!(r.read_sbyte_string(), Some("TargetPlayer".to_string()));
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn bottom_user_list_header_uses_native_wire_layout() {
+        let mut pkt = build_user_list_header(3, 21, 2);
+        assert_eq!(pkt.opcode, Opcode::WizUserInfo as u8);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(3));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(21));
+        assert_eq!(r.read_u8(), Some(0));
+        assert_eq!(r.read_u16(), Some(2));
+        assert_eq!(r.remaining(), 0);
+        pkt.put_u16_at(5, 1);
+        assert_eq!(u16::from_le_bytes([pkt.data[5], pkt.data[6]]), 1);
+    }
+
+    #[test]
+    fn bottom_user_list_entry_has_name_nation_position_and_clan_fields() {
+        let pkt = build_user_list_entry("Volkan", 1, 12.3, 45.6, 7, Some(42));
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_sbyte_string(), Some("Volkan".to_string()));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(1));
+        assert_eq!(r.read_u16(), Some(123));
+        assert_eq!(r.read_u16(), Some(456));
+        assert_eq!(r.read_u16(), Some(7));
+        assert_eq!(r.read_u16(), Some(42));
+        assert_eq!(r.read_u8(), Some(0));
+        assert_eq!(r.read_u8(), Some(0));
+        assert_eq!(r.read_u16(), Some(1));
         assert_eq!(r.remaining(), 0);
     }
 

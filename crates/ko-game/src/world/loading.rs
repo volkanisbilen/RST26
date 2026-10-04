@@ -3,7 +3,7 @@
 //! All methods here populate DashMap/RwLock fields on an already-constructed
 //! WorldState by reading rows from PostgreSQL via repository pattern.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -59,6 +59,38 @@ use super::{
 };
 
 impl WorldState {
+    /// Reload the live monster drop cache without restarting the game server.
+    /// Read the full result before touching the cache so a database error never
+    /// leaves the running world with a partially-cleared drop table.
+    pub async fn reload_monster_drop_tables(&self, pool: &DbPool) -> anyhow::Result<usize> {
+        let repo = ItemTablesRepository::new(pool);
+        let rows = repo.load_all_monster_items().await?;
+        let mut loaded_keys = HashSet::with_capacity(rows.len());
+        for row in rows.iter() {
+            loaded_keys.insert(row.s_index);
+            self.monster_items.insert(row.s_index, row.clone());
+        }
+        self.monster_items
+            .retain(|key, _| loaded_keys.contains(key));
+        tracing::info!(count = rows.len(), "monster_item live reload completed");
+        Ok(rows.len())
+    }
+
+    /// Reload item-group expansion data used by crafting and grouped drops.
+    pub async fn reload_make_item_groups(&self, pool: &DbPool) -> anyhow::Result<usize> {
+        let repo = ItemTablesRepository::new(pool);
+        let rows = repo.load_all_make_item_groups().await?;
+        let mut loaded_keys = HashSet::with_capacity(rows.len());
+        for row in rows.iter() {
+            loaded_keys.insert(row.group_num);
+            self.make_item_groups.insert(row.group_num, row.clone());
+        }
+        self.make_item_groups
+            .retain(|key, _| loaded_keys.contains(key));
+        tracing::info!(count = rows.len(), "make_item_group live reload completed");
+        Ok(rows.len())
+    }
+
     /// Load all startup DB tables into an already-constructed WorldState.
     ///
     /// This is the main loading entrypoint called by `WorldState::load()`.
@@ -152,7 +184,7 @@ impl WorldState {
         self.load_knights(pool).await?;
 
         // ─── Quest Table Loading ────────────────────────────────────────────────
-        self.load_quest_tables(pool).await?;
+        self.reload_quest_tables(pool).await?;
 
         // ─── Server Settings Loading ────────────────────────────────────────────
         self.load_server_settings(pool).await;
@@ -1815,17 +1847,9 @@ impl WorldState {
     }
 
     /// Load quest helper, monster, menu, and talk tables.
-    async fn load_quest_tables(&self, pool: &DbPool) -> anyhow::Result<()> {
+    pub async fn reload_quest_tables(&self, pool: &DbPool) -> anyhow::Result<usize> {
         let quest_repo = QuestRepository::new(pool);
         let helper_rows = quest_repo.load_quest_helpers().await?;
-        for row in &helper_rows {
-            let n_index = row.n_index as u32;
-            let npc_id = row.s_npc_id as u16;
-            self.quest_npc_list.entry(npc_id).or_default().push(n_index);
-            self.quest_helpers.insert(n_index, row.clone());
-        }
-        tracing::info!(count = helper_rows.len(), "quest_helper table loaded");
-
         // Read collection requirements, never exchange rewards. Zone 19 is
         // the shared Eslant quest catalogue (Beldan/Agata), not a live map.
         let collection_items: Vec<i32> = sqlx::query_scalar(
@@ -1841,6 +1865,28 @@ impl WorldState {
         )
         .fetch_all(pool)
         .await?;
+        let monster_rows = quest_repo.load_quest_monsters().await?;
+        let qt_repo = QuestTextRepository::new(pool);
+        let menu_rows = qt_repo.load_quest_menus().await?;
+        let talk_rows = qt_repo.load_quest_talks().await?;
+        let closed_check_rows = qt_repo.load_quest_skills_closed_check().await?;
+        let open_set_up_rows = qt_repo.load_quest_skills_open_set_up().await?;
+
+        // All database reads succeeded; replace the in-memory snapshot now.
+        self.quest_npc_list.clear();
+        self.quest_helpers.clear();
+        self.quest_monsters.clear();
+        self.quest_menus.clear();
+        self.quest_talks.clear();
+        self.quest_skills_closed_check.clear();
+        self.quest_skills_open_set_up.clear();
+        for row in &helper_rows {
+            let n_index = row.n_index as u32;
+            let npc_id = row.s_npc_id as u16;
+            self.quest_npc_list.entry(npc_id).or_default().push(n_index);
+            self.quest_helpers.insert(n_index, row.clone());
+        }
+        tracing::info!(count = helper_rows.len(), "quest_helper table loaded");
         self.collection_drop_items.clear();
         for item in collection_items {
             self.collection_drop_items.insert(item as u32, ());
@@ -1850,27 +1896,22 @@ impl WorldState {
             "Collection drop policy loaded: Luferson/Eslant x1.60; other monster items x1.15"
         );
 
-        let monster_rows = quest_repo.load_quest_monsters().await?;
         for row in &monster_rows {
             self.quest_monsters
                 .insert(row.s_quest_num as u16, row.clone());
         }
         tracing::info!(count = monster_rows.len(), "quest_monster table loaded");
 
-        let qt_repo = QuestTextRepository::new(pool);
-        let menu_rows = qt_repo.load_quest_menus().await?;
         for row in &menu_rows {
             self.quest_menus.insert(row.i_num, row.clone());
         }
         tracing::info!(count = menu_rows.len(), "quest_menu table loaded");
 
-        let talk_rows = qt_repo.load_quest_talks().await?;
         for row in &talk_rows {
             self.quest_talks.insert(row.i_num, row.clone());
         }
         tracing::info!(count = talk_rows.len(), "quest_talk table loaded");
 
-        let closed_check_rows = qt_repo.load_quest_skills_closed_check().await?;
         for row in &closed_check_rows {
             self.quest_skills_closed_check
                 .insert(row.n_index, row.clone());
@@ -1880,7 +1921,6 @@ impl WorldState {
             "quest_skills_closed_check loaded"
         );
 
-        let open_set_up_rows = qt_repo.load_quest_skills_open_set_up().await?;
         for row in &open_set_up_rows {
             self.quest_skills_open_set_up
                 .insert(row.n_index, row.clone());
@@ -1889,7 +1929,7 @@ impl WorldState {
             count = open_set_up_rows.len(),
             "quest_skills_open_set_up loaded"
         );
-        Ok(())
+        Ok(helper_rows.len())
     }
 
     /// Load server settings, damage settings, burning features, home positions.

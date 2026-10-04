@@ -101,9 +101,9 @@ pub async fn handle_point_change(session: &mut ClientSession, pkt: Packet) -> an
     resp.write_u32(equipped.max_weight);
     session.send_packet(&resp).await?;
 
-    // Send full stats refresh
-    // SendItemMove(1, 1) refreshes the client's equipment panel stats
-    world.send_item_move_refresh(sid);
+    // WIZ_POINT_CHANGE already contains the updated HP/MP caps, current HP,
+    // and carry weight. A synthetic item-move refresh here makes the client
+    // rebuild its equipment/status UI and causes a visible screen blink.
 
     // Fire-and-forget DB save
     save_stat_points_async(session);

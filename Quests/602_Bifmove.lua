@@ -6,7 +6,7 @@ end
 
 if (EVENT == 166) then
 check = CheckBeefEventLogin(UID)
-	if (check == true) then
+	if (check == 1) then
 		Nation = CheckNation(UID);
 		if (Nation == 1) then
 			ZoneChange(UID, 31, 78, 730)

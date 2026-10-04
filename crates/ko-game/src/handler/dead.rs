@@ -914,7 +914,10 @@ pub fn pvp_loyalty_on_death(world: &WorldState, killer_sid: SessionId, victim_si
     // Winning nations can continue the post-war raid in the defeated nation's
     // capital. Those home-zone records normally disable NP, so honor the live
     // invasion flags as an explicit PvP-loyalty exception.
-    let killer_nation = world.get_character_info(killer_sid).map(|ch| ch.nation).unwrap_or(0);
+    let killer_nation = world
+        .get_character_info(killer_sid)
+        .map(|ch| ch.nation)
+        .unwrap_or(0);
     let battle = world.get_battle_state();
     let active_raid = (killer_zone == crate::world::types::ZONE_KARUS
         && killer_nation == 2

@@ -1231,6 +1231,9 @@ pub struct PetState {
     /// negative and makes the pet attack tick discard an otherwise valid
     /// target.
     pub attack_target_id: i32,
+    /// One-shot attack skill requested by the pet UI. Consumed by the next
+    /// in-range pet attack tick; zero means a regular attack.
+    pub pending_attack_skill_id: u32,
 }
 
 /// Number of item slots in a pet's inventory.
@@ -1259,6 +1262,7 @@ impl Default for PetState {
             ],
             attack_started: false,
             attack_target_id: -1,
+            pending_attack_skill_id: 0,
         }
     }
 }
@@ -1289,8 +1293,13 @@ pub struct PetAttackData {
     pub session_id: SessionId,
     /// Pet NPC runtime ID (the pet entity in the world).
     pub pet_nid: u16,
+    /// Pet level drives damage from pet_stats_info. The generic NPC carrier
+    /// template must not determine a familiar's combat strength.
+    pub pet_level: u8,
     /// Target NPC runtime ID that the pet is attacking.
     pub target_npc_id: u32,
+    /// Skill to apply to this next hit, if any.
+    pub attack_skill_id: u32,
     /// Zone the owner is in (for NPC lookups).
     pub owner_zone_id: u16,
     /// Whether the pet owner is dead.

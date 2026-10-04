@@ -81,10 +81,6 @@ const NPC_ELECTION: u8 = 79;
 /// NPC type: King treasury NPC.
 const NPC_TREASURY: u8 = 80;
 
-/// NPC type: Event Manager NPC (v2603 IDA: type 174, shares handler with 171).
-/// Clicking opens the active event info dialog (WIZ_EVENT TEMPLE_EVENT).
-const NPC_EVENT_MANAGER: u8 = 174;
-
 /// Dedicated daily-quest NPC template. Its visual data is copied from a
 /// v2615-known model in the database migration, but it has its own proto ID
 /// and is never shared with an existing NPC.
@@ -318,20 +314,8 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
     // Look up template for NPC type
     let tmpl = world.get_npc_template(proto_id, npc.is_monster);
 
-    // ── GM debug: send NPC info via chat when GM clicks an NPC ──────
-    // v2525 client drops ext_hook (0xE9), so GM debug mode can't be toggled.
-    // Instead, send NPC info as a PUBLIC_CHAT message to the GM.
-    if ch.authority == 0 || ch.authority == 2 {
-        let npc_name = tmpl.as_ref().map(|t| t.name.as_str()).unwrap_or("<NoName>");
-        let npc_type = tmpl.as_ref().map(|t| t.npc_type).unwrap_or(0);
-        let npc_level = tmpl.as_ref().map(|t| t.level).unwrap_or(0);
-        let is_mon = if npc.is_monster { "MON" } else { "NPC" };
-        let debug_msg = format!(
-            "[GM] {} nid={} proto={} name={} lv={} type={}",
-            is_mon, npc_nid, proto_id, npc_name, npc_level, npc_type
-        );
-        send_gm_debug_chat(&world, sid, &debug_msg);
-    }
+    // Reference C++ does not print target information on every target packet.
+    // GMs explicitly request one stable line through +npcinfo after Z-targeting.
 
     // Handle special NPC types by npc_type
     if let Some(ref t) = tmpl {

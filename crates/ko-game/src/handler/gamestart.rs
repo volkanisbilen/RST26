@@ -156,7 +156,19 @@ async fn handle_phase1(session: &mut ClientSession) -> anyhow::Result<()> {
     for serial_id in pet_serial_candidates {
         match pet_repo.load_pet_data(serial_id).await {
             Ok(Some(row)) => {
-                loaded_pet_state = Some(crate::world::PetState {
+                let pet_items = pet_repo
+                    .load_pet_items(row.n_serial_id)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            "[sid={}] GAMESTART: failed loading pet items serial={}: {}",
+                            session.session_id(),
+                            row.n_serial_id,
+                            e
+                        );
+                        Vec::new()
+                    });
+                let mut restored = crate::world::PetState {
                     serial_id: row.n_serial_id.max(0) as u64,
                     level: row.b_level.clamp(1, 60) as u8,
                     satisfaction: row.s_satisfaction.clamp(0, 10_000),
@@ -172,14 +184,21 @@ async fn handle_phase1(session: &mut ClientSession) -> anyhow::Result<()> {
                     attack_started: false,
                     attack_target_id: -1,
                     ..Default::default()
-                });
+                };
+                super::pet::apply_persistent_pet_items(&mut restored, pet_items);
+                let equipment = restored.items.iter().enumerate()
+                    .filter(|(_, item)| item.item_id != 0 || item.count != 0)
+                    .map(|(slot, item)| format!("{}:{}x{}", slot, item.item_id, item.count))
+                    .collect::<Vec<_>>().join(",");
+                loaded_pet_state = Some(restored);
 
                 tracing::info!(
-                    "[sid={}] GAMESTART: restored pet serial={} index={} pid={}",
+                    "[sid={}] PET_LOAD source=gamestart serial={} index={} pid={} equipment=[{}]",
                     session.session_id(),
                     row.n_serial_id,
                     row.n_index,
-                    row.s_pid
+                    row.s_pid,
+                    equipment
                 );
                 break;
             }

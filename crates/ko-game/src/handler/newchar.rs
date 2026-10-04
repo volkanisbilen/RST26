@@ -157,16 +157,48 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             }
 
             let char_creation_repo = CharCreationRepository::new(session.pool());
-            let beginner_type = char_creation_repo.load_beginner_type(1).await.unwrap_or(1);
+            let beginner_type = match char_creation_repo.load_beginner_type(1).await {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(
+                        "[{}] Could not load beginner type for new character '{}': {}",
+                        session.addr(),
+                        char_name,
+                        error
+                    );
+                    1
+                }
+            };
 
             // Apply level-specific equipment when configured; otherwise use legacy class set.
             // The create_new_char_set table uses base class values (1-4, 13),
             // not the full class value (101, 102, 201, etc.).
             let class_type = (class % 100) as i16;
-            let equipment = char_creation_repo
+            let equipment = match char_creation_repo
                 .load_starting_equipment(class_type, beginner_type)
                 .await
-                .unwrap_or_default();
+            {
+                Ok(items) => items,
+                Err(error) => {
+                    tracing::error!(
+                        "[{}] Could not load starting items for '{}' (class={}, beginner_type={}): {}",
+                        session.addr(),
+                        char_name,
+                        class_type,
+                        beginner_type,
+                        error
+                    );
+                    Vec::new()
+                }
+            };
+            tracing::info!(
+                "[{}] New character '{}' uses starting items: class={}, beginner_type={}, item_slots={}",
+                session.addr(),
+                char_name,
+                class_type,
+                beginner_type,
+                equipment.len()
+            );
             if !equipment.is_empty() {
                 if let Err(e) = char_repo
                     .apply_starting_equipment(&char_name, &equipment)

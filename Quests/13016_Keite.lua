@@ -41,7 +41,10 @@ if (EVENT == 102) then
 end	      
 
 if (EVENT == 103) then
-	SelectMsg(UID, 14, -1, NPC);
+	-- Open Kate's familiar inventory explicitly. SelectMsg flag 14 only sends
+	-- a dialog packet; it does not perform the NPC merchant action on this
+	-- server. Match the native NPC merchant path and its configured group.
+	OpenTradeNpc(UID);
 end    
 
 if (EVENT == 105) then

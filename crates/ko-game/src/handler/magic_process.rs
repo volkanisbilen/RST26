@@ -32,8 +32,8 @@ use crate::systems::buff_tick::build_buff_expired_packet;
 #[cfg(test)]
 use crate::world::NATION_ELMORAD;
 use crate::world::{
-    ActiveBuff, CharacterInfo, NpcBuffEntry, Position, WorldState, NATION_KARUS, USER_DEAD, USER_SITDOWN,
-    ZONE_BATTLE2, ZONE_BATTLE3, ZONE_CHAOS_DUNGEON, ZONE_DELOS, ZONE_DUNGEON_DEFENCE,
+    ActiveBuff, CharacterInfo, NpcBuffEntry, Position, WorldState, NATION_KARUS, USER_DEAD,
+    USER_SITDOWN, ZONE_BATTLE2, ZONE_BATTLE3, ZONE_CHAOS_DUNGEON, ZONE_DELOS, ZONE_DUNGEON_DEFENCE,
     ZONE_FORGOTTEN_TEMPLE, ZONE_KNIGHT_ROYALE, ZONE_SNOW_BATTLE, ZONE_UNDER_CASTLE,
 };
 use crate::zone::SessionId;
@@ -934,6 +934,82 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 }
             }
 
+            // Dual Recovery Potion is a custom item row whose client-side
+            // animation can succeed even when a server data-table profile is
+            // incomplete. Resolve it by either its magic ID or required item
+            // ID, then apply the exact HP/MP amounts and consume the item in
+            // this authoritative EFFECTING phase.
+            let dual_potion_item = skill.use_item.unwrap_or(0) as u32;
+            if b_opcode == MAGIC_EFFECTING
+                && skill.item_group.unwrap_or(0) == 9
+                && (matches!(skill.magic_num, 811_182 | 811_183)
+                    || matches!(dual_potion_item, 811_182_000 | 811_183_000))
+            {
+                let potion_id = if matches!(dual_potion_item, 811_182_000 | 811_183_000) {
+                    dual_potion_item
+                } else if skill.magic_num == 811_183 {
+                    811_183_000
+                } else {
+                    811_182_000
+                };
+                if !world.check_exist_item(sid, potion_id, 1) {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                    return Ok(());
+                }
+
+                const DUAL_POTION_REUSE_MS: u128 = 2400;
+                if world
+                    .with_session(sid, |h| {
+                        h.last_potion_time.elapsed().as_millis() < DUAL_POTION_REUSE_MS
+                    })
+                    .unwrap_or(false)
+                {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                    return Ok(());
+                }
+
+                let Some(before) = world.get_character_info(sid) else {
+                    return Ok(());
+                };
+                if !world.rob_item(sid, potion_id, 1) {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                    return Ok(());
+                }
+                world.update_session(sid, |h| h.last_potion_time = std::time::Instant::now());
+
+                let hp_gain = if world.is_undead(sid) { -720 } else { 720 };
+                let new_hp = (before.hp + hp_gain).clamp(0, before.max_hp);
+                let new_mp = if before.hp > 0 {
+                    (before.mp + 1920).min(before.max_mp)
+                } else {
+                    before.mp
+                };
+                world.update_character_hp(sid, new_hp);
+                world.update_character_mp(sid, new_mp);
+                world.send_to_session_owned(
+                    sid,
+                    crate::systems::regen::build_hp_change_packet(before.max_hp, new_hp),
+                );
+                world.send_to_session_owned(
+                    sid,
+                    crate::systems::regen::build_mp_change_packet(before.max_mp, new_mp),
+                );
+                crate::handler::party::broadcast_party_hp(&world, sid);
+                instance.data[1] = 1;
+                instance.data[3] = hp_gain as i32;
+                let effect = instance.build_packet(MAGIC_EFFECTING);
+                broadcast_to_caster_region(&world, sid, &effect);
+                send_target_hp_update(&world, sid, sid, 0);
+                tracing::info!(
+                    sid,
+                    potion_id,
+                    hp_gain = new_hp - before.hp,
+                    mp_gain = new_mp - before.mp,
+                    "Dual Recovery Potion applied and consumed"
+                );
+                return Ok(());
+            }
+
             // Execute the skill based on type
             if !execute_skill(&world, sid, &mut instance, &skill).await {
                 return Ok(());
@@ -1516,6 +1592,15 @@ async fn execute_type1(
             0
         };
         apply_skill_damage_to_npc(world, caster_sid, npc_id, instance, damage, skill, 0).await;
+
+        // Direct physical skills used against bot entities follow the NPC HP
+        // path, but unlike player targets that path does not emit the finishing
+        // MAGIC_EFFECTING packet. Without it the 2625 client can show the cast
+        // animation while dropping the actual hit response (notably Hell Blade
+        // and Cry Echo/Battle Cry's linked attack). Complete the cast just as we
+        // do for player-target Type-1 skills.
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
         return true;
     }
 
@@ -2048,6 +2133,49 @@ async fn execute_type1_aoe(
         }
     }
 
+    // PK bots are player-like entities stored separately from ordinary NPCs.
+    // Type-1 ground skills (including warrior Passion/AOE attacks) must include
+    // enemy bots in the same zone and range; route damage through the shared bot
+    // handler so HP, score, death and regeneration stay consistent.
+    for bot in world.get_bots_in_zone_live(caster_pos.zone_id) {
+        if !bot.is_alive() || bot.nation == caster.nation {
+            continue;
+        }
+
+        let dx = caster_pos.x - bot.x;
+        let dz = caster_pos.z - bot.z;
+        if dx * dx + dz * dz >= dist_range_sq {
+            continue;
+        }
+
+        let mut damage = compute_type1_hit_damage(
+            caster_total_hit,
+            0,
+            type1_data,
+            caster_hitrate,
+            1.0,
+            attack_amount,
+            player_attack_amount,
+            &mut rng,
+        )
+        .saturating_add(s_add_damage);
+
+        if caster_pos.zone_id == ZONE_CHAOS_DUNGEON {
+            damage = if instance.skill_id == 490226 {
+                1000
+            } else {
+                100
+            };
+        }
+        damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
+        if damage <= 0 {
+            continue;
+        }
+
+        any_hit = true;
+        apply_skill_damage_to_npc(world, caster_sid, bot.id, instance, damage, skill, 0).await;
+    }
+
     // C++ line 3314: sData[3] — attack-zero indicator
     instance.data[3] = if !any_hit {
         SKILLMAGIC_FAIL_ATTACKZERO
@@ -2333,6 +2461,20 @@ async fn execute_type3(
     let time_damage = type3_data.time_damage.unwrap_or(0);
     let duration = type3_data.duration.unwrap_or(0);
     let direct_type = type3_data.direct_type.unwrap_or(0);
+    // Dual Recovery Potions use the normal Type 3 HP potion profile while
+    // carrying the MP amount in time_damage. Keep this narrowly scoped to the
+    // two item-backed magic rows; other Type 3 semantics remain unchanged.
+    let dual_potion_item = matches!(skill.use_item, Some(811_182_000 | 811_183_000));
+    let dual_potion_magic = matches!(skill.magic_num, 811_182 | 811_183);
+    let dual_potion_mp = if (dual_potion_magic || dual_potion_item)
+        && skill.item_group.unwrap_or(0) == 9
+        && moral == MORAL_SELF
+        && direct_type == 1
+    {
+        time_damage.unsigned_abs().min(i16::MAX as u32) as i16
+    } else {
+        0
+    };
 
     // Applies when: (directType==1 || directType==2) && firstDamage > 0
     // Only for potions: skillID > 400000, bType[1]==0, bMoral==MORAL_SELF, bItemGroup==9
@@ -2417,6 +2559,56 @@ async fn execute_type3(
     }
 
     // ── Healing (self or friendly target) ───────────────────────────
+    // Handle the custom dual-recovery items explicitly. Their Type-3 row
+    // describes the HP restoration as first_damage and the MP restoration as
+    // time_damage; the generic potion path treats time_damage as HOT ticks and
+    // can therefore show a successful use without applying the MP amount.
+    if dual_potion_mp > 0 && moral == MORAL_SELF && first_damage > 0 {
+        let caster = match world.get_character_info(caster_sid) {
+            Some(ch) => ch,
+            None => return false,
+        };
+        let heal_amount = first_damage.unsigned_abs().min(i16::MAX as u32) as i16;
+        let is_undead = world.is_undead(caster_sid);
+        let new_hp = if is_undead {
+            (caster.hp - heal_amount).max(0)
+        } else {
+            (caster.hp + heal_amount).min(caster.max_hp)
+        };
+        let new_mp = if caster.hp > 0 {
+            (caster.mp + dual_potion_mp).min(caster.max_mp)
+        } else {
+            caster.mp
+        };
+        world.update_character_hp(caster_sid, new_hp);
+        world.update_character_mp(caster_sid, new_mp);
+        world.send_to_session_owned(
+            caster_sid,
+            crate::systems::regen::build_hp_change_packet(caster.max_hp, new_hp),
+        );
+        world.send_to_session_owned(
+            caster_sid,
+            crate::systems::regen::build_mp_change_packet(caster.max_mp, new_mp),
+        );
+        crate::handler::party::broadcast_party_hp(world, caster_sid);
+        instance.data[1] = 1;
+        instance.data[3] = heal_amount as i32;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        send_target_hp_update(world, caster_sid, caster_sid, 0);
+        if is_undead && new_hp <= 0 {
+            dead::broadcast_death(world, caster_sid);
+        }
+        tracing::debug!(
+            "[sid={}] dual recovery potion magic={} restored hp={} mp={}",
+            caster_sid,
+            skill.magic_num,
+            new_hp.saturating_sub(caster.hp),
+            new_mp.saturating_sub(caster.mp)
+        );
+        return true;
+    }
+
     if moral == MORAL_SELF || moral == MORAL_SELF_AREA {
         let caster = match world.get_character_info(caster_sid) {
             Some(ch) => ch,
@@ -2459,6 +2651,12 @@ async fn execute_type3(
                     }
                 }
                 _ => {}
+            }
+            if dual_potion_mp > 0 && caster.hp > 0 {
+                let new_mp = (caster.mp + dual_potion_mp).min(caster.max_mp);
+                world.update_character_mp(caster_sid, new_mp);
+                let mp_pkt = crate::systems::regen::build_mp_change_packet(caster.max_mp, new_mp);
+                world.send_to_session_owned(caster_sid, mp_pkt);
             }
         }
 
@@ -2571,6 +2769,12 @@ async fn execute_type3(
                     }
                 }
                 _ => {}
+            }
+            if dual_potion_mp > 0 && target.hp > 0 {
+                let new_mp = (target.mp + dual_potion_mp).min(target.max_mp);
+                world.update_character_mp(target_sid, new_mp);
+                let mp_pkt = crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
+                world.send_to_session_owned(target_sid, mp_pkt);
             }
         }
 
@@ -3554,13 +3758,8 @@ struct MagicDamageContext {
     target_class: u16,
     /// Target's AC buff amount
     target_ac_amount: i32,
-    /// Whether the target is in a war zone.
-    is_war_zone: bool,
     /// DamageSettings from DB (class multipliers, mon_take_damage, mage_magic_damage).
     damage_settings: Option<ko_db::models::DamageSettingsRow>,
-    /// Mage weapon quality multiplier (`getplusdamage()` — MagicInstance.cpp:6694-6744).
-    /// 1.0 = no bonus (default / non-weapon).
-    plus_damage: f64,
     /// Caster's weapon base damage for magic formula
     /// Staff damage for mages, weapon damage for warriors/kurians, 0 for others.
     righthand_damage: i16,
@@ -3614,17 +3813,12 @@ fn get_npc_target_resistance(world: &WorldState, npc_id: u32, attribute: u8) -> 
 /// per call (3 from `get_player_target_resistance` + 1 from `get_buff_ac_amount`).
 fn build_player_ctx(
     world: &WorldState,
-    target_sid: SessionId,
+    _target_sid: SessionId,
     target_snap: &CombatSnapshot,
     target: &CharacterInfo,
     attribute: u8,
     caster_sid: SessionId,
 ) -> MagicDamageContext {
-    let is_war = world
-        .get_position(target_sid)
-        .and_then(|p| world.get_zone(p.zone_id))
-        .map(|z| z.is_war_zone())
-        .unwrap_or(false);
     let caster_class = world
         .get_character_info(caster_sid)
         .map(|c| c.class)
@@ -3635,9 +3829,7 @@ fn build_player_ctx(
         target_total_r: target_snap.total_resistance(attribute),
         target_class: target.class,
         target_ac_amount: target_snap.ac_amount,
-        is_war_zone: is_war,
         damage_settings: world.get_damage_settings(),
-        plus_damage: world.get_plus_damage(caster_sid),
         righthand_damage: rh_dmg,
         attribute_damage: attr_dmg,
         attribute,
@@ -3651,11 +3843,6 @@ fn build_npc_ctx(
     attribute: u8,
     caster_sid: SessionId,
 ) -> MagicDamageContext {
-    let is_war = world
-        .get_position(caster_sid)
-        .and_then(|p| world.get_zone(p.zone_id))
-        .map(|z| z.is_war_zone())
-        .unwrap_or(false);
     let caster_class = world
         .get_character_info(caster_sid)
         .map(|c| c.class)
@@ -3666,9 +3853,7 @@ fn build_npc_ctx(
         target_total_r: get_npc_target_resistance(world, npc_id, attribute),
         target_class: 0,
         target_ac_amount: 0,
-        is_war_zone: is_war,
         damage_settings: world.get_damage_settings(),
-        plus_damage: world.get_plus_damage(caster_sid),
         righthand_damage: rh_dmg,
         attribute_damage: attr_dmg,
         attribute,
@@ -3891,11 +4076,14 @@ fn apply_magic_class_bonus(
 
 // ── Type 4: Buffs / Debuffs ──────────────────────────────────────────────
 
+pub(crate) fn is_item_type4_scroll(skill: &MagicRow, _skill_id: u32) -> bool {
+    skill.type1 == Some(4)
+        && matches!(skill.item_group, Some(9 | 255))
+        && skill.use_item.unwrap_or(0) > 0
+}
+
 pub(crate) fn should_persist_type4_magic(skill: &MagicRow, skill_id: u32) -> bool {
-    skill_id > 500_000
-        || (skill.type1 == Some(4)
-            && matches!(skill.item_group, Some(9 | 255))
-            && skill.use_item.unwrap_or(0) > 0)
+    skill_id > 500_000 || is_item_type4_scroll(skill, skill_id)
 }
 
 /// Execute Type 4 skill — apply buff or debuff.
@@ -4133,7 +4321,10 @@ fn execute_type4(
 
         {
             let bt = type4_data.buff_type.unwrap_or(0);
-            if bt > 0 && world.has_buff(target_sid, bt) {
+            if bt > 0
+                && world.has_buff(target_sid, bt)
+                && !can_refresh_same_item_scroll(world, target_sid, bt, skill)
+            {
                 return false;
             }
         }
@@ -4690,7 +4881,10 @@ fn grant_type4_buff_to_target(
     }
 
     // Duplicate buff rejection
-    if bt > 0 && world.has_buff(target_sid, bt) {
+    if bt > 0
+        && world.has_buff(target_sid, bt)
+        && !can_refresh_same_item_scroll(world, target_sid, bt, skill)
+    {
         return;
     }
 
@@ -4714,6 +4908,22 @@ fn grant_type4_buff_to_target(
     if should_persist_type4_magic(skill, instance.skill_id) {
         world.insert_saved_magic(target_sid, instance.skill_id, duration);
     }
+}
+
+/// A second successful use of the same buff scroll refreshes its duration;
+/// ordinary class buffs still retain the normal duplicate-buff rejection.
+fn can_refresh_same_item_scroll(
+    world: &WorldState,
+    target_sid: SessionId,
+    buff_type: i32,
+    skill: &MagicRow,
+) -> bool {
+    let skill_id = skill.magic_num as u32;
+    is_item_type4_scroll(skill, skill_id)
+        && world
+            .get_active_buffs(target_sid)
+            .iter()
+            .any(|buff| buff.buff_type == buff_type && buff.skill_id == skill_id)
 }
 
 /// Apply a legitimate Type-4 support skill cast by a runtime bot.
@@ -6346,7 +6556,14 @@ async fn apply_skill_damage_to_npc(
             -(damage as i32),
             -(damage as i32),
         );
-        world.send_to_session_owned(caster_sid, target_hp_pkt);
+        world.broadcast_to_3x3(
+            bot.zone_id,
+            bot.region_x,
+            bot.region_z,
+            Arc::new(target_hp_pkt),
+            None,
+            0,
+        );
 
         // Handle death
         if new_hp <= 0 {
@@ -6717,7 +6934,9 @@ async fn execute_type5(
             // after debuff removal. For each removed debuff type, if it's lockable,
             // recast the original scroll buff from saved magic.
             for buff_type in &removed_types {
-                if WorldState::is_lockable_scroll(*buff_type) {
+                if WorldState::is_lockable_scroll(*buff_type)
+                    || world.has_saved_scroll_for_buff_type(target_sid, *buff_type)
+                {
                     world.recast_lockable_scrolls(target_sid, *buff_type);
                 }
             }
@@ -7348,19 +7567,16 @@ fn execute_type8(
         instance.data[1] = 1;
         let effect = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &effect);
-        world.update_position(
+        if !crate::handler::region::relocate_user_within_zone(
+            world,
             caster_sid,
-            destination.zone_id,
             destination.x,
             destination.y,
             destination.z,
-        );
-
-        let mut warp = Packet::new(Opcode::WizWarp as u8);
-        warp.write_u16((destination.x * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
-        warp.write_u16((destination.z * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
-        warp.write_i16(-1);
-        world.send_to_session_owned(caster_sid, warp);
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
         return true;
     }
 
@@ -7379,18 +7595,16 @@ fn execute_type8(
         instance.data[1] = 1;
         let effect = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &effect);
-        world.update_position(
+        if !crate::handler::region::relocate_user_within_zone(
+            world,
             caster_sid,
-            destination.zone_id,
             destination.x,
             destination.y,
             destination.z,
-        );
-        let mut warp = Packet::new(Opcode::WizWarp as u8);
-        warp.write_u16((destination.x * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
-        warp.write_u16((destination.z * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
-        warp.write_i16(-1);
-        world.send_to_session_owned(caster_sid, warp);
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
         return true;
     }
 
@@ -7413,18 +7627,16 @@ fn execute_type8(
         instance.data[1] = 1;
         let effect = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &effect);
-        world.update_position(
+        if !crate::handler::region::relocate_user_within_zone(
+            world,
             target_sid,
-            destination.zone_id,
             destination.x,
             destination.y,
             destination.z,
-        );
-        let mut warp = Packet::new(Opcode::WizWarp as u8);
-        warp.write_u16((destination.x * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
-        warp.write_u16((destination.z * 10.0).round().clamp(0.0, u16::MAX as f32) as u16);
-        warp.write_i16(-1);
-        world.send_to_session_owned(target_sid, warp);
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
         return true;
     }
 
@@ -7496,13 +7708,12 @@ fn execute_type8(
         instance.data[1] = 1;
         let effect = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &effect);
-        world.update_position(caster_sid, pos.zone_id, dest_x, pos.y, dest_z);
-
-        let mut warp = Packet::new(Opcode::WizWarp as u8);
-        warp.write_u16(instance.data[0].clamp(0, u16::MAX as i32) as u16);
-        warp.write_u16(instance.data[2].clamp(0, u16::MAX as i32) as u16);
-        warp.write_i16(-1);
-        world.send_to_session_owned(caster_sid, warp);
+        if !crate::handler::region::relocate_user_within_zone(
+            world, caster_sid, dest_x, pos.y, dest_z,
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
 
         tracing::info!(
             caster_sid,
@@ -8419,9 +8630,7 @@ mod tests {
             target_total_r: 0,
             target_class: 1, // warrior target
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: None,
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1, // fire (default)
@@ -8543,13 +8752,12 @@ mod tests {
         );
     }
 
-    /// Mage Type3 uses the same player-target divisor in every zone.
+    /// Mage Type3 damage is not modified by zone type.
     #[test]
     fn test_compute_magic_damage_war_zone_halving() {
         let ch = make_test_character(103, 20, 20, 20, 20, 80); // mage
         let ctx_normal = make_test_ctx(MagicTargetKind::Player);
-        let mut ctx_war = make_test_ctx(MagicTargetKind::Player);
-        ctx_war.is_war_zone = true;
+        let ctx_war = make_test_ctx(MagicTargetKind::Player);
         let mut rng1 = rand::rngs::StdRng::seed_from_u64(42);
         let dmg_normal = compute_magic_damage(&ch, -500, 0, &ctx_normal, &mut rng1);
         let mut rng2 = rand::rngs::StdRng::seed_from_u64(42);
@@ -8640,9 +8848,7 @@ mod tests {
             target_total_r: 0,
             target_class: 101, // warrior
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: Some(ds.clone()),
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1,
@@ -8652,9 +8858,7 @@ mod tests {
             target_total_r: 0,
             target_class: 103, // mage
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: Some(ds),
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1,
@@ -9542,9 +9746,7 @@ mod tests {
             target_total_r: 0,
             target_class: 1,
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: None,
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1,

@@ -413,6 +413,7 @@ async fn handle_warehouse_input(
 
         let ok = build_warehouse_result(WAREHOUSE_INPUT, 1);
         session.send_packet(&ok).await?;
+        crate::handler::item_move::send_inventory_snapshot(session).await?;
     } else {
         let err = build_warehouse_result(WAREHOUSE_INPUT, 0);
         session.send_packet(&err).await?;
@@ -575,6 +576,7 @@ async fn handle_warehouse_output(
 
         let ok = build_warehouse_result(WAREHOUSE_OUTPUT, 1);
         session.send_packet(&ok).await?;
+        crate::handler::item_move::send_inventory_snapshot(session).await?;
     } else {
         let err = build_warehouse_result(WAREHOUSE_OUTPUT, 0);
         session.send_packet(&err).await?;
@@ -622,6 +624,21 @@ async fn handle_warehouse_move(
     if success {
         save_warehouse_slot_async(session, src_idx);
         save_warehouse_slot_async(session, dst_idx);
+        // GM inventory diagnostics are intentionally emitted only after a
+        // successful move, so an invalid client request cannot create noise.
+        if world
+            .get_character_info(sid)
+            .is_some_and(|character| character.authority == 0 || character.authority == 2)
+        {
+            super::client_event::send_gm_debug_chat(
+                &world,
+                sid,
+                &format!(
+                    "[GM] Bank item moved: item_id={} slot {} -> {}",
+                    item_id, src_idx, dst_idx
+                ),
+            );
+        }
         let ok = build_warehouse_result(WAREHOUSE_MOVE, 1);
         session.send_packet(&ok).await?;
     } else {
@@ -670,6 +687,19 @@ async fn handle_warehouse_invenmove(
     if success {
         save_inventory_slot_async(session, src_idx);
         save_inventory_slot_async(session, dst_idx);
+        if world
+            .get_character_info(sid)
+            .is_some_and(|character| character.authority == 0 || character.authority == 2)
+        {
+            super::client_event::send_gm_debug_chat(
+                &world,
+                sid,
+                &format!(
+                    "[GM] Inventory item moved: item_id={} slot {} -> {}",
+                    item_id, src_pos, dst_pos
+                ),
+            );
+        }
         let ok = build_warehouse_result(WAREHOUSE_INVENMOVE, 1);
         session.send_packet(&ok).await?;
     } else {

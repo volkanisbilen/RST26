@@ -37,11 +37,9 @@ use crate::handler::durability::{WORE_TYPE_ATTACK, WORE_TYPE_DEFENCE};
 use crate::npc::NpcId;
 use crate::npc_type_constants::{
     NPC_BIFROST_MONUMENT, NPC_BORDER_MONUMENT, NPC_CLAN_WAR_MONUMENT, NPC_DESTROYED_ARTIFACT,
-    NPC_FOSIL, NPC_GATE,
-    NPC_GATE2, NPC_GATE_LEVER, NPC_GUARD_TOWER1, NPC_GUARD_TOWER2,
-    NPC_OBJECT_FLAG, NPC_PARTNER_TYPE, NPC_PHOENIX_GATE,
-    NPC_PRISON, NPC_PVP_MONUMENT, NPC_REFUGEE, NPC_SANTA, NPC_SOCCER_BAAL, NPC_SPECIAL_GATE,
-    NPC_TREE, NPC_VICTORY_GATE,
+    NPC_FOSIL, NPC_GATE, NPC_GATE2, NPC_GATE_LEVER, NPC_GUARD_TOWER1, NPC_GUARD_TOWER2,
+    NPC_OBJECT_FLAG, NPC_PARTNER_TYPE, NPC_PHOENIX_GATE, NPC_PRISON, NPC_PVP_MONUMENT, NPC_REFUGEE,
+    NPC_SANTA, NPC_SOCCER_BAAL, NPC_SPECIAL_GATE, NPC_TREE, NPC_VICTORY_GATE,
 };
 use crate::session::{ClientSession, SessionState};
 use crate::systems::bdw;
@@ -2865,8 +2863,14 @@ pub(crate) async fn handle_npc_death(
             None,
         );
         let notice = super::chat::build_chat_packet(
-            7, 1, 0xFFFF, "",
-            &format!("{label} has been killed by {killer_label}!"), 0, 0, 0,
+            7,
+            1,
+            0xFFFF,
+            "",
+            &format!("{label} has been killed by {killer_label}!"),
+            0,
+            0,
+            0,
         );
         world.broadcast_to_all(std::sync::Arc::new(notice), None);
 

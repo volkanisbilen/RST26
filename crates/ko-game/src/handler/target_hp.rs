@@ -97,12 +97,16 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         (ch.max_hp as u32, ch.hp as u32)
     };
 
-    // C++ stores m_targetID for use by GM commands like +npcinfo
+    // C++ stores m_targetID for use by GM commands like +npcinfo.  Its target
+    // handler does not report ordinary NPCs or monsters; it prints one chat
+    // line only when a GM selects a runtime bot.  NPC/monster data remains an
+    // explicit +npcinfo action, so target-HP polls cannot spam the chat.
     let sid = session.session_id();
+    let previous_target = world.with_session(sid, |h| h.target_id).unwrap_or(0);
     world.update_session(sid, |h| h.target_id = target_id);
 
-    // ── GM debug: show target info (NPC/monster ID, level, name) ────
-    if world.get_bot(target_id).is_some() || target_id >= NPC_BAND {
+    // Match reference_cpp/GameServer/User.cpp::CUser::HandleTargetHP.
+    if previous_target != target_id {
         let is_gm = world
             .get_character_info(sid)
             .map(|c| c.authority == 0 || c.authority == 2)
@@ -110,23 +114,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if is_gm {
             if let Some(bot) = world.get_bot(target_id) {
                 let debug_msg = format!(
-                    "[GM] BOT id={} lv={} hp={}/{}",
-                    target_id, bot.level, bot.hp, bot.max_hp
-                );
-                super::client_event::send_gm_debug_chat(&world, sid, &debug_msg);
-            } else if let Some(inst) = world.get_npc_instance(target_id) {
-                let name = world
-                    .get_npc_template(inst.proto_id, inst.is_monster)
-                    .map(|t| t.name.clone())
-                    .unwrap_or_default();
-                let level = world
-                    .get_npc_template(inst.proto_id, inst.is_monster)
-                    .map(|t| t.level)
-                    .unwrap_or(0);
-                let is_mon = if inst.is_monster { "MON" } else { "NPC" };
-                let debug_msg = format!(
-                    "[GM] {} id={} proto={} name={} lv={} hp={}/{}",
-                    is_mon, target_id, inst.proto_id, name, level, current_hp, max_hp
+                    "ID = {}, Name = {}, Nation = {}",
+                    target_id, bot.name, bot.nation
                 );
                 super::client_event::send_gm_debug_chat(&world, sid, &debug_msg);
             }

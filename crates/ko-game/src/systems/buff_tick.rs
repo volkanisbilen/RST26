@@ -74,7 +74,13 @@ fn process_buff_tick(world: &WorldState) {
             );
         }
 
-        if !buff.is_buff && crate::world::WorldState::is_lockable_scroll(buff.buff_type) {
+        // A regular buff can temporarily replace an item scroll in the same
+        // buff slot. When that replacement expires, restore the still-live
+        // scroll too; previously this recovery only ran for debuffs, making
+        // speed/attack/AC scrolls disappear early after another skill.
+        if (!buff.is_buff && crate::world::WorldState::is_lockable_scroll(buff.buff_type))
+            || world.has_saved_scroll_for_buff_type(sid, buff.buff_type)
+        {
             world.recast_lockable_scrolls(sid, buff.buff_type);
         }
 

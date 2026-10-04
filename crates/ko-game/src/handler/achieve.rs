@@ -1088,9 +1088,11 @@ async fn handle_skill_title(
     });
 
     let main_entry = world.achieve_main(cover_id as i32);
-    let title_entry = main_entry
-        .as_ref()
-        .and_then(|m| world.achieve_title(m.title_id as i32));
+    // The client sends two different IDs: cover_id authorizes the completed
+    // achievement, while skill_id selects the actual ACHIEVE_TITLE stat row.
+    // Looking the bonus up through cover_id silently applied a different (or
+    // empty) title whenever the player selected an attack/defence variant.
+    let title_entry = world.achieve_title(skill_id as i32);
 
     if !status_ok.flatten().unwrap_or(false) || main_entry.is_none() || title_entry.is_none() {
         // Reset skill title

@@ -265,6 +265,7 @@ pub async fn process_chat_command(
         "money_add" => handle_money_add(session, &args)?,
         "np_add" => handle_np_add(session, &args)?,
         "drop_add" => handle_drop_add(session, &args)?,
+        "drop_rate" => handle_monster_drop_rate(session, &args).await?,
         "drop" => handle_drop_test(session, &args)?,
         "np_change" => handle_np_change(session, &args)?,
         "exp_change" => handle_exp_change(session, &args)?,
@@ -292,6 +293,7 @@ pub async fn process_chat_command(
         "bifrostclose" => handle_bifrost_close(session)?,
         "level" => handle_level_change(session, &args)?,
         "petlevel" => handle_pet_level(session, &args).await?,
+        "petexp" => handle_pet_exp(session, &args).await?,
         "kc" => handle_kc_change(session, &args)?,
         "countzone" => handle_count_zone(session)?,
         "countlevel" => handle_count_level(session, &args)?,
@@ -405,9 +407,62 @@ pub async fn process_chat_command(
             }
             info!("[{}] +reloadranks: rankings reloaded", session.addr());
         }
-        // Reload commands — require server restart (hot-reload not yet implemented)
-        "reloadnotice" | "reloadtables" | "reloadtables2" | "reloadtables3" | "reloadmagics"
-        | "reloadquests" | "reloaddrops" | "reloaddrops2" | "reloadkings" | "reloadtitle"
+        "reloaddrops" | "reloaddrops2" => {
+            let world = session.world().clone();
+            let pool = session.pool();
+            match world.reload_monster_drop_tables(pool).await {
+                Ok(count) => send_help(
+                    session,
+                    &format!("+{command}: {count} monster drop rows reloaded."),
+                ),
+                Err(error) => send_help(session, &format!("+{command}: reload failed: {error}")),
+            }
+            info!(
+                "[{}] +{}: monster drop cache reloaded",
+                session.addr(),
+                command
+            );
+        }
+        "reloadgroupitems" => {
+            let world = session.world().clone();
+            let pool = session.pool();
+            match world.reload_make_item_groups(pool).await {
+                Ok(count) => send_help(
+                    session,
+                    &format!("+reloadgroupitems: {count} item groups reloaded."),
+                ),
+                Err(error) => send_help(
+                    session,
+                    &format!("+reloadgroupitems: reload failed: {error}"),
+                ),
+            }
+            info!(
+                "[{}] +reloadgroupitems: item-group cache reloaded",
+                session.addr()
+            );
+        }
+        "reloadtables" | "reloadtables2" | "reloadtables3" => {
+            let world = session.world().clone();
+            let pool = session.pool();
+            let drops = world.reload_monster_drop_tables(pool).await;
+            let groups = world.reload_make_item_groups(pool).await;
+            match (drops, groups) {
+                (Ok(drops), Ok(groups)) => send_help(
+                    session,
+                    &format!("+{command}: reloaded {drops} drop rows and {groups} item groups."),
+                ),
+                (Err(error), _) | (_, Err(error)) => {
+                    send_help(session, &format!("+{command}: reload failed: {error}"))
+                }
+            }
+            info!(
+                "[{}] +{}: editable drop/group caches reloaded",
+                session.addr(),
+                command
+            );
+        }
+        // Other legacy reload commands still need dedicated safe reload implementations.
+        "reloadnotice" | "reloadmagics" | "reloadquests" | "reloadkings" | "reloadtitle"
         | "reloadpus" | "reloaditems" | "reloaddungeon" | "reloaddraki" | "reloadevent"
         | "reloadpremium" | "reloadsocial" | "reloadclanpnotice" | "reload_item"
         | "reloadupgrade" | "reloadbug" | "reloadlreward" | "reloadmreward" | "reloadzoneon"
@@ -1355,6 +1410,145 @@ fn handle_drop_add(session: &mut ClientSession, args: &[&str]) -> anyhow::Result
     set_event_rate(session, args, &tw.drop_event_amount, "drop_add", "Drop")
 }
 
+/// +drop_rate <percent> — Persistently increase all drop-slot rates for the selected monster.
+async fn handle_monster_drop_rate(
+    session: &mut ClientSession,
+    args: &[&str],
+) -> anyhow::Result<()> {
+    let Some(percent) = args.first().and_then(|value| value.parse::<u16>().ok()) else {
+        send_help(session, "Usage: select a monster, then +drop_rate Percent (1-10000; permanently raises all its drops)");
+        return Ok(());
+    };
+    if !(1..=10_000).contains(&percent) {
+        send_help(
+            session,
+            "Drop increase must be between 1 and 10000 percent.",
+        );
+        return Ok(());
+    }
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let target_id = world
+        .with_session(sid, |handle| handle.target_id)
+        .unwrap_or(0);
+    let Some(npc) = world.get_npc_instance(target_id) else {
+        send_help(session, "Select a monster first (NPC target required).");
+        return Ok(());
+    };
+    if !npc.is_monster {
+        send_help(session, "The selected target is not a monster.");
+        return Ok(());
+    }
+    let Some(template) = world.get_npc_template(npc.proto_id, true) else {
+        send_help(session, "Monster template was not found.");
+        return Ok(());
+    };
+    let pool = session.pool().clone();
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            warn!(proto=npc.proto_id,error=%error,"GM drop-rate transaction failed to start");
+            send_help(session, "Could not start the drop-rate database update.");
+            return Ok(());
+        }
+    };
+    let old_table = template.item_table;
+    let reference_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM npc_template WHERE is_monster=true AND s_item=$1",
+    )
+    .bind(old_table)
+    .fetch_one(&mut *tx)
+    .await?;
+    // Some monsters share one K_MONSTER_ITEM row. Give the selected prototype
+    // its own copy first so the command never changes a different monster.
+    let table_index = if old_table <= 0 || reference_count > 1 {
+        let free_index = sqlx::query_scalar::<_, i16>(
+            r#"SELECT free_id::smallint FROM generate_series(1,32767) AS free_id
+               WHERE NOT EXISTS(SELECT 1 FROM monster_item WHERE s_index=free_id)
+                 AND NOT EXISTS(SELECT 1 FROM npc_template WHERE is_monster=true AND s_item=free_id)
+               ORDER BY free_id DESC LIMIT 1"#,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(new_table) = free_index else {
+            tx.rollback().await?;
+            send_help(
+                session,
+                "No free monster drop-table ID remains; nothing changed.",
+            );
+            return Ok(());
+        };
+        if old_table > 0 {
+            let cloned = sqlx::query(
+                r#"INSERT INTO monster_item(s_index,item01,percent01,item02,percent02,item03,percent03,item04,percent04,item05,percent05,item06,percent06,item07,percent07,item08,percent08,item09,percent09,item10,percent10,item11,percent11,item12,percent12)
+                 SELECT $1,item01,percent01,item02,percent02,item03,percent03,item04,percent04,item05,percent05,item06,percent06,item07,percent07,item08,percent08,item09,percent09,item10,percent10,item11,percent11,item12,percent12 FROM monster_item WHERE s_index=$2"#,
+            )
+            .bind(new_table)
+            .bind(old_table)
+            .execute(&mut *tx)
+            .await?;
+            if cloned.rows_affected() == 0 {
+                sqlx::query("INSERT INTO monster_item(s_index) VALUES($1)")
+                    .bind(new_table)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        } else {
+            sqlx::query("INSERT INTO monster_item(s_index) VALUES($1)")
+                .bind(new_table)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("UPDATE npc_template SET s_item=$2 WHERE s_sid=$1 AND is_monster=true")
+            .bind(npc.proto_id as i16)
+            .bind(new_table)
+            .execute(&mut *tx)
+            .await?;
+        new_table
+    } else {
+        old_table
+    };
+    sqlx::query("INSERT INTO monster_item(s_index) VALUES($1) ON CONFLICT(s_index) DO NOTHING")
+        .bind(table_index)
+        .execute(&mut *tx)
+        .await?;
+    let assignments = (1..=12).map(|slot| format!(
+        "percent{slot:02}=CASE WHEN item{slot:02}>0 AND percent{slot:02}>0 THEN GREATEST(0,LEAST(10000,ROUND(percent{slot:02}::numeric*(100+$2)::numeric/100)::integer))::smallint ELSE percent{slot:02} END"
+    )).collect::<Vec<_>>().join(",");
+    let query = format!("UPDATE monster_item SET {assignments} WHERE s_index=$1");
+    sqlx::query(&query)
+        .bind(table_index)
+        .bind(percent as i32)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    world.set_monster_drop_table(npc.proto_id, table_index);
+    match world.reload_monster_drop_tables(&pool).await {
+        Ok(_) => {
+            send_help(session, &format!(
+                "{} (ID {}) drop rates increased by {}% in PostgreSQL and saved permanently. Only this monster was changed.",
+                template.name, npc.proto_id, percent
+            ));
+            info!(
+                "[{}] GM +drop_rate: monster={} proto={} table={} increase={}%, PostgreSQL updated",
+                session.addr(),
+                template.name,
+                npc.proto_id,
+                table_index,
+                percent
+            );
+        }
+        Err(error) => {
+            warn!(proto=npc.proto_id,error=%error,"drop table reload after persistent GM update failed");
+            send_help(
+                session,
+                "Database updated, but live cache reload failed; use +reloaddrops.",
+            );
+        }
+    }
+    Ok(())
+}
+
 /// +np_change <charname> <amount> — Change a player's loyalty (NP) points.
 fn handle_np_change(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     if args.len() < 2 {
@@ -1530,6 +1724,7 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "noah CharName Gold(+/-) - Change player gold",
         "level CharName Level - Set player level",
         "petlevel Level - Set summoned pet level",
+        "petexp Amount [Character] - Add EXP to summoned pet",
         "kc CharName Amount - Set knight cash",
         "tl CharName Amount - Set TL balance",
         "np_change CharName Amount - Change NP",
@@ -1571,6 +1766,7 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "exp_add Pct - EXP event | money_add - Gold event",
         "np_add Pct - NP event | drop_add - Drop event",
         "drop Count - Test selected NPC drops (max 9999)",
+        "drop_rate Percent - Permanently increase all selected monster drop slots (%)",
         "zone_give_item Zone ItemID Count - Give item in zone",
         "online_give_item ItemID Count - Give item to online players",
         "war_open/close Type - War event",
@@ -1609,7 +1805,10 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "resetranking/resetloyalty - Reset ranking/loyalty",
         "reload_scripts - Reload quest scripts",
         "reloadranks - Reload rankings",
-        "reloaditems/reloadmagics/reloadquests/reloaddrops - Reload tables (restart)",
+        "reloaddrops - Reload monster drop cache immediately",
+        "reloadgroupitems - Reload grouped item cache immediately",
+        "reloadtables - Reload drop and grouped item caches immediately",
+        "reloaditems/reloadmagics/reloadquests - Other table reloads (restart)",
         "attendanceopen/close - Native Attendance",
         "rouletteopen/close - Native Lucky Wheel",
         "puzzleopen/close - Native Jigsaw Puzzle",
@@ -2895,6 +3094,7 @@ fn refresh_gm_pet_client(
             .as_ref()
             .map(|row| row.pet_res.max(0) as u16)
             .unwrap_or(0),
+        items: pet.items.clone(),
     };
 
     let status_packet = crate::handler::pet::build_pet_spawn_packet(&spawn_info);
@@ -5640,32 +5840,8 @@ fn handle_beef_open(session: &mut ClientSession) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Activate the beef event
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    world.update_beef_event(|e| {
-        e.is_active = true;
-        e.is_attackable = true;
-        e.is_monument_dead = false;
-        e.winner_nation = 0;
-        e.is_farming_play = false;
-        e.farming_end_time = 0;
-        e.loser_sign_time = 0;
-        e.is_loser_sign = false;
-    });
-
-    let msg = "Beef Event Basladi. Bifrost bolgesine girebilirsiniz.";
-    broadcast_war_system_chat(&world, msg);
-
-    info!(
-        "[{}] +beefopen: started at timestamp {}",
-        session.addr(),
-        now,
-    );
-
+    super::bifrost::bifrost_start(&world, None);
+    send_help(session, "Bifrost basladi. Monument kirildiginda kazanan irkin girisi acilir.");
     Ok(())
 }
 
@@ -9124,18 +9300,13 @@ mod tests {
         assert!(aliases.iter().all(|a| a.ends_with("botspawn")));
     }
 
-    /// 24+ reload stub commands return "hot-reload not supported".
+    /// All listed reload stub commands return "hot-reload not supported".
     #[test]
     fn test_reload_commands_stub_count() {
         let reload_cmds = [
             "reloadnotice",
-            "reloadtables",
-            "reloadtables2",
-            "reloadtables3",
             "reloadmagics",
             "reloadquests",
-            "reloaddrops",
-            "reloaddrops2",
             "reloadkings",
             "reloadtitle",
             "reloadpus",
@@ -9157,7 +9328,7 @@ mod tests {
             "reload_table",
             "aireset",
         ];
-        assert!(reload_cmds.len() >= 24);
+        assert!(reload_cmds.len() >= 23);
         // All start with "reload" or "aireset"
         assert!(reload_cmds
             .iter()

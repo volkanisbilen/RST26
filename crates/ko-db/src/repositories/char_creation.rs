@@ -20,7 +20,7 @@ impl<'a> CharCreationRepository<'a> {
     ///
     pub async fn load_all_char_set(&self) -> Result<Vec<CreateNewCharSetRow>, sqlx::Error> {
         sqlx::query_as::<_, CreateNewCharSetRow>(
-            "SELECT id, class_type, slot_id, item_id, item_duration, item_count, \
+            "SELECT id::bigint AS id, class_type, slot_id, item_id, item_duration, item_count, \
              item_flag, item_expire_time \
              FROM create_new_char_set ORDER BY class_type, slot_id",
         )
@@ -63,7 +63,7 @@ impl<'a> CharCreationRepository<'a> {
         beginner_type: i16,
     ) -> Result<Vec<CreateNewCharSetRow>, sqlx::Error> {
         let rows = sqlx::query_as::<_, CreateNewCharSetRow>(
-            "SELECT id, class_type, slot_id, item_id, item_duration, item_count,
+            "SELECT id::bigint AS id, class_type, slot_id, item_id, item_duration, item_count,
                     item_flag, item_expire_time
              FROM create_new_char_set_level
              WHERE class_type = $1 AND beginner_type = $2 AND item_id > 0
@@ -77,7 +77,7 @@ impl<'a> CharCreationRepository<'a> {
             return Ok(rows);
         }
         sqlx::query_as::<_, CreateNewCharSetRow>(
-            "SELECT id, class_type, slot_id, item_id, item_duration, item_count,
+            "SELECT id::bigint AS id, class_type, slot_id, item_id, item_duration, item_count,
                     item_flag, item_expire_time
              FROM create_new_char_set
              WHERE class_type = $1 AND item_id > 0

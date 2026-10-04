@@ -175,7 +175,7 @@ pub use npc::{
 };
 pub use object_event::ObjectEventRow;
 pub use perk::{PerkRow, UserPerkRow, PERK_COUNT};
-pub use pet::{PetImageChangeRow, PetStatsInfoRow, PetUserDataRow};
+pub use pet::{PetImageChangeRow, PetStatsInfoRow, PetUserDataRow, PetUserItemRow};
 pub use pet_talk::PetTalk;
 pub use ppcard::PPCardRow;
 pub use premium::{AccountPremiumRow, PremiumItemExpRow, PremiumItemRow};

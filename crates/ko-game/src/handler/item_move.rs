@@ -213,18 +213,34 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 ///   [u32 serial=0] [u32 expire_time]
 /// ```
 async fn handle_inventory_refresh(session: &mut ClientSession) -> anyhow::Result<()> {
+    send_inventory_snapshot_inner(session, true).await
+}
+
+/// Send the authoritative inventory view without reordering slots. Used after
+/// server-side bank transfers so the bag updates immediately rather than only
+/// after the user clicks the manual refresh button.
+pub async fn send_inventory_snapshot(session: &mut ClientSession) -> anyhow::Result<()> {
+    send_inventory_snapshot_inner(session, false).await
+}
+
+async fn send_inventory_snapshot_inner(
+    session: &mut ClientSession,
+    sort_bag: bool,
+) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
 
-    // Sort the bag portion of inventory by item_id descending (C++ uses std::sort with >)
-    world.update_inventory(sid, |inv| {
-        if inv.len() < INVENTORY_TOTAL {
-            inv.resize(INVENTORY_TOTAL, UserItemSlot::default());
-        }
-        let bag = &mut inv[SLOT_MAX..SLOT_MAX + HAVE_MAX];
-        bag.sort_by(|a, b| b.item_id.cmp(&a.item_id));
-        true
-    });
+    if sort_bag {
+        // Manual client refresh preserves the legacy sort behavior.
+        world.update_inventory(sid, |inv| {
+            if inv.len() < INVENTORY_TOTAL {
+                inv.resize(INVENTORY_TOTAL, UserItemSlot::default());
+            }
+            let bag = &mut inv[SLOT_MAX..SLOT_MAX + HAVE_MAX];
+            bag.sort_by(|a, b| b.item_id.cmp(&a.item_id));
+            true
+        });
+    }
 
     // Build the response packet
     let inventory = world.get_inventory(sid);
@@ -556,6 +572,9 @@ async fn handle_inventory_system(
         // Recalculate stats for the 2H weapon swap (equipment change).
         // Weight notification is integrated into set_user_ability().
         world.set_user_ability(sid);
+        // Pet equipment is not part of user_items. Persist it now so a
+        // dismiss, disconnect or server restart cannot delete auto-loot gear.
+        super::pet::save_pet_items(session).await;
         // SNIFFER-VERIFIED (2026-03-29): Original server sends sub=1 for equip success.
         // Sub=2 is stats-only (gamestart refresh) — client does NOT unlock UI on sub=2.
         send_item_move_result(session, true).await?;

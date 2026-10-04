@@ -107,6 +107,16 @@ impl GameServer {
         ));
         info!("Power Up Store web service started");
 
+        // The admin panel is reachable directly at /jstkoadminpanel/.
+        let admin_bind =
+            std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".to_string());
+        bg_tasks.push(crate::admin_web::start(
+            self.world.clone(),
+            self.pool.clone(),
+            admin_bind,
+        ));
+        info!("Admin control panel service initialized");
+
         bg_tasks.push(crate::systems::regen::start_regen_task(self.world.clone()));
         info!("HP/MP regen tick started");
 

@@ -309,7 +309,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     if !matches!(
         tmpl.npc_type,
         NPC_MERCHANT | NPC_TINKER | NPC_LOYALTY_MERCHANT | NPC_PET_TRADE
-    ) {
+    ) && !(npc.proto_id == 13_016 && tmpl.selling_group != 0)
+    {
         warn!(
             "[{}] NPC trade: NPC type {} not merchant (proto={})",
             session.addr(),
