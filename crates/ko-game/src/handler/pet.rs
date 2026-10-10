@@ -460,7 +460,7 @@ pub(crate) async fn handle_normal_mode(
                         Ok(items) => {
                             let pet_item = items.iter().find(|item| {
                                 item.serial_num > 0
-                                    && (item.item_id == 610_001_000
+                                    && ((610_001_000..610_100_000).contains(&item.item_id)
                                         || item.slot_index == 5
                                         || item.slot_index == crate::world::CFAIRY_SLOT as i16)
                             });
@@ -578,8 +578,8 @@ pub(crate) async fn handle_normal_mode(
                             return Ok(());
                         };
                         let mut appearance = existing_template.as_ref().clone();
-                        appearance.pid = pet.pid.max(1);
-                        appearance.size = pet.size.max(1);
+                        appearance.pid = if pet.pid == 0 { 25500 } else { pet.pid };
+                        appearance.size = if pet.size == 0 { 100 } else { pet.size };
                         let out =
                             build_npc_inout(crate::npc::NPC_OUT, &existing, &existing_template);
                         world.broadcast_to_3x3(
@@ -592,7 +592,9 @@ pub(crate) async fn handle_normal_mode(
                         );
                         let near_x = pos.x + 1.0;
                         let near_z = pos.z + 1.0;
-                        world.update_npc_position(pet.nid as u32, near_x, near_z);
+                        // Also re-index the pet in the zone's region grid (update_npc_position
+                        // does not), otherwise it stays registered in its old region.
+                        world.move_runtime_npc(pet.nid as u32, near_x, near_z);
                         if let Some(updated) = world.get_npc_instance(pet.nid as u32) {
                             let input = build_npc_inout(NPC_IN, &updated, &appearance);
                             world.broadcast_to_3x3(
@@ -719,8 +721,8 @@ pub(crate) async fn handle_normal_mode(
             // in the NPC-IN packet. The runtime template is only a carrier;
             // override its appearance with the pet's persisted transform.
             let mut visual_template = template.as_ref().clone();
-            visual_template.pid = pet.pid.max(1);
-            visual_template.size = pet.size.max(1);
+            visual_template.pid = if pet.pid == 0 { 25500 } else { pet.pid };
+            visual_template.size = if pet.size == 0 { 100 } else { pet.size };
             let npc_in = build_npc_inout(NPC_IN, &instance, &visual_template);
             world.broadcast_to_3x3(
                 instance.zone_id,

@@ -1769,9 +1769,9 @@ impl WorldState {
         // Register in zone region grid so the NPC is visible to nearby players
         if let Some(zone) = self.get_zone(zone_id) {
             if let Some(region) = zone.get_region(region_x, region_z) {
-                if let Some(mut npcs) = region.npcs.try_write() {
-                    npcs.insert(nid);
-                }
+                // Blocking write: a contended try_write silently left the NPC unregistered,
+                // making summoned familiars invisible to everyone after the first packet.
+                region.npcs.write().insert(nid);
             }
         }
     }

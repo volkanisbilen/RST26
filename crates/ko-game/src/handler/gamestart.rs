@@ -146,7 +146,7 @@ async fn handle_phase1(session: &mut ClientSession) -> anyhow::Result<()> {
             item.serial_num > 0
                 && (item.slot_index as usize == crate::world::CFAIRY_SLOT
                     || item.slot_index == 5
-                    || item.item_id == 610_001_000)
+                    || (610_001_000..610_100_000).contains(&item.item_id))
         })
         .map(|item| item.serial_num)
         .collect();

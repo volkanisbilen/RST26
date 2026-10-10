@@ -384,6 +384,9 @@ pub async fn trigger_zone_change(
         }
     }
 
+    // C++ ZoneChange(): CSW master-clan members entering Delos land in the castellan area.
+    let (dest_x, dest_z) = csw_master_spawn(&world, sid, dest_zone).unwrap_or((dest_x, dest_z));
+
     // Resolve (0,0) coordinates to zone start_position
     let (dest_x, dest_z) = if dest_x == 0.0 && dest_z == 0.0 {
         resolve_zero_coords(dest_zone, sid, &world)
@@ -1241,6 +1244,30 @@ pub(crate) fn save_position_async(session: &ClientSession, zone_id: u16, x: f32,
 /// When a zone change is triggered with (0,0) coordinates (e.g., event kick-out),
 /// the server looks up the spawn position from the start_position table using
 /// nation-specific columns. Falls back to zone spawn_position if no DB entry.
+/// C++ `CUser::ZoneChange` (ZoneChangeWarpHandler.cpp:106-119): members of the Castle Siege
+/// master clan entering Delos always arrive in the castellan area of the map.
+pub(crate) fn csw_master_spawn(
+    world: &crate::world::WorldState,
+    sid: crate::zone::SessionId,
+    dest_zone: u16,
+) -> Option<(f32, f32)> {
+    use rand::Rng;
+    if dest_zone != ZONE_DELOS {
+        return None;
+    }
+    let ch = world.get_character_info(sid)?;
+    let master = world.get_csw_master_knights();
+    if master == 0 || ch.knights_id == 0 || ch.knights_id != master {
+        return None;
+    }
+    let mut rng = rand::thread_rng();
+    let base_x = if ch.nation == 1 { 455.0 } else { 555.0 };
+    Some((
+        base_x + rng.gen_range(0..=5) as f32,
+        790.0 + rng.gen_range(0..=5) as f32,
+    ))
+}
+
 fn resolve_zero_coords(
     dest_zone: u16,
     sid: crate::zone::SessionId,
@@ -1365,6 +1392,9 @@ fn server_teleport_to_zone_impl(
     if !force_same_zone && pos.zone_id == dest_zone {
         return;
     }
+
+    // C++ ZoneChange(): CSW master-clan members entering Delos land in the castellan area.
+    let (dest_x, dest_z) = csw_master_spawn(world, sid, dest_zone).unwrap_or((dest_x, dest_z));
 
     // Resolve (0,0) coordinates to zone start_position
     let (dest_x, dest_z) = if dest_x == 0.0 && dest_z == 0.0 {

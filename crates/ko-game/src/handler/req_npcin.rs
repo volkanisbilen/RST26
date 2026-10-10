@@ -89,6 +89,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             None => continue,
         };
 
+        // Familiars keep their own (transformed) model/size
+        let template = world.npc_visual_template(&instance, &template);
+
         // Write per-NPC data: [u32 npcId] [GetNpcInfo]
         result.write_u32(npc_id);
         write_npc_info_base(&mut result, &instance, &template);

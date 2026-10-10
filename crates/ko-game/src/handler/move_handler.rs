@@ -758,7 +758,7 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
     /// Distance threshold for pet follow (squared): 10 m.
     ///
     /// Note: `GetDistanceSqrt` returns ACTUAL distance (with sqrt), not squared.
-    const PET_FOLLOW_DIST: f32 = 10.0;
+    const PET_FOLLOW_DIST: f32 = 4.0;
 
     use super::pet::MODE_ATTACK;
 
@@ -847,6 +847,36 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
     );
     if let Some(updated) = world.get_npc_instance(pet_nid as u32) {
         if updated.region_x != pet_npc.region_x || updated.region_z != pet_npc.region_z {
+            // The pet crossed a region border: players who only see the new region have never
+            // received it, and players who lost sight of it still hold the old NPC. Send NPC_OUT
+            // to the old 3x3 and NPC_IN (with the pet's own model) to the new 3x3.
+            if let Some(template) = world.get_npc_template(updated.proto_id, updated.is_monster) {
+                let visual = world.npc_visual_template(&updated, &template);
+                world.broadcast_to_3x3(
+                    pet_npc.zone_id,
+                    pet_npc.region_x,
+                    pet_npc.region_z,
+                    Arc::new(crate::npc::build_npc_inout(
+                        crate::npc::NPC_OUT,
+                        &pet_npc,
+                        &template,
+                    )),
+                    None,
+                    event_room,
+                );
+                world.broadcast_to_3x3(
+                    updated.zone_id,
+                    updated.region_x,
+                    updated.region_z,
+                    Arc::new(crate::npc::build_npc_inout(
+                        crate::npc::NPC_IN,
+                        &updated,
+                        &visual,
+                    )),
+                    None,
+                    event_room,
+                );
+            }
             world.broadcast_to_3x3(
                 updated.zone_id,
                 updated.region_x,

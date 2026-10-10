@@ -7261,6 +7261,40 @@ const TYPE5_LIFE_CRYSTAL: i32 = 6;
 /// - 4 (RESURRECTION_SELF): Self-resurrection (specific skill IDs)
 /// - 5 (REMOVE_BLESS): Remove HP/MP buff
 /// - 6 (LIFE_CRYSTAL): Self-resurrection via life crystal
+/// Remove a player's harmful DOT effects and clear the client's DOT indicator.
+fn cure_type3_dots(world: &WorldState, target_sid: SessionId) -> bool {
+    let removed = world.clear_harmful_dots(target_sid);
+    if removed {
+        // MAGIC_DURATION_EXPIRED with 200 removes the DOT visual.
+        let mut dot_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        dot_pkt.write_u8(MAGIC_DURATION_EXPIRED);
+        dot_pkt.write_u8(200);
+        world.send_to_session_owned(target_sid, dot_pkt);
+    }
+    removed
+}
+
+/// Remove all Type4 debuffs from a player, with per-type cleanup and expiry notices for the
+/// owner only, then restore scroll buffs the debuffs had displaced.
+fn cure_type4_debuffs(world: &WorldState, target_sid: SessionId) -> Vec<i32> {
+    let removed_types = world.remove_debuffs(target_sid);
+    for buff_type in &removed_types {
+        crate::systems::buff_tick::buff_type_cleanup(world, target_sid, *buff_type, false);
+        world.send_to_session_owned(target_sid, build_buff_expired_packet(*buff_type as u8));
+    }
+    for buff_type in &removed_types {
+        if WorldState::is_lockable_scroll(*buff_type)
+            || world.has_saved_scroll_for_buff_type(target_sid, *buff_type)
+        {
+            world.recast_lockable_scrolls(target_sid, *buff_type);
+        }
+    }
+    if !removed_types.is_empty() {
+        world.set_user_ability(target_sid);
+    }
+    removed_types
+}
+
 async fn execute_type5(
     world: &WorldState,
     caster_sid: SessionId,
@@ -7277,6 +7311,25 @@ async fn execute_type5(
 
     let sub_type = type5_data.r#type.unwrap_or(0);
     let target_id = instance.target_id;
+
+    // Group cure (target -1, party-wide moral, e.g. Bless of God): every party member in range.
+    if target_id < 0
+        && matches!(sub_type, TYPE5_REMOVE_TYPE3 | TYPE5_REMOVE_TYPE4)
+        && skill.moral.unwrap_or(0) == MORAL_PARTY_ALL
+    {
+        let radius = skill.range.unwrap_or(0).max(0) as f32;
+        for member in collect_party_all_targets(world, caster_sid, radius, |_| false) {
+            if sub_type == TYPE5_REMOVE_TYPE3 {
+                cure_type3_dots(world, member);
+            } else {
+                cure_type4_debuffs(world, member);
+            }
+        }
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        return true;
+    }
 
     // Single-target case
     let target_sid = if target_id < 0 || (target_id as u32) >= NPC_BAND {
@@ -7296,15 +7349,7 @@ async fn execute_type5(
 
     match sub_type {
         TYPE5_REMOVE_TYPE3 => {
-            // Remove all harmful DOT effects (negative hp_amount)
-            let removed = world.clear_harmful_dots(target_sid);
-            if removed {
-                // Send MAGIC_DURATION_EXPIRED with type 200 to remove DOT visual
-                let mut dot_pkt = Packet::new(Opcode::WizMagicProcess as u8);
-                dot_pkt.write_u8(MAGIC_DURATION_EXPIRED);
-                dot_pkt.write_u8(200); // C++ uses 200 for DOT removal
-                world.send_to_session_owned(target_sid, dot_pkt);
-            }
+            let removed = cure_type3_dots(world, target_sid);
             tracing::debug!(
                 "[sid={}] MagicProcess Type 5: REMOVE_TYPE3 target={} removed={}",
                 caster_sid,
@@ -7314,27 +7359,7 @@ async fn execute_type5(
         }
 
         TYPE5_REMOVE_TYPE4 => {
-            // Remove all type 4 debuffs
-            let removed_types = world.remove_debuffs(target_sid);
-            for buff_type in &removed_types {
-                // Per-type cleanup (silence, block-magic, size, ...) and an expiry notice for
-                // the debuffed player only.
-                crate::systems::buff_tick::buff_type_cleanup(world, target_sid, *buff_type, false);
-                let expired_pkt = build_buff_expired_packet(*buff_type as u8);
-                world.send_to_session_owned(target_sid, expired_pkt);
-            }
-            // after debuff removal. For each removed debuff type, if it's lockable,
-            // recast the original scroll buff from saved magic.
-            for buff_type in &removed_types {
-                if WorldState::is_lockable_scroll(*buff_type)
-                    || world.has_saved_scroll_for_buff_type(target_sid, *buff_type)
-                {
-                    world.recast_lockable_scrolls(target_sid, *buff_type);
-                }
-            }
-            if !removed_types.is_empty() {
-                world.set_user_ability(target_sid);
-            }
+            let removed_types = cure_type4_debuffs(world, target_sid);
             tracing::debug!(
                 "[sid={}] MagicProcess Type 5: REMOVE_TYPE4 target={} removed={} debuffs",
                 caster_sid,
@@ -8242,6 +8267,81 @@ fn execute_type8(
         return true;
     }
 
+    // Warp 3 (invasion scrolls) and 28 are no-ops in C++: the cast simply succeeds.
+    if matches!(warp_type, 3 | 28) {
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        return true;
+    }
+
+    // Warp 2: Bifrost chamber transport scrolls (490301-490307) and the Battle2 recall.
+    if warp_type == 2 {
+        let (Some(pos), Some(caster)) = (
+            world.get_position(caster_sid),
+            world.get_character_info(caster_sid),
+        ) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+        let destination: Option<(f32, f32)> = if caster.res_hp_type == USER_DEAD || caster.hp <= 0
+        {
+            None
+        } else if pos.zone_id == 31 {
+            // ZONE_BIFROST: fixed chamber coordinates.
+            match skill.magic_num {
+                490301 => Some((227.0, 819.0)),
+                490302 => Some((770.0, 818.0)),
+                490303 => Some((671.0, 355.0)),
+                490304 => Some((498.0, 396.0)),
+                490305 => Some((102.0, 140.0)),
+                490306 => Some((440.0, 188.0)),
+                490307 => Some((712.0, 183.0)),
+                _ => None,
+            }
+        } else if pos.zone_id == ZONE_BATTLE2 && (490301..=490307).contains(&skill.magic_num) {
+            if caster.nation == NATION_KARUS {
+                Some((394.0, 632.0))
+            } else {
+                Some((600.0, 340.0))
+            }
+        } else {
+            None
+        };
+        let Some((x, z)) = destination else {
+            instance.data[1] = 0;
+            let pkt = instance.build_packet(MAGIC_EFFECTING);
+            broadcast_to_caster_region(world, caster_sid, &pkt);
+            return false;
+        };
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        crate::handler::region::relocate_user_within_zone(world, caster_sid, x, pos.y, z);
+        return true;
+    }
+
+    // Warp 30 (Kurian Rush) and 31 (Kurian Pull): player-vs-player only. The client does the
+    // movement; the server confirms (Pull succeeds on a 6-in-11 roll like C++).
+    if warp_type == 30 || warp_type == 31 {
+        let target_id = instance.target_id;
+        let valid = target_id >= 0
+            && (target_id as u32) < NPC_BAND
+            && (warp_type == 30 || target_id as SessionId != caster_sid)
+            && world
+                .get_character_info(target_id as SessionId)
+                .is_some_and(|t| t.res_hp_type != USER_DEAD && t.hp > 0);
+        if !valid {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let success = warp_type == 30 || rand::thread_rng().gen_range(0..=10) <= 5;
+        instance.data[1] = i32::from(success);
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        return true;
+    }
+
     // Only the explicitly implemented knockback subtype may use the generic
     // kick-distance calculation. Other warp types are summons, event warps,
     // pulls, or special mechanics and must not be mis-executed as knockback.
@@ -8560,7 +8660,8 @@ fn execute_type9(
 
     // Guard / monster summons (9 Guard Summon, 7 summon scrolls): spawn the monster next to the
     // caster for `duration` seconds on the caster's side.
-    if state_change == 7 || state_change == 9 {
+    if matches!(state_change, 7 | 9 | 10..=13) {
+        let (summon_count, timed) = type9_summon_params(skill.magic_num);
         let monster = type9_data.monster_num.unwrap_or(0);
         let (Some(pos), Some(caster)) = (
             world.get_position(caster_sid),
@@ -8580,7 +8681,7 @@ fn execute_type9(
             pos.zone_id,
             pos.x,
             pos.z,
-            1,
+            summon_count,
             world.get_event_room(caster_sid),
             summon_type,
         );
@@ -8594,7 +8695,7 @@ fn execute_type9(
             type9_data.nation_change.unwrap_or(0).clamp(0, 3) as u8
         };
         for nid in spawned {
-            if duration > 0 {
+            if duration > 0 && timed {
                 world.set_npc_duration(nid, duration.clamp(0, u16::MAX as i32) as u16, 0);
             }
             if nation != 0 {
@@ -8681,6 +8782,19 @@ fn execute_type9(
     let pkt = instance.build_packet(MAGIC_EFFECTING);
     world.send_to_session_owned(caster_sid, pkt);
     true
+}
+
+/// Monster count and whether the summons despawn after `duration` for a Type9 summon skill,
+/// mirroring the per-skill `SpawnEventNpc` calls in C++ `ExecuteType9`.
+fn type9_summon_params(skill_id: i32) -> (u16, bool) {
+    match skill_id {
+        502014 | 502019 | 502015 => (5, false),
+        502022 | 502013 | 502024 | 502023 => (4, false),
+        502025 => (3, false),
+        502026 | 502027 | 502017 | 502018 | 502021 | 502031 | 502028 | 502029 | 502030
+        | 502016 | 502020 => (1, false),
+        _ => (1, true),
+    }
 }
 
 /// Check if a buff_type represents a debuff.

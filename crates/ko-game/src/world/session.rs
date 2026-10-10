@@ -2163,6 +2163,34 @@ impl WorldState {
     ///
     /// Iterates sessions to locate the one whose `pet_data.nid` matches.
     /// Returns the owner's session ID if found.
+    /// Template used to render an NPC to clients. Runtime familiars share one carrier template,
+    /// so their own (possibly transformed) model PID and size have to be applied whenever the
+    /// NPC_IN is rebuilt: on region entry, REQ_NPCIN and refreshes, not only at summon.
+    pub fn npc_visual_template(
+        &self,
+        instance: &NpcInstance,
+        template: &Arc<NpcTemplate>,
+    ) -> Arc<NpcTemplate> {
+        if instance.pet_name.is_empty() || instance.nid == 0 {
+            return template.clone();
+        }
+        let Some(owner) = self.find_pet_owner_by_nid(instance.nid as u16) else {
+            return template.clone();
+        };
+        let appearance = self
+            .with_session(owner, |h| h.pet_data.as_ref().map(|p| (p.pid, p.size)))
+            .flatten();
+        match appearance {
+            Some((pid, size)) => {
+                let mut visual = template.as_ref().clone();
+                visual.pid = if pid == 0 { 25500 } else { pid };
+                visual.size = if size == 0 { 100 } else { size };
+                Arc::new(visual)
+            }
+            None => template.clone(),
+        }
+    }
+
     pub fn find_pet_owner_by_nid(&self, pet_npc_id: u16) -> Option<SessionId> {
         if pet_npc_id == 0 {
             return None;

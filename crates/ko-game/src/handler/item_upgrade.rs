@@ -3369,10 +3369,15 @@ async fn pet_image_transform(
         }
         // Item must exist in item table
         if world.get_item(item_ids[i]).is_none() {
+            warn!("[sid={}] pet_image_transform fail: item {} unknown (idx {})", sid, item_ids[i], i);
             return send_pet_transform_fail(session).await;
         }
         // Slot check
         if (slot_pos[i] as usize) >= HAVE_MAX {
+            warn!(
+                "[sid={}] pet_image_transform fail: idx {} item {} slot {} outside the bag (items={:?} slots={:?})",
+                sid, i, item_ids[i], slot_pos[i], item_ids, slot_pos
+            );
             return send_pet_transform_fail(session).await;
         }
         // Inventory item validation
@@ -3386,12 +3391,30 @@ async fn pet_image_transform(
             || inv_item.flag == ITEM_FLAG_RENTED
             || inv_item.flag == ITEM_FLAG_SEALED
         {
+            warn!(
+                "[sid={}] pet_image_transform fail: idx {} expects item {} at bag slot {} but found item {} flag {}",
+                sid, i, item_ids[i], slot_pos[i], inv_item.item_id, inv_item.flag
+            );
             return send_pet_transform_fail(session).await;
         }
     }
 
-    // Find matching transform recipes by catalyst item (item[1])
-    let matching = world.find_pet_transforms_by_item(item_ids[1] as i32);
+    // The transform scroll is normally item[1], but the 2625 client may send the Familiar
+    // and the scroll in either order: use the first item that has transform recipes.
+    let Some(scroll_idx) = (0..4).find(|&i| {
+        item_ids[i] != 0 && !world.find_pet_transforms_by_item(item_ids[i] as i32).is_empty()
+    }) else {
+        warn!(
+            "[sid={}] pet_image_transform fail: no transform recipe for items {:?}",
+            sid, item_ids
+        );
+        return send_pet_transform_fail(session).await;
+    };
+    // The Familiar (Kaul) is item[0] unless the scroll itself arrived first.
+    let kaul_idx = if scroll_idx == 0 { 1 } else { 0 };
+
+    // Find matching transform recipes by scroll item
+    let matching = world.find_pet_transforms_by_item(item_ids[scroll_idx] as i32);
     if matching.is_empty() {
         return send_pet_transform_fail(session).await;
     }
@@ -3428,10 +3451,14 @@ async fn pet_image_transform(
         return send_pet_transform_fail(session).await;
     }
 
-    // Pet kaul item (slot 0) must be valid
-    let kaul_slot = SLOT_MAX + slot_pos[0] as usize;
+    // Pet kaul item must be valid
+    let kaul_slot = SLOT_MAX + slot_pos[kaul_idx] as usize;
     let kaul_item = world.get_inventory_slot(sid, kaul_slot).unwrap_or_default();
     if kaul_item.item_id == 0 {
+        warn!(
+            "[sid={}] pet_image_transform fail: no Familiar at bag slot {} (items={:?} slots={:?})",
+            sid, slot_pos[kaul_idx], item_ids, slot_pos
+        );
         return send_pet_transform_fail(session).await;
     }
 
@@ -3476,6 +3503,10 @@ async fn pet_image_transform(
         }
     }
     let Some(pet_state) = pet_state.filter(|pet| pet.index > 0) else {
+        warn!(
+            "[sid={}] pet_image_transform fail: no pet data for Familiar serial {} (item {})",
+            sid, pet_serial, kaul_item.item_id
+        );
         return send_pet_transform_fail(session).await;
     };
     let pet_index = pet_state.index;
@@ -3485,9 +3516,9 @@ async fn pet_image_transform(
     let pet_satisfaction = pet_state.satisfaction as u16;
 
     // Consume catalyst item (slot 1) — decrement count
-    let catalyst_slot = SLOT_MAX + slot_pos[1] as usize;
+    let catalyst_slot = SLOT_MAX + slot_pos[scroll_idx] as usize;
     world.update_inventory(sid, |inv| {
-        if catalyst_slot < inv.len() && inv[catalyst_slot].item_id == item_ids[1] {
+        if catalyst_slot < inv.len() && inv[catalyst_slot].item_id == item_ids[scroll_idx] {
             if inv[catalyst_slot].count > 1 {
                 inv[catalyst_slot].count -= 1;
             } else {
@@ -3507,7 +3538,7 @@ async fn pet_image_transform(
         let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
         pkt.write_u16(1); // count_type
         pkt.write_u8(1); // slot_section: inventory
-        pkt.write_u8(slot_pos[1]); // position within inventory
+        pkt.write_u8(slot_pos[scroll_idx]); // position within inventory
         pkt.write_u32(catalyst_info.item_id);
         pkt.write_u32(catalyst_info.count as u32);
         pkt.write_u8(0); // bNewItem = false
@@ -3571,7 +3602,7 @@ async fn pet_image_transform(
     pkt.write_u8(PET_HATCHING); // C++ quirk: success uses sub=6
     pkt.write_u8(1); // success
     pkt.write_u32(replace_item_id);
-    pkt.write_u8(slot_pos[0]);
+    pkt.write_u8(slot_pos[kaul_idx]);
     pkt.write_u32(pet_index);
     // DByte string (u16 length prefix)
     let name_bytes = pet_name.as_bytes();

@@ -857,6 +857,15 @@ impl WorldState {
     /// Expired DOTs (tick_count >= tick_limit) are automatically cleared.
     ///
     pub fn process_dot_tick(&self) -> Vec<(SessionId, i16, bool)> {
+        self.process_dot_tick_with_casters()
+            .into_iter()
+            .map(|(sid, hp, expired, _caster)| (sid, hp, expired))
+            .collect()
+    }
+
+    /// Same as [`process_dot_tick`](Self::process_dot_tick) but also returns the session id
+    /// that applied each effect, so a DOT kill can credit its caster.
+    pub fn process_dot_tick_with_casters(&self) -> Vec<(SessionId, i16, bool, SessionId)> {
         let mut results = Vec::new();
         for mut entry in self.sessions.iter_mut() {
             let sid = *entry.key();
@@ -867,10 +876,11 @@ impl WorldState {
                 }
                 slot.tick_count += 1;
                 let hp = slot.hp_amount;
+                let caster = slot.caster_sid;
 
                 if slot.tick_count >= slot.tick_limit {
                     // DOT expired, clear the slot
-                    results.push((sid, hp, true));
+                    results.push((sid, hp, true, caster));
                     slot.used = false;
                     slot.skill_id = 0;
                     slot.hp_amount = 0;
@@ -878,7 +888,7 @@ impl WorldState {
                     slot.tick_limit = 0;
                     slot.caster_sid = 0;
                 } else {
-                    results.push((sid, hp, false));
+                    results.push((sid, hp, false, caster));
                 }
             }
         }

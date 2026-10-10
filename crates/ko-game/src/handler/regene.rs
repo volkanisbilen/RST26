@@ -571,6 +571,25 @@ fn determine_respawn_location(
         }
     }
 
+    // ── 2b. Delos: CSW master-clan members respawn in the castellan area ──
+    //   C++ GetStartPosition (User.cpp:4351): x = 505 + rand(0..range_x), z = 840 + rand(0..range_z)
+    if current_zone == ZONE_DELOS {
+        let master = world.get_csw_master_knights();
+        if master != 0 && char_info.knights_id != 0 && char_info.knights_id == master {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let (range_x, range_z) = world
+                .get_start_position(current_zone)
+                .map(|s| (s.range_x.max(0), s.range_z.max(0)))
+                .unwrap_or((5, 5));
+            return (
+                current_zone,
+                505.0 + rng.gen_range(0..=range_x) as f32,
+                840.0 + rng.gen_range(0..=range_z) as f32,
+            );
+        }
+    }
+
     // ── 3. Chaos Dungeon / Bowl event → random spawn point ───────────
     //   if (GetZoneID() == ZONE_CHAOS_DUNGEON || (tBowlEventZone == GetZoneID() && isBowlEventActive))
     //     GetStartPositionRandom(sx, sz);

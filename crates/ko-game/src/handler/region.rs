@@ -1053,6 +1053,7 @@ pub async fn send_nearby_npc_inouts(session: &mut ClientSession) -> anyhow::Resu
             None => continue,
         };
 
+        let template = world.npc_visual_template(&instance, &template);
         let pkt = build_npc_inout(NPC_IN, &instance, &template);
         session.send_packet(&pkt).await?;
     }

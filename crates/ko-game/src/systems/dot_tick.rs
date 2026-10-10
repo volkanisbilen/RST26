@@ -66,16 +66,17 @@ fn process_dot_tick(world: &WorldState) -> Vec<(u32, u16)> {
         .read_temple_event(|s| s.is_attackable);
 
     // ── Player DOTs ──────────────────────────────────────────────────
-    let ticks = world.process_dot_tick();
+    let ticks = world.process_dot_tick_with_casters();
 
     // Track sessions that had DOT expirations (negative hp_amount that expired)
     // so we can send USER_STATUS_DOT cure when no DOTs remain.
     let mut sessions_with_expired_dots: HashSet<u16> = HashSet::new();
 
-    for (sid, hp_change, expired) in &ticks {
+    for (sid, hp_change, expired, caster_sid) in &ticks {
         let sid = *sid;
         let hp_change = *hp_change;
         let expired = *expired;
+        let caster_sid = *caster_sid;
 
         let (ch, pos) = match world
             .with_session(sid, |h| {
@@ -198,6 +199,30 @@ fn process_dot_tick(world: &WorldState) -> Vec<(u32, u16)> {
         // Handle death from DOT
         if new_hp <= 0 {
             dead::broadcast_death(world, sid);
+            // A DOT kill credits the player that applied it (death notice, loyalty, gold, ...).
+            if hp_change < 0
+                && caster_sid != 0
+                && caster_sid != sid
+                && world.get_character_info(caster_sid).is_some()
+            {
+                dead::set_who_killed_me(world, sid, caster_sid);
+                dead::send_death_notice(world, caster_sid, sid);
+                dead::rob_chaos_skill_items(world, sid);
+                dead::pvp_loyalty_on_death(world, caster_sid, sid);
+                dead::gold_change_on_death(world, caster_sid, sid);
+                match pos.zone_id {
+                    z if z == event_room::ZONE_BDW => {
+                        dead::track_bdw_player_kill(world, caster_sid, sid)
+                    }
+                    z if z == event_room::ZONE_CHAOS => {
+                        dead::track_chaos_pvp_kill(world, caster_sid, sid)
+                    }
+                    z if z == event_room::ZONE_JURAID => {
+                        dead::track_juraid_pvp_kill(world, caster_sid)
+                    }
+                    _ => {}
+                }
+            }
             world.clear_durational_skills(sid);
         }
 

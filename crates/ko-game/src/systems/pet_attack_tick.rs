@@ -127,6 +127,36 @@ async fn process_single_pet_attack(world: &WorldState, pd: &crate::world::PetAtt
         );
         if let Some(updated) = world.get_npc_instance(pd.pet_nid as NpcId) {
             if updated.region_x != pet_npc.region_x || updated.region_z != pet_npc.region_z {
+                // Observers of the new region have never seen this familiar: hand over with
+                // NPC_OUT (old 3x3) and NPC_IN carrying the pet's own model (new 3x3).
+                if let Some(template) = world.get_npc_template(updated.proto_id, updated.is_monster)
+                {
+                    let visual = world.npc_visual_template(&updated, &template);
+                    world.broadcast_to_3x3(
+                        pet_npc.zone_id,
+                        pet_npc.region_x,
+                        pet_npc.region_z,
+                        Arc::new(crate::npc::build_npc_inout(
+                            crate::npc::NPC_OUT,
+                            &pet_npc,
+                            &template,
+                        )),
+                        None,
+                        event_room,
+                    );
+                    world.broadcast_to_3x3(
+                        updated.zone_id,
+                        updated.region_x,
+                        updated.region_z,
+                        Arc::new(crate::npc::build_npc_inout(
+                            crate::npc::NPC_IN,
+                            &updated,
+                            &visual,
+                        )),
+                        None,
+                        event_room,
+                    );
+                }
                 world.broadcast_to_3x3(
                     updated.zone_id,
                     updated.region_x,

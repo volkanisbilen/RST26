@@ -3565,8 +3565,10 @@ fn lua_zone_change_party(lua: &Lua, (uid, zone_id, x, z): (i32, u16, f32, f32)) 
         None => vec![sid],
     };
 
+    // Floor changes inside one dungeon (Desperation/Hell Abyss key floors) are same-zone moves,
+    // which the non-force teleport silently skips.
     for member_sid in members {
-        crate::handler::zone_change::server_teleport_to_zone(&w, member_sid, zone_id, x, z);
+        crate::handler::zone_change::server_teleport_to_zone_force(&w, member_sid, zone_id, x, z);
     }
     Ok(())
 }
