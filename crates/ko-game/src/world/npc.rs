@@ -1300,6 +1300,33 @@ impl WorldState {
         (ac + flat).max(0) as i32
     }
 
+    /// Movement multiplier from an NPC's debuffs: `0.0` while stunned (STUN 47), otherwise
+    /// the strongest SPEED(6)/SPEED2(40) slow from the skill's Type4 `speed` percentage.
+    pub fn npc_move_factor(&self, npc_id: NpcId) -> f32 {
+        let Some(map) = self.npc_buffs.get(&npc_id) else {
+            return 1.0;
+        };
+        let mut factor = 1.0f32;
+        for entry in map.values() {
+            if entry.is_expired() {
+                continue;
+            }
+            match entry.buff_type {
+                47 => return 0.0,
+                6 | 40 => {
+                    if let Some(row) = self.get_magic_type4(entry.skill_id as i32) {
+                        let slow = row.speed.unwrap_or(100) as f32 / 100.0;
+                        if slow < 1.0 {
+                            factor = factor.min(slow.max(0.05));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        factor
+    }
+
     /// Get the number of active buffs on an NPC.
     pub fn npc_buff_count(&self, npc_id: NpcId) -> usize {
         self.npc_buffs

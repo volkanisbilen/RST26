@@ -61,18 +61,10 @@ fn process_buff_tick(world: &WorldState) {
         world.set_user_ability(sid);
         world.send_item_move_refresh(sid);
 
-        if let Some((pos, sender_event_room)) =
-            world.with_session(sid, |h| (h.position, h.event_room))
-        {
-            world.broadcast_to_3x3(
-                pos.zone_id,
-                pos.region_x,
-                pos.region_z,
-                Arc::new(pkt),
-                None,
-                sender_event_room,
-            );
-        }
+        // Only the buff owner learns about the expiry (C++ sends it to the target
+        // alone). A region broadcast makes every nearby client drop its own buff of
+        // the same type, e.g. their Swift when someone's short slow runs out.
+        world.send_to_session_owned(sid, pkt);
 
         // A regular buff can temporarily replace an item scroll in the same
         // buff slot. When that replacement expires, restore the still-live
@@ -84,7 +76,7 @@ fn process_buff_tick(world: &WorldState) {
             world.recast_lockable_scrolls(sid, buff.buff_type);
         }
 
-        tracing::debug!(
+        tracing::info!(
             "[sid={}] buff expired: buff_type={} skill_id={}",
             sid,
             buff.buff_type,

@@ -193,6 +193,18 @@ impl WorldState {
     ///
     pub fn apply_buff(&self, sid: SessionId, buff: ActiveBuff) {
         if let Some(mut handle) = self.sessions.get_mut(&sid) {
+            if matches!(buff.buff_type, 6 | 40) {
+                let replaced = handle.buffs.get(&buff.buff_type).map(|b| b.skill_id);
+                tracing::info!(
+                    "[sid={}] speed buff applied: buff_type={} skill_id={} duration={}s speed={} replaced_skill={:?}",
+                    sid,
+                    buff.buff_type,
+                    buff.skill_id,
+                    buff.duration_secs,
+                    buff.speed,
+                    replaced
+                );
+            }
             handle.buffs.insert(buff.buff_type, buff);
         }
     }
@@ -1609,7 +1621,11 @@ impl WorldState {
             return 0;
         }
 
+        /// `BUFF_TYPE_HP_MP` (max HP/MP buff scrolls).
+        const BUFF_TYPE_HP_MP_RECAST: i32 = 1;
+
         let mut recast_count: u32 = 0;
+        let mut hp_buff_recast = false;
 
         for (skill_id, remaining_secs) in &entries {
             // Look up Type4 buff data for the skill
@@ -1720,6 +1736,12 @@ impl WorldState {
             }
 
             recast_count += 1;
+            if type4.buff_type == Some(BUFF_TYPE_HP_MP_RECAST)
+                || type4.max_hp.unwrap_or(0) > 0
+                || type4.max_hp_pct.unwrap_or(100) > 100
+            {
+                hp_buff_recast = true;
+            }
             tracing::debug!(
                 "[sid={}] recast_saved_magic: restored skill_id={} buff_type={:?} remaining={}s",
                 sid,
@@ -1727,6 +1749,25 @@ impl WorldState {
                 type4.buff_type,
                 remaining_secs,
             );
+        }
+
+        if recast_count > 0 {
+            // The client learns the new max HP/MP from the item-move refresh; without it
+            // the restored scrolls show their icons but the bars keep the unbuffed maximum.
+            self.send_item_move_refresh(sid);
+
+            // C++ ExecuteType4: an HP/MP buff that is recast also restores HP to the new maximum.
+            if hp_buff_recast {
+                if let Some(ch) = self.get_character_info(sid) {
+                    if ch.hp > 0 {
+                        self.update_character_hp(sid, ch.max_hp);
+                        self.send_to_session_owned(
+                            sid,
+                            crate::systems::regen::build_hp_change_packet(ch.max_hp, ch.max_hp),
+                        );
+                    }
+                }
+            }
         }
 
         recast_count

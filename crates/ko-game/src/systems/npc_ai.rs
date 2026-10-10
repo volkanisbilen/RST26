@@ -630,7 +630,11 @@ fn npc_moving(
         }
     }
 
-    let step_dist = tmpl.speed_1 as f32 * (MONSTER_SPEED as f32 / 1000.0);
+    let move_factor = world.npc_move_factor(npc_id);
+    if move_factor == 0.0 {
+        return Some(500);
+    }
+    let step_dist = tmpl.speed_1 as f32 * (MONSTER_SPEED as f32 / 1000.0) * move_factor;
     let dx = ai.dest_x - ai.cur_x;
     let dz = ai.dest_z - ai.cur_z;
     let remaining = (dx * dx + dz * dz).sqrt();
@@ -1040,7 +1044,11 @@ fn npc_tracing(
         return Some(tmpl.stand_time as u64);
     }
 
-    let speed = tmpl.speed_2 as f32 * (MONSTER_SPEED as f32 / 1000.0);
+    let trace_factor = world.npc_move_factor(npc_id);
+    if trace_factor == 0.0 {
+        return Some(500);
+    }
+    let speed = tmpl.speed_2 as f32 * (MONSTER_SPEED as f32 / 1000.0) * trace_factor;
 
     // Check if target has moved enough to warrant path recalculation
     let target_moved_dx = target_pos.x - ai.path_target_x;
@@ -1169,6 +1177,11 @@ async fn npc_fighting(
     ai: &NpcAiState,
     tmpl: &NpcTemplate,
 ) -> Option<u64> {
+    // A stunned monster (Type4 STUN debuff) cannot attack.
+    if world.npc_move_factor(npc_id) == 0.0 {
+        return Some(500);
+    }
+
     // NPC-vs-NPC fighting path
     if let Some(npc_target) = ai.npc_target_id {
         return npc_fighting_npc(world, npc_id, ai, tmpl, npc_target);
