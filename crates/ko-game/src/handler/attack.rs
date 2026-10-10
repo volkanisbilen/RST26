@@ -2062,7 +2062,7 @@ async fn handle_npc_attack(
 
     // Apply monster defense multiplier to NPC AC
     // War buff: nation NPCs get AC × 1.2 during war (ChangeAbility).
-    let raw_npc_ac = world.get_npc_war_ac(&tmpl);
+    let raw_npc_ac = world.apply_npc_buff_ac(npc_id, world.get_npc_war_ac(&tmpl));
     let npc_ac = (raw_npc_ac as f64 * world.get_mon_def_multiplier()) as i32;
 
     let temp_hit_b = if npc_ac + 240 > 0 {

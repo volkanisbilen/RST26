@@ -1276,6 +1276,30 @@ impl WorldState {
             .unwrap_or(false)
     }
 
+    /// NPC defense after its active AC buffs/debuffs (`BUFF_TYPE_AC` = 2), e.g.
+    /// Torment's `ac_pct = 70` lowers a monster's defense to 70%.
+    pub fn apply_npc_buff_ac(&self, npc_id: NpcId, base_ac: i32) -> i32 {
+        const BUFF_TYPE_AC: i32 = 2;
+        let Some(map) = self.npc_buffs.get(&npc_id) else {
+            return base_ac;
+        };
+        let mut ac = base_ac as i64;
+        let mut flat = 0i64;
+        for entry in map.values() {
+            if entry.buff_type != BUFF_TYPE_AC || entry.is_expired() {
+                continue;
+            }
+            if let Some(row) = self.get_magic_type4(entry.skill_id as i32) {
+                let pct = row.ac_pct.unwrap_or(100) as i64;
+                if pct > 0 && pct != 100 {
+                    ac = ac * pct / 100;
+                }
+                flat += row.ac.unwrap_or(0) as i64;
+            }
+        }
+        (ac + flat).max(0) as i32
+    }
+
     /// Get the number of active buffs on an NPC.
     pub fn npc_buff_count(&self, npc_id: NpcId) -> usize {
         self.npc_buffs

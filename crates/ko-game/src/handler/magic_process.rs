@@ -1015,6 +1015,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 return Ok(());
             }
 
+            // Second effect of dual-type skills (damage + slow/stun, hit + DOT).
+            let secondary = secondary_skill_type(&world, &skill);
+            if secondary != 0 {
+                dispatch_skill_type(&world, sid, &mut instance, &skill, secondary).await;
+            }
+
             // ── Consume item after successful cast ──────────────────
             // Called for all non-type2 skills (type2 = heal/buff, no item consumed)
             if skill_type != 2 && !is_unlocked_manes_magic {
@@ -1471,6 +1477,42 @@ async fn execute_skill(
         }
     }
 
+    dispatch_skill_type(world, caster_sid, instance, skill, skill_type).await
+}
+
+/// Second effect of a dual-type skill (C++ `ExecuteSkill(pSkill.bType[1])`), e.g. an
+/// attack that also slows (Type4) or poisons (Type3).
+///
+/// The seeded magic table stores that second type in `etc` (3 or 4) and leaves
+/// `type2` at 0, so `etc` is honoured only for attack skills (Type1/2/3) whose
+/// matching Type3/Type4 detail row exists.
+fn secondary_skill_type(world: &WorldState, skill: &MagicRow) -> u8 {
+    let primary = skill.type1.unwrap_or(0);
+    let explicit = skill.type2.unwrap_or(0);
+    if explicit != 0 {
+        return if matches!(explicit, 3 | 4) && explicit != primary {
+            explicit as u8
+        } else {
+            0
+        };
+    }
+    if !matches!(primary, 1..=3) {
+        return 0;
+    }
+    match skill.etc.unwrap_or(0) {
+        3 if primary != 3 && world.get_magic_type3(skill.magic_num).is_some() => 3,
+        4 if world.get_magic_type4(skill.magic_num).is_some() => 4,
+        _ => 0,
+    }
+}
+
+async fn dispatch_skill_type(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &mut MagicInstance,
+    skill: &MagicRow,
+    skill_type: u8,
+) -> bool {
     match skill_type {
         1 => execute_type1(world, caster_sid, instance, skill).await,
         2 => execute_type2(world, caster_sid, instance, skill).await,
@@ -1534,7 +1576,7 @@ async fn execute_type1(
                 .and_then(|n| world.get_npc_template(n.proto_id, n.is_monster))
                 .map(|tmpl| {
                     // War buff: nation NPCs get AC × 1.2 during war (ChangeAbility).
-                    let raw_ac = world.get_npc_war_ac(&tmpl);
+                    let raw_ac = world.apply_npc_buff_ac(npc_id, world.get_npc_war_ac(&tmpl));
                     (raw_ac as f64 * world.get_mon_def_multiplier()) as i32
                 })
                 .unwrap_or(0);
@@ -2055,7 +2097,10 @@ async fn execute_type1_aoe(
         // Compute damage against NPC
         let npc_ac = world
             .get_npc_template(npc.proto_id, npc.is_monster)
-            .map(|tmpl| (tmpl.ac as f64 * world.get_mon_def_multiplier()) as i32)
+            .map(|tmpl| {
+                let raw_ac = world.apply_npc_buff_ac(npc_id, tmpl.ac as i32);
+                (raw_ac as f64 * world.get_mon_def_multiplier()) as i32
+            })
             .unwrap_or(0);
 
         let base_damage = compute_type1_hit_damage(
@@ -2238,7 +2283,7 @@ async fn execute_type2(
             npc.and_then(|n| world.get_npc_template(n.proto_id, n.is_monster))
                 .map(|tmpl| {
                     // War buff: nation NPCs get AC × 1.2 during war (ChangeAbility).
-                    let raw_ac = world.get_npc_war_ac(&tmpl);
+                    let raw_ac = world.apply_npc_buff_ac(npc_id, world.get_npc_war_ac(&tmpl));
                     (raw_ac as f64 * world.get_mon_def_multiplier()) as i32
                 })
                 .unwrap_or(0)
@@ -3074,8 +3119,10 @@ async fn execute_type3(
         // Hoist caster magic attack buff — used by both direct damage and DOT paths
         let caster_mag_atk = world.get_buff_magic_attack_amount(caster_sid);
 
+        // Durational skills (duration != 0) skip the direct-type switch in C++:
+        // only the first damage is applied and then the DOT is registered.
         match direct_type {
-            2 => {
+            2 if duration == 0 => {
                 // Player target: change MP by sFirstDamage amount
                 let target_refresh = world
                     .get_character_info(target_sid)
@@ -3089,7 +3136,7 @@ async fn execute_type3(
                 send_target_hp_update(world, caster_sid, target_sid, first_damage.abs());
                 return true;
             }
-            5 => {
+            5 if duration == 0 => {
                 let damage = if first_damage < 100 {
                     // Percentage of current HP
                     (first_damage as i32 * target.hp as i32) / -100
@@ -4227,7 +4274,16 @@ fn execute_type4(
     }
 
     // ── Self-buff ───────────────────────────────────────────────────
-    if moral == MORAL_SELF {
+    // Item scroll morals 8 and 31..=36 have no dedicated branch in C++ either:
+    // with no explicit target the buff lands on the caster.
+    if moral == MORAL_SELF || moral == 8 || (31..=36).contains(&moral) {
+        // C++ CheckType4Prerequisites: a buff of the same type that is already
+        // active cannot be cast again. Failing here keeps the scroll item.
+        if type4_buff_already_active(world, caster_sid, &type4_data) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+
         let duration = type4_data.duration.unwrap_or(0).max(0) as u16;
 
         instance.data[1] = 1; // bResult = success
@@ -4411,24 +4467,9 @@ fn execute_type4(
             }
         }
 
-        {
-            let bt = type4_data.buff_type.unwrap_or(0);
-            if bt == BUFF_TYPE_SPEED && world.has_buff(target_sid, BUFF_TYPE_SPEED2) {
-                return false;
-            }
-            if bt == BUFF_TYPE_SPEED2 && world.has_buff(target_sid, BUFF_TYPE_SPEED) {
-                return false;
-            }
-        }
-
-        {
-            let bt = type4_data.buff_type.unwrap_or(0);
-            if bt > 0
-                && world.has_buff(target_sid, bt)
-                && !can_refresh_same_item_scroll(world, target_sid, bt, skill)
-            {
-                return false;
-            }
+        if type4_buff_already_active(world, target_sid, &type4_data) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
         }
 
         let duration = type4_data.duration.unwrap_or(0).max(0) as u16;
@@ -4616,18 +4657,12 @@ fn execute_type4(
 
                     // newrand = rand + (percentagerate * 3)
                     // if icelightrate > newrand → debuff applies, else resisted
-                    let icelightrate = skill.icelightrate.unwrap_or(0) as i32;
-                    if icelightrate > 0 {
-                        let newrand = rand_val + (percentagerate * 3);
-                        if icelightrate <= newrand {
-                            // Debuff resisted — broadcast no-effect
-                            instance.data[1] = 0;
-                            let pkt = instance.build_packet(MAGIC_EFFECTING);
-                            broadcast_to_caster_region(world, caster_sid, &pkt);
-                            return true;
-                        }
-                    } else {
-                        // the skill cannot apply the debuff at all
+                    if !ice_light_speed_succeeds(
+                        skill.icelightrate.unwrap_or(0) as i32,
+                        percentagerate,
+                        rand_val,
+                    ) {
+                        // Debuff resisted — broadcast no-effect
                         instance.data[1] = 0;
                         let pkt = instance.build_packet(MAGIC_EFFECTING);
                         broadcast_to_caster_region(world, caster_sid, &pkt);
@@ -4694,7 +4729,11 @@ fn execute_type4(
             None => return false,
         };
 
-        // Self-area: always include caster
+        // Self-area: always include caster (unless the same buff is already active)
+        if moral == MORAL_SELF_AREA && type4_buff_already_active(world, caster_sid, &type4_data) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
         if moral == MORAL_SELF_AREA {
             let buff = create_active_buff(
                 instance.skill_id,
@@ -4897,12 +4936,22 @@ fn execute_type4(
                             let mut rng = rand::thread_rng();
                             rng.gen_range(0..=10000)
                         };
-                        let icelightrate = skill.icelightrate.unwrap_or(0) as i32;
-                        if icelightrate <= 0 || icelightrate <= rand_val + (percentagerate * 3) {
+                        if !ice_light_speed_succeeds(
+                            skill.icelightrate.unwrap_or(0) as i32,
+                            percentagerate,
+                            rand_val,
+                        ) {
                             continue; // Debuff resisted for this AOE target
                         }
                     }
                 }
+            }
+
+            // Buffs (non-debuff area skills) never stack on a target that has them;
+            // debuffs refresh instead.
+            if moral != MORAL_AREA_ENEMY && type4_buff_already_active(world, target_sid, &type4_data)
+            {
+                continue;
             }
 
             // M3: Break stealth on AOE hit for enemy targets
@@ -4937,6 +4986,50 @@ fn execute_type4(
             }
         }
 
+        // Area debuffs also hit monsters (C++ collects NPCs from the surrounding regions).
+        let npc_buff_type = type4_data.buff_type.unwrap_or(0);
+        if moral == MORAL_AREA_ENEMY && npc_buff_type > 0 && npc_buff_type != BUFF_TYPE_FREEZE {
+            // C++: speed/stun style debuffs reach 3 units further on NPC targets.
+            let npc_radius = if matches!(
+                npc_buff_type,
+                BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2 | BUFF_TYPE_STUN
+            ) {
+                radius + 3.0
+            } else {
+                radius
+            };
+            let npc_radius_sq = npc_radius * npc_radius;
+            let npc_duration = type4_data.duration.unwrap_or(0).max(0) as u32;
+            for npc_id in world.get_nearby_npc_ids(
+                caster_pos.zone_id,
+                caster_pos.region_x,
+                caster_pos.region_z,
+                caster_event_room,
+            ) {
+                let Some(npc) = world.get_npc_instance(npc_id) else {
+                    continue;
+                };
+                if !npc.is_monster || !matches!(world.get_npc_hp(npc_id), Some(hp) if hp > 0) {
+                    continue;
+                }
+                let ndx = aoe_x - npc.x;
+                let ndz = aoe_z - npc.z;
+                if npc_radius_sq > 0.0 && ndx * ndx + ndz * ndz > npc_radius_sq {
+                    continue;
+                }
+                world.apply_npc_buff(
+                    npc_id,
+                    NpcBuffEntry {
+                        skill_id: instance.skill_id,
+                        buff_type: npc_buff_type,
+                        start_time: std::time::Instant::now(),
+                        duration_secs: npc_duration,
+                    },
+                );
+                world.notify_npc_damaged(npc_id, caster_sid);
+            }
+        }
+
         instance.data[1] = 1;
         instance.data[3] = type4_data.duration.unwrap_or(0).max(0) as i32;
         instance.data[5] = type4_data.speed.unwrap_or(0) as i32;
@@ -4956,6 +5049,15 @@ fn execute_type4(
     true
 }
 
+/// C++ `CheckIceLightSpeed`: the SPEED/SPEED2/STUN debuff lands when
+/// `icelightrate > rand(0..=10000) + resist% * 3`. Skill rows without an
+/// explicit rate (0, as in the seeded magic table) are treated as the maximum
+/// rate so slows, freezes and stuns still apply and only resistance reduces them.
+fn ice_light_speed_succeeds(icelightrate: i32, resist_percent: i32, rand_val: i32) -> bool {
+    let rate = if icelightrate > 0 { icelightrate } else { 10000 };
+    rate > rand_val + resist_percent * 3
+}
+
 /// Check whether a skill ID is a "rush" skill that bypasses debuff resistance.
 /// Rush skills: warrior charge variants (114509, 115509, 214509, 215509).
 fn is_rush_skill(skill_id: u32) -> bool {
@@ -4973,20 +5075,8 @@ fn grant_type4_buff_to_target(
     type4_data: &ko_db::models::MagicType4Row,
     duration: u16,
 ) {
-    // SPEED / SPEED2 mutual exclusion
-    let bt = type4_data.buff_type.unwrap_or(0);
-    if bt == BUFF_TYPE_SPEED && world.has_buff(target_sid, BUFF_TYPE_SPEED2) {
-        return;
-    }
-    if bt == BUFF_TYPE_SPEED2 && world.has_buff(target_sid, BUFF_TYPE_SPEED) {
-        return;
-    }
-
-    // Duplicate buff rejection
-    if bt > 0
-        && world.has_buff(target_sid, bt)
-        && !can_refresh_same_item_scroll(world, target_sid, bt, skill)
-    {
+    // Same-type buff already active (or SPEED/SPEED2 conflict): skip this member.
+    if type4_buff_already_active(world, target_sid, type4_data) {
         return;
     }
 
@@ -5012,20 +5102,20 @@ fn grant_type4_buff_to_target(
     }
 }
 
-/// A second successful use of the same buff scroll refreshes its duration;
-/// ordinary class buffs still retain the normal duplicate-buff rejection.
-fn can_refresh_same_item_scroll(
+/// True when `target_sid` already has a Type4 buff of the same type (or the
+/// conflicting SPEED/SPEED2 pair), so the cast must be refused.
+fn type4_buff_already_active(
     world: &WorldState,
     target_sid: SessionId,
-    buff_type: i32,
-    skill: &MagicRow,
+    type4_data: &ko_db::models::MagicType4Row,
 ) -> bool {
-    let skill_id = skill.magic_num as u32;
-    is_item_type4_scroll(skill, skill_id)
-        && world
-            .get_active_buffs(target_sid)
-            .iter()
-            .any(|buff| buff.buff_type == buff_type && buff.skill_id == skill_id)
+    let bt = type4_data.buff_type.unwrap_or(0);
+    if bt <= 0 {
+        return false;
+    }
+    (bt == BUFF_TYPE_SPEED && world.has_buff(target_sid, BUFF_TYPE_SPEED2))
+        || (bt == BUFF_TYPE_SPEED2 && world.has_buff(target_sid, BUFF_TYPE_SPEED))
+        || world.has_buff(target_sid, bt)
 }
 
 /// Apply a legitimate Type-4 support skill cast by a runtime bot.
