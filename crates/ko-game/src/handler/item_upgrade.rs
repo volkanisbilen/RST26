@@ -3334,6 +3334,39 @@ async fn send_pet_transform_fail(session: &mut ClientSession) -> anyhow::Result<
     Ok(())
 }
 
+/// The client's `Pet_exchange.tbl` (CN3TableBase<TABL_PET_EXCHANG>): before sending a pet
+/// transform request it replaces each inventory item id (left) with the exchange id (right).
+/// Both ids therefore refer to the same inventory item. Items not listed map to themselves.
+const PET_EXCHANGE_MAP: &[(u32, u32)] = &[
+    (700019000, 700019001),
+    (700033000, 700033015),
+    (700034000, 700034016),
+    (700035000, 700035017),
+    (508090000, 508090019),
+    (700036000, 700036018),
+    (700044000, 700044028),
+    (700045000, 700045029),
+    (700046000, 700046030),
+    (700048000, 700048031),
+    (810447000, 810447032),
+    (810633000, 810633033),
+    (810631000, 810631034),
+    (820634000, 820634035),
+];
+
+/// Exchange id the client sends for an inventory item.
+fn pet_exchange_request_id(item_id: u32) -> u32 {
+    PET_EXCHANGE_MAP
+        .iter()
+        .find(|(inv, _)| *inv == item_id)
+        .map(|(_, req)| *req)
+        .unwrap_or(item_id)
+}
+
+fn is_pet_exchange_request_id(item_id: u32) -> bool {
+    PET_EXCHANGE_MAP.iter().any(|(_, req)| *req == item_id)
+}
+
 /// Try the known request layouts (NPC id width, item/slot pair width) and return the first one
 /// in which every non-zero item id exists in the item table.
 fn parse_pet_transform_request(
@@ -3361,7 +3394,7 @@ fn parse_pet_transform_request(
         if non_zero >= 2
             && items
                 .iter()
-                .all(|&id| id == 0 || world.get_item(id).is_some())
+                .all(|&id| id == 0 || world.get_item(id).is_some() || is_pet_exchange_request_id(id))
         {
             return Some((items, slots));
         }
@@ -3416,8 +3449,8 @@ async fn pet_image_transform(
         if item_ids[i] == 0 {
             continue;
         }
-        // Item must exist in item table
-        if world.get_item(item_ids[i]).is_none() {
+        // Item must exist in item table (exchange ids are request-only ids, see PET_EXCHANGE_MAP)
+        if world.get_item(item_ids[i]).is_none() && !is_pet_exchange_request_id(item_ids[i]) {
             warn!("[sid={}] pet_image_transform fail: item {} unknown (idx {})", sid, item_ids[i], i);
             return send_pet_transform_fail(session).await;
         }
@@ -3434,7 +3467,8 @@ async fn pet_image_transform(
         let inv_item = world
             .get_inventory_slot(sid, actual_slot)
             .unwrap_or_default();
-        if inv_item.item_id != item_ids[i]
+        if (inv_item.item_id != item_ids[i]
+            && pet_exchange_request_id(inv_item.item_id) != item_ids[i])
             || inv_item.flag == ITEM_FLAG_BOUND
             || inv_item.flag == ITEM_FLAG_DUPLICATE
             || inv_item.flag == ITEM_FLAG_RENTED
@@ -3566,8 +3600,12 @@ async fn pet_image_transform(
 
     // Consume catalyst item (slot 1) — decrement count
     let catalyst_slot = SLOT_MAX + slot_pos[scroll_idx] as usize;
+    let catalyst_item_id = world
+        .get_inventory_slot(sid, catalyst_slot)
+        .unwrap_or_default()
+        .item_id;
     world.update_inventory(sid, |inv| {
-        if catalyst_slot < inv.len() && inv[catalyst_slot].item_id == item_ids[scroll_idx] {
+        if catalyst_slot < inv.len() && inv[catalyst_slot].item_id == catalyst_item_id {
             if inv[catalyst_slot].count > 1 {
                 inv[catalyst_slot].count -= 1;
             } else {
