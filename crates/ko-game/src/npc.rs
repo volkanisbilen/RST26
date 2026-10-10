@@ -331,6 +331,10 @@ fn write_npc_info_type15(pkt: &mut Packet, npc: &NpcInstance, tmpl: &NpcTemplate
                              // Owner name + Pet name — SByte mode: u8 length prefix (NOT u16)
         pkt.write_sbyte_string(&npc.user_name);
         pkt.write_sbyte_string(&npc.pet_name);
+        // The 2625 client reads one more u32 here for type 15 (NPC-in parser, after the pet name
+        // string); 0 means "no skin". Without it every later field shifts by 4 bytes and the pet
+        // is created at the map origin with a wrong nation/level.
+        pkt.write_u32(0);
         pkt.write_u8(npc.nation);
         pkt.write_u8(tmpl.level);
         pkt.write_u16((npc.x * 10.0) as u16);
@@ -1038,6 +1042,9 @@ mod tests {
         // Pet name — SByte mode
         let pet_name = r.read_sbyte_string().unwrap();
         assert_eq!(pet_name, "Fluffy");
+
+        // 2625 client reads one extra u32 (pet skin, 0 = none) after the pet name
+        assert_eq!(r.read_u32(), Some(0));
 
         // nation
         assert_eq!(r.read_u8(), Some(2));
