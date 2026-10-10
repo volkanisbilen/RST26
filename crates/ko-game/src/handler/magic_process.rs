@@ -167,6 +167,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Pet summon skill: Type 9 state_change=8 is not stealth.
     // Route it to the runtime pet NPC spawn path.
     if skill_id == 500117 && b_opcode == MAGIC_EFFECTING {
+        tracing::info!("[sid={}] PET_SUMMON skill 500117 received, routing to pet summon", sid);
         let empty_data: [u8; 0] = [];
         let mut pet_reader = PacketReader::new(&empty_data);
 

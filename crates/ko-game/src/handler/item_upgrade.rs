@@ -3334,6 +3334,41 @@ async fn send_pet_transform_fail(session: &mut ClientSession) -> anyhow::Result<
     Ok(())
 }
 
+/// Try the known request layouts (NPC id width, item/slot pair width) and return the first one
+/// in which every non-zero item id exists in the item table.
+fn parse_pet_transform_request(
+    world: &crate::world::WorldState,
+    raw: &[u8],
+) -> Option<([u32; 4], [u8; 4])> {
+    for (npc_width, pair_width) in [(2usize, 5usize), (4, 5), (0, 5), (2, 6), (4, 6), (0, 6)] {
+        if raw.len() < npc_width + pair_width * 4 {
+            continue;
+        }
+        let mut items = [0u32; 4];
+        let mut slots = [0u8; 4];
+        let mut offset = npc_width;
+        for i in 0..4 {
+            items[i] = u32::from_le_bytes([
+                raw[offset],
+                raw[offset + 1],
+                raw[offset + 2],
+                raw[offset + 3],
+            ]);
+            slots[i] = raw[offset + 4];
+            offset += pair_width;
+        }
+        let non_zero = items.iter().filter(|&&id| id != 0).count();
+        if non_zero >= 2
+            && items
+                .iter()
+                .all(|&id| id == 0 || world.get_item(id).is_some())
+        {
+            return Some((items, slots));
+        }
+    }
+    None
+}
+
 /// Handle pet image transform — change pet appearance via transform recipe.
 /// Packet format (from client, after sub-opcode):
 /// ```text
@@ -3352,15 +3387,29 @@ async fn pet_image_transform(
     // the client's Hatching/transform exchange packet. Reading four bytes
     // here shifted every item/slot pair and made valid transform scrolls look
     // like item IDs that do not exist.
-    let _npc_id = reader.read_u16().unwrap_or(0);
-
-    // Read 4 item/slot pairs
-    let mut item_ids: [u32; 4] = [0; 4];
-    let mut slot_pos: [u8; 4] = [0; 4];
-    for i in 0..4 {
-        item_ids[i] = reader.read_u32().unwrap_or(0);
-        slot_pos[i] = reader.read_u8().unwrap_or(0);
+    //
+    // The exact request layout differs between client builds, so the payload is captured and
+    // the layout whose item ids all exist in the item table is used.
+    let mut raw: Vec<u8> = Vec::new();
+    while let Some(byte) = reader.read_u8() {
+        raw.push(byte);
     }
+    tracing::info!(
+        "[sid={}] pet_image_transform request ({} bytes): {:02X?}",
+        sid,
+        raw.len(),
+        raw
+    );
+    let (item_ids, slot_pos) = match parse_pet_transform_request(&world, &raw) {
+        Some(parsed) => parsed,
+        None => {
+            warn!(
+                "[sid={}] pet_image_transform fail: no request layout matches {:02X?}",
+                sid, raw
+            );
+            return send_pet_transform_fail(session).await;
+        }
+    };
 
     // Validate each provided item (C++ validates non-zero items)
     for i in 0..4 {

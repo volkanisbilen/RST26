@@ -558,7 +558,7 @@ pub(crate) async fn handle_normal_mode(
             let (pos, event_room, owner, mut pet) = match snapshot {
                 Some((pos, event_room, Some(owner), Some(pet))) => (pos, event_room, owner, pet),
                 _ => {
-                    debug!(
+                    tracing::warn!(
                         "[{}] WIZ_PET: summon rejected, owner or pet state missing",
                         session.addr()
                     );
@@ -621,7 +621,7 @@ pub(crate) async fn handle_normal_mode(
                                 event_room,
                             );
                         }
-                        debug!(
+                        tracing::info!(
                             "[{}] WIZ_PET: existing familiar moved beside owner nid={} zone={} x={:.1} z={:.1}",
                             session.addr(), pet.nid, pos.zone_id, near_x, near_z
                         );
