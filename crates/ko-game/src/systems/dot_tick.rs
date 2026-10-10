@@ -10,8 +10,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ko_protocol::{Opcode, Packet};
-
 use crate::handler::dead;
 use crate::magic_constants::{USER_STATUS_CURE, USER_STATUS_DOT, USER_STATUS_POISON};
 use crate::systems::buff_tick::{build_buff_expired_packet, send_user_status_update_packet};
@@ -28,13 +26,39 @@ pub fn start_dot_tick_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()
         let mut interval = tokio::time::interval(Duration::from_secs(DOT_TICK_INTERVAL_SECS));
         loop {
             interval.tick().await;
-            process_dot_tick(&world);
+            let killed = process_dot_tick(&world);
+            for (npc_id, caster_sid) in killed {
+                finish_npc_dot_kill(&world, npc_id, caster_sid).await;
+            }
         }
     })
 }
 
+/// Run the shared NPC death flow (death broadcast, party XP, loot) for an NPC
+/// that a DOT tick reduced to 0 HP.
+async fn finish_npc_dot_kill(world: &WorldState, npc_id: u32, caster_sid: u16) {
+    use crate::handler::attack;
+
+    let Some(npc) = world.get_npc_instance(npc_id) else {
+        return;
+    };
+    let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) else {
+        return;
+    };
+    let manes = attack::is_manes_survival_npc(&npc);
+    attack::handle_npc_death(world, caster_sid, npc_id, &npc, &tmpl, manes).await;
+    if manes {
+        attack::broadcast_npc_death(world, caster_sid, npc_id);
+        attack::flush_manes_progress(world, caster_sid);
+    }
+}
+
 /// Process one DOT/HOT tick — apply HP changes from all active durational skills.
-fn process_dot_tick(world: &WorldState) {
+///
+/// Returns `(npc_id, caster_sid)` for every NPC killed by a DOT this tick so the
+/// caller can run the async death flow.
+fn process_dot_tick(world: &WorldState) -> Vec<(u32, u16)> {
+    let mut killed_npcs: Vec<(u32, u16)> = Vec::new();
     // ── Pre-check temple event is_attackable state (once per tick) ───
     // temple event zones when combat is not allowed.
     let is_event_attackable = world
@@ -265,43 +289,14 @@ fn process_dot_tick(world: &WorldState) {
         // Apply damage (total_damage is negative for DOT)
         let new_hp = (npc_hp + total_damage).max(0);
         world.update_npc_hp(npc_id, new_hp);
+        if total_damage < 0 {
+            let dealt = (npc_hp - new_hp).max(0);
+            world.record_npc_damage(npc_id, caster_sid, dealt);
+        }
 
         if new_hp <= 0 {
-            // NPC died from DOT — broadcast death and award XP
             world.clear_npc_dots(npc_id);
-
-            let mut death_pkt = Packet::new(Opcode::WizDead as u8);
-            death_pkt.write_u32(npc_id);
-
-            if let Some(pos) = world.get_position(caster_sid) {
-                let npc_event_room = world
-                    .get_npc_instance(npc_id)
-                    .map(|n| n.event_room)
-                    .unwrap_or(0);
-                world.broadcast_to_3x3(
-                    pos.zone_id,
-                    pos.region_x,
-                    pos.region_z,
-                    Arc::new(death_pkt),
-                    None,
-                    npc_event_room,
-                );
-            }
-
-            // Award simplified XP from NPC template
-            if let Some(npc) = world.get_npc_instance(npc_id) {
-                if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-                    let exp_amount = (tmpl.level as u32) * (tmpl.level as u32) * 2;
-                    world.update_character_stats(caster_sid, |ch| {
-                        ch.exp = ch.exp.saturating_add(exp_amount as u64);
-                    });
-
-                    let mut exp_pkt = Packet::new(Opcode::WizExpChange as u8);
-                    exp_pkt.write_u8(1);
-                    exp_pkt.write_i64(exp_amount as i64);
-                    world.send_to_session_owned(caster_sid, exp_pkt);
-                }
-            }
+            killed_npcs.push((npc_id, caster_sid));
         } else {
             // NPC survived — notify AI for aggro targeting
             world.notify_npc_damaged(npc_id, caster_sid);
@@ -329,6 +324,8 @@ fn process_dot_tick(world: &WorldState) {
             new_hp
         );
     }
+
+    killed_npcs
 }
 
 /// Send a `MAGIC_DURATION_EXPIRED` packet when a DOT/HOT slot expires.

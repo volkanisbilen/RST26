@@ -2438,6 +2438,122 @@ fn resolve_aoe_center(raw_x: i32, raw_z: i32, caster_x: f32, caster_z: f32) -> (
     }
 }
 
+/// Party members a `MORAL_PARTY_ALL` self-cast reaches: alive, same zone and
+/// within `radius` of the caster (radius 0 = unlimited). Falls back to the caster.
+fn collect_party_all_targets(
+    world: &WorldState,
+    caster_sid: SessionId,
+    radius: f32,
+    skip: impl Fn(SessionId) -> bool,
+) -> Vec<SessionId> {
+    let mut targets: Vec<SessionId> = Vec::with_capacity(8);
+    let party = world
+        .get_character_info(caster_sid)
+        .and_then(|c| c.party_id)
+        .and_then(|pid| world.get_party(pid));
+    if let Some(party) = party {
+        let caster_pos = world.get_position(caster_sid);
+        for &msid in party.members.iter().flatten() {
+            if world.is_player_dead(msid) || skip(msid) {
+                continue;
+            }
+            if msid != caster_sid && radius > 0.0 {
+                if let (Some(cp), Some(tp)) = (&caster_pos, world.get_position(msid)) {
+                    if cp.zone_id != tp.zone_id {
+                        continue;
+                    }
+                    let dx = cp.x - tp.x;
+                    let dz = cp.z - tp.z;
+                    if (dx * dx + dz * dz).sqrt() > radius {
+                        continue;
+                    }
+                }
+            }
+            targets.push(msid);
+        }
+    }
+    if targets.is_empty() {
+        targets.push(caster_sid);
+    }
+    targets
+}
+
+/// Applies a Type3 friendly heal (HP/MP direct part plus HOT) to one target.
+/// Returns false when the target is missing or dead.
+#[allow(clippy::too_many_arguments)]
+fn apply_type3_friendly_heal(
+    world: &WorldState,
+    caster_sid: SessionId,
+    target_sid: SessionId,
+    skill_id: u32,
+    direct_type: i32,
+    first_damage: i32,
+    time_damage: i32,
+    duration: i32,
+    dual_potion_mp: i16,
+) -> bool {
+    let Some(target) = world.get_character_info(target_sid) else {
+        return false;
+    };
+    if target.res_hp_type == USER_DEAD || target.hp <= 0 {
+        return false;
+    }
+
+    let heal_amount = first_damage.unsigned_abs() as i16;
+    if heal_amount > 0 {
+        match direct_type {
+            1 | 0 => {
+                let is_target_undead = world.is_undead(target_sid);
+                let new_hp = if is_target_undead {
+                    (target.hp - heal_amount).max(0)
+                } else {
+                    (target.hp + heal_amount).min(target.max_hp)
+                };
+                world.update_character_hp(target_sid, new_hp);
+
+                let hp_pkt = crate::systems::regen::build_hp_change_packet(target.max_hp, new_hp);
+                world.send_to_session_owned(target_sid, hp_pkt);
+                crate::handler::party::broadcast_party_hp(world, target_sid);
+
+                if is_target_undead && new_hp <= 0 {
+                    dead::broadcast_death(world, target_sid);
+                }
+            }
+            2 => {
+                if target.hp > 0 {
+                    let new_mp = (target.mp + heal_amount).min(target.max_mp);
+                    world.update_character_mp(target_sid, new_mp);
+
+                    let mp_pkt =
+                        crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
+                    world.send_to_session_owned(target_sid, mp_pkt);
+                }
+            }
+            _ => {}
+        }
+        if dual_potion_mp > 0 && target.hp > 0 {
+            let new_mp = (target.mp + dual_potion_mp).min(target.max_mp);
+            world.update_character_mp(target_sid, new_mp);
+            let mp_pkt = crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
+            world.send_to_session_owned(target_sid, mp_pkt);
+        }
+    }
+
+    // HOT (undead: HOT becomes DOT)
+    if time_damage > 0 && duration > 0 {
+        let tick_count = (duration / 2).max(1) as u8;
+        let raw_per_tick =
+            (time_damage / tick_count as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let hp_per_tick = if world.is_undead(target_sid) {
+            -raw_per_tick
+        } else {
+            raw_per_tick
+        };
+        world.add_durational_skill(target_sid, skill_id, hp_per_tick, tick_count, caster_sid);
+    }
+    true
+}
+
 /// Execute Type 3 skill — magical damage, healing, or DOT/HOT.
 /// Handles direct damage, healing, and durational (DOT/HOT) effects.
 /// DOT effects are registered via `world.add_durational_skill()` and
@@ -2709,6 +2825,44 @@ async fn execute_type3(
             }
         }
 
+        // Group cast (target -1): like C++ ExecuteType3, heal the caster and every
+        // party member in range instead of only one target.
+        if moral == MORAL_PARTY_ALL && instance.target_id < 0 {
+            let radius = type3_data.radius.unwrap_or(0) as f32;
+            let stacking_hot = duration > 0 && direct_type == 1;
+            let targets = collect_party_all_targets(world, caster_sid, radius, |sid| {
+                stacking_hot && world.has_active_hot(sid)
+            });
+            let heal_amount = first_damage.unsigned_abs() as i16;
+            instance.data[1] = 1;
+            instance.data[3] = heal_amount as i32;
+            for &t_sid in &targets {
+                if !apply_type3_friendly_heal(
+                    world,
+                    caster_sid,
+                    t_sid,
+                    instance.skill_id,
+                    direct_type,
+                    first_damage,
+                    time_damage,
+                    duration,
+                    dual_potion_mp,
+                ) {
+                    continue;
+                }
+                let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+                pkt.write_u8(MAGIC_EFFECTING);
+                pkt.write_u32(instance.skill_id);
+                pkt.write_u32(instance.caster_id as u32);
+                pkt.write_u32(t_sid as u32);
+                for d in &instance.data {
+                    pkt.write_u32(*d as u32);
+                }
+                broadcast_to_caster_region(world, caster_sid, &pkt);
+            }
+            return true;
+        }
+
         let target_id = instance.target_id;
         let target_sid = if target_id < 0 {
             caster_sid
@@ -2736,66 +2890,17 @@ async fn execute_type3(
         }
 
         let heal_amount = first_damage.unsigned_abs() as i16;
-        if heal_amount > 0 {
-            match direct_type {
-                // DirectType 1: HP heal (default path)
-                1 | 0 => {
-                    let is_target_undead = world.is_undead(target_sid);
-                    let new_hp = if is_target_undead {
-                        (target.hp - heal_amount).max(0)
-                    } else {
-                        (target.hp + heal_amount).min(target.max_hp)
-                    };
-                    world.update_character_hp(target_sid, new_hp);
-
-                    let hp_pkt =
-                        crate::systems::regen::build_hp_change_packet(target.max_hp, new_hp);
-                    world.send_to_session_owned(target_sid, hp_pkt);
-                    crate::handler::party::broadcast_party_hp(world, target_sid);
-
-                    if is_target_undead && new_hp <= 0 {
-                        dead::broadcast_death(world, target_sid);
-                    }
-                }
-                // DirectType 2: MP heal — C++ MagicInstance.cpp:4099-4103
-                2 => {
-                    if target.hp > 0 {
-                        let new_mp = (target.mp + heal_amount).min(target.max_mp);
-                        world.update_character_mp(target_sid, new_mp);
-
-                        let mp_pkt =
-                            crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
-                        world.send_to_session_owned(target_sid, mp_pkt);
-                    }
-                }
-                _ => {}
-            }
-            if dual_potion_mp > 0 && target.hp > 0 {
-                let new_mp = (target.mp + dual_potion_mp).min(target.max_mp);
-                world.update_character_mp(target_sid, new_mp);
-                let mp_pkt = crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
-                world.send_to_session_owned(target_sid, mp_pkt);
-            }
-        }
-
-        // Register HOT if time_damage > 0 and duration > 0 (undead: HOT becomes DOT)
-        if time_damage > 0 && duration > 0 {
-            let tick_count = (duration / 2).max(1) as u8;
-            let raw_per_tick =
-                (time_damage / tick_count as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            let hp_per_tick = if world.is_undead(target_sid) {
-                -raw_per_tick
-            } else {
-                raw_per_tick
-            };
-            world.add_durational_skill(
-                target_sid,
-                instance.skill_id,
-                hp_per_tick,
-                tick_count,
-                caster_sid,
-            );
-        }
+        apply_type3_friendly_heal(
+            world,
+            caster_sid,
+            target_sid,
+            instance.skill_id,
+            direct_type,
+            first_damage,
+            time_damage,
+            duration,
+            dual_potion_mp,
+        );
 
         instance.data[3] = heal_amount as i32;
 
@@ -3867,8 +3972,7 @@ fn build_npc_ctx(
 /// 3. Resistance formula: 485×total_hit/(total_r+510)
 /// 4. Class coefficient multiplier (PvP only)
 /// 5. Randomization: rand(0,damage/2)×0.1 + damage×0.85 − sMagicAmount
-/// 6. Warrior magic vs NPC zeroing (int32(0.50f) = 0)
-///    - 6a: Weapon damage reduction (line 6616-6619) — subtracts weapon-based damage
+/// 6. Weapon damage reduction (line 6616-6619) — subtracts weapon-based damage
 /// 7. Warrior no-weapon halving + AC boost
 /// 8. Player targets /3 (NPC damage is not divided)
 /// 10. MAX_DAMAGE cap (32000)
@@ -3942,11 +4046,8 @@ fn compute_magic_damage(
     };
     damage = (random as f32 * 0.1 + damage as f32 * 0.85) as i32 - s_magic_amount;
 
-    // ── Step 6: Warrior magic vs NPC zeroing ──────────────────────────
-    // C++ line 6603-6604: damage *= int32(0.50f) → int32(0.50f) = 0 → damage = 0
-    if is_warrior && ctx.target_kind == MagicTargetKind::Npc {
-        damage = 0;
-    }
+    // The `damage *= int32(0.50f)` warrior-vs-NPC zeroing exists only in the
+    // `#if 0` branch of C++ GetMagicDamage; the active branch does not have it.
 
     // ── Step 6.5: Weapon damage reduction ───────────────────────────────
     // For player casters (not NPC): subtract weapon-based damage from magic damage.
@@ -3963,18 +4064,19 @@ fn compute_magic_damage(
         damage -= (rh_part + attr_part) as i32;
     }
 
-    // Current reference path applies warrior adjustments directly.  Its old
-    // optional mage multiplier block is disabled.
-    if is_warrior {
+    // Weaponless warriors deal half damage (C++: isWarrior && righthand_damage == 0).
+    if is_warrior && ctx.righthand_damage == 0 {
         damage /= 2;
-        if ctx.target_kind == MagicTargetKind::Player && ctx.target_ac_amount < 100 {
-            damage += damage * 30 / 100;
-        }
     }
 
     // Player targets are divided by three; NPC targets retain full PvE damage.
     if ctx.target_kind == MagicTargetKind::Player {
         damage /= 3;
+    }
+
+    // Warrior bonus against low-AC players is applied after the /3 step.
+    if is_warrior && ctx.target_kind == MagicTargetKind::Player && ctx.target_ac_amount < 100 {
+        damage += damage * 30 / 100;
     }
 
     // ── Step 10: Convert from negative domain to positive return ─────
@@ -8782,15 +8884,22 @@ mod tests {
         assert!(dmg_npc > 0, "Mage vs NPC should deal damage: {}", dmg_npc);
     }
 
-    /// Test warrior magic vs NPC target is zeroed.
+    /// A party-all cast with no party (or unknown caster) falls back to the caster.
     #[test]
-    fn test_compute_magic_damage_warrior_vs_npc_zero() {
+    fn test_collect_party_all_targets_falls_back_to_caster() {
+        let world = WorldState::new();
+        let targets = collect_party_all_targets(&world, 7, 30.0, |_| false);
+        assert_eq!(targets, vec![7]);
+    }
+
+    /// Warrior magic vs NPC is not zeroed (the zeroing is only in C++'s `#if 0` branch).
+    #[test]
+    fn test_compute_magic_damage_warrior_vs_npc_not_zero() {
         let ch = make_test_character(101, 90, 60, 30, 20, 10); // warrior
         let ctx = make_test_ctx(MagicTargetKind::Npc);
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let damage = compute_magic_damage(&ch, -200, 0, &ctx, &mut rng);
-        // C++ int32(0.50f) = 0, so damage should be 0
-        assert_eq!(damage, 0, "Warrior magic vs NPC should be 0");
+        assert!(damage > 0, "Warrior magic vs NPC should deal damage: {}", damage);
     }
 
     /// Test MAX_DAMAGE cap (32000).
