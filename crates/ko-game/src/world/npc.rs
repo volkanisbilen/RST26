@@ -766,14 +766,7 @@ impl WorldState {
             gate_pkt.write_u8(1);
             gate_pkt.write_u32(npc.nid);
             gate_pkt.write_u8(1);
-            self.broadcast_to_3x3(
-                ZONE_JURAID,
-                npc.region_x,
-                npc.region_z,
-                Arc::new(gate_pkt),
-                None,
-                room_id,
-            );
+            self.broadcast_to_zone_event_room(ZONE_JURAID, room_id, Arc::new(gate_pkt), None);
 
             tracing::debug!(
                 npc_id = npc.nid,

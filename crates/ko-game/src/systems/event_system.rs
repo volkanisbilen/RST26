@@ -80,7 +80,11 @@ fn spawn_juraid_room_npcs(world: &WorldState) {
             // the Juraid bridge model/collision object; cloning it as K_NPC
             // made the server open the gate while the client kept no walkable
             // bridge. Its zero search range keeps this static gate out of AI.
-            let is_monster = is_wave_monster || is_deva || is_bridge;
+            // Bridge of Summoning (PID 8110) is a world gate, not a combat
+            // target. Sending it through the monster NPC_INOUT layout makes
+            // Z-targeting select it and puts the client into attack mode.
+            // Keep the monster wire layout only for actual combat spawns.
+            let is_monster = is_wave_monster || is_deva;
             let count = if is_wave_monster {
                 row.s_count.max(1) as u16
             } else {
