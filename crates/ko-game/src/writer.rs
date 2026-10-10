@@ -48,21 +48,13 @@ pub async fn writer_loop(
     let mut total_writes: u64 = 0;
 
     while let Some(first_packet) = rx.recv().await {
-        // WIZ_EXT_HOOK is outside this client's native dispatch range.
-        // Do not block 0xC7: it is the native quest-panel opcode used by
-        // Rescuing Sid and the client cannot update that mission without it.
-        if first_packet.opcode == 0xE9 {
-            tracing::debug!(
-                "Writer DROP opcode=0x{:02X} len={} (blocked: causes v2600 client corruption)",
-                first_packet.opcode,
-                first_packet.data.len()
-            );
-            continue;
-        }
-
         buf.clear();
         let seq = sequence.load(Ordering::Acquire);
         let mut batch_count: u32 = 1;
+        let mut hook_routes = Vec::new();
+        if first_packet.opcode == 0xE9 {
+            hook_routes.push((first_packet.data.first().copied(), first_packet.data.len()));
+        }
         total_packets += 1;
 
         tracing::info!(
@@ -88,7 +80,7 @@ pub async fn writer_loop(
         // Drain all additional pending packets (non-blocking)
         while let Ok(packet) = rx.try_recv() {
             if packet.opcode == 0xE9 {
-                continue;
+                hook_routes.push((packet.data.first().copied(), packet.data.len()));
             }
             let seq = sequence.load(Ordering::Acquire);
             batch_count += 1;
@@ -159,6 +151,10 @@ pub async fn writer_loop(
                 batch_count,
             );
             break;
+        }
+        for (sub, bytes) in hook_routes {
+            tracing::info!(target: "hook_protocol", sub, bytes,
+                "HOOK S2C TCP write completed");
         }
     }
     tracing::warn!(
@@ -283,6 +279,35 @@ fn build_frame_plaintext(packet: &Packet, buf: &mut Vec<u8>) -> anyhow::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the actual channel/TCP path: both the first E9 response and a
+    /// queued E9 response used to disappear before build_frame was called.
+    #[tokio::test]
+    async fn extension_responses_reach_tcp_in_order() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let (_, writer) = server.into_split();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let crypto = Arc::new(JvCryption::new());
+        let aes = Arc::new(AesCryption::new());
+        let mut expected = Vec::new();
+        for (opcode, payload) in [(0xE9, vec![0xAE, 1, 0]), (0x10, vec![1]), (0xE9, vec![0xA8, 0])] {
+            let mut packet = Packet::new(opcode);
+            packet.data.extend_from_slice(&payload);
+            build_frame(&crypto, 0, &packet, &mut expected, &aes).unwrap();
+            tx.send(Arc::new(packet)).unwrap();
+        }
+        drop(tx);
+        let task = tokio::spawn(writer_loop(writer, rx, crypto,
+            Arc::new(AtomicU32::new(0)), aes));
+        let mut actual = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(3), client.read_to_end(&mut actual))
+            .await.unwrap().unwrap();
+        task.await.unwrap();
+        assert_eq!(actual, expected);
+    }
 
     /// Unencrypted frame: header(2) + len(2) + opcode(1) + data + footer(2).
     #[test]

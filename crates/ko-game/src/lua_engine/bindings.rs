@@ -1907,9 +1907,28 @@ fn lua_get_premium(lua: &Lua, uid: i32) -> LuaResult<u8> {
 }
 
 fn lua_get_event_trigger(lua: &Lua, uid: i32) -> LuaResult<i32> {
-    Ok(get_world(lua)?
-        .with_session(uid as SessionId, |h| h.event_sid as i32)
-        .unwrap_or(-1))
+    let world = get_world(lua)?;
+    let (event_nid, event_sid) = world
+        .with_session(uid as SessionId, |h| (h.event_nid, h.event_sid))
+        .unwrap_or((0, 0));
+
+    // Abyss gate Lua chooses direction and validates required keys. The
+    // database event_trigger rows map gate trap numbers to these script IDs.
+    if event_sid == 7001 {
+        if let Some(npc) = world.get_npc_instance(event_nid as u32) {
+            if npc.proto_id == 7001 && !npc.is_monster && npc.trap_number > 0 {
+                let trap = npc.trap_number as i32;
+                return Ok(match trap {
+                    1..=20 => 40_000 + trap,
+                    21..=36 => 42_000 + trap - 20,
+                    37..=50 => 43_601 + (trap - 37) * 100,
+                    _ => -1,
+                });
+            }
+        }
+    }
+
+    Ok(event_sid as i32)
 }
 
 fn lua_roll_dice(_lua: &Lua, (_uid, max): (i32, u16)) -> LuaResult<u16> {
@@ -4099,8 +4118,22 @@ fn lua_send_nation_transfer(lua: &Lua, uid: i32) -> LuaResult<()> {
     Ok(())
 }
 
-/// RobAllItemParty(uid, item_id, count) -> bool
-fn lua_rob_all_item_party(lua: &Lua, (uid, item_id, count): (i32, u32, u16)) -> LuaResult<bool> {
+/// RobAllItemParty(uid, item_id [, count]) -> bool
+/// The C++ Lua binding defaults count to 1; preserve that behavior for legacy
+/// quest scripts (notably the Abyss gate script) that pass only two arguments.
+fn lua_rob_all_item_party(lua: &Lua, args: LuaMultiValue) -> LuaResult<bool> {
+    let vals: Vec<LuaValue> = args.into_vec();
+    if vals.len() < 2 {
+        return Ok(false);
+    }
+
+    let uid = lua_val_to_i32(&vals[0])?;
+    let item_id = lua_val_to_u32(&vals[1])?;
+    let count = vals
+        .get(2)
+        .map(|value| lua_val_to_u16(value).unwrap_or(1).max(1))
+        .unwrap_or(1);
+
     let w = get_world(lua)?;
     Ok(w.rob_all_item_party(uid as SessionId, item_id, count))
 }
@@ -7847,6 +7880,31 @@ mod tests {
             })
             .unwrap_or(0);
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_rob_all_item_party_defaults_to_one_when_count_omitted() {
+        let (lua, world) = setup_lua_world();
+        let item_id = 389_010_000u32;
+        insert_test_item(&world, item_id, true);
+        world.give_item(1, item_id, 5);
+
+        let result: bool = lua
+            .load("return RobAllItemParty(1, 389010000)")
+            .eval()
+            .unwrap();
+        assert!(result);
+
+        let count = world
+            .with_session(1, |h| {
+                h.inventory[WorldState::SLOT_MAX..(WorldState::SLOT_MAX + WorldState::HAVE_MAX)]
+                    .iter()
+                    .filter(|s| s.item_id == item_id && s.count > 0)
+                    .map(|s| s.count as u32)
+                    .sum::<u32>()
+            })
+            .unwrap_or(0);
+        assert_eq!(count, 4);
     }
 
     #[test]

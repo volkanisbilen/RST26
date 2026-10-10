@@ -1,0 +1,28 @@
+300080930|31903000|Gold Premium ( 30 Days )
+347100000|34710000|100 TL Voucher
+389196000|38919600|Silvery Gem
+389205000|38920500|Black Gem
+389301000|91001200|Lost Gift
+399281685|39928100|DC premium
+399282686|39928200|EXP premium
+399292764|39929200|war premium
+399295859|39929500|Switching Premium
+399300914|39930000|CLAN premium
+700079000|70007900|Certificate 10000 Knight Cash
+700082000|70008100|Certificate 100 Knight Cash
+700083000|70008200|Certificate 350 Knight Cash
+700084000|70008300|Certificate 700 Knight Cash
+700085000|70008400|Certificate 1000 Knight Cash
+700089000|70008900|Certificate 2000 Knight Cash
+700191000|70019100|Voucher of Genie (15 Days) + Auto Loot (15 Days)
+800170000|80017000|Valkyrie Helmet Certificate
+800180000|80018000|Valkyrie Armor Certificate
+800230000|80023000|Gryphon's Helmet Certificate
+800240000|80024000|Gryphon's armor Certificate
+800260000|80026000|Bahamut Helmet Certificate
+800270000|80027000|Bahamut Armor Certificate
+800440000|90044000|Voucher of Extra Inventory
+810035000|81003500|VIP Package
+810251000|90005300|Voucher of Battle Wings ( 30 Days )
+900000000|90001000|Coin
+900017000|98951100|Certificate of Victory (+0)

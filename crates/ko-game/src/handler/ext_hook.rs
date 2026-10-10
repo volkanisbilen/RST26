@@ -1005,8 +1005,8 @@ pub async fn handle_pus(session: &mut ClientSession, data: &[u8]) -> anyhow::Res
 }
 
 /// PUS sub 0: Send full catalog + categories to client.
-/// Wire format (items): `[0xE9][0xA8][u32 count]([u32 id][u32 item_id][u32 price][i16 cat][i32 buy_count][i16 price_type]) × N`
-/// Wire format (cats):  `[0xE9][0xA9][u32 count]([u32 id][string name][i16 status]) × N`
+/// 2625 proxy items (sub-op 0xA8): `[count]([id][item_id][name][price][u8 category][u32 count][u8 price_type][icon])`.
+/// Categories (sub-op 0xD6): `[count]([id][name][u8 status])`.
 async fn handle_pus_send_catalog(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
 
@@ -1016,12 +1016,27 @@ async fn handle_pus_send_catalog(session: &mut ClientSession) -> anyhow::Result<
     pkt.write_u8(EXT_SUB_PUS);
     pkt.write_u32(items.len() as u32);
     for item in &items {
+        let item_def = world.get_item(item.item_id.max(0) as u32);
+        let display_name = item
+            .item_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| item.item_title.as_deref().filter(|s| !s.trim().is_empty()))
+            .or_else(|| item_def.as_ref().and_then(|i| i.str_name.as_deref()))
+            .unwrap_or("Unknown item");
+        let icon = item_def
+            .as_ref()
+            .and_then(|i| i.item_icon_id1)
+            .unwrap_or(0)
+            .max(0) as u32;
         pkt.write_u32(item.id as u32);
         pkt.write_u32(item.item_id as u32);
+        pkt.write_string(display_name);
         pkt.write_u32(item.price.unwrap_or(0) as u32);
-        pkt.write_i16(item.category);
-        pkt.write_i32(item.buy_count);
-        pkt.write_i16(item.price_type);
+        pkt.write_u8(item.category.clamp(0, u8::MAX as i16) as u8);
+        pkt.write_u32(item.buy_count.max(0) as u32);
+        pkt.write_u8(item.price_type.clamp(0, u8::MAX as i16) as u8);
+        pkt.write_u32(icon);
     }
     session.send_packet(&pkt).await?;
 
@@ -1033,9 +1048,10 @@ async fn handle_pus_send_catalog(session: &mut ClientSession) -> anyhow::Result<
     for cat in &cats {
         cpkt.write_u32(cat.id as u32);
         cpkt.write_string(&cat.category_name);
-        cpkt.write_i16(cat.status);
+        cpkt.write_u8(cat.status.clamp(0, u8::MAX as i16) as u8);
     }
-    session.send_packet(&cpkt).await
+    session.send_packet(&cpkt).await?;
+    send_cash_change(session).await
 }
 
 /// PUS sub 1: Purchase item with KC or TL.
@@ -1123,6 +1139,14 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
                 h.tl_balance = h.tl_balance.saturating_sub(price);
             });
             send_cash_change(session).await?;
+        }
+    }
+    if pus_item.price_type != 0 {
+        let account = session.account_id().unwrap_or("");
+        if !account.is_empty() {
+            let repo = ko_db::repositories::cash_shop::CashShopRepository::new(session.pool());
+            repo.update_kc_balances(account, world.get_knight_cash(sid) as i32,
+                world.get_tl_balance(sid) as i32).await?;
         }
     }
     Ok(())
@@ -1233,12 +1257,134 @@ pub async fn handle_drop_request(session: &mut ClientSession, data: &[u8]) -> an
         2 => handle_drop_cmd2(session, rest).await,
         3 => handle_drop_cmd3(session, rest).await,
         4 => handle_drop_cmd4(session, rest).await,
+        5 => handle_drop_cmd5(session, rest).await,
+        7 => handle_drop_tooltip(session, rest).await,
         _ => Ok(()),
     }
 }
 
-/// Drop command 1: Look up target NPC's drop items.
-/// Wire format: `[0xE9][EXT_SUB_DROP_REQUEST][u8(1)][u16 proto_id]([u32 item_id][u16 percent] × 12)[u8 is_monster]`
+async fn handle_drop_tooltip(session: &mut ClientSession, data: &[u8]) -> anyhow::Result<()> {
+    let Some(id) = ko_protocol::PacketReader::new(data).read_u32() else { return Ok(()); };
+    let Some(item) = session.world().get_item(id) else { return Ok(()); };
+    let mut lines = Vec::new();
+    macro_rules! stat {
+        ($label:expr, $value:expr) => {
+            if let Some(value) = $value.filter(|value| *value != 0) {
+                lines.push(format!("{}: {}", $label, value));
+            }
+        };
+    }
+    stat!("Attack", item.damage); stat!("Defence", item.ac);
+    stat!("Required level", item.req_level);
+    stat!("STR", item.str_b); stat!("HP", item.sta_b); stat!("DEX", item.dex_b);
+    stat!("INT", item.intel_b); stat!("MP", item.cha_b);
+    stat!("Health bonus", item.max_hp_b); stat!("Mana bonus", item.max_mp_b);
+    stat!("Fire damage", item.fire_damage); stat!("Ice damage", item.ice_damage);
+    stat!("Lightning damage", item.lightning_damage); stat!("Poison damage", item.poison_damage);
+    stat!("Fire resistance", item.fire_r); stat!("Cold resistance", item.cold_r);
+    stat!("Lightning resistance", item.lightning_r); stat!("Magic resistance", item.magic_r);
+    stat!("Poison resistance", item.poison_r); stat!("Curse resistance", item.curse_r);
+    stat!("Dagger defence", item.dagger_ac); stat!("Jamadar defence", item.jamadar_ac);
+    stat!("Sword defence", item.sword_ac); stat!("Club defence", item.club_ac);
+    stat!("Axe defence", item.axe_ac); stat!("Spear defence", item.spear_ac); stat!("Bow defence", item.bow_ac);
+    stat!("HP drain", item.hp_drain); stat!("MP drain", item.mp_drain);
+    stat!("Required STR", item.req_str); stat!("Required HP", item.req_sta);
+    stat!("Required DEX", item.req_dex); stat!("Required INT", item.req_intel); stat!("Required MP", item.req_cha);
+    let mut pkt = Packet::new(WIZ_EXT_HOOK);
+    pkt.write_u8(EXT_SUB_DROP_REQUEST); pkt.write_u8(7); pkt.write_u32(id);
+    pkt.write_string(item.str_name.as_deref().unwrap_or("Unknown item"));
+    pkt.write_u32(item.item_icon_id1.unwrap_or(0).max(0) as u32);
+    pkt.write_u8(lines.len() as u8);
+    for line in lines { pkt.write_u8(0); pkt.write_string(&line); }
+    session.send_packet(&pkt).await
+}
+
+/// 2625 panel response: proto, length-prefixed name, level, monster flag, count, then
+/// (item id, chance/10000, icon id, length-prefixed item name) records.
+fn build_drop_panel_response(
+    world: &crate::world::WorldState,
+    proto_id: u16,
+    template: &crate::npc::NpcTemplate,
+    table_index: i16,
+) -> Packet {
+    let pairs = if template.is_monster {
+        world
+            .get_monster_item(table_index)
+            .map(|r| monster_item_pairs(&r).to_vec())
+    } else {
+        world
+            .get_npc_item(table_index)
+            .map(|r| npc_item_pairs(&r).to_vec())
+    }
+    .unwrap_or_default();
+
+    let mut drops: Vec<(u32, u16)> = Vec::new();
+    for (id, chance) in pairs {
+        if id <= 0 || chance <= 0 {
+            continue;
+        }
+        if id < 100 {
+            // Production codes are generated by level/nation, not fixed item groups.
+            drops.push((id as u32, chance.clamp(0, 10000) as u16));
+        } else if id < 100_000_000 {
+            if let Some(group) = world.get_make_item_group(id) {
+                let total = group.items.iter().filter(|id| **id > 0).count() as u32;
+                let mut weights = std::collections::BTreeMap::<u32, u32>::new();
+                for item_id in group.items {
+                    if item_id > 0 {
+                        *weights.entry(item_id as u32).or_default() += 1;
+                    }
+                }
+                for (item, weight) in weights {
+                    drops.push((item, (chance.clamp(0, 10000) as u32 * weight / total) as u16));
+                }
+            }
+        } else {
+            drops.push((id as u32, chance as u16));
+        }
+    }
+
+    let mut pkt = Packet::new(WIZ_EXT_HOOK);
+    pkt.write_u8(EXT_SUB_DROP_REQUEST);
+    pkt.write_u8(1);
+    pkt.write_u16(proto_id);
+    pkt.write_string(&template.name);
+    pkt.write_u16(template.level as u16);
+    pkt.write_u8(u8::from(template.is_monster));
+    let count_offset = pkt.data.len();
+    pkt.write_u16(0);
+    let mut written = 0u16;
+    for (item_id, chance) in drops.into_iter().take(u16::MAX as usize) {
+        let item = world.get_item(item_id);
+        let icon = item
+            .as_ref()
+            .and_then(|i| i.item_icon_id1.or(i.item_icon_id2))
+            .unwrap_or(0)
+            .max(0) as u32;
+        let name = item
+            .as_ref()
+            .and_then(|i| i.str_name.as_deref())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| if item_id < 100 {
+                format!("Random equipment (group {item_id})")
+            } else { format!("Item {item_id}") });
+        // The outer KO frame length is u16; leave room for encryption overhead.
+        if pkt.data.len() + 12 + name.len() > 60_000 {
+            warn!(proto_id, written, "Drop catalog exceeds one client frame; remaining entries omitted");
+            break;
+        }
+        pkt.write_u32(item_id);
+        pkt.write_u16(chance);
+        pkt.write_u32(icon);
+        pkt.write_string(&name);
+        written += 1;
+    }
+    pkt.data[count_offset..count_offset + 2].copy_from_slice(&written.to_le_bytes());
+    pkt
+}
+
+/// Drop command 1: Look up target NPC's drop items by its runtime ID.
 async fn handle_drop_cmd1(session: &mut ClientSession, data: &[u8]) -> anyhow::Result<()> {
     if data.len() < 4 {
         return Ok(());
@@ -1248,50 +1394,15 @@ async fn handle_drop_cmd1(session: &mut ClientSession, data: &[u8]) -> anyhow::R
 
     let world = session.world().clone();
 
-    if target_nid == 0 {
-        return Ok(());
-    }
-
     let npc = match world.get_npc_instance(target_nid) {
         Some(n) => n,
         None => return Ok(()),
     };
-
-    let proto_id = npc.proto_id as i16;
-    let is_monster = if npc.is_monster { 1u8 } else { 0u8 };
-
-    let mut pkt = Packet::new(WIZ_EXT_HOOK);
-    pkt.write_u8(EXT_SUB_DROP_REQUEST);
-    pkt.write_u8(1);
-    pkt.write_u16(proto_id as u16);
-
-    if is_monster == 1 {
-        if let Some(mi) = world.get_monster_item(proto_id) {
-            let items = monster_item_pairs(&mi);
-            for &(item_id, percent) in &items {
-                pkt.write_u32(item_id as u32);
-                pkt.write_u16(percent as u16);
-            }
-        } else {
-            for _ in 0..12 {
-                pkt.write_u32(0);
-                pkt.write_u16(0);
-            }
-        }
-    } else if let Some(ni) = world.get_npc_item(proto_id) {
-        let items = npc_item_pairs(&ni);
-        for &(item_id, percent) in &items {
-            pkt.write_u32(item_id as u32);
-            pkt.write_u16(percent as u16);
-        }
-    } else {
-        for _ in 0..12 {
-            pkt.write_u32(0);
-            pkt.write_u16(0);
-        }
-    }
-
-    pkt.write_u8(is_monster);
+    let template = match world.get_npc_template(npc.proto_id, npc.is_monster) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+    let pkt = build_drop_panel_response(&world, npc.proto_id, &template, template.item_table);
     session.send_packet(&pkt).await
 }
 
@@ -1331,53 +1442,42 @@ async fn handle_drop_cmd3(session: &mut ClientSession, data: &[u8]) -> anyhow::R
 
     let world = session.world().clone();
 
+    let template = match world.get_npc_template(mob_proto, true) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+    let pkt = build_drop_panel_response(&world, mob_proto, &template, template.item_table);
+    session.send_packet(&pkt).await
+}
+
+/// Search live monster prototypes; the result is bounded to fit a single frame.
+async fn handle_drop_cmd5(session: &mut ClientSession, data: &[u8]) -> anyhow::Result<()> {
+    let mut reader = ko_protocol::PacketReader::new(data);
+    let query = match reader.read_string() {
+        Some(query) if query.len() <= 100 => query.trim().to_lowercase(),
+        _ => return Ok(()),
+    };
+    let world = session.world();
+    let mut rows = Vec::new();
+    for proto in 1..=u16::MAX {
+        let Some(template) = world.get_npc_template(proto, true) else { continue; };
+        if query.parse::<u16>().ok() == Some(proto) || template.name.to_lowercase().contains(&query) {
+            rows.push((proto, template));
+            if rows.len() == 100 { break; }
+        }
+    }
     let mut pkt = Packet::new(WIZ_EXT_HOOK);
     pkt.write_u8(EXT_SUB_DROP_REQUEST);
-    pkt.write_u8(1);
-    pkt.write_u16(mob_proto);
-
-    let mi = match world.get_monster_item(mob_proto as i16) {
-        Some(m) => m,
-        None => {
-            // Empty response
-            pkt.write_u32(0); // list size
-            pkt.write_u8(1); // is_monster
-            return session.send_packet(&pkt).await;
-        }
-    };
-
-    let items = monster_item_pairs(&mi);
-    let mut drop_list: Vec<(u32, u16)> = Vec::new();
-    let mut added_random = false;
-    const MIN_ITEM_ID: i32 = 100000000;
-
-    for &(item_id, percent) in &items {
-        if item_id == 0 {
-            continue;
-        }
-        if item_id < MIN_ITEM_ID {
-            // Group item — check for random group indicator
-            if !added_random && world.has_make_item_group_random(item_id) {
-                added_random = true;
-                drop_list.push((900004000, 10000));
-            }
-            // Expand group items
-            if let Some(group) = world.get_make_item_group(item_id) {
-                for &gitem in &group.items {
-                    drop_list.push((gitem as u32, percent as u16));
-                }
-            }
-        } else {
-            drop_list.push((item_id as u32, percent as u16));
-        }
+    pkt.write_u8(5);
+    pkt.write_u16(rows.len() as u16);
+    for (proto, template) in rows {
+        pkt.write_u16(proto);
+        pkt.write_string(&template.name);
+        pkt.write_u16(template.level as u16);
+        let has_drops = world.get_monster_item(template.item_table)
+            .is_some_and(|row| monster_item_pairs(&row).iter().any(|(id, rate)| *id > 0 && *rate > 0));
+        pkt.write_u8(u8::from(has_drops));
     }
-
-    pkt.write_u32(drop_list.len() as u32);
-    for &(item_id, percent) in &drop_list {
-        pkt.write_u32(item_id);
-        pkt.write_u16(percent);
-    }
-    pkt.write_u8(1); // is_monster
     session.send_packet(&pkt).await
 }
 
@@ -1847,11 +1947,12 @@ pub async fn handle_item_exchange_info(
     let rest = if data.len() > 1 { &data[1..] } else { &[] };
 
     match subcode {
+        0 => send_right_exchange_slots(session).await,
         1 => handle_right_click_exchange_send(session, rest).await,
         2 => handle_new_right_click_exchange_send(session, rest).await,
         3 => handle_new_right_click_exchange(session, rest).await,
         4 => handle_new_right_click_give_exchange(session, rest).await,
-        5 => handle_new_right_click_generator_exchange(session, rest),
+        5 => handle_new_right_click_generator_exchange(session, rest).await,
         _ => {
             debug!("ItemExchangeInfo: unknown subcode {}", subcode);
             Ok(())
@@ -1925,6 +2026,11 @@ async fn handle_new_right_click_exchange_send(
     pkt.write_u8(2); // new format
     pkt.write_u8(slot);
     pkt.write_u32(item_id);
+    let item = world.get_item(item_id);
+    pkt.write_u32(item.as_ref().and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32);
+    pkt.write_string(item.as_ref().and_then(|i| i.str_name.as_deref()).unwrap_or(""));
+    let count = world.with_session(sid, |h| h.inventory.get(slot as usize).map(|s| s.count).unwrap_or(0)).unwrap_or(0);
+    pkt.write_u16(count);
     session.send_packet(&pkt).await
 }
 
@@ -1940,8 +2046,7 @@ async fn handle_new_right_click_exchange(
     let rest = if data.len() > 1 { &data[1..] } else { &[] };
 
     match exchange_type {
-        1 => handle_exchange_reward(session, rest).await,
-        2 => handle_exchange_all(session, rest).await,
+        1 | 2 => send_right_exchange_preview(session, exchange_type, rest).await,
         3 => handle_exchange_premium(session, rest).await,
         4 => handle_exchange_knight_cash(session, rest).await,
         6 => handle_exchange_genie(session, rest).await,
@@ -1953,22 +2058,33 @@ async fn handle_new_right_click_exchange(
     }
 }
 
-/// Exchange type 1: Reward exchange — exchange for specific reward item.
-async fn handle_exchange_reward(session: &mut ClientSession, _data: &[u8]) -> anyhow::Result<()> {
-    // Send exchange type response
-    let mut pkt = Packet::new(WIZ_EXT_HOOK);
-    pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
-    pkt.write_u8(3); // exchange process
-    pkt.write_u8(1); // reward type
-    session.send_packet(&pkt).await
-}
-
-/// Exchange type 2: Exchange all — exchange all matching items.
-async fn handle_exchange_all(session: &mut ClientSession, _data: &[u8]) -> anyhow::Result<()> {
+async fn send_right_exchange_preview(session: &mut ClientSession, kind: u8, data: &[u8]) -> anyhow::Result<()> {
+    let mut reader = ko_protocol::PacketReader::new(data);
+    let Some(item_id) = reader.read_u32() else { return Ok(()); };
+    let world = session.world().clone();
+    let Some(row) = world.get_right_exchange(item_id as i32) else { return Ok(()); };
+    if row.exchange_type.unwrap_or(0) != kind as i16
+        || !world.check_exist_item(session.session_id(), item_id, 1) { return Ok(()); }
+    let icon = |id: u32| world.get_item(id).and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32;
+    let name = |id: u32| world.get_item(id).and_then(|i| i.str_name.clone()).unwrap_or_default();
     let mut pkt = Packet::new(WIZ_EXT_HOOK);
     pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
     pkt.write_u8(3);
-    pkt.write_u8(2);
+    pkt.write_u8(kind);
+    pkt.write_u8(kind);
+    pkt.write_u32(item_id);
+    for i in 0..25 {
+        pkt.write_u32(row.exchange_items.get(i).copied().unwrap_or(0).max(0) as u32);
+        pkt.write_u32(row.expiration_times.get(i).copied().unwrap_or(0).max(0) as u32);
+    }
+    pkt.write_u32(icon(item_id));
+    for i in 0..25 { pkt.write_u32(icon(row.exchange_items.get(i).copied().unwrap_or(0).max(0) as u32)); }
+    pkt.write_u8(1);
+    pkt.write_string(&name(item_id));
+    for i in 0..25 {
+        pkt.write_string(&name(row.exchange_items.get(i).copied().unwrap_or(0).max(0) as u32));
+        pkt.write_u32(row.exchange_counts.get(i).copied().unwrap_or(0).max(0) as u32);
+    }
     session.send_packet(&pkt).await
 }
 
@@ -2045,6 +2161,11 @@ async fn handle_new_right_click_give_exchange(
         }
         let selected_item = u32::from_le_bytes([data[5], data[6], data[7], data[8]]);
 
+        // Validate the selected reward before consuming the player's coupon.
+        if selected_item == 0 || !right_exchange.exchange_items.contains(&(selected_item as i32)) {
+            return Ok(());
+        }
+
         // Check free slots
         let free_slots = world.count_free_slots(sid);
         if free_slots < 1 {
@@ -2112,7 +2233,7 @@ async fn handle_new_right_click_give_exchange(
 /// Sub 5: Generator exchange — random item from ITEM_EXCHANGE table.
 /// Uses weighted random selection from m_ItemExchangeArray where
 /// `bRandomFlag IN (1,2,3,101)` and `nOriginItemNum[0] == item_id`.
-fn handle_new_right_click_generator_exchange(
+async fn handle_new_right_click_generator_exchange(
     session: &mut ClientSession,
     data: &[u8],
 ) -> anyhow::Result<()> {
@@ -2196,11 +2317,12 @@ fn handle_new_right_click_generator_exchange(
         return Ok(());
     }
 
+    let mut last_reward = 0;
     // Process each count
     for _ in 0..count {
         // Check free slots
         if world.count_free_slots(sid) < 1 {
-            return Ok(());
+            break;
         }
 
         // Random pick
@@ -2213,14 +2335,31 @@ fn handle_new_right_click_generator_exchange(
 
         // Rob source item
         if !world.rob_item(sid, exchange_item_id, 1) {
-            return Ok(());
+            break;
         }
 
         // Give won item
-        world.give_item(sid, won_item, 1);
+        if !world.give_item(sid, won_item, 1) {
+            world.give_item(sid, exchange_item_id, 1);
+            break;
+        }
+        last_reward = won_item;
     }
 
-    Ok(())
+    let left = world.with_session(sid, |h| h.inventory.iter()
+        .filter(|slot| slot.item_id == exchange_item_id)
+        .map(|slot| slot.count as u32).sum::<u32>()).unwrap_or(0);
+    let item = world.get_item(last_reward);
+    let mut pkt = Packet::new(WIZ_EXT_HOOK);
+    pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
+    pkt.write_u8(3); pkt.write_u8(8);
+    pkt.write_u32(last_reward);
+    pkt.write_u32(item.as_ref().and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32);
+    pkt.write_string(item.as_ref().and_then(|i| i.str_name.as_deref()).unwrap_or(""));
+    pkt.write_u16(left.min(u16::MAX as u32) as u16);
+    pkt.write_string(if last_reward == 0 { "Canta dolu veya esya kirilamiyor." } else { "" });
+    pkt.write_u32(exchange_item_id);
+    session.send_packet(&pkt).await
 }
 
 /// Handle DAILY_REWARD (0xF7) — daily login reward claim.
@@ -2619,22 +2758,53 @@ pub async fn send_anti_afk_list(session: &mut ClientSession) -> anyhow::Result<(
 /// Sends 6 packets (one per exchange type 1,2,3,4,6,7).
 /// Packet: `[0xE9, 0xE6, u8(2), u8(type), u16(count), u32(item_id)...]`
 pub async fn send_right_exchange_list(session: &mut ClientSession) -> anyhow::Result<()> {
-    let world = session.world();
+    let world = session.world().clone();
     let by_type = world.get_right_exchange_by_type();
+    send_right_exchange_slots(session).await?;
 
-    // C++ sends types in order: 1, 2, 3, 4, 6, 7 (skips 5 for non-1098)
     for exchange_type in &[1u8, 2, 3, 4, 6, 7] {
         let items = by_type.get(exchange_type).cloned().unwrap_or_default();
         let mut pkt = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
         pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
-        pkt.write_u8(2); // list type (server-initiated)
+        pkt.write_u8(2);
         pkt.write_u8(*exchange_type);
         pkt.write_u16(items.len() as u16);
-        for item_id in &items {
-            pkt.write_u32(*item_id);
-        }
+        for item_id in &items { pkt.write_u32(*item_id); }
         session.send_packet(&pkt).await?;
     }
+    Ok(())
+}
+
+pub async fn send_right_exchange_slots(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+
+    // The proxy's right-click hook is disabled until it receives this slot map.
+    // The type lists alone do not enable any inventory slot.
+    let inventory = world.with_session(session.session_id(), |h| h.inventory.clone()).unwrap_or_default();
+    let mut slots = Packet::new(WIZ_EXT_HOOK);
+    slots.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
+    slots.write_u8(0);
+    for index in 14..42 {
+        let item_id = inventory.get(index).map(|s| s.item_id).unwrap_or(0);
+        let sub = if world.get_right_exchange(item_id as i32).is_some() { 1 }
+            else if !world.get_generator_exchanges(item_id).is_empty() { 2 } else { 0 };
+        slots.write_u8(u8::from(sub != 0));
+        slots.write_u8(sub);
+        slots.write_u32(item_id);
+    }
+    slots.write_u8(2);
+    for index in 14..42 {
+        let slot = inventory.get(index);
+        let item = slot.and_then(|s| world.get_item(s.item_id));
+        slots.write_u32(item.and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32);
+        slots.write_u16(slot.map(|s| s.count).unwrap_or(0));
+    }
+    let character = world.get_character_info(session.session_id());
+    slots.write_u32(character.as_ref().map(|c| c.item_weight.max(0) as u32).unwrap_or(0));
+    slots.write_u32(character.as_ref().map(|c| c.max_weight.max(0) as u32).unwrap_or(0));
+    slots.write_u32(character.map(|c| c.gold).unwrap_or(0));
+    session.send_packet(&slots).await?;
+
     Ok(())
 }
 

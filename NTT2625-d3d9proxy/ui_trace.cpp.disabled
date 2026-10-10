@@ -1,0 +1,89 @@
+// TEMPORARY diagnostics: logs who sets short numeric UI texts ("3", "3 / 0", ...) so the
+// char-select LV label code can be located. Hooks CN3UIString::SetString (vtable 0x1009EC8 +0xD8,
+// thiscall(this, const std::string*)). Output: ui_trace.log. Remove once the label is patched.
+#include <windows.h>
+#include <stdio.h>
+#include <share.h>
+
+void Log(const char* msg);
+
+namespace
+{
+    const DWORD KO_SETSTRING = 0x006F3BC0;
+    const BYTE  kPrologue[5] = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF };
+    typedef void(__thiscall* tSetString)(void* self, const void* str);
+    tSetString oSetString = nullptr;
+    volatile LONG g_lines = 0;
+
+    const char* StrPtr(const void* s)   // MSVC std::string: buf[16]/ptr, size +0x10, cap +0x14
+    {
+        DWORD cap = *(const DWORD*)((const BYTE*)s + 0x14);
+        return cap > 15 ? *(const char* const*)s : (const char*)s;
+    }
+
+    bool LooksNumeric(const char* t, size_t n)
+    {
+        if (n == 0 || n > 12) return false;
+        bool digit = false;
+        for (size_t i = 0; i < n; i++)
+        {
+            char c = t[i];
+            if (c >= '0' && c <= '9') digit = true;
+            else if (c != ' ' && c != '/') return false;
+        }
+        return digit;
+    }
+
+    void __fastcall hkSetString(void* self, void* /*edx*/, const void* str)
+    {
+        __try
+        {
+            size_t n = *(const DWORD*)((const BYTE*)str + 0x10);
+            const char* t = StrPtr(str);
+            if (g_lines < 300 && LooksNumeric(t, n))
+            {
+                InterlockedIncrement(&g_lines);
+                void* frames[6] = {};
+                USHORT k = RtlCaptureStackBackTrace(1, 6, frames, nullptr);
+                char path[MAX_PATH];
+                GetModuleFileNameA(nullptr, path, MAX_PATH);
+                strcpy_s(strrchr(path, '\\') + 1, 32, "ui_trace.log");
+                if (FILE* f = _fsopen(path, "a", _SH_DENYNO))
+                {
+                    fprintf(f, "text=\"%.*s\" ui=%p callers:", (int)n, t, self);
+                    for (USHORT i = 0; i < k; i++) fprintf(f, " %08lX", (DWORD)frames[i]);
+                    fprintf(f, "\n");
+                    fclose(f);
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        oSetString(self, str);
+    }
+
+    DWORD WINAPI Install(LPVOID)
+    {
+        BYTE* target = (BYTE*)KO_SETSTRING;
+        for (int i = 0; i < 1200 && memcmp(target, kPrologue, 5) != 0; i++) Sleep(100);
+        if (memcmp(target, kPrologue, 5) != 0) { Log("UITRACE: SetString prologue mismatch, not hooked"); return 0; }
+        BYTE* tramp = (BYTE*)VirtualAlloc(nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (!tramp) return 0;
+        memcpy(tramp, target, 5);
+        tramp[5] = 0xE9;
+        *(DWORD*)(tramp + 6) = (DWORD)(target + 5) - (DWORD)(tramp + 10);
+        oSetString = (tSetString)tramp;
+        DWORD old;
+        if (!VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &old)) return 0;
+        target[0] = 0xE9;
+        *(DWORD*)(target + 1) = (DWORD)hkSetString - (DWORD)(target + 5);
+        VirtualProtect(target, 5, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), target, 5);
+        Log("UITRACE: CN3UIString::SetString hooked -> ui_trace.log");
+        return 0;
+    }
+}
+
+void UiTrace_Init()
+{
+    CloseHandle(CreateThread(nullptr, 0, Install, nullptr, 0, nullptr));
+}

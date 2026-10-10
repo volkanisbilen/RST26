@@ -185,7 +185,7 @@ async fn native_event_hub_open(
         h.native_event_hub_armed = true;
     });
     // The client renders entries in the order supplied by the server.
-    let mut active = Vec::new();
+    let mut active = vec![(EVENT_HUB_COIN, 1u8)]; // proxy entry 0: Daily Quest
     let candidates = [
         (EVENT_HUB_ATTENDANCE, "attendance"),
         (EVENT_HUB_ROULETTE, "roulette"),
@@ -229,6 +229,11 @@ async fn native_event_hub_select(
     session.world().update_session(session.session_id(), |h| {
         h.native_event_hub_armed = false;
     });
+    if event_id == EVENT_HUB_COIN {
+        super::quest::send_quest_data(session).await?;
+        super::daily_quest::daily_quest_send_list(session.world(), session.session_id());
+        return super::daily_quest::open_daily_quest_manager(session, 0).await;
+    }
     let event_key = match event_id {
         EVENT_HUB_ATTENDANCE | EVENT_HUB_ATTENDANCE_SELECT => "attendance",
         EVENT_HUB_ROULETTE => "roulette",

@@ -1,0 +1,93 @@
+// TEMP (2026-10-09): what the GM "hold G = run fast" changes, to make it work on the GM panel horse too.
+// Logs to d3d9proxy.log ("GTRACE"):
+//  - G (DirectInput scan 0x22) down / up: authority (+0x6DC), riding flag / look (+0x6E1 / +0x6E4)
+//  - 1.5 s after G down (still held): every dword of our player object (0x2000 bytes) that changed, as float and int
+//  - the first move packets (0x06) sent while G is held, with the exe callers
+// Hooks: quote_key_block.cpp (keyboard state) and genie_hg.cpp HG_Send.
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+
+void Log(const char* msg);
+
+namespace
+{
+    const DWORD KO_PTR_ME = 0x01115834;
+    const DWORD G_SCAN = 0x22;
+    const size_t SNAP = 0x2000;
+    bool  g_down = false, g_diffDone = false;
+    DWORD g_downAt = 0;
+    int   g_moveLogged = 0;
+    BYTE  g_before[SNAP];
+
+    BYTE* Me() { __try { return *(BYTE**)KO_PTR_ME; } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; } }
+    bool Copy(BYTE* dst, const BYTE* src, size_t n) { __try { memcpy(dst, src, n); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } }
+
+    void LogState(const char* what)
+    {
+        BYTE* me = Me(); if (!me) return;
+        char b[200];
+        __try { sprintf_s(b, "GTRACE: G %s | auth=%u riding=%u look=%d", what, *(DWORD*)(me + 0x6DC), me[0x6E1], *(int*)(me + 0x6E4)); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+        Log(b);
+    }
+
+    void Diff()
+    {
+        BYTE* me = Me(); if (!me) return;
+        static BYTE now[SNAP];
+        if (!Copy(now, me, SNAP)) return;
+        int n = 0;
+        for (size_t o = 0; o + 4 <= SNAP && n < 60; o += 4)
+        {
+            DWORD a = *(DWORD*)(g_before + o), c = *(DWORD*)(now + o);
+            if (a == c) continue;
+            float fa = *(float*)&a, fc = *(float*)&c;
+            char b[160];
+            sprintf_s(b, "GTRACE: +%04X  %08lX -> %08lX   f %.4g -> %.4g   i %ld -> %ld", (unsigned)o, a, c, fa, fc, (long)a, (long)c);
+            Log(b); n++;
+        }
+        char b[64]; sprintf_s(b, "GTRACE: %d changed dwords", n); Log(b);
+    }
+}
+
+// quote_key_block.cpp: every keyboard GetDeviceState (game thread)
+void GTrace_OnKeys(const BYTE* keys)
+{
+    bool down = (keys[G_SCAN] & 0x80) != 0;
+    if (down && !g_down)
+    {
+        g_down = true; g_downAt = GetTickCount(); g_diffDone = false; g_moveLogged = 0;
+        BYTE* me = Me();
+        if (me) Copy(g_before, me, SNAP);
+        LogState("down");
+    }
+    else if (!down && g_down)
+    {
+        g_down = false;
+        LogState("up");
+    }
+    else if (down && !g_diffDone && GetTickCount() - g_downAt > 1500)
+    {
+        g_diffDone = true;
+        Diff();
+    }
+}
+
+// genie_hg.cpp HG_Send: move packets while G is held
+void GTrace_OnSend(const BYTE* buf, int len)
+{
+    __try
+    {
+        if (!g_down || g_moveLogged >= 4 || !buf || len < 2 || buf[0] != 0x06) return;
+        g_moveLogged++;
+        char hb[600]; int n = sprintf_s(hb, "GTRACE: move send len=%d:", len);
+        for (int i = 0; i < len && i < 32; i++) n += sprintf_s(hb + n, sizeof(hb) - n, " %02X", buf[i]);
+        void* fr[24]; USHORT c = CaptureStackBackTrace(0, 24, fr, nullptr);
+        n += sprintf_s(hb + n, sizeof(hb) - n, " | callers:");
+        for (USHORT i = 0; i < c && n < 560; i++)
+            if ((DWORD)fr[i] >= 0x401000 && (DWORD)fr[i] < 0x1800000) n += sprintf_s(hb + n, sizeof(hb) - n, " %08lX", (DWORD)fr[i]);
+        Log(hb);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}

@@ -258,7 +258,7 @@ pub fn build_start_packet(ev: &CollectionRaceEvent, duration_secs: u32, nation: 
     pkt.write_u16((ev.total_count as u32 * ev.rank_bug) as u16);
     pkt.write_u16(ev.user_limit);
     pkt.write_u8(nation);
-    pkt.write_sbyte_string(&ev.event_name);
+    pkt.write_string(&ev.event_name);
     pkt.write_u8(ev.zone_id);
     pkt
 }
@@ -311,7 +311,7 @@ pub fn build_refresh_packet(
     pkt.write_u16((ev.total_count as u32 * ev.rank_bug) as u16);
     pkt.write_u16(ev.user_limit);
     pkt.write_u8(nation);
-    pkt.write_sbyte_string(&ev.event_name);
+    pkt.write_string(&ev.event_name);
     pkt.write_u8(ev.zone_id);
     pkt
 }
@@ -1230,7 +1230,7 @@ mod tests {
         assert_eq!(r.read_u16(), Some(10)); // total(5) * rank_bug(2) = 10
         assert_eq!(r.read_u16(), Some(2500)); // user_limit
         assert_eq!(r.read_u8(), Some(2)); // nation
-        assert_eq!(r.read_sbyte_string(), Some("CR Test".to_string()));
+        assert_eq!(r.read_string(), Some("CR Test".to_string()));
         assert_eq!(r.read_u8(), Some(71)); // zone_id
 
         assert_eq!(r.remaining(), 0);

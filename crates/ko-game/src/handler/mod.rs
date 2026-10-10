@@ -278,7 +278,12 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
         }
     }
 
-    match opcode {
+    let sync_exchange_slots = matches!(opcode, Some(Opcode::WizItemMove | Opcode::WizItemGet
+        | Opcode::WizItemUpgrade | Opcode::WizWarehouse | Opcode::WizTradeNpc
+        | Opcode::WizShoppingMall | Opcode::WizClientEvent | Opcode::WizNpcEvent | Opcode::WizSelectMsg))
+        || (opcode == Some(Opcode::WizExtHook) && matches!((packet.data.first().copied(), packet.data.get(1).copied()),
+            (Some(0xE6), Some(4 | 5)) | (Some(0xA8), Some(1 | 3)) | (Some(0xB4), _)));
+    let result = match opcode {
         // --- Pre-auth ---
         Some(Opcode::WizKickout) if session.state() == SessionState::Connected => {
             // v2600: client sends 0x51 as first packet to game server (handshake).
@@ -562,7 +567,11 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
             );
             Ok(())
         }
+    };
+    if result.is_ok() && sync_exchange_slots && session.state() == SessionState::InGame {
+        ext_hook::send_right_exchange_slots(session).await?;
     }
+    result
 }
 
 /// Handle WIZ_TIME / WIZ_WEATHER from client (GM-only update).
@@ -640,6 +649,10 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
     let mut reader = PacketReader::new(&pkt.data);
     let sub_opcode = reader.read_u8().unwrap_or(0);
 
+    tracing::info!(target: "hook_protocol", sid = session.session_id(),
+        sub = sub_opcode, command = pkt.data.get(1).copied(), bytes = pkt.data.len(),
+        "HOOK C2S dispatch");
+
     match sub_opcode {
         ext_hook::EXT_SUB_CINDERELLA => cinderella::handle(session, repack_ext_data(&pkt)).await,
         ext_hook::EXT_SUB_PERKS => perks::handle(session, repack_ext_data(&pkt)).await,
@@ -715,7 +728,7 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
             ext_hook::handle_game_master_mode(session, &pkt.data[1..]).await
         }
         _ => {
-            debug!(
+            tracing::warn!(
                 "[{}] WIZ_EXT_HOOK unhandled sub-opcode: 0x{:02X}",
                 session.addr(),
                 sub_opcode

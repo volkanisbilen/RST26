@@ -1,0 +1,12 @@
+100 9 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain0.bin
+116 11 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain1.bin
+134 12 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain2.bin
+153 5 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain3.bin
+165 16 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain4.bin
+188 17 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain5.bin
+212 71 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain6.bin
+290 64 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain7.bin
+361 73 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain8.bin
+441 1008 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain9.bin
+1456 4104 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain10.bin
+5567 70001 D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\pak\plain11.bin

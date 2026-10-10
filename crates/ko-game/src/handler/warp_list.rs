@@ -71,17 +71,19 @@ pub(super) fn resolve_active_battle_warp(world: &WorldState, effective_zone: u16
     effective_zone
 }
 
-fn is_hidden_moradon_abyss_warp(
+fn effective_destination_for_warp(
     source_zone: u16,
-    name: &str,
-    announce: &str,
-    dest_zone: i16,
-) -> bool {
-    if !(21..=25).contains(&source_zone) {
-        return false;
+    warp: &ko_protocol::smd::WarpInfo,
+    nation: u8,
+) -> u16 {
+    // Moradon's Abyss entry was exported with a legacy destination (105).
+    // The live dungeon is zone 32; preserve the gate's menu entry and correct
+    // both the displayed destination and the final selected destination.
+    let label = format!("{} {}", warp.name, warp.announce).to_ascii_lowercase();
+    if source_zone == 21 && (warp.dest_zone == 9 || warp.dest_zone == 105 || label.contains("abyss")) {
+        return 32;
     }
-    let label = format!("{name} {announce}").to_ascii_lowercase();
-    dest_zone == 9 || label.contains("abyss")
+    effective_warp_destination(warp.warp_id, warp.dest_zone, nation)
 }
 
 use crate::npc_type_constants::MAX_OBJECT_RANGE;
@@ -210,11 +212,6 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     // Keep the removed Moradon Abyss destination unavailable even if a client
     // submits a stale/forged warp ID instead of selecting from the visible list.
-    if is_hidden_moradon_abyss_warp(pos.zone_id, &warp.name, &warp.announce, warp.dest_zone) {
-        send_select_fail(session).await?;
-        return Ok(());
-    }
-
     // Nation check: if warp is nation-restricted, must match player nation
     if warp.nation != 0 && warp.nation != char_info.nation as i16 {
         send_select_fail(session).await?;
@@ -223,7 +220,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     let effective_dest_zone = resolve_active_battle_warp(
         &world,
-        effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation),
+        effective_destination_for_warp(pos.zone_id, &warp, char_info.nation),
     );
 
     // Validate after resolving v2615's legacy zone-19 Eslant destination.
@@ -330,9 +327,6 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
     let battle = world.get_battle_state();
     let mut entries: Vec<&ko_protocol::smd::WarpInfo> = Vec::with_capacity(warps.len());
     for warp in &warps {
-        if is_hidden_moradon_abyss_warp(pos.zone_id, &warp.name, &warp.announce, warp.dest_zone) {
-            continue;
-        }
         // Nation filter: skip if warp is nation-restricted and doesn't match
         if warp.nation != 0 && warp.nation != char_info.nation as i16 {
             continue;
@@ -340,7 +334,7 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
 
         let effective_dest_zone = resolve_active_battle_warp(
             &world,
-            effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation),
+            effective_destination_for_warp(pos.zone_id, &warp, char_info.nation),
         );
 
         // Destination zone must exist and be active after legacy resolution.
@@ -374,7 +368,7 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
     entries.sort_by_key(|w| {
         resolve_active_battle_warp(
             &world,
-            effective_warp_destination(w.warp_id, w.dest_zone, char_info.nation),
+            effective_destination_for_warp(pos.zone_id, w, char_info.nation),
         )
     });
 
@@ -389,7 +383,7 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
         result.write_string(&warp.announce);
         result.write_u16(resolve_active_battle_warp(
             &world,
-            effective_warp_destination(warp.warp_id, warp.dest_zone, char_info.nation),
+            effective_destination_for_warp(pos.zone_id, &warp, char_info.nation),
         ));
         result.write_u16(DEFAULT_MAX_USERS);
         result.write_u32(warp.pay);

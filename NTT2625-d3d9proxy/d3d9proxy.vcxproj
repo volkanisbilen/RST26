@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- d3d9 proxy (x86 DLL) for the 2625 client. Replaces build.bat: open d3d9proxy.sln in VS2022, Release | Win32, Build.
+     New .cpp files: add them to the project (Solution Explorer > Add > Existing Item).
+     Post-build: copies d3d9.dll into GameDir (old one kept as d3d9.dll.bak) only while the game is closed.
+     GameDir can be changed below or with msbuild /p:GameDir=...  /p:Deploy=false builds without copying. -->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{7D3A9E52-4C1B-4F6A-9B2E-2625D3D90001}</ProjectGuid>
+    <RootNamespace>d3d9proxy</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>NotSet</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)'==''">D:\ai\2625_Client</GameDir>
+    <Deploy Condition="'$(Deploy)'==''">true</Deploy>
+    <OutDir>$(ProjectDir)</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Configuration)\</IntDir>
+    <TargetName>d3d9</TargetName>
+    <TargetExt>.dll</TargetExt>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level1</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <ConformanceMode>false</ConformanceMode>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <DebugInformationFormat>None</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <ModuleDefinitionFile>d3d9.def</ModuleDefinitionFile>
+      <AdditionalDependencies>user32.lib;gdi32.lib;msimg32.lib;crypt32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <ImportLibrary>$(IntDir)d3d9proxy.lib</ImportLibrary>
+    </Link>
+    <PostBuildEvent Condition="'$(Deploy)'=='true'">
+      <Command>tasklist /FI "IMAGENAME eq KnightOnLine.exe" | find /I "KnightOnLine.exe" &gt;nul &amp;&amp; (echo OYUN ACIK: d3d9.dll derlendi ama oyuna kopyalanmadi. Oyunu kapatip tekrar derleyin. &amp; exit /b 0)
+
+if exist "$(GameDir)\d3d9.dll" copy /y "$(GameDir)\d3d9.dll" "$(GameDir)\d3d9.dll.bak" &gt;nul
+
+copy /y "$(TargetPath)" "$(GameDir)\d3d9.dll" &amp;&amp; echo TAMAM: d3d9.dll oyuna kopyalandi ($(GameDir))
+
+exit /b 0</Command>
+      <Message>d3d9.dll oyuna kopyalaniyor (oyun kapaliysa)</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="d3d9proxy.cpp" />
+    <ClCompile Include="pus_store.cpp" />
+    <ClCompile Include="rce_store.cpp" />
+    <ClCompile Include="cr_panel.cpp" />
+    <ClCompile Include="cape_gate.cpp" />
+    <ClCompile Include="crash_trap.cpp" />
+    <ClCompile Include="iat_fix.cpp" />
+    <ClCompile Include="client_patches.cpp" />
+    <ClCompile Include="sp_panel.cpp" />
+    <ClCompile Include="genie_hg.cpp" />
+    <ClCompile Include="cind_panel.cpp" />
+    <ClCompile Include="csw_panel.cpp" />
+    <ClCompile Include="merchant_currency.cpp" />
+    <ClCompile Include="lottery_panel.cpp" />
+    <ClCompile Include="event_reward_panel.cpp" />
+    <ClCompile Include="event_title.cpp" />
+    <ClCompile Include="anvil_rate.cpp" />
+    <ClCompile Include="login_remember.cpp" />
+    <ClCompile Include="drop_panel.cpp" />
+    <ClCompile Include="cross_exch.cpp" />
+    <ClCompile Include="reconnect.cpp" />
+    <ClCompile Include="hold_repeat.cpp" />
+    <ClCompile Include="reset_bar.cpp" />
+    <ClCompile Include="net_trace.cpp" />
+    <ClCompile Include="manner_store.cpp" />
+    <ClCompile Include="hotkey_guard.cpp" />
+    <ClCompile Include="dropbox_panel.cpp" />
+    <ClCompile Include="launch_guard.cpp" />
+    <ClCompile Include="tag_panel.cpp" />
+    <ClCompile Include="jobchange_panel.cpp" />
+    <ClCompile Include="gm_panel.cpp" />
+    <ClCompile Include="discord_presence.cpp" />
+    <ClCompile Include="pack_override.cpp" />
+    <ClCompile Include="discord_rpc\src\discord_rpc.cpp"><AdditionalIncludeDirectories>discord_rpc\include;discord_rpc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
+    <ClCompile Include="discord_rpc\src\rpc_connection.cpp"><AdditionalIncludeDirectories>discord_rpc\include;discord_rpc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
+    <ClCompile Include="discord_rpc\src\serialization.cpp"><AdditionalIncludeDirectories>discord_rpc\include;discord_rpc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
+    <ClCompile Include="discord_rpc\src\connection_win.cpp"><AdditionalIncludeDirectories>discord_rpc\include;discord_rpc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
+    <ClCompile Include="discord_rpc\src\discord_register_win.cpp"><AdditionalIncludeDirectories>discord_rpc\include;discord_rpc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
+    <ClCompile Include="quote_key_block.cpp" />
+    <ClCompile Include="register_panel.cpp" />
+    <ClCompile Include="hopeguard_banner.cpp" />
+    <ClCompile Include="solocape_icon.cpp" />
+    <ClCompile Include="drop_button.cpp" />
+    <ClCompile Include="item_tooltip.cpp" />
+    <ClCompile Include="camera_range.cpp" />
+    <ClCompile Include="price_fix.cpp" />
+    <ClCompile Include="infinite_stone.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="cind_layout.h" />
+    <ClInclude Include="cr_layout.h" />
+    <ClInclude Include="cross_layout.h" />
+    <ClInclude Include="dropbox_layout.h" />
+    <ClInclude Include="dropbtn_layout.h" />
+    <ClInclude Include="drop_shared.h" />
+    <ClInclude Include="itemtip_layout.h" />
+    <ClInclude Include="evreward_layout.h" />
+    <ClInclude Include="hg_layout.h" />
+    <ClInclude Include="launch_ticket.h" />
+    <ClInclude Include="lottery_layout.h" />
+    <ClInclude Include="manner_layout.h" />
+    <ClInclude Include="pus_layout.h" />
+    <ClInclude Include="rce_layout.h" />
+    <ClInclude Include="reconnect_layout.h" />    <ClInclude Include="solocape_layout.h" />
+    <ClInclude Include="sp_layout.h" />
+    <ClInclude Include="tag_layout.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="d3d9.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
