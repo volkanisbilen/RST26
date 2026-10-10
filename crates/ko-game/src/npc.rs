@@ -445,8 +445,13 @@ fn write_npc_info_default(pkt: &mut Packet, npc: &NpcInstance, tmpl: &NpcTemplat
             // Per-user packets in req_npcin would need user_clan_id for nation=3.
             0u8
         } else if tmpl.s_sid == GUARD_SUMMON {
-            // Guard summons keep their nation (template group) even as monsters.
-            tmpl.group
+            // Guard summons keep their nation even as monsters: the caster's nation when
+            // summoned by a skill, otherwise the template group.
+            if npc.nation != 0 {
+                npc.nation
+            } else {
+                tmpl.group
+            }
         } else if tmpl.is_monster {
             // Regular monsters always send nation=0.
             0u8

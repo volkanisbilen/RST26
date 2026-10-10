@@ -1081,6 +1081,19 @@ impl WorldState {
         }
     }
 
+    /// Set the runtime nation of an event NPC (guard summons take their caster's nation).
+    pub fn set_npc_nation(&self, nid: NpcId, nation: u8) {
+        if let Some(entry) = self.npc_instances.get(&nid) {
+            let old = entry.value().clone();
+            let updated = Arc::new(NpcInstance {
+                nation,
+                ..(*old).clone()
+            });
+            drop(entry);
+            self.npc_instances.insert(nid, updated);
+        }
+    }
+
     /// Set duration (auto-death timer) on a spawned NPC.
     ///
     /// After `duration_secs` elapses, the NPC AI tick will automatically kill it.

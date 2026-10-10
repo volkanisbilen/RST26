@@ -415,6 +415,15 @@ async fn process_single_npc(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, 
     //       && pNpc->m_iSpawnedTime
     //       && (int32(UNIXTIME) - pNpc->m_iSpawnedTime > pNpc->m_sDuration))
     //       pNpc->Dead();
+    // Timed summons are spawned without access to the AI clock: stamp the spawn time on the
+    // first tick that sees a duration.
+    if !is_dead && ai.duration_secs > 0 && ai.spawned_at_ms == 0 {
+        world.update_npc_ai(npc_id, |s| {
+            if s.spawned_at_ms == 0 {
+                s.spawned_at_ms = now_ms.max(1);
+            }
+        });
+    }
     if !is_dead && ai.duration_secs > 0 && ai.spawned_at_ms > 0 {
         let duration_ms = ai.duration_secs as u64 * 1000;
         let alive_ms = now_ms.saturating_sub(ai.spawned_at_ms);

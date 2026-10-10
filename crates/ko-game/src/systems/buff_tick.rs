@@ -202,6 +202,17 @@ use crate::magic_constants::{USER_STATUS_CURE, USER_STATUS_POISON, USER_STATUS_S
 /// changes to the client. This must run **before** `SetUserAbility()` so that
 /// cleared fields are reflected in the stat recalculation.
 pub(crate) fn buff_type_cleanup(world: &WorldState, sid: u16, buff_type: i32, is_buff: bool) {
+    // Debuffs raise the POISON status indicator when applied; clear it once the last
+    // debuff is gone (slows and stuns are handled in their own arms below).
+    if !is_buff && !matches!(buff_type, BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2 | BUFF_TYPE_STUN) {
+        let has_remaining_debuffs = world
+            .with_session(sid, |h| h.buffs.values().any(|b| !b.is_buff))
+            .unwrap_or(false);
+        if !has_remaining_debuffs {
+            send_user_status_update_packet(world, sid, USER_STATUS_POISON, USER_STATUS_CURE);
+        }
+    }
+
     match buff_type {
         // FREEZE: clear block state, restore skills, clear invisibility,
         // broadcast ABNORMAL_NORMAL (or transform skill if transformed)

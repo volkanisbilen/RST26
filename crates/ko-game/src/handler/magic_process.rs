@@ -47,7 +47,7 @@ use crate::magic_constants::{
     MAGIC_TYPE4_EXTEND, MORAL_ALL, MORAL_AREA_ALL, MORAL_AREA_ENEMY, MORAL_AREA_FRIEND,
     MORAL_ENEMY, MORAL_FRIEND_EXCEPTME, MORAL_FRIEND_WITHME, MORAL_PARTY, MORAL_PARTY_ALL,
     MORAL_SELF, MORAL_SELF_AREA, SKILLMAGIC_FAIL_ATTACKZERO, SKILLMAGIC_FAIL_NOEFFECT,
-    USER_STATUS_DOT, USER_STATUS_POISON,
+    USER_STATUS_DOT, USER_STATUS_POISON, USER_STATUS_SPEED,
 };
 use crate::npc_type_constants::{
     NPC_BIFROST_MONUMENT, NPC_BORDER_MONUMENT, NPC_CLAN_WAR_MONUMENT, NPC_DESTROYED_ARTIFACT,
@@ -4852,6 +4852,7 @@ fn execute_type4(
         broadcast_kaul_state_change(world, target_sid, &type4_data, instance.skill_id);
         broadcast_size_state_change(world, target_sid, &type4_data, instance.skill_id);
         broadcast_buff_state_change_on_apply(world, target_sid, &type4_data, instance.skill_id);
+        send_type4_debuff_inflict_status(world, target_sid, &type4_data);
         return true;
     }
 
@@ -5133,6 +5134,19 @@ fn execute_type4(
             broadcast_kaul_state_change(world, target_sid, &type4_data, instance.skill_id);
             broadcast_size_state_change(world, target_sid, &type4_data, instance.skill_id);
             broadcast_buff_state_change_on_apply(world, target_sid, &type4_data, instance.skill_id);
+
+            // Every affected player gets its own MAGIC_EFFECTING (target = that player) so the
+            // buff/debuff icon shows on their client, and debuffs raise the status indicator
+            // that cure skills rely on (C++ BuildAndSendSkillPacket per target).
+            let mut per_target = *instance;
+            per_target.target_id = target_sid as i32;
+            per_target.data[1] = 1;
+            per_target.data[3] = type4_data.duration.unwrap_or(0).max(0);
+            per_target.data[5] = type4_data.speed.unwrap_or(0);
+            broadcast_to_caster_region(world, caster_sid, &per_target.build_packet(MAGIC_EFFECTING));
+            if moral == MORAL_AREA_ENEMY {
+                send_type4_debuff_inflict_status(world, target_sid, &type4_data);
+            }
             // Persist scroll buffs on AOE targets
             if should_persist_type4_magic(skill, instance.skill_id) {
                 world.insert_saved_magic(target_sid, instance.skill_id, duration);
@@ -5253,6 +5267,24 @@ fn grant_type4_buff_to_target(
     if should_persist_type4_magic(skill, instance.skill_id) {
         world.insert_saved_magic(target_sid, instance.skill_id, duration);
     }
+}
+
+/// Tell a debuffed player's client (and party UI) that a harmful Type4 effect started:
+/// slows use the SPEED indicator, every other debuff the POISON one (C++ ExecuteType4).
+fn send_type4_debuff_inflict_status(
+    world: &WorldState,
+    target_sid: SessionId,
+    type4_data: &ko_db::models::MagicType4Row,
+) {
+    let status = if matches!(
+        type4_data.buff_type.unwrap_or(0),
+        BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2
+    ) {
+        USER_STATUS_SPEED
+    } else {
+        USER_STATUS_POISON
+    };
+    crate::systems::buff_tick::send_user_status_update_packet(world, target_sid, status, 1);
 }
 
 /// True when `target_sid` already has a Type4 buff of the same type (or the
@@ -8165,10 +8197,30 @@ fn execute_type8(
             if target.res_hp_type == USER_DEAD || target.hp <= 0 {
                 continue;
             }
+            // C++: bind object of the current zone, else the nation's start position
+            // (plus a random offset inside the start range).
             let dest = if target.bind_zone as u16 == pos.zone_id
                 && (target.bind_x != 0.0 || target.bind_z != 0.0)
             {
                 Some((target.bind_x, target.bind_z))
+            } else if let Some(start) = world.get_start_position(pos.zone_id) {
+                let (bx, bz) = if target.nation == 1 {
+                    (start.karus_x, start.karus_z)
+                } else {
+                    (start.elmorad_x, start.elmorad_z)
+                };
+                let mut rng = rand::thread_rng();
+                let ox = if start.range_x > 0 {
+                    rng.gen_range(0..=start.range_x)
+                } else {
+                    0
+                };
+                let oz = if start.range_z > 0 {
+                    rng.gen_range(0..=start.range_z)
+                } else {
+                    0
+                };
+                Some(((bx + ox) as f32, (bz + oz) as f32))
             } else {
                 world.get_start_position_random(pos.zone_id)
             };
@@ -8506,8 +8558,58 @@ fn execute_type9(
         return true;
     }
 
+    // Guard / monster summons (9 Guard Summon, 7 summon scrolls): spawn the monster next to the
+    // caster for `duration` seconds on the caster's side.
+    if state_change == 7 || state_change == 9 {
+        let monster = type9_data.monster_num.unwrap_or(0);
+        let (Some(pos), Some(caster)) = (
+            world.get_position(caster_sid),
+            world.get_character_info(caster_sid),
+        ) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+        if monster <= 0 || monster > u16::MAX as i32 {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let summon_type = if state_change == 9 { 7 } else { 0 };
+        let spawned = world.spawn_event_npc_ex(
+            monster as u16,
+            true,
+            pos.zone_id,
+            pos.x,
+            pos.z,
+            1,
+            world.get_event_room(caster_sid),
+            summon_type,
+        );
+        if spawned.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let nation = if state_change == 9 {
+            caster.nation
+        } else {
+            type9_data.nation_change.unwrap_or(0).clamp(0, 3) as u8
+        };
+        for nid in spawned {
+            if duration > 0 {
+                world.set_npc_duration(nid, duration.clamp(0, u16::MAX as i32) as u16, 0);
+            }
+            if nation != 0 {
+                world.update_npc_ai(nid, |s| s.nation = nation);
+                world.set_npc_nation(nid, nation);
+            }
+        }
+        instance.data[1] = 1;
+        instance.data[3] = duration;
+        world.send_to_session_owned(caster_sid, instance.build_packet(MAGIC_EFFECTING));
+        return true;
+    }
+
     // Only the stealth states (1/2) mark the caster invisible. Secrecy (5) and the
-    // summon states (7..13) must not hide the caster.
+    // summon states (8, 10..13) must not hide the caster.
     if !(state_change == 1 || state_change == 2) {
         instance.data[1] = 1;
         instance.data[3] = duration;
