@@ -409,6 +409,9 @@ impl ClientSession {
                 );
             }
 
+            // ── 0. Fun Class: restore the real character before it is saved ──
+            crate::handler::cinderella::cinderella_logout(&self.world, sid, true);
+
             // ── 1. Save character stats + position ────────────────────────
             if !char_id.is_empty() {
                 if let Some(ch) = self.world.get_character_info(sid) {

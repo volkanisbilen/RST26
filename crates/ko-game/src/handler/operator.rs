@@ -2050,6 +2050,13 @@ fn handle_war_close(session: &mut ClientSession, args: &[&str]) -> anyhow::Resul
 fn handle_funclass_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     let world = session.world().clone();
 
+    // The Fun Class event is disabled: it swaps the character's class, level and items in
+    // memory and an interrupted session used to save that preset over the real character.
+    send_help(session, "Fun Class event is disabled on this server.");
+    if true {
+        return Ok(());
+    }
+
     if args.is_empty() {
         send_help(session, "Usage: +funclass_open <setting_id (0-4)>");
         return Ok(());

@@ -40,6 +40,9 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
     let char_id = session.character_id().unwrap_or("").to_string();
     let account_id = session.account_id().unwrap_or("").to_string();
 
+    // ── 0. Fun Class: give the character its own identity back BEFORE it is saved ──
+    crate::handler::cinderella::cinderella_logout(&world, sid, true);
+
     // ── 1. Save character stats + position to DB ────────────────────
     if !char_id.is_empty() {
         // Save stats (hp, mp, exp, gold, loyalty, loyalty_monthly, manner_point)
