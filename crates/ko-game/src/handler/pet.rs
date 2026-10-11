@@ -566,6 +566,23 @@ pub(crate) async fn handle_normal_mode(
                 }
             };
 
+            // A familiar whose satisfaction ran out is revived with 10% when summoned again;
+            // otherwise the next decay tick would despawn it right after it appears.
+            if pet.satisfaction <= 0 {
+                const REVIVE_SATISFACTION: i16 = 1000; // 10% of the 10000 maximum
+                pet.satisfaction = REVIVE_SATISFACTION;
+                world.update_session(sid, |h| {
+                    if let Some(active_pet) = h.pet_data.as_mut() {
+                        active_pet.satisfaction = REVIVE_SATISFACTION;
+                    }
+                });
+                tracing::info!(
+                    "[sid={}] PET_SUMMON satisfaction was 0, restored to {}",
+                    sid,
+                    REVIVE_SATISFACTION
+                );
+            }
+
             // If a stale runtime pet exists, move it beside the owner instead
             // of silently ignoring the summon. Clients require an OUT/IN pair
             // to reliably refresh a familiar's position and transformed PID.
@@ -773,7 +790,7 @@ pub(crate) async fn handle_normal_mode(
             session.send_packet(&pet_ui).await?;
 
             tracing::info!(
-                "[sid={}] PET_SPAWN nid={} template_sid={} model_spid={} template_type={} template_is_monster={} nation={} size={} name={} zone={} pos={:.1}/{:.1}/{:.1}",
+                "[sid={}] PET_SPAWN nid={} template_sid={} model_spid={} template_type={} template_is_monster={} nation={} size={} name={} zone={} pos={:.1}/{:.1}/{:.1} satisfaction={} hp={} index={}",
                 sid,
                 runtime_nid,
                 PET_RUNTIME_TEMPLATE_SID,
@@ -786,7 +803,10 @@ pub(crate) async fn handle_normal_mode(
                 pos.zone_id,
                 spawn_x,
                 pos.y,
-                spawn_z
+                spawn_z,
+                pet.satisfaction,
+                pet.hp,
+                pet.index
             );
 
             return Ok(());
@@ -1111,9 +1131,10 @@ pub fn build_pet_spawn_packet(info: &PetSpawnInfo) -> Packet {
     resp.write_u16(info.satisfaction);
     resp.write_u16(info.attack);
     resp.write_u16(info.defence);
-    // 6x resistance values (all the same in C++)
+    // 6x resistance values, one BYTE each: the 2625 client reads 6 bytes here (C++ PetRes is
+    // uint8). Writing u16 pushed the four item records 6 bytes early.
     for _ in 0..6 {
-        resp.write_u16(info.resistance);
+        resp.write_u8(info.resistance.min(255) as u8);
     }
 
     // Pet inventory: the four persistent equipment slots.
@@ -1416,7 +1437,7 @@ mod tests {
         assert_eq!(r.read_u16(), Some(90)); // defence
                                             // 6x resistance
         for _ in 0..6 {
-            assert_eq!(r.read_u16(), Some(18));
+            assert_eq!(r.read_u8(), Some(18));
         }
         // 4x empty pet inventory items
         for _ in 0..PET_INVENTORY_TOTAL {
