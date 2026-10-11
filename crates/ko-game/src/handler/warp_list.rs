@@ -426,7 +426,10 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
         result.write_u16(WARP_FUNCLASS_ENTRY as u16);
         result.write_string("Fun Class Event");
         result.write_string("Enter the active Cinderella War event");
-        result.write_u16(world.cinderella_zone_id());
+        // The client resolves picture / level range from this zone number and drops rows it
+        // does not know; the event zone (110) is not in its warp tables, so show Moradon's.
+        // The real destination is resolved server side from the warp id.
+        result.write_u16(21);
         result.write_u16(DEFAULT_MAX_USERS);
         result.write_u32(0);
     }
