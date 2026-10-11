@@ -27,21 +27,12 @@ use crate::world::WorldState;
 use crate::zone::SessionId;
 
 pub const ZONE_ULTIMA: u16 = 55;
-/// Client proto of the Ultima Keeper NPC (registration), see migrations/20261011000008.
-pub const NPC_ULTIMA_KEEPER: u16 = 31997;
 const NPC_BOSS_SMALL: u16 = 31990;
 const NPC_BOSS_MEDIUM: u16 = 31991;
 const NPC_BOSS_LARGE: u16 = 31992;
 const NPC_SEAL: u16 = 31993;
 const NPC_ESCAPE: u16 = 31994;
 
-pub const EVENT_REGISTER: i32 = 1_300_001;
-pub const EVENT_CANCEL: i32 = 1_300_002;
-
-// Client text ids (Quest_Menu / Quest_Talk of the 2625 client)
-const TEXT_HEADER: i32 = 45099;
-const TEXT_ENTER: i32 = 45131;
-const TEXT_CANCEL: i32 = 45134;
 
 const MIN_LEVEL: u8 = 80;
 const MIN_LADDER: u32 = 50;
@@ -153,99 +144,110 @@ fn room_notice(world: &WorldState, room: &Room, msg: &str) {
     }
 }
 
-// ── Registration (NPC) ───────────────────────────────────────────────────
+// ── Registration (native survival-style window) ──────────────────────────
 
-/// Right-click on the Ultima Keeper NPC.
-pub async fn npc_click(session: &mut ClientSession) -> anyhow::Result<()> {
-    let world = session.world().clone();
-    let sid = session.session_id();
-    let mut texts = [-1; 12];
-    let mut events = [-1; 12];
-    texts[0] = TEXT_ENTER;
-    events[0] = EVENT_REGISTER;
-    texts[1] = TEXT_CANCEL;
-    events[1] = EVENT_CANCEL;
-    super::select_msg::send_select_msg(&world, sid, 2, -1, TEXT_HEADER, &texts, &events, "ultima.lua");
-    Ok(())
+/// Title shown in the registration window (the client's UIF has a fixed title; the proxy swaps it).
+const TITLE_ULTIMA: &str = "Ultima";
+
+fn build_title_packet(title: &str) -> Packet {
+    let mut pkt = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
+    pkt.write_u8(0xFA); // proxy: registration window title
+    pkt.write_string(title);
+    pkt
 }
 
-/// A button of the Keeper dialog was chosen.
-pub async fn handle_event(session: &mut ClientSession, event: i32) -> anyhow::Result<()> {
-    let world = session.world().clone();
-    let sid = session.session_id();
-    match event {
-        EVENT_REGISTER => register(&world, sid),
-        EVENT_CANCEL => cancel(&world, sid),
-        _ => {}
+/// Is the Ultima registration window currently open?
+pub fn registration_open() -> bool {
+    state().lock().phase == Phase::Registration
+}
+
+fn registered_count(st: &State) -> u16 {
+    st.registrants.len().min(u16::MAX as usize) as u16
+}
+
+/// Send the registration window (title + remaining time + participant count) to everybody online.
+fn broadcast_window(world: &WorldState, st: &State, now: u64) {
+    let remaining = st.reg_deadline.saturating_sub(now).min(u16::MAX as u64) as u16;
+    let open = Arc::new(super::survival::build_registration_open(remaining, registered_count(st)));
+    let title = Arc::new(build_title_packet(TITLE_ULTIMA));
+    for sid in world.get_in_game_session_ids() {
+        world.send_to_session_arc(sid, Arc::clone(&title));
+        world.send_to_session_arc(sid, Arc::clone(&open));
     }
+}
+
+/// Refresh only the participant count for everybody while the registration is open.
+fn refresh_counts(world: &WorldState, st: &State, now: u64) {
+    let remaining = st.reg_deadline.saturating_sub(now).min(u16::MAX as u64) as u16;
+    let open = Arc::new(super::survival::build_registration_open(remaining, registered_count(st)));
+    for sid in world.get_in_game_session_ids() {
+        world.send_to_session_arc(sid, Arc::clone(&open));
+    }
+}
+
+/// Apply / Cancel pressed in the registration window while Ultima's registration is open.
+pub async fn window_action(session: &mut ClientSession, apply: bool) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let now = now_unix();
+    let result: i16 = if apply {
+        match try_register(&world, sid) {
+            Ok(()) => 1,
+            Err(msg) => {
+                notice(&world, sid, msg);
+                -1
+            }
+        }
+    } else {
+        state().lock().registrants.retain(|(s, _)| *s != sid);
+        2
+    };
+    // refresh the count for everybody first; the result must be the last packet this client sees
+    let participants = {
+        let st = state().lock();
+        refresh_counts(&world, &st, now);
+        let count = registered_count(&st);
+        // the count refresh flips every client's button back to Apply: keep the registered ones on Cancel
+        for (other, _) in st.registrants.iter().filter(|(o, _)| *o != sid) {
+            world.send_to_session_owned(*other, super::survival::build_registration_result(1, count));
+        }
+        count
+    };
+    session
+        .send_packet(&super::survival::build_registration_result(result, participants))
+        .await?;
     Ok(())
 }
 
-pub fn is_ultima_event(event: i32) -> bool {
-    matches!(event, EVENT_REGISTER | EVENT_CANCEL)
-}
-
-fn register(world: &WorldState, sid: SessionId) {
+fn try_register(world: &WorldState, sid: SessionId) -> Result<(), &'static str> {
     let Some(ch) = world.get_character_info(sid) else {
-        return;
+        return Err("Registration failed.");
     };
     let mut st = state().lock();
     if st.phase != Phase::Registration {
-        let msg = if st.phase == Phase::Running {
-            "Players are fighting Ultima. Please try again later."
-        } else {
-            "Ultima's Dungeon registration is not open."
-        };
-        drop(st);
-        notice(world, sid, msg);
-        return;
+        return Err("Ultima's Dungeon registration is not open.");
     }
     if ch.level < MIN_LEVEL {
-        drop(st);
-        notice(world, sid, &format!("You need to be level {MIN_LEVEL} or higher."));
-        return;
+        return Err("You need to be level 80 or higher.");
     }
     if ch.loyalty_monthly < MIN_LADDER {
-        drop(st);
-        notice(world, sid, &format!("You need at least {MIN_LADDER} monthly Ladder Points."));
-        return;
+        return Err("You need at least 50 monthly Ladder Points.");
     }
     if world.is_player_dead(sid) {
-        return;
+        return Err("You cannot register while dead.");
     }
-    if world.get_character_info(sid).is_some_and(|c| c.party_id.is_some()) {
-        drop(st);
-        notice(world, sid, "You cannot register while you are in a party.");
-        return;
+    if ch.party_id.is_some() {
+        return Err("You cannot register while you are in a party.");
     }
     let day = now_unix() / 86_400;
     if st.entered.get(&ch.name) == Some(&day) {
-        drop(st);
-        notice(world, sid, "Ultima's Dungeon can be entered once a day.");
-        return;
+        return Err("Ultima's Dungeon can be entered once a day.");
     }
     if st.registrants.iter().any(|(s, _)| *s == sid) {
-        drop(st);
-        notice(world, sid, "You are already registered.");
-        return;
+        return Err("You are already registered.");
     }
     st.registrants.push((sid, ch.name.clone()));
-    let count = st.registrants.len();
-    drop(st);
-    notice(world, sid, &format!("You are registered for Ultima's Dungeon ({count} registered)."));
-}
-
-fn cancel(world: &WorldState, sid: SessionId) {
-    let mut st = state().lock();
-    let before = st.registrants.len();
-    st.registrants.retain(|(s, _)| *s != sid);
-    let removed = st.registrants.len() != before;
-    drop(st);
-    notice(
-        world,
-        sid,
-        if removed { "Your Ultima's Dungeon registration was cancelled." } else { "You are not registered." },
-    );
+    Ok(())
 }
 
 // ── GM control ───────────────────────────────────────────────────────────
@@ -260,10 +262,11 @@ pub fn gm_open(world: &WorldState, minutes: Option<u64>) -> &'static str {
     st.phase = Phase::Registration;
     st.reg_deadline = now_unix() + minutes * 60;
     st.registrants.clear();
+    broadcast_window(world, &st, now_unix());
     drop(st);
     announce_all(
         world,
-        &format!("Ultima's Dungeon registration is open for {minutes} minutes. Register at the Ultima Keeper in Moradon."),
+        &format!("Ultima's Dungeon registration is open for {minutes} minutes. Press Apply in the registration window."),
     );
     "Ultima's Dungeon registration opened."
 }

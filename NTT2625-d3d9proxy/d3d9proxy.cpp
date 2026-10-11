@@ -1,4 +1,4 @@
-// d3d9 proxy: forwards to the system d3d9.dll and loads HopeGuard.dll from the game folder.
+﻿// d3d9 proxy: forwards to the system d3d9.dll and loads HopeGuard.dll from the game folder.
 // Goal: get our DLL into the 2625 client without touching the XIGNCODE-packed exe.
 #include <windows.h>
 #include <stdio.h>
@@ -19,6 +19,7 @@ void Rce_OnRecv(const BYTE* buf, size_t len);
 void Rce_FlushSendQueue();
 void Cr_Init();
 void Cr_OnRecv(const BYTE* buf, size_t len);
+void SurvivalTitle_OnRecv(const BYTE* buf, size_t len);
 void Cape_Init();
 void Sp_Init();
 void Sp_OnRecv(const BYTE* buf, size_t len);
@@ -318,6 +319,7 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
                 Pus_OnRecv(pkt, data[1] - *offset);
                 Rce_OnRecv(pkt, data[1] - *offset);
                 Cr_OnRecv(pkt, data[1] - *offset);
+                SurvivalTitle_OnRecv(pkt, data[1] - *offset);   // registration window title (Ultima / Manes)
                 Sp_OnRecv(pkt, data[1] - *offset);
                 Cind_OnRecv(pkt, data[1] - *offset);
                 Csw_OnRecv(pkt, data[1] - *offset);

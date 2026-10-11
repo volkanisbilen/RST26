@@ -9648,7 +9648,12 @@ fn handle_manes_survival_open(session: &mut ClientSession) -> anyhow::Result<()>
         crate::handler::survival::REGISTRATION_DURATION_SECONDS,
         participants,
     ));
+    let mut title = ko_protocol::Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
+    title.write_u8(0xFA);
+    title.write_string("Manes' Survival");
+    let title = Arc::new(title);
     for sid in world.get_in_game_session_ids() {
+        world.send_to_session_arc(sid, Arc::clone(&title));
         world.send_to_session_arc(sid, Arc::clone(&open));
     }
     crate::handler::survival::broadcast_registration_status(&world, 0);
