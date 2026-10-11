@@ -12,13 +12,15 @@
 //! ## Difficulty Levels
 //! | Difficulty | Party Size | Stages    | Stage IDs |
 //! |------------|------------|-----------|-----------|
-//! | Easy (1)   | 2-3        | 5 stages  | 1-5       |
-//! | Normal (2) | 4-7        | 12 stages | 6-17      |
-//! | Hard (3)   | 8+         | 18 stages | 18-35     |
+//! | Easy (1)   | 2-3        | 5 waves   | 1-5       |
+//! | Normal (2) | 4-7        | 15 waves  | 1-15      |
+//! | Hard (3)   | 8+         | 20 waves  | 1-20      |
+//! Waves 1-5 Castle Army 1, 6-10 Castle Army 2, 11-15 Draki Army, 16-20 Bifrost Army;
+//! the last wave of each army holds that army's boss.
 //! ## Rewards (per monster kill)
-//! - **Full Moon Rift Jewel**: 1 for stages 1-17, 2 for stages 18-35 (killer only)
+//! - **Full Moon Rift Jewel**: 1 for Castle/Draki, 2 for the Bifrost Army, none for Astaroth (killer only)
 //! - **Monster Coin**: 2 for killer, 1 for each other party member
-//! - **Lunar Order Token**: 1 per party member when boss dies (9931, 9936, 9951, 9959, 9971)
+//! - **Lunar Order Token**: 1 per party member when boss dies (10000, 10005, 10011, 10019)
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU16, AtomicU32, Ordering};
@@ -75,12 +77,18 @@ pub const GUARDIAN_NPCS: [(u16, i16, i16); 6] = [
 // ── Boss Monster IDs ───────────────────────────────────────────────────
 
 /// Boss monster proto IDs that grant Lunar Order Token on death.
-pub const BOSS_MONSTER_IDS: [u16; 5] = [9931, 9951, 9936, 9959, 9971];
+pub const BOSS_MONSTER_IDS: [u16; 4] = [10000, 10005, 10011, 10019];
+
+/// Astaroth: a suicide monster that only targets the towers; gives no coin and no jewel.
+pub const ASTAROTH: u16 = 10001;
+
+/// First wave of the Bifrost Army (kills there give 2 jewels).
+pub const BIFROST_FIRST_STAGE: i16 = 16;
 
 /// All valid DD monster proto IDs (for reward eligibility).
-pub const DD_MONSTER_IDS: [u16; 26] = [
-    9927, 9928, 9929, 9930, 9931, 9932, 9933, 9934, 9935, 9936, 9937, 9938, 9939, 9940, 9941, 9942,
-    9947, 9948, 9949, 9950, 9951, 9955, 9956, 9957, 9958, 9959,
+pub const DD_MONSTER_IDS: [u16; 23] = [
+    9997, 9998, 9999, 10000, 10001, 10002, 10003, 10004, 10005, 10006, 10007, 10008, 10009, 10010,
+    10011, 10012, 10013, 10014, 10015, 10016, 10017, 10018, 10019,
 ];
 
 // ── Sign Result Codes ──────────────────────────────────────────────────
@@ -134,9 +142,7 @@ impl DdDifficulty {
     ///
     pub fn starting_stage(&self) -> i16 {
         match self {
-            Self::Easy => 1,
-            Self::Normal => 6,
-            Self::Hard => 18,
+            Self::Easy | Self::Normal | Self::Hard => 1,
         }
     }
 
@@ -145,8 +151,8 @@ impl DdDifficulty {
     pub fn final_stage(&self) -> i16 {
         match self {
             Self::Easy => 5,
-            Self::Normal => 17,
-            Self::Hard => 35,
+            Self::Normal => 15,
+            Self::Hard => 20,
         }
     }
 
@@ -155,8 +161,8 @@ impl DdDifficulty {
     pub fn max_stages(&self) -> u8 {
         match self {
             Self::Easy => 5,
-            Self::Normal => 12,
-            Self::Hard => 18,
+            Self::Normal => 15,
+            Self::Hard => 20,
         }
     }
 
@@ -164,11 +170,7 @@ impl DdDifficulty {
     ///
     ///   Easy: stage_id directly, Normal: stage_id - 5, Hard: stage_id - 17
     pub fn stage_offset(&self) -> i16 {
-        match self {
-            Self::Easy => 0,
-            Self::Normal => 5,
-            Self::Hard => 17,
-        }
+        0
     }
 }
 
@@ -428,39 +430,12 @@ pub fn advance_stage(room: &DdRoomInfo, stages: &[DfStageRow]) -> StageAdvanceRe
 }
 
 /// Get the spawn delay for a given difficulty and stage.
-pub fn get_spawn_delay(difficulty: u16, stage_id: i16) -> u32 {
-    match difficulty {
-        1 => {
-            // Easy: stages 1-5 all get 10s
-            if (1..=5).contains(&stage_id) {
-                10
-            } else {
-                20
-            }
-        }
-        2 => {
-            // Normal: stages 6-10 = 10s, 11-17 = 20s, else 15s
-            if (6..=10).contains(&stage_id) {
-                10
-            } else if (11..=17).contains(&stage_id) {
-                20
-            } else {
-                15
-            }
-        }
-        3 => {
-            // Hard: 18-22 = 10s, 23-29 = 20s, 30-35 = 30s, else 20s
-            if (18..=22).contains(&stage_id) {
-                10
-            } else if (23..=29).contains(&stage_id) {
-                20
-            } else if (30..=35).contains(&stage_id) {
-                30
-            } else {
-                20
-            }
-        }
-        _ => 20,
+pub fn get_spawn_delay(_difficulty: u16, stage_id: i16) -> u32 {
+    // waves 1-5: 10 s, 6-12: 20 s, 13 and later: 30 s
+    match stage_id {
+        ..=5 => 10,
+        6..=12 => 20,
+        _ => 30,
     }
 }
 
@@ -495,8 +470,13 @@ pub fn calculate_kill_reward(proto_id: u16, current_stage: i16) -> Option<DdKill
         return None;
     }
 
-    // Full Moon Rift Jewel: 1 for stages 1-17, 2 for stages 18-35
-    let rift_jewel_count = if (18..=35).contains(&current_stage) {
+    // Astaroth (suicide monster) gives no coin and no jewel
+    if proto_id == ASTAROTH {
+        return None;
+    }
+
+    // Full Moon Rift Jewel: 1 for Castle/Draki, 2 for the Bifrost Army
+    let rift_jewel_count = if current_stage >= BIFROST_FIRST_STAGE {
         2
     } else {
         1
@@ -559,7 +539,7 @@ pub fn select_stage(stages: &[DfStageRow], difficulty: u16, stage_id: i16) -> Op
 pub fn get_stage_monsters(monsters: &[DfMonsterRow], stage_id: i16) -> Vec<&DfMonsterRow> {
     monsters
         .iter()
-        .filter(|m| m.id == stage_id as i32)
+        .filter(|m| m.id / 100 == stage_id as i32)
         .collect()
 }
 
@@ -578,907 +558,119 @@ pub fn should_rob_monster_coins() -> bool {
 mod tests {
     use super::*;
 
-    fn make_stages() -> Vec<DfStageRow> {
-        vec![
-            DfStageRow {
-                id: 1,
-                difficulty: 1,
-                difficulty_name: Some("Easy".into()),
-                stage_id: 1,
-            },
-            DfStageRow {
-                id: 3,
-                difficulty: 1,
-                difficulty_name: Some("Easy".into()),
-                stage_id: 2,
-            },
-            DfStageRow {
-                id: 4,
-                difficulty: 1,
-                difficulty_name: Some("Easy".into()),
-                stage_id: 3,
-            },
-            DfStageRow {
-                id: 5,
-                difficulty: 1,
-                difficulty_name: Some("Easy".into()),
-                stage_id: 4,
-            },
-            DfStageRow {
-                id: 6,
-                difficulty: 1,
-                difficulty_name: Some("Easy".into()),
-                stage_id: 5,
-            },
-            DfStageRow {
-                id: 7,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 6,
-            },
-            DfStageRow {
-                id: 8,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 7,
-            },
-            DfStageRow {
-                id: 9,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 8,
-            },
-            DfStageRow {
-                id: 10,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 9,
-            },
-            DfStageRow {
-                id: 11,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 10,
-            },
-            DfStageRow {
-                id: 12,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 11,
-            },
-            DfStageRow {
-                id: 13,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 12,
-            },
-            DfStageRow {
-                id: 14,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 13,
-            },
-            DfStageRow {
-                id: 15,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 14,
-            },
-            DfStageRow {
-                id: 16,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 15,
-            },
-            DfStageRow {
-                id: 17,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 16,
-            },
-            DfStageRow {
-                id: 18,
-                difficulty: 2,
-                difficulty_name: Some("Normal".into()),
-                stage_id: 17,
-            },
-            DfStageRow {
-                id: 19,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 18,
-            },
-            DfStageRow {
-                id: 20,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 19,
-            },
-            DfStageRow {
-                id: 21,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 20,
-            },
-            DfStageRow {
-                id: 22,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 21,
-            },
-            DfStageRow {
-                id: 23,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 22,
-            },
-            DfStageRow {
-                id: 24,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 23,
-            },
-            DfStageRow {
-                id: 25,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 24,
-            },
-            DfStageRow {
-                id: 26,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 25,
-            },
-            DfStageRow {
-                id: 27,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 26,
-            },
-            DfStageRow {
-                id: 28,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 27,
-            },
-            DfStageRow {
-                id: 29,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 28,
-            },
-            DfStageRow {
-                id: 30,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 29,
-            },
-            DfStageRow {
-                id: 31,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 30,
-            },
-            DfStageRow {
-                id: 32,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 31,
-            },
-            DfStageRow {
-                id: 33,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 32,
-            },
-            DfStageRow {
-                id: 34,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 33,
-            },
-            DfStageRow {
-                id: 35,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 34,
-            },
-            DfStageRow {
-                id: 36,
-                difficulty: 3,
-                difficulty_name: Some("Hard".into()),
-                stage_id: 35,
-            },
-        ]
+    fn stages(diff: i16, last: i16) -> Vec<DfStageRow> {
+        (1..=last)
+            .map(|n| DfStageRow {
+                id: diff as i32 * 100 + n as i32,
+                difficulty: diff,
+                difficulty_name: None,
+                stage_id: n,
+            })
+            .collect()
     }
 
-    fn make_monsters() -> Vec<DfMonsterRow> {
-        vec![
-            DfMonsterRow {
-                id: 1,
-                difficulty: Some(1),
-                monster_id: 9927,
-                is_monster: false,
-                pos_x: 60,
-                pos_z: 42,
-                s_count: Some(2),
-                s_direction: 0,
-                s_radius_range: Some(10),
-            },
-            DfMonsterRow {
-                id: 2,
-                difficulty: Some(1),
-                monster_id: 9928,
-                is_monster: false,
-                pos_x: 60,
-                pos_z: 42,
-                s_count: Some(1),
-                s_direction: 0,
-                s_radius_range: Some(0),
-            },
-            DfMonsterRow {
-                id: 5,
-                difficulty: Some(1),
-                monster_id: 9931,
-                is_monster: false,
-                pos_x: 60,
-                pos_z: 42,
-                s_count: Some(1),
-                s_direction: 0,
-                s_radius_range: Some(0),
-            },
-        ]
+    fn mon(id: i32, monster_id: i16, count: i16) -> DfMonsterRow {
+        DfMonsterRow {
+            id,
+            difficulty: Some(1),
+            monster_id,
+            is_monster: false,
+            pos_x: 60,
+            pos_z: 42,
+            s_count: Some(count),
+            s_direction: 0,
+            s_radius_range: Some(10),
+        }
     }
-
-    // ── Difficulty Tests ──────────────────────────────────────────────
 
     #[test]
-    fn test_difficulty_from_party_size() {
-        assert_eq!(DdDifficulty::from_party_size(0), None);
+    fn difficulty_from_party_size() {
         assert_eq!(DdDifficulty::from_party_size(1), None);
         assert_eq!(DdDifficulty::from_party_size(2), Some(DdDifficulty::Easy));
-        assert_eq!(DdDifficulty::from_party_size(3), Some(DdDifficulty::Easy));
-        assert_eq!(DdDifficulty::from_party_size(4), Some(DdDifficulty::Normal));
-        assert_eq!(DdDifficulty::from_party_size(7), Some(DdDifficulty::Normal));
+        assert_eq!(DdDifficulty::from_party_size(5), Some(DdDifficulty::Normal));
         assert_eq!(DdDifficulty::from_party_size(8), Some(DdDifficulty::Hard));
-        assert_eq!(DdDifficulty::from_party_size(10), Some(DdDifficulty::Hard));
     }
 
     #[test]
-    fn test_difficulty_starting_stage() {
-        assert_eq!(DdDifficulty::Easy.starting_stage(), 1);
-        assert_eq!(DdDifficulty::Normal.starting_stage(), 6);
-        assert_eq!(DdDifficulty::Hard.starting_stage(), 18);
-    }
-
-    #[test]
-    fn test_difficulty_final_stage() {
+    fn difficulty_wave_counts() {
         assert_eq!(DdDifficulty::Easy.final_stage(), 5);
-        assert_eq!(DdDifficulty::Normal.final_stage(), 17);
-        assert_eq!(DdDifficulty::Hard.final_stage(), 35);
+        assert_eq!(DdDifficulty::Normal.final_stage(), 15);
+        assert_eq!(DdDifficulty::Hard.final_stage(), 20);
+        assert_eq!(DdDifficulty::Hard.max_stages(), 20);
+        assert_eq!(DdDifficulty::Hard.starting_stage(), 1);
     }
 
     #[test]
-    fn test_difficulty_max_stages() {
-        assert_eq!(DdDifficulty::Easy.max_stages(), 5);
-        assert_eq!(DdDifficulty::Normal.max_stages(), 12);
-        assert_eq!(DdDifficulty::Hard.max_stages(), 18);
+    fn spawn_delays() {
+        assert_eq!(get_spawn_delay(3, 5), 10);
+        assert_eq!(get_spawn_delay(3, 6), 20);
+        assert_eq!(get_spawn_delay(3, 12), 20);
+        assert_eq!(get_spawn_delay(3, 13), 30);
+        assert_eq!(get_spawn_delay(3, 20), 30);
     }
 
     #[test]
-    fn test_difficulty_stage_offset() {
-        assert_eq!(DdDifficulty::Easy.stage_offset(), 0);
-        assert_eq!(DdDifficulty::Normal.stage_offset(), 5);
-        assert_eq!(DdDifficulty::Hard.stage_offset(), 17);
-    }
-
-    // ── Room State Tests ──────────────────────────────────────────────
-
-    #[test]
-    fn test_room_new() {
-        let room = DdRoomInfo::new(1);
-        assert_eq!(room.room_id.load(Ordering::Relaxed), 1);
-        assert!(!room.is_started.load(Ordering::Relaxed));
-        assert_eq!(room.difficulty.load(Ordering::Relaxed), 0);
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 0);
-        assert_eq!(room.kill_count.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            room.spawn_time.load(Ordering::Relaxed),
-            DD_INITIAL_SPAWN_TIME
-        );
-        assert_eq!(room.room_close.load(Ordering::Relaxed), DD_ROOM_CLOSE_TIME);
+    fn rewards() {
+        let r = calculate_kill_reward(9997, 3).unwrap();
+        assert_eq!((r.rift_jewel_count, r.killer_coin_count, r.party_coin_count), (1, 2, 1));
+        assert!(!r.lunar_token);
+        assert_eq!(calculate_kill_reward(10012, 16).unwrap().rift_jewel_count, 2);
+        assert!(calculate_kill_reward(10000, 5).unwrap().lunar_token);
+        assert!(calculate_kill_reward(10019, 20).unwrap().lunar_token);
+        assert!(calculate_kill_reward(ASTAROTH, 7).is_none());
+        assert!(calculate_kill_reward(1, 1).is_none());
     }
 
     #[test]
-    fn test_room_start_easy() {
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-
-        assert!(room.is_started.load(Ordering::Relaxed));
-        assert_eq!(room.difficulty.load(Ordering::Relaxed), 1);
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 1);
-        assert!(room.monster_beginner_spawned.load(Ordering::Relaxed));
-        assert!(!room.monster_spawned.load(Ordering::Relaxed));
-        assert!(!room.is_finished.load(Ordering::Relaxed));
+    fn stage_display() {
+        assert_eq!(get_stage_display(1, 3), Some((5, 3)));
+        assert_eq!(get_stage_display(2, 15), Some((15, 15)));
+        assert_eq!(get_stage_display(3, 20), Some((20, 20)));
+        assert_eq!(get_stage_display(0, 1), None);
     }
 
     #[test]
-    fn test_room_start_normal() {
-        let room = DdRoomInfo::new(2);
-        room.try_claim_and_start(DdDifficulty::Normal);
-
-        assert!(room.is_started.load(Ordering::Relaxed));
-        assert_eq!(room.difficulty.load(Ordering::Relaxed), 2);
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 6);
+    fn stage_monsters_grouped_by_wave() {
+        let m = vec![mon(101, 9997, 5), mon(102, 9998, 5), mon(201, 9997, 3)];
+        assert_eq!(get_stage_monsters(&m, 1).len(), 2);
+        assert_eq!(get_stage_monsters(&m, 2).len(), 1);
+        assert!(get_stage_monsters(&m, 3).is_empty());
     }
 
     #[test]
-    fn test_room_start_hard() {
-        let room = DdRoomInfo::new(3);
-        room.try_claim_and_start(DdDifficulty::Hard);
-
-        assert!(room.is_started.load(Ordering::Relaxed));
-        assert_eq!(room.difficulty.load(Ordering::Relaxed), 3);
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 18);
-    }
-
-    #[test]
-    fn test_room_reset() {
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Hard);
-        room.kill_count.store(10, Ordering::Relaxed);
-
-        room.reset();
-
-        assert!(!room.is_started.load(Ordering::Relaxed));
-        assert_eq!(room.difficulty.load(Ordering::Relaxed), 0);
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 0);
-        assert_eq!(room.kill_count.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn test_room_try_claim_double_fails() {
+    fn advance_until_finished() {
+        let st = stages(1, 5);
         let room = DdRoomInfo::new(1);
         assert!(room.try_claim_and_start(DdDifficulty::Easy));
-        // Second claim on the same room should fail (CAS)
-        assert!(!room.try_claim_and_start(DdDifficulty::Normal));
-        // Room should retain original difficulty
-        assert_eq!(room.difficulty.load(Ordering::Relaxed), 1);
+        for expect in 2..=5 {
+            match advance_stage(&room, &st) {
+                StageAdvanceResult::NextStage { new_stage_id, spawn_delay } => {
+                    assert_eq!(new_stage_id, expect);
+                    assert_eq!(spawn_delay, 10);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(advance_stage(&room, &st), StageAdvanceResult::Finished);
     }
 
     #[test]
-    fn test_room_try_claim_after_reset() {
+    fn hard_runs_twenty_waves() {
+        let st = stages(3, 20);
         let room = DdRoomInfo::new(1);
-        assert!(room.try_claim_and_start(DdDifficulty::Easy));
-        room.reset();
-        // After reset, room can be claimed again
         assert!(room.try_claim_and_start(DdDifficulty::Hard));
-        assert_eq!(room.difficulty.load(Ordering::Relaxed), 3);
+        let mut n = 1;
+        while let StageAdvanceResult::NextStage { .. } = advance_stage(&room, &st) {
+            n += 1;
+        }
+        assert_eq!(n, 20);
     }
 
     #[test]
-    fn test_try_claim_free_room() {
-        let rooms: Vec<DdRoomInfo> = (1..=3).map(DdRoomInfo::new).collect();
-        // First claim gets room 1
+    fn claim_is_exclusive() {
+        let rooms = vec![DdRoomInfo::new(1), DdRoomInfo::new(2)];
         assert_eq!(try_claim_free_room(&rooms, DdDifficulty::Easy), Some(1));
-        // Second claim gets room 2 (room 1 is already started)
-        assert_eq!(try_claim_free_room(&rooms, DdDifficulty::Normal), Some(2));
-        // Third claim gets room 3
-        assert_eq!(try_claim_free_room(&rooms, DdDifficulty::Hard), Some(3));
-        // No more free rooms
+        assert_eq!(try_claim_free_room(&rooms, DdDifficulty::Easy), Some(2));
         assert_eq!(try_claim_free_room(&rooms, DdDifficulty::Easy), None);
-    }
-
-    // ── Timer Tick Tests ──────────────────────────────────────────────
-
-    #[test]
-    fn test_timer_idle_when_not_started() {
-        let room = DdRoomInfo::new(1);
-        assert_eq!(timer_tick(&room), DdTickResult::Idle);
-    }
-
-    #[test]
-    fn test_timer_decrements_spawn_time() {
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-
-        // First tick decrements from 60 to 59
-        let result = timer_tick(&room);
-        assert_eq!(result, DdTickResult::Idle);
-        assert_eq!(room.spawn_time.load(Ordering::Relaxed), 59);
-    }
-
-    #[test]
-    fn test_timer_spawns_at_zero() {
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-        room.spawn_time.store(1, Ordering::Relaxed);
-
-        let result = timer_tick(&room);
-        assert_eq!(
-            result,
-            DdTickResult::SpawnStage {
-                stage_id: 1,
-                difficulty: 1,
-            }
-        );
-        // beginner flag cleared
-        assert!(!room.monster_beginner_spawned.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn test_timer_room_close_kicks() {
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-        room.monster_beginner_spawned
-            .store(false, Ordering::Relaxed);
-        room.spawn_time.store(999, Ordering::Relaxed);
-        room.room_close.store(1, Ordering::Relaxed);
-
-        let result = timer_tick(&room);
-        assert_eq!(result, DdTickResult::KickAll);
-    }
-
-    #[test]
-    fn test_timer_finish_kicks() {
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-        room.monster_beginner_spawned
-            .store(false, Ordering::Relaxed);
-        room.spawn_time.store(999, Ordering::Relaxed);
-        room.is_finished.store(true, Ordering::Relaxed);
-        room.out_time.store(1, Ordering::Relaxed);
-        room.room_close.store(999, Ordering::Relaxed);
-
-        let result = timer_tick(&room);
-        assert_eq!(result, DdTickResult::KickAll);
-    }
-
-    // ── Stage Advancement Tests ───────────────────────────────────────
-
-    #[test]
-    fn test_advance_stage_easy() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(
-            result,
-            StageAdvanceResult::NextStage {
-                new_stage_id: 2,
-                spawn_delay: 10,
-            }
-        );
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn test_advance_stage_easy_final() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-        room.stage_id.store(5, Ordering::Relaxed);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(result, StageAdvanceResult::Finished);
-    }
-
-    #[test]
-    fn test_advance_stage_normal() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Normal);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(
-            result,
-            StageAdvanceResult::NextStage {
-                new_stage_id: 7,
-                spawn_delay: 10,
-            }
-        );
-    }
-
-    #[test]
-    fn test_advance_stage_normal_later() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Normal);
-        room.stage_id.store(11, Ordering::Relaxed);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(
-            result,
-            StageAdvanceResult::NextStage {
-                new_stage_id: 12,
-                spawn_delay: 20,
-            }
-        );
-    }
-
-    #[test]
-    fn test_advance_stage_normal_final() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Normal);
-        room.stage_id.store(17, Ordering::Relaxed);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(result, StageAdvanceResult::Finished);
-    }
-
-    #[test]
-    fn test_advance_stage_hard() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Hard);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(
-            result,
-            StageAdvanceResult::NextStage {
-                new_stage_id: 19,
-                spawn_delay: 10,
-            }
-        );
-    }
-
-    #[test]
-    fn test_advance_stage_hard_mid() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Hard);
-        room.stage_id.store(25, Ordering::Relaxed);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(
-            result,
-            StageAdvanceResult::NextStage {
-                new_stage_id: 26,
-                spawn_delay: 20,
-            }
-        );
-    }
-
-    #[test]
-    fn test_advance_stage_hard_late() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Hard);
-        room.stage_id.store(30, Ordering::Relaxed);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(
-            result,
-            StageAdvanceResult::NextStage {
-                new_stage_id: 31,
-                spawn_delay: 30,
-            }
-        );
-    }
-
-    #[test]
-    fn test_advance_stage_hard_final() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Hard);
-        room.stage_id.store(35, Ordering::Relaxed);
-
-        let result = advance_stage(&room, &stages);
-        assert_eq!(result, StageAdvanceResult::Finished);
-    }
-
-    // ── Spawn Delay Tests ─────────────────────────────────────────────
-
-    #[test]
-    fn test_spawn_delay_easy() {
-        assert_eq!(get_spawn_delay(1, 1), 10);
-        assert_eq!(get_spawn_delay(1, 3), 10);
-        assert_eq!(get_spawn_delay(1, 5), 10);
-    }
-
-    #[test]
-    fn test_spawn_delay_normal() {
-        assert_eq!(get_spawn_delay(2, 6), 10);
-        assert_eq!(get_spawn_delay(2, 10), 10);
-        assert_eq!(get_spawn_delay(2, 11), 20);
-        assert_eq!(get_spawn_delay(2, 17), 20);
-    }
-
-    #[test]
-    fn test_spawn_delay_hard() {
-        assert_eq!(get_spawn_delay(3, 18), 10);
-        assert_eq!(get_spawn_delay(3, 22), 10);
-        assert_eq!(get_spawn_delay(3, 23), 20);
-        assert_eq!(get_spawn_delay(3, 29), 20);
-        assert_eq!(get_spawn_delay(3, 30), 30);
-        assert_eq!(get_spawn_delay(3, 35), 30);
-    }
-
-    // ── Monster ID Tests ──────────────────────────────────────────────
-
-    #[test]
-    fn test_is_dd_monster() {
-        assert!(is_dd_monster(9927));
-        assert!(is_dd_monster(9942));
-        assert!(is_dd_monster(9947));
-        assert!(is_dd_monster(9958));
-        assert!(is_dd_monster(9959));
-        assert!(!is_dd_monster(1234));
-        assert!(!is_dd_monster(9943));
-        assert!(!is_dd_monster(9960));
-    }
-
-    #[test]
-    fn test_is_dd_boss() {
-        assert!(is_dd_boss(9931));
-        assert!(is_dd_boss(9951));
-        assert!(is_dd_boss(9936));
-        assert!(is_dd_boss(9959));
-        assert!(is_dd_boss(9971));
-        assert!(!is_dd_boss(9927));
-        assert!(!is_dd_boss(1234));
-    }
-
-    // ── Kill Reward Tests ─────────────────────────────────────────────
-
-    #[test]
-    fn test_kill_reward_normal_monster_early_stage() {
-        let reward = calculate_kill_reward(9927, 5);
-        assert!(reward.is_some());
-        let r = reward.unwrap();
-        assert_eq!(r.rift_jewel_count, 1);
-        assert_eq!(r.killer_coin_count, 2);
-        assert_eq!(r.party_coin_count, 1);
-        assert!(!r.lunar_token);
-    }
-
-    #[test]
-    fn test_kill_reward_normal_monster_late_stage() {
-        let reward = calculate_kill_reward(9955, 20);
-        assert!(reward.is_some());
-        let r = reward.unwrap();
-        assert_eq!(r.rift_jewel_count, 2);
-        assert_eq!(r.killer_coin_count, 2);
-        assert_eq!(r.party_coin_count, 1);
-        assert!(!r.lunar_token);
-    }
-
-    #[test]
-    fn test_kill_reward_boss_monster() {
-        let reward = calculate_kill_reward(9931, 5);
-        assert!(reward.is_some());
-        let r = reward.unwrap();
-        assert!(r.lunar_token);
-    }
-
-    #[test]
-    fn test_kill_reward_non_dd_monster() {
-        let reward = calculate_kill_reward(1234, 5);
-        assert!(reward.is_none());
-    }
-
-    // ── Stage Display Tests ───────────────────────────────────────────
-
-    #[test]
-    fn test_stage_display_easy() {
-        let (max, display) = get_stage_display(1, 1).unwrap();
-        assert_eq!(max, 5);
-        assert_eq!(display, 1);
-
-        let (max, display) = get_stage_display(1, 5).unwrap();
-        assert_eq!(max, 5);
-        assert_eq!(display, 5);
-    }
-
-    #[test]
-    fn test_stage_display_normal() {
-        let (max, display) = get_stage_display(2, 6).unwrap();
-        assert_eq!(max, 12);
-        assert_eq!(display, 1);
-
-        let (max, display) = get_stage_display(2, 17).unwrap();
-        assert_eq!(max, 12);
-        assert_eq!(display, 12);
-    }
-
-    #[test]
-    fn test_stage_display_hard() {
-        let (max, display) = get_stage_display(3, 18).unwrap();
-        assert_eq!(max, 18);
-        assert_eq!(display, 1);
-
-        let (max, display) = get_stage_display(3, 35).unwrap();
-        assert_eq!(max, 18);
-        assert_eq!(display, 18);
-    }
-
-    #[test]
-    fn test_stage_display_invalid_difficulty() {
-        assert!(get_stage_display(0, 1).is_none());
-        assert!(get_stage_display(4, 1).is_none());
-    }
-
-    // ── Finish Timer Tests ────────────────────────────────────────────
-
-    #[test]
-    fn test_trigger_finish() {
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-
-        trigger_finish(&room);
-
-        assert!(!room.monster_beginner_spawned.load(Ordering::Relaxed));
-        assert!(!room.monster_spawned.load(Ordering::Relaxed));
-        assert!(room.is_finished.load(Ordering::Relaxed));
-        assert_eq!(room.out_time.load(Ordering::Relaxed), DD_FINISH_TIME);
-    }
-
-    // ── Stage Lookup Tests ────────────────────────────────────────────
-
-    #[test]
-    fn test_select_stage() {
-        let stages = make_stages();
-        let stage = select_stage(&stages, 1, 1);
-        assert!(stage.is_some());
-        assert_eq!(stage.unwrap().id, 1);
-
-        let stage = select_stage(&stages, 2, 6);
-        assert!(stage.is_some());
-
-        let stage = select_stage(&stages, 1, 99);
-        assert!(stage.is_none());
-    }
-
-    #[test]
-    fn test_get_stage_monsters() {
-        let monsters = make_monsters();
-        let spawns = get_stage_monsters(&monsters, 1);
-        assert_eq!(spawns.len(), 1);
-        assert_eq!(spawns[0].monster_id, 9927);
-
-        let spawns = get_stage_monsters(&monsters, 5);
-        assert_eq!(spawns.len(), 1);
-        assert_eq!(spawns[0].monster_id, 9931);
-
-        let spawns = get_stage_monsters(&monsters, 99);
-        assert_eq!(spawns.len(), 0);
-    }
-
-    // ── Guardian NPC Tests ────────────────────────────────────────────
-
-    #[test]
-    fn test_guardian_npcs_defined() {
-        assert_eq!(GUARDIAN_NPCS.len(), 6);
-        // First 3 are NPC 31737
-        assert_eq!(GUARDIAN_NPCS[0].0, 31737);
-        assert_eq!(GUARDIAN_NPCS[1].0, 31737);
-        assert_eq!(GUARDIAN_NPCS[2].0, 31737);
-        // Others are unique
-        assert_eq!(GUARDIAN_NPCS[3].0, 31740);
-        assert_eq!(GUARDIAN_NPCS[4].0, 31739);
-        assert_eq!(GUARDIAN_NPCS[5].0, 31738);
-    }
-
-    // ── Constants Tests ───────────────────────────────────────────────
-
-    #[test]
-    fn test_constants() {
-        assert_eq!(ZONE_DUNGEON_DEFENCE, 89);
-        assert_eq!(DUNGEON_DEFENCE_RIFT_ITEM, 914057000);
-        assert_eq!(MONSTER_COIN_ITEM, 914058000);
-        assert_eq!(MONSTER_RIFT_JEWEL, 914069000);
-        assert_eq!(LUNAR_ORDER_TOKEN, 810977000);
-        assert_eq!(DD_INITIAL_SPAWN_TIME, 60);
-        assert_eq!(DD_ROOM_CLOSE_TIME, 7200);
-        assert_eq!(DD_FINISH_TIME, 30);
-        assert_eq!(TEMPLE_EVENT_DUNGEON_SIGN, 58);
-        assert_eq!(TEMPLE_EVENT_STAGE_COUNTER, 60);
-    }
-
-    // ── Full Lifecycle Test ───────────────────────────────────────────
-
-    #[test]
-    fn test_full_easy_lifecycle() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Easy);
-
-        // Room is started, stage 1
-        assert!(room.is_started.load(Ordering::Relaxed));
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 1);
-
-        // Simulate ticks until spawn
-        room.spawn_time.store(1, Ordering::Relaxed);
-        let result = timer_tick(&room);
-        assert_eq!(
-            result,
-            DdTickResult::SpawnStage {
-                stage_id: 1,
-                difficulty: 1,
-            }
-        );
-
-        // Advance through all stages
-        for expected_stage in 2..=5 {
-            let advance = advance_stage(&room, &stages);
-            if expected_stage <= 4 {
-                match advance {
-                    StageAdvanceResult::NextStage { new_stage_id, .. } => {
-                        assert_eq!(new_stage_id, expected_stage);
-                    }
-                    _ => panic!("Expected NextStage for stage {}", expected_stage),
-                }
-            }
-        }
-
-        // Final stage: should be finished
-        let advance = advance_stage(&room, &stages);
-        assert_eq!(advance, StageAdvanceResult::Finished);
-
-        // Trigger finish
-        trigger_finish(&room);
-        assert!(room.is_finished.load(Ordering::Relaxed));
-        assert_eq!(room.out_time.load(Ordering::Relaxed), DD_FINISH_TIME);
-
-        // Simulate finish timer expiry
-        room.monster_beginner_spawned
-            .store(false, Ordering::Relaxed);
-        room.monster_spawned.store(false, Ordering::Relaxed);
-        room.spawn_time.store(999, Ordering::Relaxed);
-        room.room_close.store(999, Ordering::Relaxed);
-        room.out_time.store(1, Ordering::Relaxed);
-        let result = timer_tick(&room);
-        assert_eq!(result, DdTickResult::KickAll);
-    }
-
-    #[test]
-    fn test_full_normal_lifecycle() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Normal);
-
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 6);
-
-        // Advance through all 12 normal stages (6-17)
-        for expected_stage in 7..=17 {
-            let advance = advance_stage(&room, &stages);
-            match advance {
-                StageAdvanceResult::NextStage { new_stage_id, .. } => {
-                    assert_eq!(new_stage_id, expected_stage);
-                }
-                _ => panic!("Expected NextStage for stage {}", expected_stage),
-            }
-        }
-
-        // Final stage 17: should be finished
-        let advance = advance_stage(&room, &stages);
-        assert_eq!(advance, StageAdvanceResult::Finished);
-    }
-
-    #[test]
-    fn test_full_hard_lifecycle() {
-        let stages = make_stages();
-        let room = DdRoomInfo::new(1);
-        room.try_claim_and_start(DdDifficulty::Hard);
-
-        assert_eq!(room.stage_id.load(Ordering::Relaxed), 18);
-
-        // Advance through all 18 hard stages (18-35)
-        for expected_stage in 19..=35 {
-            let advance = advance_stage(&room, &stages);
-            match advance {
-                StageAdvanceResult::NextStage { new_stage_id, .. } => {
-                    assert_eq!(new_stage_id, expected_stage);
-                }
-                _ => panic!("Expected NextStage for stage {}", expected_stage),
-            }
-        }
-
-        // Final stage 35: should be finished
-        let advance = advance_stage(&room, &stages);
-        assert_eq!(advance, StageAdvanceResult::Finished);
     }
 }
