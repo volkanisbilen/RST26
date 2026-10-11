@@ -350,6 +350,19 @@ pub async fn process_chat_command(
         "beefopen" => handle_beef_open(session)?,
         "beefclose" => handle_beef_close(session)?,
         "ftopen" => handle_ft_open(session, &args)?,
+        "ultimaopen" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::ultima::gm_open(session.world(), minutes);
+            send_help(session, msg);
+        }
+        "ultimastart" => {
+            let msg = super::ultima::gm_start(session.world());
+            send_help(session, msg);
+        }
+        "ultimaend" => {
+            let msg = super::ultima::gm_end(session.world());
+            send_help(session, msg);
+        }
         "ftclose" => handle_ft_close(session)?,
         "lottery" => handle_lottery_start(session, &args).await?,
         "lotteryclose" => handle_lottery_close(session)?,

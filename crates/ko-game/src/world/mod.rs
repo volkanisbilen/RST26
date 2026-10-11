@@ -708,6 +708,12 @@ pub struct WorldState {
     cindwar_event_users: DashMap<SessionId, ()>,
     /// Sessions whose client still shows the Fun Class identity; refreshed once the zone change lands.
     cind_refresh_pending: DashMap<SessionId, ()>,
+    /// Ultima's Dungeon: bosses that cannot lose HP while their seal stands.
+    pub(crate) ultima_boss_guard: DashMap<u32, ()>,
+    /// Ultima's Dungeon: seal structures (only the fixed basic-attack hit counts).
+    pub(crate) ultima_seals: DashMap<u32, i32>,
+    /// Ultima's Dungeon: bosses in their lethal window (warriors hit 1.5x).
+    pub(crate) ultima_lethal: DashMap<u32, ()>,
     /// Per-player Cinderella War state (original data backup, cooldowns, KDA).
     ///
     cindwar_player_states: DashMap<SessionId, crate::handler::cinderella::CindirellaPlayerState>,
@@ -1115,6 +1121,9 @@ impl WorldState {
             cindwar_zone_id: AtomicU16::new(0),
             cindwar_event_users: DashMap::new(),
             cind_refresh_pending: DashMap::new(),
+            ultima_boss_guard: DashMap::new(),
+            ultima_seals: DashMap::new(),
+            ultima_lethal: DashMap::new(),
             cindwar_player_states: DashMap::new(),
             cindwar_event_state: parking_lot::RwLock::new(
                 crate::handler::cinderella::CindirellaEventState::default(),
@@ -1356,6 +1365,9 @@ impl WorldState {
             cindwar_zone_id: AtomicU16::new(0),
             cindwar_event_users: DashMap::new(),
             cind_refresh_pending: DashMap::new(),
+            ultima_boss_guard: DashMap::new(),
+            ultima_seals: DashMap::new(),
+            ultima_lethal: DashMap::new(),
             cindwar_player_states: DashMap::new(),
             cindwar_event_state: parking_lot::RwLock::new(
                 crate::handler::cinderella::CindirellaEventState::default(),

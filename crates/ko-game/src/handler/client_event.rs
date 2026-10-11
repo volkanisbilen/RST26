@@ -327,6 +327,11 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
         return Ok(());
     }
 
+    if proto_id == super::ultima::NPC_ULTIMA_KEEPER {
+        super::ultima::npc_click(session).await?;
+        return Ok(());
+    }
+
     if proto_id == NPC_FUNCLASS_EVENT {
         funclass_npc_enter(session).await?;
         return Ok(());

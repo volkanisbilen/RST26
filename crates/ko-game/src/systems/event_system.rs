@@ -740,6 +740,9 @@ pub fn start_event_system_task(
                 }
             }
 
+            // ── Ultima's Dungeon timer tick ──────────────────────────────
+            crate::handler::ultima::tick(&world);
+
             // ── Forgotten Temple timer tick ───────────────────────────────
             // Called every 1s while the event is active. Handles summon phase,
             // stage spawning, victory detection, and finish/kick logic.

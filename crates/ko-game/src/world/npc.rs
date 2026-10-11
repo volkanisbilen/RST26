@@ -118,8 +118,44 @@ impl WorldState {
     /// Update (set) the HP of an NPC by runtime ID.
     pub fn update_npc_hp(&self, nid: NpcId, hp: i32) {
         if let Some(mut entry) = self.npc_hp.get_mut(&nid) {
+            // Ultima's Dungeon rules: a sealed boss takes no damage, a seal only loses its fixed hit.
+            if hp < *entry {
+                if self.ultima_boss_guard.contains_key(&nid) {
+                    return;
+                }
+                if let Some(hit) = self.ultima_seals.get(&nid) {
+                    if *entry - hp != *hit {
+                        return;
+                    }
+                }
+            }
             *entry = hp;
         }
+    }
+    /// Ultima's Dungeon: register / clear the boss guard, seals and lethal windows.
+    pub fn ultima_set_boss_guard(&self, nid: NpcId, on: bool) {
+        if on {
+            self.ultima_boss_guard.insert(nid, ());
+        } else {
+            self.ultima_boss_guard.remove(&nid);
+        }
+    }
+    pub fn ultima_register_seal(&self, nid: NpcId, hit: i32) {
+        self.ultima_seals.insert(nid, hit);
+    }
+    pub fn ultima_set_lethal(&self, nid: NpcId, on: bool) {
+        if on {
+            self.ultima_lethal.insert(nid, ());
+        } else {
+            self.ultima_lethal.remove(&nid);
+        }
+    }
+    pub fn ultima_is_lethal(&self, nid: NpcId) -> bool {
+        self.ultima_lethal.contains_key(&nid)
+    }
+    /// Fixed damage of one basic attack on an Ultima seal, if `nid` is one.
+    pub fn ultima_seal_hit(&self, nid: NpcId) -> Option<i32> {
+        self.ultima_seals.get(&nid).map(|v| *v)
     }
     /// Check if an NPC is dead (HP <= 0).
     pub fn is_npc_dead(&self, nid: NpcId) -> bool {

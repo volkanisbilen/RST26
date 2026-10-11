@@ -4326,6 +4326,15 @@ fn apply_npc_type_damage_override(
     npc: &crate::npc::NpcInstance,
     damage: i16,
 ) -> i16 {
+    // Ultima's Dungeon: a seal only takes its fixed basic-attack hit; during the boss's
+    // lethal window warriors hit 1.5x.
+    if let Some(hit) = world.ultima_seal_hit(npc.nid) {
+        return hit.clamp(1, i16::MAX as i32) as i16;
+    }
+    if damage > 0 && world.ultima_is_lethal(npc.nid) && is_warrior(attacker.class) {
+        return (damage as i32 * 3 / 2).min(i16::MAX as i32) as i16;
+    }
+
     // Weapon kind for pickaxe: C++ GameDefine.h:1234 — WEAPON_PICKAXE = 61
     const WEAPON_PICKAXE: i32 = 61;
     // Punishment stick item ID: C++ GameDefine.h:1622 — `GetNum() == 900356000`

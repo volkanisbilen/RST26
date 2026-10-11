@@ -51,6 +51,7 @@ pub mod cryption;
 pub mod daily_quest;
 pub mod gm_panel;
 pub mod soft_reconnect;
+pub mod ultima;
 pub mod daily_quest_v2525;
 pub mod daily_rank;
 pub mod datasave;

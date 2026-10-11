@@ -115,6 +115,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         return Ok(());
     }
 
+    if super::ultima::is_ultima_event(effective_event) {
+        super::ultima::handle_event(session, effective_event).await?;
+        return Ok(());
+    }
+
     if super::daily_quest::is_daily_quest_manager_event(effective_event) {
         super::daily_quest::handle_daily_quest_manager_event(session, effective_event).await?;
         return Ok(());
