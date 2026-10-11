@@ -32,7 +32,7 @@ pub const ZONE_ULTIMA: u16 = 55;
 const NPC_BOSS_SMALL: u16 = 10100;
 const NPC_BOSS_MEDIUM: u16 = 10110;
 const NPC_BOSS_LARGE: u16 = 10111;
-/// "Demolition Seal Artifact": the seal that has to be destroyed first.
+/// The seal that has to be destroyed first: the client's "[Artifact]" NPC (type 61, attackable like a CSW artifact).
 const NPC_SEAL: u16 = 10101;
 /// "[Protection] Ultima Seal Artifact": the four untargetable escape structures.
 const NPC_ESCAPE: u16 = 10103;
@@ -533,7 +533,7 @@ fn spawn_boss_and_seal(world: &WorldState, room: &mut Room) {
     };
     let (cx, cz) = room.center;
     let boss = world.spawn_event_npc_ex(boss_proto, true, ZONE_ULTIMA, cx, cz, 1, room.event_room, 0);
-    let seal = world.spawn_event_npc_ex(NPC_SEAL, true, ZONE_ULTIMA, cx + 10.0, cz, 1, room.event_room, 0);
+    let seal = world.spawn_event_npc_ex(NPC_SEAL, false, ZONE_ULTIMA, cx + 10.0, cz, 1, room.event_room, 0);
     let (Some(&boss_nid), Some(&seal_nid)) = (boss.first(), seal.first()) else {
         warn!("Ultima's Dungeon: could not spawn the boss/seal (templates missing)");
         room_notice(world, room, "Ultima's Dungeon could not start. Please contact a GM.");

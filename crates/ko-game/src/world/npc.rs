@@ -124,9 +124,9 @@ impl WorldState {
                     return;
                 }
                 if let Some(hit) = self.ultima_seals.get(&nid) {
-                    if *entry - hp != *hit {
-                        return;
-                    }
+                    // any hit (melee, skill, area) removes one fixed hit
+                    *entry = (*entry - *hit).max(0);
+                    return;
                 }
             }
             *entry = hp;
