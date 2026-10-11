@@ -3307,24 +3307,9 @@ async fn pet_hatching(
     pkt.write_u16(9000); // satisfaction
     session.send_packet(&pkt).await?;
 
-    // Send pet spawn info packet — opens the pet status window on client.
-    let spawn_info = super::pet::PetSpawnInfo {
-        index: pet_index,
-        name: pet_name.clone(),
-        level: PET_START_LEVEL,
-        exp_percent: 0,
-        max_hp: pet_info.pet_max_hp as u16,
-        hp: pet_info.pet_max_hp as u16,
-        max_mp: pet_info.pet_max_sp as u16,
-        mp: pet_info.pet_max_sp as u16,
-        satisfaction: 9000,
-        attack: pet_info.pet_attack as u16,
-        defence: pet_info.pet_defence as u16,
-        resistance: pet_info.pet_res as u16,
-        items: Default::default(),
-    };
-    let spawn_pkt = super::pet::build_pet_spawn_packet(&spawn_info);
-    session.send_packet(&spawn_pkt).await?;
+    // The reference server answers a hatch with the result packet only. The pet is summoned
+    // later with its item; sending the spawn/status packet here made the pet appear next to
+    // the player without being summoned.
 
     debug!(
         "[sid={}] pet_hatching: egg={} → pet_index={} name={}",

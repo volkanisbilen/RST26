@@ -845,6 +845,14 @@ pub fn start_event_system_task(
                             tracing::info!(
                                 "Forgotten Temple: event finished, kicking players to Moradon"
                             );
+                            world.broadcast_to_zone(
+                                forgotten_temple::ZONE_FORGOTTEN_TEMPLE,
+                                Arc::new(crate::systems::timed_notice::build_notice_packet(
+                                    8,
+                                    "The Forgotten Temple event has ended.",
+                                )),
+                                None,
+                            );
 
                             // Find all users in FT zone and teleport to Moradon
                             let ft_users = world.collect_sessions_by(|h| {
@@ -2219,29 +2227,23 @@ async fn grant_reward(world: &WorldState, sid: SessionId, reward: &AggregatedRew
 pub async fn distribute_ft_rewards(world: &WorldState) {
     use crate::handler::forgotten_temple;
 
-    let rewards = match world.get_event_rewards(forgotten_temple::FT_REWARD_LOCAL_ID) {
-        Some(r) => r,
-        None => {
-            tracing::warn!(
-                "Forgotten Temple: no event rewards configured for local_id={}",
-                forgotten_temple::FT_REWARD_LOCAL_ID
-            );
-            return;
-        }
-    };
+    /// Forgotten Temple chests: Blue = 1st grade (high level), Green = 2nd grade (low level).
+    const FT_BLUE_CHEST: u32 = 379_156_000;
+    const FT_GREEN_CHEST: u32 = 379_155_000;
+    const FT_CHEST_COUNT: u16 = 20;
+    const FT_HIGH_LEVEL: u8 = 60;
+    const FT_LEAVE_SECS: u64 = 15;
 
-    // Filter to active reward rows (status=true, local_id=13)
-    let active_rows: Vec<&EventRewardRow> = rewards
-        .iter()
-        .filter(|r| r.status && r.local_id == forgotten_temple::FT_REWARD_LOCAL_ID)
-        .collect();
-
-    if active_rows.is_empty() {
-        tracing::warn!("Forgotten Temple: no active reward rows found");
-        return;
-    }
-
-    let aggregated = aggregate_rewards(&active_rows);
+    // Configured rows (exp / loyalty / noah / items) if any
+    let aggregated = world
+        .get_event_rewards(forgotten_temple::FT_REWARD_LOCAL_ID)
+        .map(|rewards| {
+            let rows: Vec<&EventRewardRow> = rewards
+                .iter()
+                .filter(|r| r.status && r.local_id == forgotten_temple::FT_REWARD_LOCAL_ID)
+                .collect();
+            aggregate_rewards(&rows)
+        });
 
     // Collect all eligible players in FT zone
     let ft_users: Vec<SessionId> = world.collect_sessions_by(|h| {
@@ -2254,20 +2256,47 @@ pub async fn distribute_ft_rewards(world: &WorldState) {
     });
 
     let mut rewarded = 0u32;
-
     for sid in &ft_users {
-        grant_reward(world, *sid, &aggregated).await;
+        if let Some(ref agg) = aggregated {
+            if !agg.items.is_empty() || agg.experience > 0 || agg.loyalty > 0 || agg.noah > 0 {
+                grant_reward(world, *sid, agg).await;
+            }
+        }
+        let level = world.get_character_info(*sid).map(|c| c.level).unwrap_or(0);
+        let (chest, name) = if level >= FT_HIGH_LEVEL {
+            (FT_BLUE_CHEST, "Blue Treasure Chest")
+        } else {
+            (FT_GREEN_CHEST, "Green Treasure Chest")
+        };
+        let msg = if world.give_item(*sid, chest, FT_CHEST_COUNT) {
+            format!("Monster Challenge cleared! Reward: {FT_CHEST_COUNT} {name}.")
+        } else {
+            format!("Monster Challenge cleared! Your bag is full, {name} could not be given.")
+        };
+        world.send_to_session_owned(*sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
         rewarded += 1;
     }
 
+    // Everybody in the temple is told they are leaving; the finish tick moves them out.
+    let leave = format!("The Forgotten Temple is cleared. You will leave in {FT_LEAVE_SECS} seconds.");
+    world.broadcast_to_zone(
+        forgotten_temple::ZONE_FORGOTTEN_TEMPLE,
+        Arc::new(crate::systems::timed_notice::build_notice_packet(8, &leave)),
+        None,
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    world
+        .forgotten_temple_state()
+        .waiting_time
+        .store(now + FT_LEAVE_SECS, std::sync::atomic::Ordering::Relaxed);
+
     tracing::info!(
-        "Forgotten Temple: distributed rewards to {}/{} players (items={}, exp={}, loyalty={}, noah={})",
+        "Forgotten Temple: rewarded {}/{} players (20 chests each)",
         rewarded,
         ft_users.len(),
-        aggregated.items.len(),
-        aggregated.experience,
-        aggregated.loyalty,
-        aggregated.noah,
     );
 }
 
