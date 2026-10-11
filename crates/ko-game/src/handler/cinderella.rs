@@ -404,14 +404,13 @@ fn build_preset_skills(skill_pages: [i16; 4], free_skill_pts: i16) -> Packet {
 /// The event system requires WorldState integration to be fully functional.
 /// Currently validates packets and sub-opcodes, but event activation
 /// depends on GM commands setting up the event state.
-/// C++ `GetCindirellaForcedZone`: the Fun Class runs on the mini maps (107 Mini Colony Zone,
-/// 115 Mini Ardream); old Ronark Land / Ardream settings are mapped to them.
+/// Zone the Fun Class runs in. C++ forces the mini maps (107 / 115); this client crashes while
+/// loading those maps (zones 107, 111, 115), so the old PvP / mini settings fall back to the
+/// Snow War map (110), which loads fine. Any other configured zone is kept.
 pub fn forced_event_zone(zone: u16) -> u16 {
     match zone {
-        72 => 115,
-        71 | 73 => 107,
-        107 | 115 => zone,
-        _ => 107,
+        71..=73 | 107 | 115 => 110,
+        _ => zone,
     }
 }
 
