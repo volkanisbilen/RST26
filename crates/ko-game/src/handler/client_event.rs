@@ -252,6 +252,7 @@ async fn handle_ticket_exchange(session: &mut ClientSession, pkt: &Packet) -> an
 async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
+    tracing::info!(sid, npc_nid, "NPC click received");
 
     // Player must be alive and not busy
     // isDead() || isTrading() || isMerchanting() || isStoreOpen() || isSellingMerchant()
@@ -312,6 +313,7 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
     //   m_sEventNid = (int16)sNpcID;
     //   m_sEventSid = pNpc->GetProtoID();
     let proto_id = npc.proto_id;
+    tracing::info!(sid, npc_nid, proto_id, "NPC click in range");
     world.update_session(sid, |h| {
         h.event_nid = npc_nid as i16;
         h.event_sid = proto_id as i16;

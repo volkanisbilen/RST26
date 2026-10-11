@@ -96,6 +96,24 @@ pub fn start(world: Arc<WorldState>, pool: DbPool, bind: String) -> tokio::task:
                 post(force_logout_character),
             )
             .route("/jstkoadminpanel/api/items", get(items))
+            .route("/jstkoadminpanel/api/collection-race/config", get(collection_race_config))
+            .route("/jstkoadminpanel/api/collection-race/npcs", get(collection_race_npcs))
+            .route(
+                "/jstkoadminpanel/api/collection-race/settings",
+                post(create_collection_race_setting),
+            )
+            .route(
+                "/jstkoadminpanel/api/collection-race/settings/{index}",
+                post(update_collection_race_setting).delete(delete_collection_race_setting),
+            )
+            .route(
+                "/jstkoadminpanel/api/collection-race/rewards",
+                post(create_collection_race_reward),
+            )
+            .route(
+                "/jstkoadminpanel/api/collection-race/rewards/{index}",
+                post(update_collection_race_reward).delete(delete_collection_race_reward),
+            )
             .route(
                 "/jstkoadminpanel/api/quest-studio/npcs",
                 get(quest_studio_npcs),
@@ -718,6 +736,74 @@ async fn items(
     Ok(Json(Value::Array(rows.into_iter().map(|r|json!({"id":r.try_get::<i32,_>("num").unwrap_or(0),"name":r.try_get::<Option<String>,_>("str_name").ok().flatten().unwrap_or_default(),"description":r.try_get::<Option<String>,_>("description").ok().flatten().unwrap_or_default(),"icon":r.try_get::<Option<i32>,_>("item_icon_id1").ok().flatten(),"countable":r.try_get::<Option<i32>,_>("countable").ok().flatten().unwrap_or(0)})).collect())))
 }
 
+// Collection Race ------------------------------------------------------------
+// This is an administrative editor for the existing Collection Race tables.
+// It does not change game rules; settings are loaded by the server at startup.
+async fn collection_race_config(headers: HeaderMap, State(app): State<App>) -> Result<Json<Value>, ApiError> {
+    auth(&headers, false)?;
+    let zones = sqlx::query("SELECT zone_no, zone_name FROM zone_info ORDER BY zone_no")
+        .fetch_all(&app.pool).await.map_err(|_| ApiError::Internal)?;
+    let settings = sqlx::query("SELECT s.*,COALESCE(z.zone_name,'') AS zone_name,COALESCE(n1.str_name,'') AS unit1_name,COALESCE(n2.str_name,'') AS unit2_name,COALESCE(n3.str_name,'') AS unit3_name FROM collection_race_settings s LEFT JOIN zone_info z ON z.zone_no=s.event_zone LEFT JOIN npc_template n1 ON n1.s_sid=s.unit1 LEFT JOIN npc_template n2 ON n2.s_sid=s.unit2 LEFT JOIN npc_template n3 ON n3.s_sid=s.unit3 ORDER BY s.event_index")
+        .fetch_all(&app.pool).await.map_err(|_| ApiError::Internal)?;
+    let rewards = sqlx::query("SELECT r.*,COALESCE(i.str_name,'') AS item_name FROM collection_race_reward r LEFT JOIN item i ON i.num=r.item_id ORDER BY r.event_id,r.idx")
+        .fetch_all(&app.pool).await.map_err(|_| ApiError::Internal)?;
+    Ok(Json(json!({
+        "zones": zones.into_iter().map(|r| json!({"id":r.try_get::<i16,_>("zone_no").unwrap_or(0),"name":r.try_get::<String,_>("zone_name").unwrap_or_default()})).collect::<Vec<_>>(),
+        "settings": settings.into_iter().map(|r| json!({
+            "index":r.try_get::<i16,_>("event_index").unwrap_or(0),"name":r.try_get::<String,_>("event_name").unwrap_or_default(),
+            "targets":[
+                json!({"sid":r.try_get::<i16,_>("unit1").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count1").unwrap_or(0),"name":r.try_get::<String,_>("unit1_name").unwrap_or_default()}),
+                json!({"sid":r.try_get::<i16,_>("unit2").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count2").unwrap_or(0),"name":r.try_get::<String,_>("unit2_name").unwrap_or_default()}),
+                json!({"sid":r.try_get::<i16,_>("unit3").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count3").unwrap_or(0),"name":r.try_get::<String,_>("unit3_name").unwrap_or_default()})
+            ],
+            "min_level":r.try_get::<i16,_>("min_level").unwrap_or(1),"max_level":r.try_get::<i16,_>("max_level").unwrap_or(83),"zone":r.try_get::<i16,_>("event_zone").unwrap_or(0),"zone_name":r.try_get::<String,_>("zone_name").unwrap_or_default(),"minutes":r.try_get::<i32,_>("event_time").unwrap_or(60),"user_limit":r.try_get::<i32,_>("user_limit").unwrap_or(1),"repeat":r.try_get::<bool,_>("is_repeat").unwrap_or(false),"auto_start":r.try_get::<bool,_>("auto_start").unwrap_or(false),"auto_hour":r.try_get::<i16,_>("auto_hour").unwrap_or(0),"auto_minute":r.try_get::<i16,_>("auto_minute").unwrap_or(0)
+        })).collect::<Vec<_>>(),
+        "rewards": rewards.into_iter().map(|r| json!({"index":r.try_get::<i16,_>("idx").unwrap_or(0),"event_id":r.try_get::<i16,_>("event_id").unwrap_or(0),"description":r.try_get::<String,_>("description").unwrap_or_default(),"item_id":r.try_get::<i32,_>("item_id").unwrap_or(0),"item_name":r.try_get::<String,_>("item_name").unwrap_or_default(),"count":r.try_get::<i32,_>("item_count").unwrap_or(0),"rate":r.try_get::<i32,_>("rate").unwrap_or(100),"time":r.try_get::<i32,_>("item_time").unwrap_or(0),"flag":r.try_get::<i32,_>("item_flag").unwrap_or(0),"session":r.try_get::<i32,_>("item_session").unwrap_or(0)})).collect::<Vec<_>>()
+    })))
+}
+
+async fn collection_race_npcs(headers: HeaderMap, State(app): State<App>, Query(q): Query<Search>) -> Result<Json<Value>, ApiError> {
+    auth(&headers, false)?;
+    let term=q.q.unwrap_or_default().trim().to_owned();
+    if term.is_empty() { return Ok(Json(json!([]))); }
+    let rows=sqlx::query("SELECT s_sid,COALESCE(str_name,'') AS name,is_monster,by_family FROM npc_template WHERE CAST(s_sid AS TEXT)=$1 OR str_name ILIKE $2 ORDER BY is_monster DESC,CASE WHEN CAST(s_sid AS TEXT)=$1 THEN 0 ELSE 1 END,str_name LIMIT $3")
+        .bind(&term).bind(format!("%{term}%")).bind(q.limit.unwrap_or(60).clamp(1,100)).fetch_all(&app.pool).await.map_err(|_|ApiError::Internal)?;
+    Ok(Json(Value::Array(rows.into_iter().map(|r|json!({"id":r.try_get::<i16,_>("s_sid").unwrap_or(0),"name":r.try_get::<String,_>("name").unwrap_or_default(),"is_monster":r.try_get::<bool,_>("is_monster").unwrap_or(false),"family":r.try_get::<i16,_>("by_family").unwrap_or(0)})).collect())))
+}
+
+#[derive(Deserialize)]
+struct CollectionRaceSettingEdit { name:String, targets:Vec<CollectionRaceTarget>, min_level:i16, max_level:i16, zone:i16, minutes:i32, user_limit:i32, repeat:bool, auto_start:bool, auto_hour:i16, auto_minute:i16 }
+#[derive(Deserialize)]
+struct CollectionRaceTarget { sid:i16, count:i16 }
+#[derive(Deserialize)]
+struct CollectionRaceRewardEdit { description:String, item_id:i32, count:i32, rate:i32, time:i32, flag:i32, session:i32 }
+
+async fn collection_race_zone_valid(pool:&DbPool, zone:i16) -> Result<bool,ApiError> { sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM zone_info WHERE zone_no=$1)").bind(zone).fetch_one(pool).await.map_err(|_|ApiError::Internal) }
+async fn collection_race_npc_valid(pool:&DbPool, sid:i16) -> Result<bool,ApiError> { sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM npc_template WHERE s_sid=$1)").bind(sid).fetch_one(pool).await.map_err(|_|ApiError::Internal) }
+async fn validate_collection_race_setting(pool:&DbPool, p:&CollectionRaceSettingEdit) -> Result<(),ApiError> {
+    if p.name.trim().is_empty() || p.name.len()>30 || p.targets.len()!=3 || !(1..=83).contains(&p.min_level) || !(p.min_level..=83).contains(&p.max_level) || !(1..=1440).contains(&p.minutes) || !(1..=i16::MAX as i32).contains(&p.user_limit) || !(0..=23).contains(&p.auto_hour) || !(0..=59).contains(&p.auto_minute) || !collection_race_zone_valid(pool,p.zone).await? { return Err(ApiError::BadRequest); }
+    for target in &p.targets { if target.sid<0 || target.count<0 || (target.sid==0 && target.count!=0) || (target.sid>0 && target.count==0) { return Err(ApiError::BadRequest); } if target.sid>0 && !collection_race_npc_valid(pool,target.sid).await? { return Err(ApiError::BadRequest); } }
+    Ok(())
+}
+async fn write_collection_race_setting(tx:&mut sqlx::Transaction<'_,sqlx::Postgres>, index:i16, p:&CollectionRaceSettingEdit, upsert:bool) -> Result<u64,ApiError> {
+    let t=&p.targets;
+    let sql=if upsert { "INSERT INTO collection_race_settings(event_index,event_name,unit1,unit_count1,unit2,unit_count2,unit3,unit_count3,min_level,max_level,event_zone,event_time,user_limit,is_repeat,auto_start,auto_hour,auto_minute) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)" } else { "UPDATE collection_race_settings SET event_name=$2,unit1=$3,unit_count1=$4,unit2=$5,unit_count2=$6,unit3=$7,unit_count3=$8,min_level=$9,max_level=$10,event_zone=$11,event_time=$12,user_limit=$13,is_repeat=$14,auto_start=$15,auto_hour=$16,auto_minute=$17 WHERE event_index=$1" };
+    Ok(sqlx::query(sql).bind(index).bind(p.name.trim()).bind(t[0].sid).bind(t[0].count).bind(t[1].sid).bind(t[1].count).bind(t[2].sid).bind(t[2].count).bind(p.min_level).bind(p.max_level).bind(p.zone).bind(p.minutes).bind(p.user_limit).bind(p.repeat).bind(p.auto_start).bind(p.auto_hour).bind(p.auto_minute).execute(&mut **tx).await.map_err(|_|ApiError::Internal)?.rows_affected())
+}
+async fn create_collection_race_setting(headers:HeaderMap, ConnectInfo(peer):ConnectInfo<SocketAddr>, State(app):State<App>, Json(p):Json<CollectionRaceSettingEdit>) -> Result<Json<Value>,ApiError> {
+    let (_,s)=auth(&headers,true)?; validate_collection_race_setting(&app.pool,&p).await?; let mut tx=app.pool.begin().await.map_err(|_|ApiError::Internal)?; let index:i16=sqlx::query_scalar("SELECT COALESCE(MAX(event_index),0)+1 FROM collection_race_settings").fetch_one(&mut *tx).await.map_err(|_|ApiError::Internal)?; if index<1{return Err(ApiError::BadRequest)}; write_collection_race_setting(&mut tx,index,&p,true).await?; audit(&mut tx,&s.actor,"collection_race.setting.create",&index.to_string(),json!({"name":p.name,"zone":p.zone,"targets":p.targets.iter().map(|x|json!({"sid":x.sid,"count":x.count})).collect::<Vec<_>>() }),peer.ip()).await?; tx.commit().await.map_err(|_|ApiError::Internal)?; Ok(Json(json!({"ok":true,"index":index,"note":"Kaydedildi. Etkinlik tanımı sunucu yeniden başladığında belleğe yüklenir."})))
+}
+async fn update_collection_race_setting(headers:HeaderMap, ConnectInfo(peer):ConnectInfo<SocketAddr>, State(app):State<App>, Path(index):Path<i16>, Json(p):Json<CollectionRaceSettingEdit>) -> Result<Json<Value>,ApiError> {
+    let (_,s)=auth(&headers,true)?; if index<1{return Err(ApiError::BadRequest)}; validate_collection_race_setting(&app.pool,&p).await?; let mut tx=app.pool.begin().await.map_err(|_|ApiError::Internal)?; if write_collection_race_setting(&mut tx,index,&p,false).await?==0{return Err(ApiError::NotFound)}; audit(&mut tx,&s.actor,"collection_race.setting.update",&index.to_string(),json!({"name":p.name,"zone":p.zone,"targets":p.targets.iter().map(|x|json!({"sid":x.sid,"count":x.count})).collect::<Vec<_>>() }),peer.ip()).await?; tx.commit().await.map_err(|_|ApiError::Internal)?; Ok(Json(json!({"ok":true,"note":"Kaydedildi. Etkinlik tanımı sunucu yeniden başladığında belleğe yüklenir."})))
+}
+async fn delete_collection_race_setting(headers:HeaderMap, ConnectInfo(peer):ConnectInfo<SocketAddr>, State(app):State<App>, Path(index):Path<i16>) -> Result<StatusCode,ApiError> {
+    let (_,s)=auth(&headers,true)?; let mut tx=app.pool.begin().await.map_err(|_|ApiError::Internal)?; let result=sqlx::query("DELETE FROM collection_race_settings WHERE event_index=$1").bind(index).execute(&mut *tx).await.map_err(|_|ApiError::Internal)?; if result.rows_affected()==0{return Err(ApiError::NotFound)}; let rewards=sqlx::query("DELETE FROM collection_race_reward WHERE event_id=$1").bind(index).execute(&mut *tx).await.map_err(|_|ApiError::Internal)?.rows_affected(); audit(&mut tx,&s.actor,"collection_race.setting.delete",&index.to_string(),json!({"deleted_rewards":rewards}),peer.ip()).await?; tx.commit().await.map_err(|_|ApiError::Internal)?; Ok(StatusCode::NO_CONTENT)
+}
+async fn validate_collection_race_reward(pool:&DbPool,p:&CollectionRaceRewardEdit)->Result<(),ApiError>{ if p.description.len()>100||p.item_id<=0||p.count<1||!(0..=100).contains(&p.rate)||p.time<0||p.flag<0||p.session<0{return Err(ApiError::BadRequest)}; let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item WHERE num=$1)").bind(p.item_id).fetch_one(pool).await.map_err(|_|ApiError::Internal)?; if !exists{return Err(ApiError::BadRequest)}; Ok(()) }
+async fn write_collection_race_reward(tx:&mut sqlx::Transaction<'_,sqlx::Postgres>,index:i16,event_id:i16,p:&CollectionRaceRewardEdit,insert:bool)->Result<u64,ApiError>{let sql=if insert{"INSERT INTO collection_race_reward(idx,event_id,description,item_id,item_count,rate,item_time,item_flag,item_session) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"}else{"UPDATE collection_race_reward SET event_id=$2,description=$3,item_id=$4,item_count=$5,rate=$6,item_time=$7,item_flag=$8,item_session=$9 WHERE idx=$1"};Ok(sqlx::query(sql).bind(index).bind(event_id).bind(p.description.trim()).bind(p.item_id).bind(p.count).bind(p.rate).bind(p.time).bind(p.flag).bind(p.session).execute(&mut **tx).await.map_err(|_|ApiError::Internal)?.rows_affected())}
+async fn create_collection_race_reward(headers:HeaderMap,ConnectInfo(peer):ConnectInfo<SocketAddr>,State(app):State<App>,Json((event_id,p)):Json<(i16,CollectionRaceRewardEdit)>)->Result<Json<Value>,ApiError>{let (_,s)=auth(&headers,true)?;if event_id<1||!sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM collection_race_settings WHERE event_index=$1)").bind(event_id).fetch_one(&app.pool).await.map_err(|_|ApiError::Internal)?{return Err(ApiError::BadRequest)};validate_collection_race_reward(&app.pool,&p).await?;let mut tx=app.pool.begin().await.map_err(|_|ApiError::Internal)?;let index:i16=sqlx::query_scalar("SELECT COALESCE(MAX(idx),0)+1 FROM collection_race_reward").fetch_one(&mut *tx).await.map_err(|_|ApiError::Internal)?;if index<1{return Err(ApiError::BadRequest)};write_collection_race_reward(&mut tx,index,event_id,&p,true).await?;audit(&mut tx,&s.actor,"collection_race.reward.create",&index.to_string(),json!({"event_id":event_id,"item_id":p.item_id,"count":p.count}),peer.ip()).await?;tx.commit().await.map_err(|_|ApiError::Internal)?;Ok(Json(json!({"ok":true,"index":index,"note":"Ödül kaydedildi."})))}
+async fn update_collection_race_reward(headers:HeaderMap,ConnectInfo(peer):ConnectInfo<SocketAddr>,State(app):State<App>,Path(index):Path<i16>,Json((event_id,p)):Json<(i16,CollectionRaceRewardEdit)>)->Result<Json<Value>,ApiError>{let (_,s)=auth(&headers,true)?;if index<1||event_id<1||!sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM collection_race_settings WHERE event_index=$1)").bind(event_id).fetch_one(&app.pool).await.map_err(|_|ApiError::Internal)?{return Err(ApiError::BadRequest)};validate_collection_race_reward(&app.pool,&p).await?;let mut tx=app.pool.begin().await.map_err(|_|ApiError::Internal)?;if write_collection_race_reward(&mut tx,index,event_id,&p,false).await?==0{return Err(ApiError::NotFound)};audit(&mut tx,&s.actor,"collection_race.reward.update",&index.to_string(),json!({"event_id":event_id,"item_id":p.item_id,"count":p.count}),peer.ip()).await?;tx.commit().await.map_err(|_|ApiError::Internal)?;Ok(Json(json!({"ok":true,"note":"Ödül kaydedildi."})))}
+async fn delete_collection_race_reward(headers:HeaderMap,ConnectInfo(peer):ConnectInfo<SocketAddr>,State(app):State<App>,Path(index):Path<i16>)->Result<StatusCode,ApiError>{let (_,s)=auth(&headers,true)?;let mut tx=app.pool.begin().await.map_err(|_|ApiError::Internal)?;let result=sqlx::query("DELETE FROM collection_race_reward WHERE idx=$1").bind(index).execute(&mut *tx).await.map_err(|_|ApiError::Internal)?;if result.rows_affected()==0{return Err(ApiError::NotFound)};audit(&mut tx,&s.actor,"collection_race.reward.delete",&index.to_string(),json!({}),peer.ip()).await?;tx.commit().await.map_err(|_|ApiError::Internal)?;Ok(StatusCode::NO_CONTENT)}
 // Quest Studio ---------------------------------------------------------------
 
 async fn quest_studio_npcs(
