@@ -38,6 +38,16 @@ use crate::world::WorldState;
 const DEFAULT_MAX_USERS: u16 = 150;
 const WARP_FUNCLASS_ENTRY: i16 = i16::MIN;
 
+/// Moradon variants (21-25) host the Fun Class Event entry in their warp gates.
+fn is_moradon_zone(zone: u16) -> bool {
+    (ZONE_MORADON..=ZONE_MORADON + 4).contains(&zone)
+}
+
+/// PvP zones that are closed while the Fun Class Event runs (players are sent back to Moradon).
+pub(crate) fn is_funclass_closed_zone(zone: u16) -> bool {
+    matches!(zone, ZONE_BATTLE..=ZONE_BATTLE6 | ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE)
+}
+
 /// Resolve the two legacy Eslant destinations stored in the active v2615 SMDs.
 fn effective_warp_destination(warp_id: i16, raw_zone: i16, nation: u8) -> u16 {
     match (warp_id, raw_zone) {
@@ -199,7 +209,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 
     if warp_id == WARP_FUNCLASS_ENTRY {
-        if pos.zone_id != ZONE_MORADON || !world.is_cinderella_active() {
+        if !is_moradon_zone(pos.zone_id) || !world.is_cinderella_active() {
             send_select_fail(session).await?;
             return Ok(());
         }
@@ -363,6 +373,10 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
             None => continue,
         }
 
+        if world.is_cinderella_active() && is_funclass_closed_zone(effective_dest_zone) {
+            continue;
+        }
+
         // Battle zone filter: hide Ardream/Ronark warps based on active battle type
         let dz = effective_dest_zone;
         if battle.battle_open == NATION_BATTLE || battle.battle_open == SIEGE_BATTLE {
@@ -387,7 +401,7 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
         )
     });
 
-    let show_funclass_entry = pos.zone_id == ZONE_MORADON && world.is_cinderella_active();
+    let show_funclass_entry = is_moradon_zone(pos.zone_id) && world.is_cinderella_active();
     // Build the response packet
     let mut result = Packet::new(Opcode::WizWarpList as u8);
     result.write_u8(1); // sub-opcode: GetWarpList

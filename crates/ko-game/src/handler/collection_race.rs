@@ -263,6 +263,44 @@ pub fn build_start_packet(ev: &CollectionRaceEvent, duration_secs: u32, nation: 
     pkt
 }
 
+/// Append the optional proxy meta block (`u8 1`, target names + icons, reward names + icons,
+/// zone name) so the client panel shows monster/item names and item icons instead of ids.
+pub fn append_meta(pkt: &mut Packet, world: &WorldState, ev: &CollectionRaceEvent) {
+    pkt.write_u8(1);
+    for i in 0..CR_SLOTS {
+        let name = if ev.proto_ids[i] == 0 {
+            String::new()
+        } else {
+            world
+                .get_npc_template(ev.proto_ids[i], true)
+                .or_else(|| world.get_npc_template(ev.proto_ids[i], false))
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| format!("Monster {}", ev.proto_ids[i]))
+        };
+        pkt.write_string(&name);
+        pkt.write_u32(0);
+    }
+    for i in 0..CR_REWARD_SLOTS {
+        let id = ev.reward_item_ids[i];
+        let (name, icon) = match world.get_item(id) {
+            Some(it) => (
+                it.str_name.clone().unwrap_or_default(),
+                it.item_icon_id1.or(it.item_icon_id2).unwrap_or(0).max(0) as u32,
+            ),
+            None if id == ITEM_GOLD => ("Gold".to_string(), 0),
+            None if id == ITEM_EXP => ("Experience".to_string(), 0),
+            None => (String::new(), 0),
+        };
+        pkt.write_string(&name);
+        pkt.write_u32(icon);
+    }
+    let zone = world
+        .get_zone(ev.zone_id as u16)
+        .and_then(|z| z.zone_info.as_ref().map(|i| i.zone_name.clone()))
+        .unwrap_or_default();
+    pkt.write_string(&zone);
+}
+
 /// Build a CR refresh/game-entry packet (sub=0x01).
 /// Sent to a player who logs in while an event is active. Includes their
 /// per-user kill progress and the adjusted required counts (×2.5 if in repeat).
@@ -576,13 +614,10 @@ pub async fn send_on_game_entry(
                 let my_kills = user_entry.kill_counts;
                 let user_status = user_entry.user_status;
                 let remaining = ev.event_end_time.saturating_sub(now);
-                Some(build_refresh_packet(
-                    &ev,
-                    my_kills,
-                    user_status,
-                    remaining,
-                    nation,
-                ))
+                let mut pkt =
+                    build_refresh_packet(&ev, my_kills, user_status, remaining, nation);
+                append_meta(&mut pkt, &world, &ev);
+                Some(pkt)
             }
         }
         // ev dropped here
@@ -1117,7 +1152,8 @@ pub fn gm_open(world: &WorldState, event_index: i16) -> Result<&'static str, &'s
             };
             if level >= ev.min_level && level <= ev.max_level {
                 let duration_secs = def.event_time_mins * 60;
-                let pkt = build_start_packet(&ev, duration_secs, nation);
+                let mut pkt = build_start_packet(&ev, duration_secs, nation);
+                append_meta(&mut pkt, world, &ev);
                 world.send_to_session_owned(sid, pkt);
 
                 // Reset per-user state
@@ -1147,7 +1183,9 @@ pub fn broadcast_start(world: &WorldState, duration_secs: u32) {
         if level < ev.min_level || level > ev.max_level {
             continue;
         }
-        world.send_to_session_owned(sid, build_start_packet(&ev, duration_secs, nation));
+        let mut pkt = build_start_packet(&ev, duration_secs, nation);
+        append_meta(&mut pkt, world, &ev);
+        world.send_to_session_owned(sid, pkt);
         world.update_session(sid, |h| {
             h.cr_kill_counts = [0u16; CR_SLOTS];
             h.cr_check_finish = false;

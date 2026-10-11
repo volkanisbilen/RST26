@@ -2101,6 +2101,16 @@ fn handle_funclass_open(session: &mut ClientSession, args: &[&str]) -> anyhow::R
     }
     world.set_cinderella_active(true, zone_id);
 
+    // PvP zones are closed during the event: everyone still there goes back to Moradon.
+    for sid in world.all_ingame_session_ids() {
+        let in_closed = world
+            .get_position(sid)
+            .is_some_and(|p| super::warp_list::is_funclass_closed_zone(p.zone_id));
+        if in_closed {
+            super::zone_change::server_teleport_to_zone(&world, sid, crate::world::types::ZONE_MORADON, 0.0, 0.0);
+        }
+    }
+
     // Announce
     let msg = format!(
         "Fun Class Event starting in {} minutes! Warp to zone {}.",
