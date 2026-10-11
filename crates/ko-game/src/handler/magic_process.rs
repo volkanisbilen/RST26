@@ -168,6 +168,28 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Route it to the runtime pet NPC spawn path.
     if skill_id == 500117 && b_opcode == MAGIC_EFFECTING {
         tracing::info!("[sid={}] PET_SUMMON skill 500117 received, routing to pet summon", sid);
+        let summon_skill = world.get_magic(500117);
+
+        // The summon item (use_item of the skill) is required and is spent when a familiar
+        // actually appears; moving an already summoned pet next to the owner costs nothing.
+        if let Some(skill) = summon_skill.as_ref() {
+            let item_id = resolve_consume_item(skill);
+            if item_id != 0
+                && !NO_CONSUME_ITEMS.contains(&item_id)
+                && !world.check_exist_item(sid, item_id, 1)
+            {
+                world.send_to_session_owned(
+                    sid,
+                    build_skill_failed_packet(skill_id, caster_id_raw, target_id_raw, &s_data),
+                );
+                return Ok(());
+            }
+        }
+
+        let runtime_before = world
+            .with_session(sid, |h| h.pet_data.as_ref().is_some_and(|p| p.nid != 0))
+            .unwrap_or(false);
+
         let empty_data: [u8; 0] = [];
         let mut pet_reader = PacketReader::new(&empty_data);
 
@@ -177,6 +199,15 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             &mut pet_reader,
         )
         .await?;
+
+        let runtime_after = world
+            .with_session(sid, |h| h.pet_data.as_ref().is_some_and(|p| p.nid != 0))
+            .unwrap_or(false);
+        if !runtime_before && runtime_after {
+            if let Some(skill) = summon_skill.as_ref() {
+                consume_item(&world, sid, skill);
+            }
+        }
 
         return Ok(());
     }
