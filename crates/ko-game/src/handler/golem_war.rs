@@ -84,6 +84,18 @@ fn announce(world: &WorldState, msg: &str) {
     world.broadcast_to_all(Arc::new(build_notice_packet(8, msg)), None);
 }
 
+/// Golems currently owned by each nation: [Karus, El Morad]. The score IS this count (50 - 50 at the
+/// start, every conversion moves one golem from one side to the other, 100 wins).
+fn counts(st: &State) -> [u32; 2] {
+    let mut c = [0u32; 2];
+    for &n in st.golems.values() {
+        if n == 1 || n == 2 {
+            c[(n - 1) as usize] += 1;
+        }
+    }
+    c
+}
+
 fn native(sub: u8) -> ko_protocol::Packet {
     let mut pkt = ko_protocol::Packet::new(WIZ_RONARK_WAR);
     pkt.write_u8(sub);
@@ -94,7 +106,8 @@ fn native(sub: u8) -> ko_protocol::Packet {
 fn score_packet(st: &State, now: u64) -> ko_protocol::Packet {
     let elapsed = now.saturating_sub(st.started).min(DURATION_SECS);
     let shown = CLIENT_BATTLE_SECS - DURATION_SECS + elapsed;
-    let (left, right) = if KARUS_FIRST { (st.score[0], st.score[1]) } else { (st.score[1], st.score[0]) };
+    let c = counts(st);
+    let (left, right) = if KARUS_FIRST { (c[0], c[1]) } else { (c[1], c[0]) };
     let mut pkt = native(3);
     pkt.write_u32(shown as u32);
     pkt.write_u32(left);
@@ -253,8 +266,7 @@ pub fn on_npc_death(world: &WorldState, killer_sid: SessionId, npc: &crate::npc:
     if let Some(&nid) = world.spawn_event_npc(proto_for(nation), true, ZONE_RONARK, npc.x, npc.z, 1).first() {
         st.golems.insert(nid, nation);
     }
-    st.score[(nation - 1) as usize] += 1;
-    let (k, e) = (st.score[0], st.score[1]);
+    let [k, e] = counts(&st);
     send_all(world, score_packet(&st, now_unix()));
 
     if k >= TOTAL || e >= TOTAL {
@@ -292,7 +304,7 @@ pub fn tick(world: &WorldState) {
 
 fn finish(world: &WorldState, st: &mut State) {
     st.active = false;
-    let (karus, elmo) = (st.score[0], st.score[1]);
+    let [karus, elmo] = counts(st);
 
     for (&nid, _) in st.golems.iter() {
         world.kill_npc(nid);
