@@ -6309,6 +6309,7 @@ async fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::R
     }
 
     broadcast_war_system_chat(&world, "Collection Race Event has started!");
+    super::collection_race::broadcast_start(&world, def.event_time_mins * 60);
     info!(
         "[{}] +cropen: started CR event '{}' (ID={})",
         session.addr(),

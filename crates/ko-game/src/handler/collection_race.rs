@@ -1134,6 +1134,27 @@ pub fn gm_open(world: &WorldState, event_index: i16) -> Result<&'static str, &'s
     Ok("Collection Race start request sent.")
 }
 
+/// Send the start packet to every eligible online player and reset their per-user CR state.
+/// Used by `+cropen` after `start_event` so the client panel opens.
+pub fn broadcast_start(world: &WorldState, duration_secs: u32) {
+    let cr = world.collection_race_event();
+    let ev = cr.read();
+    for sid in world.all_ingame_session_ids() {
+        let (level, nation) = match world.get_character_info(sid) {
+            Some(c) => (c.level, c.nation),
+            None => continue,
+        };
+        if level < ev.min_level || level > ev.max_level {
+            continue;
+        }
+        world.send_to_session_owned(sid, build_start_packet(&ev, duration_secs, nation));
+        world.update_session(sid, |h| {
+            h.cr_kill_counts = [0u16; CR_SLOTS];
+            h.cr_check_finish = false;
+        });
+    }
+}
+
 /// GM +crclose command: close the active Collection Race event.
 pub fn gm_close(world: &WorldState) -> Result<&'static str, &'static str> {
     let cr = world.collection_race_event();
