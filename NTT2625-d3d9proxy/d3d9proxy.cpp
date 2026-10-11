@@ -304,12 +304,9 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
             InterlockedIncrement(&g_opCount[pkt[0]]);
             NetTrace_Packet("recv", pkt, (int)(data[1] - *offset));
             if (pkt[0] == 0x3D) Rce_OnRecv(pkt, data[1] - *offset);
-            if (pkt[0] == 0x5B && data[1] - *offset >= 6 && pkt[1] == 4)
-            {
-                Rce_OnRecv(pkt, data[1] - *offset);
-                *offset = (int)data[1];
-                return 1;
-            }
+            // 0x5B sub 4 (Chaotic Generator NPC) is left to the native client: it opens its own
+            // Chaotic Generator window (CUIPieceChange). It used to be swallowed here and answered
+            // with the Cross Exchange panel.
             if (pkt[0] == 0x0D) Reconnect_OnRecv(pkt, data[1] - *offset);   // soft re-connect: GameStart answer
             if (pkt[0] == 0x07 || pkt[0] == 0xE9) Tag_OnRecv(pkt, data[1] - *offset);   // tag list / player out of view
             if (pkt[0] == 0x97 || pkt[0] == 0xE9) Genie_OnRecv(pkt, (int)(data[1] - *offset));   // genie options load / leader target

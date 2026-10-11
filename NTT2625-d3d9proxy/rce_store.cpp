@@ -1045,9 +1045,6 @@ void Rce_OnRecv(const BYTE* buf, size_t len)
         if (g_hWndR) PostMessageW(g_hWndR, WM_RCE_REFRESH, 0, 0);
         return;
     }
-    if (len >= 6 && buf[0] == 0x5B && buf[1] == 4) {
-        Rce_OpenCross(); Log("RCE: Chaotic Generator -> batch exchange panel"); return;
-    }
     if (len < 3 || buf[1] != RCE_SUBOP) return;   // buf[0]=0xE9, buf[1]=0xE6, buf[2]=op
     ReaderR r{ buf, len, 2 };
     BYTE op = r.get<BYTE>();
