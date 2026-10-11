@@ -27,7 +27,14 @@ const PROTO_ICE: u16 = 9930; // Karus
 const PER_NATION: usize = 50;
 const TOTAL: u32 = 100;
 const DURATION_SECS: u64 = 600;
-const SCORE_ANNOUNCE_SECS: u64 = 60;
+const SCORE_SYNC_SECS: u64 = 5;
+const MIN_SPACING: f32 = 11.0;
+/// Native Ronark-war UI packet (client sub_715330): [1] start, [2][winner] end, [3][elapsed][a][b] score.
+const WIZ_RONARK_WAR: u8 = 0xD3;
+/// The client's score window assumes a 30 minute battle (remaining = 1800 - elapsed).
+const CLIENT_BATTLE_SECS: u64 = 1800;
+/// First counter of the score packet is shown on the left (blue / Karus Ice), second on the right.
+const KARUS_FIRST: bool = true;
 const AUTO_HOURS: [u32; 2] = [14, 22];
 
 const ITEM_DUAL_POTION: u32 = 811_182_000;
@@ -77,6 +84,38 @@ fn announce(world: &WorldState, msg: &str) {
     world.broadcast_to_all(Arc::new(build_notice_packet(8, msg)), None);
 }
 
+fn native(sub: u8) -> ko_protocol::Packet {
+    let mut pkt = ko_protocol::Packet::new(WIZ_RONARK_WAR);
+    pkt.write_u8(sub);
+    pkt
+}
+
+/// Native score window update: remaining time (client counts 1800 - elapsed) and both counters.
+fn score_packet(st: &State, now: u64) -> ko_protocol::Packet {
+    let elapsed = now.saturating_sub(st.started).min(DURATION_SECS);
+    let shown = CLIENT_BATTLE_SECS - DURATION_SECS + elapsed;
+    let (left, right) = if KARUS_FIRST { (st.score[0], st.score[1]) } else { (st.score[1], st.score[0]) };
+    let mut pkt = native(3);
+    pkt.write_u32(shown as u32);
+    pkt.write_u32(left);
+    pkt.write_u32(right);
+    pkt
+}
+
+fn send_all(world: &WorldState, pkt: ko_protocol::Packet) {
+    world.broadcast_to_all(Arc::new(pkt), None);
+}
+
+/// A player who just arrived in Ronark Land while the event runs gets the panel too.
+pub fn send_state_to_player(world: &WorldState, sid: SessionId) {
+    let st = state().lock();
+    if !st.active {
+        return;
+    }
+    world.send_to_session_owned(sid, native(1));
+    world.send_to_session_owned(sid, score_packet(&st, now_unix()));
+}
+
 fn proto_for(nation: u8) -> u16 {
     if nation == 2 { PROTO_FLAME } else { PROTO_ICE }
 }
@@ -124,11 +163,21 @@ pub fn gm_open(world: &WorldState) -> &'static str {
     if st.active {
         return "The Fire & Ice event is already running.";
     }
-    let spots: Vec<(f32, f32)> = (0..PER_NATION * 2)
-        .filter_map(|_| world.get_start_position_random(ZONE_RONARK))
-        .collect();
+    // spread the golems over the whole Bowl: random walkable points, at least MIN_SPACING apart
+    let mut spots: Vec<(f32, f32)> = Vec::with_capacity(PER_NATION * 2);
+    let mut rng = rand::thread_rng();
+    for _ in 0..6000 {
+        if spots.len() >= PER_NATION * 2 {
+            break;
+        }
+        let Some((bx, bz)) = world.get_start_position_random(ZONE_RONARK) else { break };
+        let (x, z) = (bx + rng.gen_range(-12.0..12.0), bz + rng.gen_range(-12.0..12.0));
+        if spots.iter().all(|&(px, pz)| (px - x).powi(2) + (pz - z).powi(2) >= MIN_SPACING * MIN_SPACING) {
+            spots.push((x, z));
+        }
+    }
     if spots.len() < PER_NATION * 2 {
-        return "Ronark Land has no spawn points.";
+        return "Ronark Land has too few spawn points for the golems.";
     }
     st.golems.clear();
     st.killers.clear();
@@ -148,12 +197,10 @@ pub fn gm_open(world: &WorldState) -> &'static str {
     let now = now_unix();
     st.active = true;
     st.started = now;
-    st.next_announce = now + SCORE_ANNOUNCE_SECS;
+    st.next_announce = now + SCORE_SYNC_SECS;
+    send_all(world, native(1));
+    send_all(world, score_packet(&st, now));
     drop(st);
-    announce(
-        world,
-        "Fire & Ice has begun in Ronark Land! Convert the enemy nation's golems - El Morad hunts Ice Golems, Karus hunts Flame Golems. 10 minutes!",
-    );
     info!("Fire & Ice golem war started");
     "The Fire & Ice event started."
 }
@@ -199,6 +246,7 @@ pub fn on_npc_death(world: &WorldState, killer_sid: SessionId, npc: &crate::npc:
     }
     st.score[(nation - 1) as usize] += 1;
     let (k, e) = (st.score[0], st.score[1]);
+    send_all(world, score_packet(&st, now_unix()));
 
     if k >= TOTAL || e >= TOTAL {
         finish(world, &mut st);
@@ -216,14 +264,8 @@ pub fn tick(world: &WorldState) {
             return;
         }
         if now >= st.next_announce {
-            st.next_announce = now + SCORE_ANNOUNCE_SECS;
-            let left = (st.started + DURATION_SECS).saturating_sub(now) / 60 + 1;
-            let msg = format!(
-                "[Fire & Ice] Karus {} - El Morad {} ({} min left)",
-                st.score[0], st.score[1], left
-            );
-            drop(st);
-            announce(world, &msg);
+            st.next_announce = now + SCORE_SYNC_SECS;
+            send_all(world, score_packet(&st, now));
         }
         return;
     }
@@ -253,11 +295,9 @@ fn finish(world: &WorldState, st: &mut State) {
         std::cmp::Ordering::Less => Some(2),
         std::cmp::Ordering::Equal => None,
     };
-    let result = match winner {
-        Some(n) => format!("{} wins Fire & Ice!", nation_name(n)),
-        None => "Fire & Ice ended in a draw!".to_string(),
-    };
-    announce(world, &format!("[Fire & Ice] {result} Karus {karus} - El Morad {elmo}"));
+    let mut end = native(2);
+    end.write_u8(winner.unwrap_or(0));
+    send_all(world, end);
 
     let killers: Vec<(SessionId, u8)> = st
         .killers

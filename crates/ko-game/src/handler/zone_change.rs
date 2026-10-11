@@ -1182,6 +1182,9 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
         super::gamestart::send_myinfo_refresh(session).await?;
         super::region::broadcast_user_appearance_update(&world, sid);
     }
+    if zone_id == super::golem_war::ZONE_RONARK {
+        super::golem_war::send_state_to_player(&world, sid);
+    }
     if world.is_cinderella_active()
         && super::cinderella::is_cinderella_zone(zone_id, world.cinderella_zone_id())
     {
