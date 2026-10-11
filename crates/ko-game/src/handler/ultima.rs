@@ -772,7 +772,7 @@ fn close_room(world: &WorldState, room: &mut Room) {
         if world.get_event_room(p.sid) == room.event_room {
             world.update_session(p.sid, |h| h.event_room = 0);
             if world.get_position(p.sid).is_some_and(|pos| pos.zone_id == ZONE_ULTIMA) {
-                super::zone_change::server_teleport_to_zone(world, p.sid, ZONE_MORADON, 0.0, 0.0);
+                revive_and_leave(world, p.sid);
             }
         }
     }
@@ -780,5 +780,30 @@ fn close_room(world: &WorldState, room: &mut Room) {
     info!(event_room = room.event_room, "Ultima's Dungeon: room closed");
 }
 
-#[allow(dead_code)]
-fn _packet_type_check(_: Packet) {}
+/// Fighters that died in the dungeon are revived (full HP, standing) and answered with a
+/// respawn packet before the zone change, otherwise they arrive in Moradon still "dead" with 0 HP.
+fn revive_and_leave(world: &WorldState, sid: SessionId) {
+    if world.is_player_dead(sid) {
+        world.update_res_hp_type(sid, crate::world::USER_STANDING);
+        world.update_session(sid, |h| {
+            h.who_killed_me = -1;
+            h.lost_exp = 0;
+        });
+        if let Some(ch) = world.get_character_info(sid) {
+            world.update_character_hp(sid, ch.max_hp);
+            world.send_to_session_owned(sid, crate::systems::regen::build_hp_change_packet(ch.max_hp, ch.max_hp));
+            let (x, z) = world
+                .get_start_position(ZONE_MORADON)
+                .map(|s| if ch.nation == 1 { (s.karus_x as f32, s.karus_z as f32) } else { (s.elmorad_x as f32, s.elmorad_z as f32) })
+                .filter(|&(x, z)| x != 0.0 || z != 0.0)
+                .unwrap_or((814.0, 437.0));
+            let mut resp = Packet::new(ko_protocol::Opcode::WizRegene as u8);
+            resp.write_u16((x * 10.0) as u16);
+            resp.write_u16((z * 10.0) as u16);
+            resp.write_u16(0);
+            resp.write_u8(1);
+            world.send_to_session_owned(sid, resp);
+        }
+    }
+    super::zone_change::server_teleport_to_zone(world, sid, ZONE_MORADON, 0.0, 0.0);
+}
