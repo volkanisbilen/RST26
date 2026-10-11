@@ -31,6 +31,9 @@ void Csw_OnRecv(const BYTE* buf, size_t len);
 void Csw_FlushSendQueue();
 void MerchCur_Init();
 void Lottery_Init();
+void Daily_Init();
+void Daily_OnRecv(const BYTE* buf, size_t len);
+void Daily_FlushSendQueue();
 void Lottery_OnRecv(const BYTE* buf, size_t len);
 void Lottery_FlushSendQueue();
 void MannerStore_Init();
@@ -248,7 +251,7 @@ static LRESULT CALLBACK ProxyWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     {
         if (GetCurrentThreadId() == g_gameTid)
         {
-            __try { Pus_FlushSendQueue(); Rce_FlushSendQueue(); Sp_FlushSendQueue(); Cind_FlushSendQueue(); Csw_FlushSendQueue(); Lottery_FlushSendQueue(); MannerStore_FlushSendQueue(); DropBox_FlushSendQueue(); Drop_FlushSendQueue(); LaunchGuard_FlushSendQueue(); Tag_FlushSendQueue(); JobChange_FlushSendQueue(); SoloCapeIcon_FlushSendQueue(); ItemTip_FlushSendQueue(); GmPanel_FlushSendQueue(); Register_FlushSendQueue(); }
+            __try { Pus_FlushSendQueue(); Rce_FlushSendQueue(); Sp_FlushSendQueue(); Cind_FlushSendQueue(); Csw_FlushSendQueue(); Lottery_FlushSendQueue(); Daily_FlushSendQueue(); MannerStore_FlushSendQueue(); DropBox_FlushSendQueue(); Drop_FlushSendQueue(); LaunchGuard_FlushSendQueue(); Tag_FlushSendQueue(); JobChange_FlushSendQueue(); SoloCapeIcon_FlushSendQueue(); ItemTip_FlushSendQueue(); GmPanel_FlushSendQueue(); Register_FlushSendQueue(); }
             __except (EXCEPTION_EXECUTE_HANDLER) { Log("FLUSH: exception in send flush"); }
         }
         return 0;
@@ -319,6 +322,7 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
                 Cind_OnRecv(pkt, data[1] - *offset);
                 Csw_OnRecv(pkt, data[1] - *offset);
                 Lottery_OnRecv(pkt, data[1] - *offset);
+                Daily_OnRecv(pkt, data[1] - *offset);   // 0xE9 / 0xD3 only (filtered inside)
                 MannerStore_OnRecv(pkt, data[1] - *offset);
                 DropBox_OnRecv(pkt, data[1] - *offset);
                 EvReward_OnRecv(pkt, data[1] - *offset);
@@ -338,7 +342,7 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
         InterlockedIncrement(&g_recvTotal);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { Log("HOOK recv: panel parser exception"); }
-    __try { Pus_FlushSendQueue(); Rce_FlushSendQueue(); Sp_FlushSendQueue(); Cind_FlushSendQueue(); Csw_FlushSendQueue(); Lottery_FlushSendQueue(); MannerStore_FlushSendQueue(); DropBox_FlushSendQueue(); Drop_FlushSendQueue(); LaunchGuard_FlushSendQueue(); Tag_FlushSendQueue(); JobChange_FlushSendQueue(); SoloCapeIcon_FlushSendQueue(); ItemTip_FlushSendQueue(); GmPanel_FlushSendQueue(); Register_FlushSendQueue(); } // game thread: safe point for our own sends
+    __try { Pus_FlushSendQueue(); Rce_FlushSendQueue(); Sp_FlushSendQueue(); Cind_FlushSendQueue(); Csw_FlushSendQueue(); Lottery_FlushSendQueue(); Daily_FlushSendQueue(); MannerStore_FlushSendQueue(); DropBox_FlushSendQueue(); Drop_FlushSendQueue(); LaunchGuard_FlushSendQueue(); Tag_FlushSendQueue(); JobChange_FlushSendQueue(); SoloCapeIcon_FlushSendQueue(); ItemTip_FlushSendQueue(); GmPanel_FlushSendQueue(); Register_FlushSendQueue(); } // game thread: safe point for our own sends
     __except (EXCEPTION_EXECUTE_HANDLER) { Log("PUS: exception in send flush"); }
     return g_oRecv(self, data, offset);
 }
@@ -485,6 +489,7 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
         Csw_Init();             // Castle Siege War clan score board (csw_panel.cpp)
         MerchCur_Init();        // Coins / Knight Cash / TL choice under the merchant price dialog (merchant_currency.cpp)
         Lottery_Init();
+        Daily_Init();
         MannerStore_Init();
         DropBox_Init();
         EvReward_Init();

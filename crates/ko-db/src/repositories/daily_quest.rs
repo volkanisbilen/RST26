@@ -108,6 +108,20 @@ impl<'a> DailyQuestRepository<'a> {
         Ok(())
     }
 
+    /// Delete one daily quest progress entry (player abandoned the quest).
+    pub async fn delete_user_quest(
+        &self,
+        character_id: &str,
+        quest_id: i16,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM user_daily_quest WHERE character_id = $1 AND quest_id = $2")
+            .bind(character_id)
+            .bind(quest_id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Delete all daily quest progress for a character (e.g., on character delete).
     pub async fn delete_user_quests(&self, character_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM user_daily_quest WHERE character_id = $1")

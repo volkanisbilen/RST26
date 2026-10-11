@@ -230,9 +230,8 @@ async fn native_event_hub_select(
         h.native_event_hub_armed = false;
     });
     if event_id == EVENT_HUB_COIN {
-        super::quest::send_quest_data(session).await?;
-        super::daily_quest::daily_quest_send_list(session.world(), session.session_id());
-        return super::daily_quest::open_daily_quest_manager(session, 0).await;
+        super::daily_quest::daily_quest_send_panel(session.world(), session.session_id());
+        return Ok(());
     }
     let event_key = match event_id {
         EVENT_HUB_ATTENDANCE | EVENT_HUB_ATTENDANCE_SELECT => "attendance",

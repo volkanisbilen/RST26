@@ -82,6 +82,7 @@ exit /b 0</Command>
     <ClCompile Include="csw_panel.cpp" />
     <ClCompile Include="merchant_currency.cpp" />
     <ClCompile Include="lottery_panel.cpp" />
+    <ClCompile Include="daily_panel.cpp" />
     <ClCompile Include="event_reward_panel.cpp" />
     <ClCompile Include="event_title.cpp" />
     <ClCompile Include="anvil_rate.cpp" />
@@ -128,6 +129,7 @@ exit /b 0</Command>
     <ClInclude Include="hg_layout.h" />
     <ClInclude Include="launch_ticket.h" />
     <ClInclude Include="lottery_layout.h" />
+    <ClInclude Include="daily_layout.h" />
     <ClInclude Include="manner_layout.h" />
     <ClInclude Include="pus_layout.h" />
     <ClInclude Include="rce_layout.h" />
