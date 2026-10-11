@@ -178,7 +178,10 @@ pub fn broadcast_death(world: &WorldState, dead_sid: SessionId) {
                 }
                 // ── FT / Delos Castellan / Dungeon Defence death ─────
                 //   KickOutZoneUser(true, ZONE_MORADON);
-                ZONE_FORGOTTEN_TEMPLE | ZONE_DELOS_CASTELLAN | ZONE_DUNGEON_DEFENCE => {
+                ZONE_DUNGEON_DEFENCE => {
+                    super::dungeon_defence::on_player_death(world, dead_sid);
+                }
+                ZONE_FORGOTTEN_TEMPLE | ZONE_DELOS_CASTELLAN => {
                     let nation = world
                         .get_character_info(dead_sid)
                         .map(|c| c.nation)

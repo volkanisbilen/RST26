@@ -360,6 +360,15 @@ pub async fn process_chat_command(
             send_help(session, msg);
         }
         "eventbotfill" => handle_event_bot_fill(session, &args).await?,
+        "riftopen" => {
+            let d = match args.first().map(|a| a.to_ascii_lowercase()).as_deref() {
+                Some("normal") | Some("2") => super::dungeon_defence::DdDifficulty::Normal,
+                Some("hard") | Some("3") => super::dungeon_defence::DdDifficulty::Hard,
+                _ => super::dungeon_defence::DdDifficulty::Easy,
+            };
+            let msg = super::dungeon_defence::gm_open(session.world(), session.session_id(), d);
+            send_help(session, &msg);
+        }
         "golemopen" => {
             let msg = super::golem_war::gm_open(session.world());
             send_help(session, msg);

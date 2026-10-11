@@ -3830,7 +3830,7 @@ fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, p
 }
 
 /// Decrement DD room kill counter and advance stage when all monsters are dead.
-fn dd_decrement_and_advance(world: &WorldState, event_room: u16) {
+pub(crate) fn dd_decrement_and_advance(world: &WorldState, event_room: u16) {
     use crate::handler::dungeon_defence;
 
     let room = match world.dd_rooms().iter().find(|r| {

@@ -188,3 +188,5 @@ UPDATE npc_template SET str_name='Lust', s_pid=9885 WHERE s_sid=10016 AND is_mon
 UPDATE npc_template SET str_name='Envy', s_pid=9886 WHERE s_sid=10017 AND is_monster=TRUE;
 UPDATE npc_template SET str_name='Greed', s_pid=9887 WHERE s_sid=10018 AND is_monster=TRUE;
 UPDATE npc_template SET str_name='Ultima', s_pid=9888 WHERE s_sid=10019 AND is_monster=TRUE;
+UPDATE npc_template SET i_hp_point=30000 WHERE s_sid IN (31738,31739) AND is_monster=FALSE;
+UPDATE npc_template SET i_hp_point=100000 WHERE s_sid=31740 AND is_monster=FALSE;

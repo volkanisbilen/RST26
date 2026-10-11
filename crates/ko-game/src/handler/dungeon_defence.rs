@@ -202,6 +202,8 @@ pub struct DdRoomInfo {
     pub is_finished: AtomicBool,
     /// User list in this room (character names).
     pub users: parking_lot::RwLock<HashMap<usize, String>>,
+    /// Deaths used per player (3 allowed).
+    pub deaths: parking_lot::RwLock<HashMap<u16, u8>>,
 }
 
 impl DdRoomInfo {
@@ -220,6 +222,7 @@ impl DdRoomInfo {
             monster_spawned: AtomicBool::new(false),
             is_finished: AtomicBool::new(false),
             users: parking_lot::RwLock::new(HashMap::new()),
+            deaths: parking_lot::RwLock::new(HashMap::new()),
         }
     }
 
@@ -239,6 +242,7 @@ impl DdRoomInfo {
         self.stage_id.store(0, Ordering::Relaxed);
         self.difficulty.store(0, Ordering::Relaxed);
         self.users.write().clear();
+        self.deaths.write().clear();
     }
 
     /// Atomically claim and initialize a room for a new DD run.
@@ -266,6 +270,7 @@ impl DdRoomInfo {
         self.monster_beginner_spawned.store(true, Ordering::Relaxed);
         self.monster_spawned.store(false, Ordering::Relaxed);
         self.is_finished.store(false, Ordering::Relaxed);
+        self.deaths.write().clear();
         self.difficulty.store(difficulty as u16, Ordering::Relaxed);
         self.stage_id
             .store(difficulty.starting_stage(), Ordering::Relaxed);
@@ -550,6 +555,143 @@ pub fn get_stage_monsters(monsters: &[DfMonsterRow], stage_id: i16) -> Vec<&DfMo
 pub fn should_rob_monster_coins() -> bool {
     // Always rob monster coins on DD entry
     true
+}
+
+// ── Towers, deaths, defeat ─────────────────────────────────────────────
+
+/// Deaths a player may use before being sent back to Moradon.
+pub const DD_MAX_DEATHS: u8 = 3;
+/// Tower proto ids: outer, inner, nexus.
+pub const OUTER_TOWER: u16 = 31738;
+pub const INNER_TOWER: u16 = 31739;
+pub const NEXUS_TOWER: u16 = 31740;
+/// Metres within which a monster attacks a tower.
+const TOWER_REACH: f32 = 10.0;
+/// Damage an Astaroth deals to a tower when it blows itself up.
+const ASTAROTH_BLAST: i32 = 5_000;
+
+fn room_notice(world: &crate::world::WorldState, room_id: u16, msg: &str) {
+    let pkt = crate::systems::timed_notice::build_notice_packet(8, msg);
+    world.broadcast_to_zone_event_room(ZONE_DUNGEON_DEFENCE, room_id, std::sync::Arc::new(pkt), None);
+}
+
+/// Send a player home: revive if dead, drop the Monster Coins, restore HP, teleport to Moradon.
+pub fn remove_player(world: &crate::world::WorldState, sid: u16) {
+    if world.is_player_dead(sid) {
+        world.update_res_hp_type(sid, crate::world::USER_STANDING);
+        world.update_session(sid, |h| {
+            h.who_killed_me = -1;
+            h.lost_exp = 0;
+        });
+    }
+    world.rob_all_of_item(sid, MONSTER_COIN_ITEM);
+    world.update_session(sid, |h| h.event_room = 0);
+    world.recalculate_max_hp_mp(sid);
+    if let Some(ch) = world.get_character_info(sid) {
+        world.update_character_hp(sid, ch.max_hp);
+        world.send_to_session_owned(sid, crate::systems::regen::build_hp_change_packet(ch.max_hp, ch.max_hp));
+    }
+    super::zone_change::server_teleport_to_zone(world, sid, crate::world::types::ZONE_MORADON, 0.0, 0.0);
+}
+
+/// A player died inside a Rift room: 3 deaths are allowed, the third one sends them to Moradon.
+/// When nobody is left the rift is lost.
+pub fn on_player_death(world: &crate::world::WorldState, sid: u16) {
+    let room_id = world.with_session(sid, |h| h.event_room).unwrap_or(0);
+    if room_id == 0 {
+        return;
+    }
+    let Some(room) = world
+        .dd_rooms()
+        .iter()
+        .find(|r| r.room_id.load(Ordering::Relaxed) == room_id && r.is_started.load(Ordering::Relaxed))
+    else {
+        return;
+    };
+    let used = {
+        let mut d = room.deaths.write();
+        let e = d.entry(sid).or_insert(0);
+        *e += 1;
+        *e
+    };
+    if used < DD_MAX_DEATHS {
+        let msg = format!("You died. Deaths left: {}.", DD_MAX_DEATHS - used);
+        world.send_to_session_owned(sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
+        return;
+    }
+    world.send_to_session_owned(
+        sid,
+        crate::systems::timed_notice::build_notice_packet(8, "You have used all your deaths and leave the rift."),
+    );
+    remove_player(world, sid);
+    let left = world.collect_sessions_by(|h| h.event_room == room_id && h.position.zone_id == ZONE_DUNGEON_DEFENCE);
+    if left.is_empty() {
+        room.room_close.store(1, Ordering::Relaxed);
+    }
+}
+
+/// Monsters within reach hit the towers; Astaroth blows up on a tower. A fallen Nexus loses the rift.
+/// Called once a second.
+pub fn tower_tick(world: &crate::world::WorldState) {
+    for room in world.dd_rooms() {
+        if !room.is_started.load(Ordering::Relaxed) || room.is_finished.load(Ordering::Relaxed) {
+            continue;
+        }
+        let room_id = room.room_id.load(Ordering::Relaxed);
+        for &(proto, x, z) in &GUARDIAN_NPCS {
+            if !(OUTER_TOWER..=NEXUS_TOWER).contains(&proto) {
+                continue;
+            }
+            let near = world.npcs_near(ZONE_DUNGEON_DEFENCE, x as f32, z as f32, TOWER_REACH, room_id);
+            let Some(tower) = near.iter().find(|n| n.proto_id == proto && !n.is_monster) else { continue };
+            if world.is_npc_dead(tower.nid) {
+                continue;
+            }
+            let mut dmg = 0i32;
+            for m in near.iter().filter(|n| n.is_monster && !world.is_npc_dead(n.nid)) {
+                if m.proto_id == ASTAROTH {
+                    dmg += ASTAROTH_BLAST;
+                    world.kill_npc(m.nid);
+                    crate::handler::attack::dd_decrement_and_advance(world, room_id);
+                } else if let Some(t) = world.get_npc_template(m.proto_id, true) {
+                    dmg += (t.damage as i32 / 5).max(1);
+                }
+            }
+            if dmg == 0 {
+                continue;
+            }
+            let hp = world.get_npc_hp(tower.nid).unwrap_or(0) - dmg;
+            if hp > 0 {
+                world.update_npc_hp(tower.nid, hp);
+                continue;
+            }
+            world.kill_npc(tower.nid);
+            match proto {
+                NEXUS_TOWER => {
+                    room_notice(world, room_id, "The Nexus has fallen. The rift is lost.");
+                    room.room_close.store(1, Ordering::Relaxed);
+                }
+                OUTER_TOWER => room_notice(world, room_id, "The Outer Tower has fallen!"),
+                _ => room_notice(world, room_id, "The Inner Tower has fallen!"),
+            }
+        }
+    }
+}
+
+/// `+riftopen [easy|normal|hard]`: the GM opens a rift alone (no voucher, party or level check).
+pub fn gm_open(world: &crate::world::WorldState, sid: u16, difficulty: DdDifficulty) -> String {
+    let Some(room_id) = try_claim_free_room(world.dd_rooms(), difficulty) else {
+        return "No free Full Moon Rift room.".to_string();
+    };
+    super::zone_change::server_teleport_to_zone(world, sid, ZONE_DUNGEON_DEFENCE, 0.0, 0.0);
+    world.update_session(sid, |h| h.event_room = room_id);
+    for &(npc_id, x, z) in &GUARDIAN_NPCS {
+        world.spawn_event_npc_ex(npc_id, false, ZONE_DUNGEON_DEFENCE, x as f32, z as f32, 1, room_id, 0);
+    }
+    format!(
+        "Full Moon Rift opened (room {room_id}, {} waves). First wave in {DD_INITIAL_SPAWN_TIME} s.",
+        difficulty.max_stages()
+    )
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
