@@ -163,22 +163,31 @@ pub fn gm_open(world: &WorldState) -> &'static str {
     if st.active {
         return "The Fire & Ice event is already running.";
     }
-    // spread the golems over the whole Bowl: random walkable points, at least MIN_SPACING apart
+    // spread the golems over the whole Bowl: random walkable points, as far apart as the area allows
+    // (the spacing is relaxed step by step until all 100 golems have a place)
     let mut spots: Vec<(f32, f32)> = Vec::with_capacity(PER_NATION * 2);
     let mut rng = rand::thread_rng();
-    for _ in 0..6000 {
+    for (spacing, jitter) in [(MIN_SPACING, 18.0f32), (8.0, 24.0), (5.0, 30.0), (2.0, 36.0), (0.0, 40.0)] {
+        for _ in 0..4000 {
+            if spots.len() >= PER_NATION * 2 {
+                break;
+            }
+            let Some((bx, bz)) = world.get_start_position_random(ZONE_RONARK) else { break };
+            let (x, z) = (bx + rng.gen_range(-jitter..jitter), bz + rng.gen_range(-jitter..jitter));
+            if spots.iter().all(|&(px, pz)| (px - x).powi(2) + (pz - z).powi(2) >= spacing * spacing) {
+                spots.push((x, z));
+            }
+        }
         if spots.len() >= PER_NATION * 2 {
             break;
         }
-        let Some((bx, bz)) = world.get_start_position_random(ZONE_RONARK) else { break };
-        let (x, z) = (bx + rng.gen_range(-12.0..12.0), bz + rng.gen_range(-12.0..12.0));
-        if spots.iter().all(|&(px, pz)| (px - x).powi(2) + (pz - z).powi(2) >= MIN_SPACING * MIN_SPACING) {
-            spots.push((x, z));
-        }
     }
-    if spots.len() < PER_NATION * 2 {
-        return "Ronark Land has too few spawn points for the golems.";
+    if spots.is_empty() {
+        return "Ronark Land has no spawn points for the golems.";
     }
+    // never start with fewer golems than 2 per spawn point pair: use what we found (rounded to even)
+    let usable = spots.len() - spots.len() % 2;
+    spots.truncate(usable);
     st.golems.clear();
     st.killers.clear();
     st.score = [0; 2];
