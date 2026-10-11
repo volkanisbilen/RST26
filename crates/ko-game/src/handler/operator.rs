@@ -322,7 +322,7 @@ pub async fn process_chat_command(
         "angelclose" => handle_santa(session, FLYING_NONE),
         "permanent" => handle_permanent_chat(session, &args)?,
         "offpermanent" => handle_permanent_chat_off(session)?,
-        "tl" => handle_tl_balance(session, &args)?,
+        "tl" => handle_tl_balance(session, &args).await?,
         "block" => handle_block(session, &args).await?,
         "unblock" => handle_unblock(session, &args).await?,
         "genie" => handle_genie_toggle(session, &args)?,
@@ -357,7 +357,7 @@ pub async fn process_chat_command(
         "cindopen" => handle_funclass_open(session, &args)?,
         "cindclose" => handle_funclass_close(session)?,
         "resetloyalty" => handle_reset_loyalty(session).await?,
-        "cropen" => handle_cr_open(session, &args)?,
+        "cropen" => handle_cr_open(session, &args).await?,
         "crclose" => handle_cr_close(session)?,
         "npcinfo" => handle_npc_info(session)?,
         "bug" => handle_bug_rescue(session, &args)?,
@@ -4328,13 +4328,10 @@ fn handle_war_result(session: &mut ClientSession, args: &[&str]) -> anyhow::Resu
     Ok(())
 }
 
-/// +tl <charname> <amount> — Transfer Knight Cash (KC/TL) to a target player.
-/// This is the C++ "+tl" command which adds/removes KC from a target player.
-/// Functionally identical to our existing "+kc" command — delegates to the same
-/// cash_gain/cash_lose functions.
-fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+/// +tl <charname> <amount> — adjust only the target account's TL balance.
+async fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     if args.len() < 2 {
-        send_help(session, "Usage: +tl CharacterName KC(+/-)");
+        send_help(session, "Usage: +tl CharacterName TL(+/-)");
         return Ok(());
     }
 
@@ -4342,7 +4339,7 @@ fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Resu
     let amount: i32 = match args[1].parse() {
         Ok(v) => v,
         Err(_) => {
-            send_help(session, "Invalid KC amount");
+            send_help(session, "Invalid TL amount");
             return Ok(());
         }
     };
@@ -4361,19 +4358,26 @@ fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Resu
         }
     };
 
-    let pool = session.pool().clone();
-    if amount > 0 {
-        super::knight_cash::cash_gain(&world, &pool, target_sid, amount as u32);
-        send_help(session, "User has received TL.");
-    } else {
-        super::knight_cash::cash_lose(&world, &pool, target_sid, (-amount) as u32);
-        send_help(
-            session,
-            &format!("Removed {} TL from {target_name}", -amount),
-        );
-    }
-
-    info!("GM +tl: {} KC={}", target_name, amount);
+    let account = world
+        .with_session(target_sid, |h| h.account_id.clone())
+        .unwrap_or_default();
+    let repo = ko_db::repositories::cash_shop::CashShopRepository::new(session.pool());
+    let Some(new_tl) = repo.adjust_tl_balance(&account, amount).await? else {
+        send_help(session, "TL balance is insufficient or outside the allowed range.");
+        return Ok(());
+    };
+    world.update_session(target_sid, |h| h.tl_balance = new_tl as u32);
+    let kc = world.get_knight_cash(target_sid);
+    world.send_to_session_owned(
+        target_sid,
+        super::knight_cash::build_cashchange_packet(kc, new_tl as u32),
+    );
+    world.send_to_session_owned(
+        target_sid,
+        super::knight_cash::build_kc_chat_packet(kc, new_tl as u32),
+    );
+    send_help(session, &format!("{target_name}: TL {amount:+}; balance {new_tl} TL"));
+    info!("GM +tl: {} TL={}", target_name, amount);
     Ok(())
 }
 
@@ -6253,7 +6257,7 @@ async fn handle_reset_loyalty(session: &mut ClientSession) -> anyhow::Result<()>
 
 /// +cropen <EventID> — start Collection Race event.
 /// Loads event definition from WorldState settings, then starts the event.
-fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+async fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     if args.is_empty() {
         send_help(session, "Usage: +cropen EventID");
         return Ok(());
@@ -6277,11 +6281,21 @@ fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
         }
     };
 
-    // Build rewards from event_rewards table (rewards are loaded from DB at startup)
-    // C++ uses LoadCollectionReward which populates pCollectionRaceEvent.RewardItemID/Count/Time
-    // Our start_event expects: &[(item_id, count, time, rate, session)]
-    // For simplicity, pass empty rewards — the event system loads them separately if available.
-    let rewards: Vec<(u32, u32, u32, u8, u8)> = Vec::new();
+    let repository = ko_db::repositories::collection_race::CollectionRaceRepository::new(
+        session.pool(),
+    );
+    let reward_rows = repository.load_rewards_by_event(event_id).await?;
+    let rewards: Vec<(u32, u32, u32, u8, u8)> = reward_rows
+        .iter()
+        .take(super::collection_race::CR_REWARD_SLOTS)
+        .map(|reward| (
+            reward.item_id.max(0) as u32,
+            reward.item_count.max(0) as u32,
+            reward.item_time.max(0) as u32,
+            reward.rate.clamp(0, 100) as u8,
+            reward.item_session.clamp(0, 255) as u8,
+        ))
+        .collect();
 
     let cr = world.collection_race_event();
     let now = std::time::SystemTime::now()

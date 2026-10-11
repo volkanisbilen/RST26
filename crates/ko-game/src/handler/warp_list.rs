@@ -29,12 +29,14 @@ use crate::session::{ClientSession, SessionState};
 use crate::systems::war::{NATION_BATTLE, SIEGE_BATTLE};
 use crate::world::types::{
     ZONE_ARDREAM, ZONE_BATTLE, ZONE_BATTLE2, ZONE_BATTLE3, ZONE_BATTLE4, ZONE_BATTLE5,
-    ZONE_BATTLE6, ZONE_ELMORAD_ESLANT, ZONE_KARUS_ESLANT, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+    ZONE_BATTLE6, ZONE_ELMORAD_ESLANT, ZONE_KARUS_ESLANT, ZONE_MORADON,
+    ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
 };
 use crate::world::WorldState;
 
 /// Default max users per zone (`m_sMaxUser`, not yet stored in our zone model).
 const DEFAULT_MAX_USERS: u16 = 150;
+const WARP_FUNCLASS_ENTRY: i16 = i16::MIN;
 
 /// Resolve the two legacy Eslant destinations stored in the active v2615 SMDs.
 fn effective_warp_destination(warp_id: i16, raw_zone: i16, nation: u8) -> u16 {
@@ -196,6 +198,19 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
+    if warp_id == WARP_FUNCLASS_ENTRY {
+        if pos.zone_id != ZONE_MORADON || !world.is_cinderella_active() {
+            send_select_fail(session).await?;
+            return Ok(());
+        }
+        let event_zone = world.cinderella_zone_id();
+        if event_zone == 0 || world.get_zone(event_zone).is_none() {
+            send_select_fail(session).await?;
+            return Ok(());
+        }
+        zone_change::trigger_zone_change(session, event_zone, 0.0, 0.0).await?;
+        return Ok(());
+    }
     let warp = match zone.map_data.as_ref().and_then(|md| md.get_warp(warp_id)) {
         Some(w) => w.clone(),
         None => {
@@ -372,10 +387,11 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
         )
     });
 
+    let show_funclass_entry = pos.zone_id == ZONE_MORADON && world.is_cinderella_active();
     // Build the response packet
     let mut result = Packet::new(Opcode::WizWarpList as u8);
     result.write_u8(1); // sub-opcode: GetWarpList
-    result.write_u16(entries.len() as u16);
+    result.write_u16((entries.len() + usize::from(show_funclass_entry)) as u16);
 
     for warp in &entries {
         result.write_u16(warp.warp_id as u16);
@@ -389,6 +405,14 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
         result.write_u32(warp.pay);
     }
 
+    if show_funclass_entry {
+        result.write_u16(WARP_FUNCLASS_ENTRY as u16);
+        result.write_string("Fun Class Event");
+        result.write_string("Enter the active Cinderella War event");
+        result.write_u16(world.cinderella_zone_id());
+        result.write_u16(DEFAULT_MAX_USERS);
+        result.write_u32(0);
+    }
     session.send_packet(&result).await?;
 
     debug!(

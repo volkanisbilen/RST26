@@ -15,6 +15,7 @@ use ko_db::repositories::chaos_stone::ChaosStoneRepository;
 use ko_db::repositories::char_creation::CharCreationRepository;
 use ko_db::repositories::cinderella::CinderellaRepository;
 use ko_db::repositories::coefficient::CoefficientRepository;
+use ko_db::repositories::collection_race::CollectionRaceRepository;
 use ko_db::repositories::daily_quest::DailyQuestRepository;
 use ko_db::repositories::draki_tower::DrakiTowerRepository;
 use ko_db::repositories::dungeon_defence::DungeonDefenceRepository;
@@ -202,6 +203,8 @@ impl WorldState {
         // ─── Forgotten Temple / DD / Draki / Chaos Stone Loading ────────────────
         self.load_dungeon_tables(pool).await;
 
+        self.load_collection_race(pool).await;
+
         // ─── Under The Castle / Daily Quest Loading ─────────────────────────────
         self.load_misc_event_tables(pool).await;
 
@@ -232,6 +235,44 @@ impl WorldState {
         Ok(())
     }
 
+    async fn load_collection_race(&self, pool: &DbPool) {
+        let repository = CollectionRaceRepository::new(pool);
+        match repository.load_settings().await {
+            Ok(rows) => {
+                self.collection_race_settings.clear();
+                for row in &rows {
+                    self.collection_race_settings.insert(
+                        row.event_index,
+                        crate::handler::collection_race::CrEventDef {
+                            event_id: row.event_index,
+                            event_name: row.event_name.clone(),
+                            proto_ids: [
+                                row.unit1.max(0) as u16,
+                                row.unit2.max(0) as u16,
+                                row.unit3.max(0) as u16,
+                            ],
+                            kill_counts: [
+                                row.unit_count1.max(0) as u16,
+                                row.unit_count2.max(0) as u16,
+                                row.unit_count3.max(0) as u16,
+                            ],
+                            min_level: row.min_level.clamp(1, 255) as u8,
+                            max_level: row.max_level.clamp(1, 255) as u8,
+                            zone_id: row.event_zone.clamp(0, 255) as u8,
+                            event_time_mins: row.event_time.max(0) as u32,
+                            user_limit: row.user_limit.clamp(0, u16::MAX as i32) as u16,
+                            event_list_status: u8::from(row.is_repeat),
+                            auto_start: row.auto_start,
+                            auto_hour: row.auto_hour as i32,
+                            auto_minute: row.auto_minute as i32,
+                        },
+                    );
+                }
+                tracing::info!(count = rows.len(), "collection_race_settings loaded");
+            }
+            Err(error) => tracing::warn!("collection_race_settings failed to load: {error}"),
+        }
+    }
     /// Load the validated zone-96 runtime spawn configuration.
     async fn load_manes_survival(&self, pool: &DbPool) -> anyhow::Result<()> {
         let repository = ManesSurvivalRepository::new(pool);

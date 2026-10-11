@@ -124,6 +124,17 @@ impl<'a> CashShopRepository<'a> {
         Ok((row.0, row.1.unwrap_or(0)))
     }
 
+    /// Adjust only TL. KC must not be rewritten by a GM TL grant.
+    pub async fn adjust_tl_balance(&self, account_id: &str, amount: i32) -> Result<Option<i32>, sqlx::Error> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "UPDATE tb_user SET bonus_cash_point = COALESCE(bonus_cash_point, 0)::bigint + $2 \
+             WHERE str_account_id = $1 \
+             AND COALESCE(bonus_cash_point, 0)::bigint + $2 BETWEEN 0 AND 2147483647 \
+             RETURNING bonus_cash_point",
+        ).bind(account_id).bind(amount as i64).fetch_optional(self.pool).await?;
+        Ok(row.map(|row| row.0))
+    }
+
     /// Deduct amount from TL balance (bonus_cash_point).
     ///
     /// Uses `bonus_cash_point` column for TL purchases.
