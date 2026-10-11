@@ -7008,6 +7008,20 @@ async fn apply_skill_damage_to_npc(
         None => return,
     };
 
+    // Fire & Ice: only the other nation's golems can be hurt, and golems take 30% from area skills.
+    if super::golem_war::is_golem(npc_id) {
+        if !super::golem_war::can_attack(world, caster_sid, npc_id) {
+            return;
+        }
+    }
+    let damage = if super::golem_war::is_golem(npc_id)
+        && matches!(skill.moral, Some(crate::magic_constants::MORAL_AREA_ENEMY) | Some(crate::magic_constants::MORAL_AREA_ALL))
+    {
+        ((damage as i32) * 30 / 100).max(1) as i16
+    } else {
+        damage
+    };
+
     let tmpl = match world.get_npc_template(npc.proto_id, npc.is_monster) {
         Some(t) => t,
         None => return,

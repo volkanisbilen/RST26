@@ -740,6 +740,8 @@ pub fn start_event_system_task(
                 }
             }
 
+            crate::handler::golem_war::tick(&world);
+
             // ── Ultima's Dungeon timer tick ──────────────────────────────
             crate::handler::ultima::tick(&world);
 

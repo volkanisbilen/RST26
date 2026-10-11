@@ -50,6 +50,7 @@ pub mod costume;
 pub mod cryption;
 pub mod daily_quest;
 pub mod gm_panel;
+pub mod golem_war;
 pub mod soft_reconnect;
 pub mod ultima;
 pub mod daily_quest_v2525;

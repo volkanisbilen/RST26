@@ -360,6 +360,19 @@ pub async fn process_chat_command(
             send_help(session, msg);
         }
         "eventbotfill" => handle_event_bot_fill(session, &args).await?,
+        "golemopen" => {
+            let msg = super::golem_war::gm_open(session.world());
+            send_help(session, msg);
+        }
+        "golemend" => {
+            let msg = super::golem_war::gm_end(session.world());
+            send_help(session, msg);
+        }
+        "golemauto" => {
+            let on = args.first().is_some_and(|a| a.eq_ignore_ascii_case("on"));
+            super::golem_war::set_auto(on);
+            send_help(session, if on { "Fire & Ice auto schedule: ON (14:00 and 22:00 server time)." } else { "Fire & Ice auto schedule: OFF." });
+        }
         "ultimabot" => {
             let count = args.first().and_then(|a| a.parse::<usize>().ok()).unwrap_or(5);
             let class = args.get(1).and_then(|a| a.parse::<u16>().ok()).unwrap_or(1);

@@ -1822,6 +1822,11 @@ async fn handle_npc_attack(
         None => return,
     };
 
+    // Fire & Ice: a nation can only hurt the other nation's golems.
+    if !super::golem_war::can_attack(&world, attacker_sid, npc_id) {
+        return;
+    }
+
     // Town, quest and event NPCs are never combat targets. Previously only
     // a small set of infrastructure NPC types was filtered, allowing regular
     // NPCs with zero combat HP (including Event Manager) to be "killed".
@@ -2459,6 +2464,9 @@ pub(crate) async fn handle_npc_death(
     tmpl: &crate::npc::NpcTemplate,
     defer_death_broadcast: bool,
 ) {
+    // Fire & Ice: a killed golem is converted to the killer's nation.
+    super::golem_war::on_npc_death(world, killer_sid, npc);
+
     // Manes must receive the combat result and HP=0 before WIZ_DEAD. Its
     // physical/magic callers emit this packet after those two packets.
     if !defer_death_broadcast {
