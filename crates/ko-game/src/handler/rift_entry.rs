@@ -26,6 +26,8 @@ pub fn set_event_id(id: i16) {
 }
 
 const MIN_LEVEL: u8 = 70;
+/// The Full Moon Rift Voucher is only required when this is on (Blanc hands one out daily).
+const REQUIRE_VOUCHER: bool = false;
 const GROUP_SIZE: usize = 8;
 const DEFAULT_REG_MINUTES: u64 = 3;
 
@@ -108,7 +110,7 @@ pub async fn temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
     let result = match try_register(&world, sid) {
-        Ok(()) => 1u8,
+        Ok(()) => 0u8, // the client's "registered" state (Apply turns into Cancel)
         Err((code, msg)) => {
             notice(&world, sid, msg);
             code
@@ -151,7 +153,7 @@ fn try_register(world: &WorldState, sid: SessionId) -> Result<(), (u8, &'static 
         if world.get_event_room(sid) != 0 {
             return Err((RES_OTHER_EVENT, "You are already in an event."));
         }
-        if !world.check_exist_item(sid, dd::DUNGEON_DEFENCE_RIFT_ITEM, 1) {
+        if REQUIRE_VOUCHER && !world.check_exist_item(sid, dd::DUNGEON_DEFENCE_RIFT_ITEM, 1) {
             return Err((RES_PLAIN, "You need a Full Moon Rift Voucher."));
         }
     }
@@ -177,10 +179,11 @@ pub fn gm_open(world: &WorldState, minutes: Option<u64>) -> &'static str {
         (minutes * 60).min(u16::MAX as u64) as u16,
     ));
     let count = Arc::new(counter_packet(0));
+    // the title goes last: the window object only exists once the open packet has been handled
     for sid in world.get_in_game_session_ids() {
-        world.send_to_session_arc(sid, Arc::clone(&title));
         world.send_to_session_arc(sid, Arc::clone(&open));
         world.send_to_session_arc(sid, Arc::clone(&count));
+        world.send_to_session_arc(sid, Arc::clone(&title));
     }
     drop(st);
     world.broadcast_to_all(
@@ -246,7 +249,7 @@ fn start(world: &WorldState) {
             continue;
         }
         let gm = is_gm(world, sid);
-        if !gm && (ch.level < MIN_LEVEL || !world.check_exist_item(sid, dd::DUNGEON_DEFENCE_RIFT_ITEM, 1)) {
+        if !gm && (ch.level < MIN_LEVEL || (REQUIRE_VOUCHER && !world.check_exist_item(sid, dd::DUNGEON_DEFENCE_RIFT_ITEM, 1))) {
             continue;
         }
         by_nation[(ch.nation.max(1) as usize - 1).min(1)].push(sid);
@@ -255,13 +258,6 @@ fn start(world: &WorldState) {
     let mut started = 0;
     for list in by_nation {
         for group in split_groups(list) {
-            let any_gm = group.iter().any(|&s| is_gm(world, s));
-            if group.len() < 2 && !any_gm {
-                for &sid in &group {
-                    notice(world, sid, "Full Moon Rift: not enough players in your group. Your voucher was not used.");
-                }
-                continue;
-            }
             let difficulty = DdDifficulty::from_party_size(group.len() as u16).unwrap_or(DdDifficulty::Easy);
             let Some(_room_id) = dd::open_room(world, &group, difficulty) else {
                 for &sid in &group {
@@ -269,9 +265,11 @@ fn start(world: &WorldState) {
                 }
                 continue;
             };
-            form_party(world, &group);
+            if group.len() >= 2 {
+                form_party(world, &group);
+            }
             for &sid in &group {
-                if !is_gm(world, sid) {
+                if REQUIRE_VOUCHER && !is_gm(world, sid) {
                     world.rob_item(sid, dd::DUNGEON_DEFENCE_RIFT_ITEM, 1);
                 }
                 notice(

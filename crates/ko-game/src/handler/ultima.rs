@@ -201,9 +201,9 @@ fn broadcast_window(world: &WorldState, st: &State, now: u64) {
     let open = Arc::new(crate::systems::event_room::build_event_start_broadcast(event_id(), remaining));
     let count = Arc::new(counter_packet(registered_count(st)));
     for sid in world.get_in_game_session_ids() {
-        world.send_to_session_arc(sid, Arc::clone(&title));
         world.send_to_session_arc(sid, Arc::clone(&open));
         world.send_to_session_arc(sid, Arc::clone(&count));
+        world.send_to_session_arc(sid, Arc::clone(&title));
     }
 }
 
@@ -225,7 +225,7 @@ pub async fn temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
     let result = match try_register(&world, sid) {
-        Ok(()) => 1u8,
+        Ok(()) => 0u8, // the client's "registered" state (Apply turns into Cancel)
         Err(msg) => {
             notice(&world, sid, msg);
             4u8
