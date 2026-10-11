@@ -38,7 +38,7 @@ const NPC_SEAL: u16 = 10101;
 const NPC_ESCAPE: u16 = 10103;
 
 /// Temple-event id the client's registration window is opened with (`+ultimaid <n>` changes it live).
-static EVENT_ID: AtomicI16 = AtomicI16::new(104);
+static EVENT_ID: AtomicI16 = AtomicI16::new(47);
 
 pub fn event_id() -> i16 {
     EVENT_ID.load(Ordering::Relaxed)
