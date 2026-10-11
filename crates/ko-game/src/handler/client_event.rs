@@ -86,6 +86,25 @@ const NPC_TREASURY: u8 = 80;
 /// and is never shared with an existing NPC.
 const NPC_DAILY_QUEST_MANAGER: u16 = 31999;
 
+/// Moradon "Fun Class Event" NPC (client proto added by `patch_funclass_npc`). Right-click
+/// sends the player into the running Fun Class (Cinderella) event, or says there is none.
+const NPC_FUNCLASS_EVENT: u16 = 31998;
+
+async fn funclass_npc_enter(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let zone = world.cinderella_zone_id();
+    if !world.is_cinderella_active() || zone == 0 || world.get_zone(zone).is_none() {
+        let pkt = super::chat::build_chat_packet(
+            8, 0, 0, "**", "There is no Fun Class Event running right now.", 0, 0, 0,
+        );
+        world.send_to_session_owned(sid, pkt);
+        return Ok(());
+    }
+    super::zone_change::trigger_zone_change(session, zone, 0.0, 0.0).await?;
+    Ok(())
+}
+
 /// Handle WIZ_CLIENT_EVENT from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
@@ -303,6 +322,11 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
     // target selection.
     if proto_id == 31774 {
         super::native_events::try_open_akara_menu_from_target(session, npc_nid).await?;
+        return Ok(());
+    }
+
+    if proto_id == NPC_FUNCLASS_EVENT {
+        funclass_npc_enter(session).await?;
         return Ok(());
     }
 
