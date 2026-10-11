@@ -705,19 +705,7 @@ pub fn start_event_system_task(
                     });
 
                     for sid in &user_sids {
-                        // Remove Monster Coins and restore normal HP before teleport
-                        world.rob_all_of_item(*sid, dungeon_defence::MONSTER_COIN_ITEM);
-                        world.recalculate_max_hp_mp(*sid);
-                        world.update_session(*sid, |h| {
-                            h.event_room = 0;
-                        });
-                        crate::handler::zone_change::server_teleport_to_zone(
-                            &world,
-                            *sid,
-                            crate::world::types::ZONE_MORADON,
-                            0.0,
-                            0.0,
-                        )
+                        crate::handler::dungeon_defence::remove_player(&world, *sid);
                     }
 
                     // Despawn room NPCs and reset
@@ -741,6 +729,7 @@ pub fn start_event_system_task(
             }
 
             crate::handler::dungeon_defence::tower_tick(&world);
+            crate::handler::rift_entry::tick(&world);
             crate::handler::golem_war::tick(&world);
 
             // ── Ultima's Dungeon timer tick ──────────────────────────────

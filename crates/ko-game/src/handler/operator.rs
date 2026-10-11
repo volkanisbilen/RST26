@@ -360,6 +360,26 @@ pub async fn process_chat_command(
             send_help(session, msg);
         }
         "eventbotfill" => handle_event_bot_fill(session, &args).await?,
+        "riftreg" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::rift_entry::gm_open(session.world(), minutes);
+            send_help(session, msg);
+        }
+        "riftstart" => {
+            let msg = super::rift_entry::gm_start(session.world());
+            send_help(session, msg);
+        }
+        "riftend" => {
+            let msg = super::rift_entry::gm_cancel(session.world());
+            send_help(session, msg);
+        }
+        "riftid" => {
+            if let Some(id) = args.first().and_then(|a| a.parse::<i16>().ok()) {
+                super::rift_entry::set_event_id(id);
+            }
+            let msg = format!("Rift registration window id: {}", super::rift_entry::event_id());
+            send_help(session, &msg);
+        }
         "riftopen" => {
             let d = match args.first().map(|a| a.to_ascii_lowercase()).as_deref() {
                 Some("normal") | Some("2") => super::dungeon_defence::DdDifficulty::Normal,

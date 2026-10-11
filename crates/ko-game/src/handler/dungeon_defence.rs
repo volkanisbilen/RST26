@@ -586,12 +586,18 @@ pub fn remove_player(world: &crate::world::WorldState, sid: u16) {
     }
     world.rob_all_of_item(sid, MONSTER_COIN_ITEM);
     world.update_session(sid, |h| h.event_room = 0);
+    super::zone_change::server_teleport_to_zone(world, sid, crate::world::types::ZONE_MORADON, 0.0, 0.0);
+    restore_stats(world, sid);
+}
+
+/// Undo the rift's 10 000 HP equalization: real max HP/MP back, full HP, client told.
+pub fn restore_stats(world: &crate::world::WorldState, sid: u16) {
+    world.set_user_ability(sid);
     world.recalculate_max_hp_mp(sid);
     if let Some(ch) = world.get_character_info(sid) {
         world.update_character_hp(sid, ch.max_hp);
         world.send_to_session_owned(sid, crate::systems::regen::build_hp_change_packet(ch.max_hp, ch.max_hp));
     }
-    super::zone_change::server_teleport_to_zone(world, sid, crate::world::types::ZONE_MORADON, 0.0, 0.0);
 }
 
 /// A player died inside a Rift room: 3 deaths are allowed, the third one sends them to Moradon.
@@ -679,12 +685,21 @@ pub fn tower_tick(world: &crate::world::WorldState) {
     }
 }
 
-/// `+riftopen [easy|normal|hard]`: the GM opens a rift alone (no voucher, party or level check).
+/// Claim a room, move `members` in and spawn the guardians. No voucher/party checks here.
+pub fn open_room(world: &crate::world::WorldState, members: &[u16], difficulty: DdDifficulty) -> Option<u16> {
+    let room_id = try_claim_free_room(world.dd_rooms(), difficulty)?;
+    for &m in members {
+        super::zone_change::server_teleport_to_zone(world, m, ZONE_DUNGEON_DEFENCE, 0.0, 0.0);
+        world.update_session(m, |h| h.event_room = room_id);
+    }
+    for &(npc_id, x, z) in &GUARDIAN_NPCS {
+        world.spawn_event_npc_ex(npc_id, false, ZONE_DUNGEON_DEFENCE, x as f32, z as f32, 1, room_id, 0);
+    }
+    Some(room_id)
+}
+
+/// `+riftopen [easy|normal|hard]`: the GM opens a rift for their whole party (no voucher or level check).
 pub fn gm_open(world: &crate::world::WorldState, sid: u16, difficulty: DdDifficulty) -> String {
-    let Some(room_id) = try_claim_free_room(world.dd_rooms(), difficulty) else {
-        return "No free Full Moon Rift room.".to_string();
-    };
-    // the GM and the whole party go in
     let mut members = world
         .get_party_id(sid)
         .and_then(|pid| world.get_party(pid))
@@ -693,17 +708,13 @@ pub fn gm_open(world: &crate::world::WorldState, sid: u16, difficulty: DdDifficu
     if !members.contains(&sid) {
         members.push(sid);
     }
-    for &m in &members {
-        super::zone_change::server_teleport_to_zone(world, m, ZONE_DUNGEON_DEFENCE, 0.0, 0.0);
-        world.update_session(m, |h| h.event_room = room_id);
+    match open_room(world, &members, difficulty) {
+        Some(room_id) => format!(
+            "Full Moon Rift opened (room {room_id}, {} waves). First wave in {DD_INITIAL_SPAWN_TIME} s.",
+            difficulty.max_stages()
+        ),
+        None => "No free Full Moon Rift room.".to_string(),
     }
-    for &(npc_id, x, z) in &GUARDIAN_NPCS {
-        world.spawn_event_npc_ex(npc_id, false, ZONE_DUNGEON_DEFENCE, x as f32, z as f32, 1, room_id, 0);
-    }
-    format!(
-        "Full Moon Rift opened (room {room_id}, {} waves). First wave in {DD_INITIAL_SPAWN_TIME} s.",
-        difficulty.max_stages()
-    )
 }
 
 /// Players may not walk back past this line towards the monster spawn (x < 110 on the lane z < 70).

@@ -470,6 +470,9 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
     if super::ultima::registration_open() {
         return super::ultima::temple_join(session).await;
     }
+    if super::rift_entry::registration_open() {
+        return super::rift_entry::temple_join(session).await;
+    }
     debug!("[{}] WIZ_EVENT TEMPLE_EVENT_JOIN", session.addr());
 
     let world = session.world().clone();
@@ -623,6 +626,9 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
 async fn handle_temple_disband(session: &mut ClientSession) -> anyhow::Result<()> {
     if super::ultima::registration_open() {
         return super::ultima::temple_disband(session).await;
+    }
+    if super::rift_entry::registration_open() {
+        return super::rift_entry::temple_disband(session).await;
     }
     debug!("[{}] WIZ_EVENT TEMPLE_EVENT_DISBAND", session.addr());
 
