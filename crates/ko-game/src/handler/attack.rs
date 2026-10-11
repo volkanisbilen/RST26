@@ -2174,11 +2174,8 @@ async fn handle_npc_attack(
             damage
         };
 
-    // Cap damage at MAX_DAMAGE — matches player attack path.
-    // Ultima's Dungeon rooms (event rooms >= 200 in zone 55): GMs hit like everybody else.
-    let in_ultima_room =
-        attacker_pos.zone_id == 55 && world.get_event_room(attacker_sid) >= 200;
-    let damage = if is_gm && !in_ultima_room {
+    // Cap damage at MAX_DAMAGE — matches player attack path
+    let damage = if is_gm {
         GM_FIXED_DAMAGE
     } else {
         damage.min(crate::attack_constants::MAX_DAMAGE as i16)

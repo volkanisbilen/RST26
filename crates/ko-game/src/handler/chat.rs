@@ -469,6 +469,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Route based on chat type
     match chat_type {
         Some(ChatType::General) => {
+            if message.trim().eq_ignore_ascii_case("party") {
+                crate::handler::ultima::party_request(&world, sid);
+            }
             // GM general chat is server-wide: GM text must reach every nation
             // and zone, not just the sender's nearby region. Keep the GM chat
             // packet type so the client renders it with its normal GM styling.

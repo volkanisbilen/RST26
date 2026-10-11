@@ -9235,3 +9235,36 @@ mod tests {
         );
     }
 }
+
+
+/// Event helper: broadcast a bot's melee swing at `target_id` (visual only).
+pub(crate) fn event_bot_swing(world: &WorldState, bot_id: BotId, target_id: u32) {
+    let Some(bot) = world.get_bot(bot_id) else { return };
+    let mut pkt = Packet::new(Opcode::WizAttack as u8);
+    pkt.write_u8(1);
+    pkt.write_u8(ATTACK_SUCCESS);
+    pkt.write_u32(bot.id);
+    pkt.write_u32(target_id);
+    pkt.write_u8(0);
+    broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &pkt);
+}
+
+/// Event helper: put a bot next to (x, z) and tell the clients around it.
+pub(crate) fn event_bot_place(world: &WorldState, bot_id: BotId, x: f32, z: f32) {
+    let Some(old) = world.get_bot(bot_id) else { return };
+    let (rx, rz) = (crate::zone::calc_region(x), crate::zone::calc_region(z));
+    if rx != old.region_x || rz != old.region_z {
+        let out_pkt = build_bot_inout_packet(&old, world, 2); // INOUT_OUT
+        broadcast_to_bot_region(world, old.zone_id, old.region_x, old.region_z, &out_pkt);
+    }
+    world.update_bot(bot_id, |b| {
+        b.x = x;
+        b.z = z;
+        b.region_x = rx;
+        b.region_z = rz;
+    });
+    if let Some(b) = world.get_bot(bot_id) {
+        let in_pkt = build_bot_inout_packet(&b, world, 1); // INOUT_IN
+        broadcast_to_bot_region(world, b.zone_id, rx, rz, &in_pkt);
+    }
+}

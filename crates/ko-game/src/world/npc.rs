@@ -105,6 +105,21 @@ impl WorldState {
             .map(|entry| entry.value().clone())
             .collect()
     }
+    /// Live NPC/monster instances of a zone within `radius` of (x, z) that belong to `event_room`.
+    pub fn npcs_near(&self, zone_id: u16, x: f32, z: f32, radius: f32, event_room: u16) -> Vec<Arc<NpcInstance>> {
+        self.npc_instances
+            .iter()
+            .filter(|e| {
+                let n = e.value();
+                if n.zone_id != zone_id || n.event_room != event_room {
+                    return false;
+                }
+                let (dx, dz) = (n.x - x, n.z - z);
+                (dx * dx + dz * dz).sqrt() <= radius
+            })
+            .map(|e| e.value().clone())
+            .collect()
+    }
     /// Get the current HP of an NPC by runtime ID.
     ///
     /// Returns `None` if the NPC does not exist.
@@ -124,8 +139,9 @@ impl WorldState {
                     return;
                 }
                 if let Some(hit) = self.ultima_seals.get(&nid) {
-                    // any hit (melee, skill, area) removes one fixed hit
-                    *entry = (*entry - *hit).max(0);
+                    // any hit removes one fixed hit; a GM's fixed 30000 hit counts in full
+                    let taken = if *entry - hp == 30_000 { 30_000 } else { *hit };
+                    *entry = (*entry - taken).max(0);
                     return;
                 }
             }

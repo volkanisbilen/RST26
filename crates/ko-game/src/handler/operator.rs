@@ -359,6 +359,14 @@ pub async fn process_chat_command(
             let msg = super::ultima::gm_start(session.world());
             send_help(session, msg);
         }
+        "eventbotfill" => handle_event_bot_fill(session, &args).await?,
+        "ultimabot" => {
+            let count = args.first().and_then(|a| a.parse::<usize>().ok()).unwrap_or(5);
+            let class = args.get(1).and_then(|a| a.parse::<u16>().ok()).unwrap_or(1);
+            let msg = super::ultima::gm_spawn_bots(session.world(), session.session_id(), count, class);
+            send_help(session, &msg);
+        }
+        "killnear" => handle_kill_near(session, &args).await?,
         "ultimaid" => {
             match args.first().and_then(|a| a.parse::<i16>().ok()) {
                 Some(id) => {
@@ -9776,5 +9784,82 @@ fn handle_manes_survival_close(session: &mut ClientSession) -> anyhow::Result<()
         rewarded,
         failed
     );
+    Ok(())
+}
+
+
+/// +killnear [radius=5] - really kill every monster within `radius` metres of the GM (death
+/// broadcast, experience, drops/loot box), instead of just removing them.
+async fn handle_kill_near(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let radius = args
+        .first()
+        .and_then(|a| a.parse::<f32>().ok())
+        .unwrap_or(5.0)
+        .clamp(1.0, 60.0);
+    let Some(pos) = world.get_position(sid) else {
+        return Ok(());
+    };
+    let room = world.get_event_room(sid);
+    let mut killed = 0u32;
+    for npc in world.npcs_near(pos.zone_id, pos.x, pos.z, radius, room) {
+        if !npc.is_monster || world.is_npc_dead(npc.nid) {
+            continue;
+        }
+        let Some(tmpl) = world.get_npc_template(npc.proto_id, true) else {
+            continue;
+        };
+        world.update_npc_hp(npc.nid, 0);
+        if !world.is_npc_dead(npc.nid) {
+            continue; // protected (e.g. a sealed boss)
+        }
+        super::attack::handle_npc_death(&world, sid, npc.nid, &npc, &tmpl, false).await;
+        killed += 1;
+    }
+    send_help(session, &format!("{killed} monster(s) within {radius} m killed."));
+    Ok(())
+}
+
+
+/// +eventbotfill <count> - GM panel "Bot Type 6 (event)". Does the sensible thing for the event the
+/// GM is in: Ultima rooms get fighting bots, an open Ultima registration gets bot registrants, any
+/// other zone gets PK-style bots of the opposite nation.
+async fn handle_event_bot_fill(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let count = args.first().and_then(|a| a.parse::<usize>().ok()).unwrap_or(5).clamp(1, 200);
+    let class = rand::random::<u16>() % 4 + 1;
+
+    let in_room = world.get_event_room(sid) >= 200
+        && world.get_position(sid).is_some_and(|p| p.zone_id == super::ultima::ZONE_ULTIMA);
+    if in_room {
+        let msg = super::ultima::gm_spawn_bots(&world, sid, count, class);
+        send_help(session, &msg);
+        return Ok(());
+    }
+    if let Some(msg) = super::ultima::gm_registration_bots(&world, count) {
+        send_help(session, &msg);
+        return Ok(());
+    }
+
+    // any other event / zone: PK bots around the GM. Half are of the GM's nation (they form
+    // parties and invite players who type "party" / open Seek), half are the enemy.
+    let my_nation = world.get_character_info(sid).map(|c| c.nation).unwrap_or(1);
+    let (ally, enemy) = if my_nation == 1 { ("1", "2") } else { ("2", "1") };
+    let allies = (count + 1) / 2;
+    let enemies = count - allies;
+    for (nation, n) in [(ally, allies), (enemy, enemies)] {
+        if n == 0 {
+            continue;
+        }
+        let class_s = ((rand::random::<u16>() % 4) + 1).to_string();
+        let count_s = n.to_string();
+        handle_bot_spawn(
+            session,
+            &[class_s.as_str(), "83", nation, count_s.as_str()],
+            crate::world::BotAiState::Pk,
+        )?;
+    }
     Ok(())
 }
