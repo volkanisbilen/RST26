@@ -2120,6 +2120,7 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
 
     // (WIZ_ITEM_GET workaround removed — testing RENTAL+SERVER_INDEX fix instead)
 
+    super::soft_reconnect::on_game_entered(&world, session.session_id());
     tracing::info!(
         "[{}] Phase2 COMPLETE: {} entered game world (sid={}, zone={}, region=({},{}))",
         session.addr(),

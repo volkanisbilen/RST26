@@ -1007,6 +1007,7 @@ async fn handle_move(
     if success {
         save_clan_wh_slot_async(session, clan_id, src_idx, final_src);
         save_clan_wh_slot_async(session, clan_id, dst_idx, final_dst);
+        super::warehouse::gm_move_note(session.world(), session.session_id(), "Clan bank", item_id, src_idx, dst_idx);
         session
             .send_packet(&build_result(CLAN_BANK_MOVE, 1))
             .await?;

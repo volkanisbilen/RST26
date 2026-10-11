@@ -50,6 +50,7 @@ pub mod costume;
 pub mod cryption;
 pub mod daily_quest;
 pub mod gm_panel;
+pub mod soft_reconnect;
 pub mod daily_quest_v2525;
 pub mod daily_rank;
 pub mod datasave;
@@ -663,6 +664,8 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
         daily_quest::EXT_SUB_DAILY_QUEST => daily_quest::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::GMPANEL = 0xF5 — GM panel (GM-only)
         gm_panel::EXT_SUB_GM_PANEL => gm_panel::handle(session, repack_ext_data(&pkt)).await,
+        // ExtSub::RECONNECT = 0xEF — soft re-connect resume
+        soft_reconnect::EXT_SUB_RECONNECT => soft_reconnect::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::LOTTERY = 0xC7 — lottery event join/state
         lottery::EXT_SUB_LOTTERY => lottery::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::CR = 0xAF — Collection Race (server→client only, silently ignore)

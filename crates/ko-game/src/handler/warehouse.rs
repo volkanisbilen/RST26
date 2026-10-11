@@ -979,3 +979,17 @@ mod tests {
         assert_eq!(pkt.data[1], 2); // RequiredMoney
     }
 }
+
+/// GM-only chat line after a successful storage move (bank, vault, clan bank).
+pub(super) fn gm_move_note(world: &crate::world::WorldState, sid: crate::zone::SessionId, label: &str, item_id: u32, src: usize, dst: usize) {
+    if world
+        .get_character_info(sid)
+        .is_some_and(|c| c.authority == 0 || c.authority == 2)
+    {
+        super::client_event::send_gm_debug_chat(
+            world,
+            sid,
+            &format!("[GM] {label} item moved: item_id={item_id} slot {src} -> {dst}"),
+        );
+    }
+}

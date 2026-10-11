@@ -3135,26 +3135,37 @@ async fn pet_hatching(
         return send_pet_hatching_fail(session, 1).await;
     }
 
-    // Read packet — C++ uses DByte mode for the string
-    // Reference PetMainHandler::HatchingImageTransformExchange reads sNpcID
-    // as uint16. Consuming four bytes here shifted all four item/slot pairs,
-    // so the transform recipe and inventory positions could never line up.
-    let _npc_id = reader.read_u16().unwrap_or(0);
-    let item_id = reader.read_u32().unwrap_or(0);
-    let slot_pos = reader.read_i8().unwrap_or(-1);
-    // Pet name: u16 length prefix (DByte mode)
-    let name_len = reader.read_u16().unwrap_or(0) as usize;
-    let pet_name: String = if name_len > 0 && name_len <= 15 {
-        let mut bytes = Vec::with_capacity(name_len);
-        for _ in 0..name_len {
-            match reader.read_u8() {
-                Some(b) => bytes.push(b),
-                None => break,
-            }
+    // The NPC id is 16 or 32 bit depending on the client build (the 2625 transform request uses
+    // 32 bit). Capture the payload and take the layout whose item sits in the named bag slot.
+    let raw: Vec<u8> = reader.read_remaining().to_vec();
+    tracing::info!("[sid={}] pet_hatching request ({} bytes): {:02X?}", sid, raw.len(), raw);
+    let mut parsed: Option<(u32, i8, String)> = None;
+    for npc_width in [4usize, 2, 0] {
+        if raw.len() < npc_width + 4 + 1 + 2 {
+            continue;
         }
-        String::from_utf8_lossy(&bytes).to_string()
-    } else {
-        String::new()
+        let o = npc_width;
+        let item = u32::from_le_bytes([raw[o], raw[o + 1], raw[o + 2], raw[o + 3]]);
+        let slot = raw[o + 4] as i8;
+        let name_len = u16::from_le_bytes([raw[o + 5], raw[o + 6]]) as usize;
+        if name_len == 0 || name_len > 15 || raw.len() < o + 7 + name_len {
+            continue;
+        }
+        let in_bag = slot >= 0 && (slot as usize) < HAVE_MAX;
+        let item_matches = in_bag
+            && world
+                .get_inventory_slot(sid, SLOT_MAX + slot as usize)
+                .is_some_and(|s| s.item_id == item);
+        if !item_matches {
+            continue;
+        }
+        let name = String::from_utf8_lossy(&raw[o + 7..o + 7 + name_len]).to_string();
+        parsed = Some((item, slot, name));
+        break;
+    }
+    let Some((item_id, slot_pos, pet_name)) = parsed else {
+        warn!("[sid={}] pet_hatching fail: no request layout matches {:02X?}", sid, raw);
+        return send_pet_hatching_fail(session, 1).await;
     };
 
     // Validate pet name (1-15 chars)

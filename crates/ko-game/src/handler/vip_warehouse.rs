@@ -677,6 +677,7 @@ async fn handle_storage_to_store(
     if success {
         save_vip_warehouse_slot_async(session, src_idx);
         save_vip_warehouse_slot_async(session, dst_idx);
+        super::warehouse::gm_move_note(&world, sid, "Vault", item_id, src_idx, dst_idx);
         let ok = build_error(VIP_STORAGE_TO_STORE, 1);
         session.send_packet(&ok).await?;
     } else {

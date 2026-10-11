@@ -427,9 +427,17 @@ async fn handle_mining_attempt(session: &mut ClientSession) -> anyhow::Result<()
             crate::handler::level::exp_change(&world, sid, exp).await;
         }
         effect = EFFECT_MINING_EXP;
+        let msg = format!("Mining: you gained {} experience.", exp);
+        world.send_to_session_owned(sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
     } else {
         world.give_item(sid, reward_item_id, 1);
         effect = EFFECT_MINING_ITEM;
+        let name = world
+            .get_item(reward_item_id)
+            .and_then(|i| i.str_name.clone())
+            .unwrap_or_else(|| format!("item {}", reward_item_id));
+        let msg = format!("Mining: you obtained {}.", name);
+        world.send_to_session_owned(sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
     }
 
     // Golden Pickaxe mining wear is 0.5 per successful attempt. Since the
