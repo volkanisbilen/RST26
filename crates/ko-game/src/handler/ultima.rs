@@ -13,6 +13,7 @@
 //! 6. Rewards depend on how many destructive attacks a player survived.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI16, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use ko_protocol::Packet;
@@ -27,12 +28,25 @@ use crate::world::WorldState;
 use crate::zone::SessionId;
 
 pub const ZONE_ULTIMA: u16 = 55;
-const NPC_BOSS_SMALL: u16 = 31990;
-const NPC_BOSS_MEDIUM: u16 = 31991;
-const NPC_BOSS_LARGE: u16 = 31992;
-const NPC_SEAL: u16 = 31993;
-const NPC_ESCAPE: u16 = 31994;
+/// Boss tiers by room size. These are the client's own "[Boss] Ultima" monster ids (mob_us.tbl).
+const NPC_BOSS_SMALL: u16 = 10100;
+const NPC_BOSS_MEDIUM: u16 = 10110;
+const NPC_BOSS_LARGE: u16 = 10111;
+/// "Demolition Seal Artifact": the seal that has to be destroyed first.
+const NPC_SEAL: u16 = 10101;
+/// "[Protection] Ultima Seal Artifact": the four untargetable escape structures.
+const NPC_ESCAPE: u16 = 10103;
 
+/// Temple-event id the client's registration window is opened with (`+ultimaid <n>` changes it live).
+static EVENT_ID: AtomicI16 = AtomicI16::new(104);
+
+pub fn event_id() -> i16 {
+    EVENT_ID.load(Ordering::Relaxed)
+}
+
+pub fn set_event_id(id: i16) {
+    EVENT_ID.store(id, Ordering::Relaxed);
+}
 
 const MIN_LEVEL: u8 = 80;
 const MIN_LADDER: u32 = 50;
@@ -144,15 +158,25 @@ fn room_notice(world: &WorldState, room: &Room, msg: &str) {
     }
 }
 
-// ── Registration (native survival-style window) ──────────────────────────
+// ── Registration (the client's temple-event registration window) ─────────
 
-/// Title shown in the registration window (the client's UIF has a fixed title; the proxy swaps it).
-const TITLE_ULTIMA: &str = "Ultima";
+const SUB_JOIN: u8 = 8;
+const SUB_DISBAND: u8 = 9;
+const SUB_COUNTER: u8 = 16;
 
-fn build_title_packet(title: &str) -> Packet {
-    let mut pkt = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
-    pkt.write_u8(0xFA); // proxy: registration window title
-    pkt.write_string(title);
+fn counter_packet(count: u16) -> Packet {
+    let mut pkt = Packet::new(ko_protocol::Opcode::WizEvent as u8);
+    pkt.write_u8(SUB_COUNTER);
+    pkt.write_u16(event_id() as u16);
+    pkt.write_u16(count);
+    pkt
+}
+
+fn reply(op: u8, result: u8) -> Packet {
+    let mut pkt = Packet::new(ko_protocol::Opcode::WizEvent as u8);
+    pkt.write_u8(op);
+    pkt.write_u8(result);
+    pkt.write_i16(event_id());
     pkt
 }
 
@@ -165,57 +189,53 @@ fn registered_count(st: &State) -> u16 {
     st.registrants.len().min(u16::MAX as usize) as u16
 }
 
-/// Send the registration window (title + remaining time + participant count) to everybody online.
+/// Open the registration window for everybody online.
 fn broadcast_window(world: &WorldState, st: &State, now: u64) {
     let remaining = st.reg_deadline.saturating_sub(now).min(u16::MAX as u64) as u16;
-    let open = Arc::new(super::survival::build_registration_open(remaining, registered_count(st)));
-    let title = Arc::new(build_title_packet(TITLE_ULTIMA));
+    let open = Arc::new(crate::systems::event_room::build_event_start_broadcast(event_id(), remaining));
+    let count = Arc::new(counter_packet(registered_count(st)));
     for sid in world.get_in_game_session_ids() {
-        world.send_to_session_arc(sid, Arc::clone(&title));
         world.send_to_session_arc(sid, Arc::clone(&open));
+        world.send_to_session_arc(sid, Arc::clone(&count));
     }
 }
 
-/// Refresh only the participant count for everybody while the registration is open.
-fn refresh_counts(world: &WorldState, st: &State, now: u64) {
-    let remaining = st.reg_deadline.saturating_sub(now).min(u16::MAX as u64) as u16;
-    let open = Arc::new(super::survival::build_registration_open(remaining, registered_count(st)));
+fn broadcast_count(world: &WorldState, st: &State) {
+    let count = Arc::new(counter_packet(registered_count(st)));
     for sid in world.get_in_game_session_ids() {
-        world.send_to_session_arc(sid, Arc::clone(&open));
+        world.send_to_session_arc(sid, Arc::clone(&count));
     }
 }
 
-/// Apply / Cancel pressed in the registration window while Ultima's registration is open.
-pub async fn window_action(session: &mut ClientSession, apply: bool) -> anyhow::Result<()> {
+fn is_gm(world: &WorldState, sid: SessionId) -> bool {
+    world
+        .get_character_info(sid)
+        .is_some_and(|c| c.authority == 0 || c.authority == 2)
+}
+
+/// WIZ_EVENT join (Apply pressed) while Ultima's registration is open.
+pub async fn temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
-    let now = now_unix();
-    let result: i16 = if apply {
-        match try_register(&world, sid) {
-            Ok(()) => 1,
-            Err(msg) => {
-                notice(&world, sid, msg);
-                -1
-            }
+    let result = match try_register(&world, sid) {
+        Ok(()) => 1u8,
+        Err(msg) => {
+            notice(&world, sid, msg);
+            4u8
         }
-    } else {
-        state().lock().registrants.retain(|(s, _)| *s != sid);
-        2
     };
-    // refresh the count for everybody first; the result must be the last packet this client sees
-    let participants = {
-        let st = state().lock();
-        refresh_counts(&world, &st, now);
-        let count = registered_count(&st);
-        // the count refresh flips every client's button back to Apply: keep the registered ones on Cancel
-        for (other, _) in st.registrants.iter().filter(|(o, _)| *o != sid) {
-            world.send_to_session_owned(*other, super::survival::build_registration_result(1, count));
-        }
-        count
-    };
-    session
-        .send_packet(&super::survival::build_registration_result(result, participants))
-        .await?;
+    session.send_packet(&reply(SUB_JOIN, result)).await?;
+    broadcast_count(&world, &state().lock());
+    Ok(())
+}
+
+/// WIZ_EVENT disband (Cancel pressed) while Ultima's registration is open.
+pub async fn temple_disband(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    state().lock().registrants.retain(|(s, _)| *s != sid);
+    session.send_packet(&reply(SUB_DISBAND, 1)).await?;
+    broadcast_count(&world, &state().lock());
     Ok(())
 }
 
@@ -223,28 +243,31 @@ fn try_register(world: &WorldState, sid: SessionId) -> Result<(), &'static str> 
     let Some(ch) = world.get_character_info(sid) else {
         return Err("Registration failed.");
     };
+    let gm = ch.authority == 0 || ch.authority == 2;
     let mut st = state().lock();
     if st.phase != Phase::Registration {
         return Err("Ultima's Dungeon registration is not open.");
     }
-    if ch.level < MIN_LEVEL {
-        return Err("You need to be level 80 or higher.");
-    }
-    if ch.loyalty_monthly < MIN_LADDER {
-        return Err("You need at least 50 monthly Ladder Points.");
-    }
-    if world.is_player_dead(sid) {
-        return Err("You cannot register while dead.");
-    }
-    if ch.party_id.is_some() {
-        return Err("You cannot register while you are in a party.");
-    }
-    let day = now_unix() / 86_400;
-    if st.entered.get(&ch.name) == Some(&day) {
-        return Err("Ultima's Dungeon can be entered once a day.");
-    }
     if st.registrants.iter().any(|(s, _)| *s == sid) {
         return Err("You are already registered.");
+    }
+    if !gm {
+        if ch.level < MIN_LEVEL {
+            return Err("You need to be level 80 or higher.");
+        }
+        if ch.loyalty_monthly < MIN_LADDER {
+            return Err("You need at least 50 monthly Ladder Points.");
+        }
+        if world.is_player_dead(sid) {
+            return Err("You cannot register while dead.");
+        }
+        if ch.party_id.is_some() {
+            return Err("You cannot register while you are in a party.");
+        }
+        let day = now_unix() / 86_400;
+        if st.entered.get(&ch.name) == Some(&day) {
+            return Err("Ultima's Dungeon can be entered once a day.");
+        }
     }
     st.registrants.push((sid, ch.name.clone()));
     Ok(())
@@ -266,7 +289,7 @@ pub fn gm_open(world: &WorldState, minutes: Option<u64>) -> &'static str {
     drop(st);
     announce_all(
         world,
-        &format!("Ultima's Dungeon registration is open for {minutes} minutes. Press Apply in the registration window."),
+        &format!("Ultima's Dungeon registration is open for {minutes} minutes. Use the registration window to apply."),
     );
     "Ultima's Dungeon registration opened."
 }
@@ -309,18 +332,25 @@ fn start_rooms(world: &WorldState, st: &mut State, now: u64) {
     let day = now / 86_400;
     // re-validate: online, level, alive, ladder
     let mut valid: Vec<(SessionId, String)> = Vec::new();
+    let mut any_gm = false;
     for (sid, name) in std::mem::take(&mut st.registrants) {
         let Some(ch) = world.get_character_info(sid) else { continue };
-        if ch.name != name || ch.level < MIN_LEVEL || ch.loyalty_monthly < MIN_LADDER {
+        let gm = ch.authority == 0 || ch.authority == 2;
+        if ch.name != name {
+            continue;
+        }
+        if !gm && (ch.level < MIN_LEVEL || ch.loyalty_monthly < MIN_LADDER) {
             continue;
         }
         if world.is_player_dead(sid) || world.get_event_room(sid) != 0 {
             continue;
         }
+        any_gm |= gm;
         valid.push((sid, name));
     }
 
-    if valid.len() < MIN_PLAYERS {
+    // a GM in the list lets the event start with any number of players (testing)
+    if valid.is_empty() || (valid.len() < MIN_PLAYERS && !any_gm) {
         for (sid, _) in &valid {
             notice(world, *sid, "Ultima's Dungeon was cancelled: not enough players registered.");
         }
@@ -356,7 +386,9 @@ fn start_rooms(world: &WorldState, st: &mut State, now: u64) {
         let mut players = Vec::new();
         for _ in 0..size {
             let Some((sid, name)) = it.next() else { break };
-            st.entered.insert(name.clone(), day);
+            if !is_gm(world, sid) {
+                st.entered.insert(name.clone(), day);
+            }
             players.push(Player { sid, name, out_stage: None });
         }
         for p in &players {
@@ -569,7 +601,8 @@ fn begin_warning(world: &WorldState, room: &mut Room, now: u64) {
     ];
     room.structures.clear();
     for (x, z) in spots {
-        if let Some(&nid) = world.spawn_event_npc_ex(NPC_ESCAPE, false, ZONE_ULTIMA, x, z, 1, room.event_room, 0).first() {
+        if let Some(&nid) = world.spawn_event_npc_ex(NPC_ESCAPE, true, ZONE_ULTIMA, x, z, 1, room.event_room, 0).first() {
+            world.ultima_set_boss_guard(nid, true); // cannot be damaged
             room.structures.push((nid, x, z));
         }
     }
@@ -601,6 +634,7 @@ fn resolve_destructive_attack(world: &WorldState, room: &mut Room, now: u64) {
         }
     }
     for &(nid, _, _) in &structures {
+        world.ultima_set_boss_guard(nid, false);
         world.kill_npc(nid);
     }
     room.structures.clear();
@@ -705,6 +739,7 @@ fn finish_room(world: &WorldState, room: &mut Room, victory: bool, now: u64) {
     }
 
     for &(nid, _, _) in &room.structures {
+        world.ultima_set_boss_guard(nid, false);
         world.kill_npc(nid);
     }
     room.structures.clear();

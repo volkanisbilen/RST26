@@ -73,7 +73,6 @@ exit /b 0</Command>
     <ClCompile Include="rce_store.cpp" />
     <ClCompile Include="cr_panel.cpp" />
     <ClCompile Include="pack_icon.cpp" />
-    <ClCompile Include="survival_title.cpp" />
     <ClCompile Include="cape_gate.cpp" />
     <ClCompile Include="crash_trap.cpp" />
     <ClCompile Include="iat_fix.cpp" />

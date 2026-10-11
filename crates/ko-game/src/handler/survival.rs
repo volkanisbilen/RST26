@@ -530,10 +530,6 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 
     let action = reader.read_u16().unwrap_or(0);
-    // While Ultima's Dungeon registration is open the shared registration window belongs to it.
-    if super::ultima::registration_open() && matches!(action, ACTION_APPLY | ACTION_CANCEL) {
-        return super::ultima::window_action(session, action == ACTION_APPLY).await;
-    }
     let sid = session.session_id();
     let world = session.world().clone();
     let manager = &world.manes_survival_manager;

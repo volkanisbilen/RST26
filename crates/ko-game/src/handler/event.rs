@@ -467,6 +467,9 @@ async fn handle_monster_stone(
 /// - result=1: success
 /// - result=4: fail
 async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
+    if super::ultima::registration_open() {
+        return super::ultima::temple_join(session).await;
+    }
     debug!("[{}] WIZ_EVENT TEMPLE_EVENT_JOIN", session.addr());
 
     let world = session.world().clone();
@@ -618,6 +621,9 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
 /// - result=1: success
 /// - result=4: fail
 async fn handle_temple_disband(session: &mut ClientSession) -> anyhow::Result<()> {
+    if super::ultima::registration_open() {
+        return super::ultima::temple_disband(session).await;
+    }
     debug!("[{}] WIZ_EVENT TEMPLE_EVENT_DISBAND", session.addr());
 
     let world = session.world().clone();

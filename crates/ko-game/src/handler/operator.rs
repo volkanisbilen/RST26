@@ -359,6 +359,47 @@ pub async fn process_chat_command(
             let msg = super::ultima::gm_start(session.world());
             send_help(session, msg);
         }
+        "ultimaid" => {
+            match args.first().and_then(|a| a.parse::<i16>().ok()) {
+                Some(id) => {
+                    super::ultima::set_event_id(id);
+                    send_help(session, &format!("Ultima registration event id set to {id}."));
+                }
+                None => {
+                    let id = super::ultima::event_id();
+                    send_help(session, &format!("Ultima registration event id is {id}. Usage: +ultimaid <id>"));
+                }
+            }
+        }
+        "tev" => {
+            // probe: show the client's temple-event registration window for an event id (to yourself)
+            let id = args.first().and_then(|a| a.parse::<i16>().ok()).unwrap_or(24);
+            let secs = args.get(1).and_then(|a| a.parse::<u16>().ok()).unwrap_or(300);
+            let pkt = crate::systems::event_room::build_event_start_broadcast(id, secs);
+            session.world().send_to_session_owned(session.session_id(), pkt);
+            send_help(session, &format!("Temple event window shown for id {id}."));
+        }
+        "tevsweep" => {
+            // probe: cycle ids from..to every 2 seconds and print each id, to find which one shows "Ultima"
+            let from = args.first().and_then(|a| a.parse::<i16>().ok()).unwrap_or(1);
+            let to = args.get(1).and_then(|a| a.parse::<i16>().ok()).unwrap_or(130);
+            let world = session.world().clone();
+            let sid = session.session_id();
+            tokio::spawn(async move {
+                for id in from..=to {
+                    world.send_to_session_owned(
+                        sid,
+                        crate::systems::event_room::build_event_start_broadcast(id, 300),
+                    );
+                    world.send_to_session_owned(
+                        sid,
+                        crate::systems::timed_notice::build_notice_packet(8, &format!("[tevsweep] event id {id}")),
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            });
+            send_help(session, &format!("Sweeping temple event ids {from}..{to} (2 s each)."));
+        }
         "ultimaend" => {
             let msg = super::ultima::gm_end(session.world());
             send_help(session, msg);
@@ -9648,12 +9689,7 @@ fn handle_manes_survival_open(session: &mut ClientSession) -> anyhow::Result<()>
         crate::handler::survival::REGISTRATION_DURATION_SECONDS,
         participants,
     ));
-    let mut title = ko_protocol::Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
-    title.write_u8(0xFA);
-    title.write_string("Manes' Survival");
-    let title = Arc::new(title);
     for sid in world.get_in_game_session_ids() {
-        world.send_to_session_arc(sid, Arc::clone(&title));
         world.send_to_session_arc(sid, Arc::clone(&open));
     }
     crate::handler::survival::broadcast_registration_status(&world, 0);
