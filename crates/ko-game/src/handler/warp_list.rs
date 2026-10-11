@@ -29,18 +29,20 @@ use crate::session::{ClientSession, SessionState};
 use crate::systems::war::{NATION_BATTLE, SIEGE_BATTLE};
 use crate::world::types::{
     ZONE_ARDREAM, ZONE_BATTLE, ZONE_BATTLE2, ZONE_BATTLE3, ZONE_BATTLE4, ZONE_BATTLE5,
-    ZONE_BATTLE6, ZONE_ELMORAD_ESLANT, ZONE_KARUS_ESLANT, ZONE_MORADON,
+    ZONE_BATTLE6, ZONE_ELMORAD_ESLANT, ZONE_KARUS_ESLANT,
     ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
 };
 use crate::world::WorldState;
 
 /// Default max users per zone (`m_sMaxUser`, not yet stored in our zone model).
 const DEFAULT_MAX_USERS: u16 = 150;
-const WARP_FUNCLASS_ENTRY: i16 = i16::MIN;
+const WARP_FUNCLASS_ENTRY: i16 = 9000;
 
-/// Moradon variants (21-25) host the Fun Class Event entry in their warp gates.
-fn is_moradon_zone(zone: u16) -> bool {
-    (ZONE_MORADON..=ZONE_MORADON + 4).contains(&zone)
+/// The Fun Class Event entry is offered in every warp gate outside the event zone and the closed PvP zones.
+fn funclass_entry_visible(world: &WorldState, zone: u16) -> bool {
+    world.is_cinderella_active()
+        && zone != world.cinderella_zone_id()
+        && !is_funclass_closed_zone(zone)
 }
 
 /// PvP zones that are closed while the Fun Class Event runs (players are sent back to Moradon).
@@ -209,7 +211,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 
     if warp_id == WARP_FUNCLASS_ENTRY {
-        if !is_moradon_zone(pos.zone_id) || !world.is_cinderella_active() {
+        if !funclass_entry_visible(&world, pos.zone_id) {
             send_select_fail(session).await?;
             return Ok(());
         }
@@ -401,7 +403,8 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
         )
     });
 
-    let show_funclass_entry = is_moradon_zone(pos.zone_id) && world.is_cinderella_active();
+    let show_funclass_entry = funclass_entry_visible(&world, pos.zone_id);
+    debug!(zone = pos.zone_id, show_funclass_entry, "warp list funclass entry");
     // Build the response packet
     let mut result = Packet::new(Opcode::WizWarpList as u8);
     result.write_u8(1); // sub-opcode: GetWarpList
