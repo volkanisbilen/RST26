@@ -49,6 +49,7 @@ pub mod corpse;
 pub mod costume;
 pub mod cryption;
 pub mod daily_quest;
+pub mod gm_panel;
 pub mod daily_quest_v2525;
 pub mod daily_rank;
 pub mod datasave;
@@ -660,6 +661,8 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
         knight_cash::EXT_SUB_KCUPDATE => knight_cash::handle_kcupdate_query(session).await,
         // ExtSub::DAILY_QUEST = 0xD3 — daily quest UI panel requests
         daily_quest::EXT_SUB_DAILY_QUEST => daily_quest::handle(session, repack_ext_data(&pkt)).await,
+        // ExtSub::GMPANEL = 0xF5 — GM panel (GM-only)
+        gm_panel::EXT_SUB_GM_PANEL => gm_panel::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::LOTTERY = 0xC7 — lottery event join/state
         lottery::EXT_SUB_LOTTERY => lottery::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::CR = 0xAF — Collection Race (server→client only, silently ignore)
