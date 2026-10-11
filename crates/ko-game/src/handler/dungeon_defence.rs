@@ -82,6 +82,9 @@ pub const BOSS_MONSTER_IDS: [u16; 4] = [10000, 10005, 10011, 10019];
 /// Astaroth: a suicide monster that only targets the towers; gives no coin and no jewel.
 pub const ASTAROTH: u16 = 10001;
 
+/// Gluttony: a monster that magic cannot hurt.
+pub const GLUTTONY: u16 = 10013;
+
 /// First wave of the Bifrost Army (kills there give 2 jewels).
 pub const BIFROST_FIRST_STAGE: i16 = 16;
 

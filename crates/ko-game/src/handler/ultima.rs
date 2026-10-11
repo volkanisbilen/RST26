@@ -197,9 +197,11 @@ fn registered_count(st: &State) -> u16 {
 /// Open the registration window for everybody online.
 fn broadcast_window(world: &WorldState, st: &State, now: u64) {
     let remaining = st.reg_deadline.saturating_sub(now).min(u16::MAX as u64) as u16;
+    let title = Arc::new(super::survival::build_window_title("Ultima Dungeon"));
     let open = Arc::new(crate::systems::event_room::build_event_start_broadcast(event_id(), remaining));
     let count = Arc::new(counter_packet(registered_count(st)));
     for sid in world.get_in_game_session_ids() {
+        world.send_to_session_arc(sid, Arc::clone(&title));
         world.send_to_session_arc(sid, Arc::clone(&open));
         world.send_to_session_arc(sid, Arc::clone(&count));
     }

@@ -279,7 +279,20 @@ pub fn build_selection_submit_result(list_type: u8, result: i16) -> Packet {
     pkt
 }
 
+/// Registration window title for the proxy (the client's survival window has a fixed
+/// "Manes' Survival" title; the proxy swaps it). At most 15 characters.
+pub fn build_window_title(title: &str) -> Packet {
+    let mut pkt = Packet::new(0xE9);
+    pkt.write_u8(0xFA);
+    pkt.write_string(title);
+    pkt
+}
+
 pub fn broadcast_registration_status(world: &crate::world::WorldState, elapsed_seconds: u32) {
+    let title = Arc::new(build_window_title("Manes' Survival"));
+    for sid in world.get_in_game_session_ids() {
+        world.send_to_session_arc(sid, Arc::clone(&title));
+    }
     let remaining =
         REGISTRATION_DURATION_SECONDS.saturating_sub(elapsed_seconds.min(u16::MAX as u32) as u16);
     let participants = world

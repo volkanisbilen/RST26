@@ -7008,6 +7008,11 @@ async fn apply_skill_damage_to_npc(
         None => return,
     };
 
+    // Full Moon Rift: Gluttony cannot be hurt by magic.
+    if npc.is_monster && npc.proto_id == super::dungeon_defence::GLUTTONY {
+        return;
+    }
+
     // Fire & Ice: only the other nation's golems can be hurt, and golems take 30% from area skills.
     if super::golem_war::is_golem(npc_id) {
         if !super::golem_war::can_attack(world, caster_sid, npc_id) {

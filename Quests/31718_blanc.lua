@@ -10,7 +10,7 @@ local JEWEL = 914069000;
 
 -- ROOT
 if (EVENT == 100) then
-	SelectMsg(UID, 3, -1, 45188, NPC, 40753, 200, 44411, 2500, 27, 3001);
+	SelectMsg(UID, 3, -1, 45188, NPC, 40753, 200, 44411, 2500, 40772, 300, 27, 3001);
 end
 
 -- Jewel shop
@@ -59,6 +59,18 @@ if (EVENT == 204) then
 	else
 		RobItem(UID, JEWEL, 200);
 		GiveItem(UID, 810942000, 1);
+	end
+end
+
+-- Daily Full Moon Rift Voucher (you only get one while you hold none)
+if (EVENT == 300) then
+	if (HowmuchItem(UID, 914057000) > 0) then
+		SelectMsg(UID, 2, -1, 44694, NPC, 10, 3001);
+	elseif (CheckGiveSlot(UID, 1) == false) then
+		SelectMsg(UID, 2, -1, 44692, NPC, 10, 3001);
+	else
+		GiveItem(UID, 914057000, 1);
+		SelectMsg(UID, 2, -1, 44694, NPC, 10, 3001);
 	end
 end
 

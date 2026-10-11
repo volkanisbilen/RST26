@@ -15,7 +15,7 @@ use crate::world::WorldState;
 use crate::zone::SessionId;
 
 /// Temple-event id the registration window is opened with (`+riftid <n>` changes it live).
-static EVENT_ID: AtomicI16 = AtomicI16::new(24);
+static EVENT_ID: AtomicI16 = AtomicI16::new(47);
 
 pub fn event_id() -> i16 {
     EVENT_ID.load(Ordering::Relaxed)
@@ -77,6 +77,14 @@ fn reply(op: u8, result: u8) -> Packet {
     pkt
 }
 
+/// Failure result codes of the client's registration window (id 47): 1 already applied, 5 applied to
+/// another dungeon, 6 level too low, 9 not the time. 4 shows nothing, the server notice explains.
+const RES_ALREADY: u8 = 1;
+const RES_OTHER_EVENT: u8 = 5;
+const RES_LEVEL: u8 = 6;
+const RES_NOT_TIME: u8 = 9;
+const RES_PLAIN: u8 = 4;
+
 fn broadcast_count(world: &WorldState, st: &State) {
     let count = Arc::new(counter_packet(st.registrants.len().min(u16::MAX as usize) as u16));
     for sid in world.get_in_game_session_ids() {
@@ -101,9 +109,9 @@ pub async fn temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
     let sid = session.session_id();
     let result = match try_register(&world, sid) {
         Ok(()) => 1u8,
-        Err(msg) => {
+        Err((code, msg)) => {
             notice(&world, sid, msg);
-            4u8
+            code
         }
     };
     session.send_packet(&reply(SUB_JOIN, result)).await?;
@@ -121,30 +129,30 @@ pub async fn temple_disband(session: &mut ClientSession) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn try_register(world: &WorldState, sid: SessionId) -> Result<(), &'static str> {
+fn try_register(world: &WorldState, sid: SessionId) -> Result<(), (u8, &'static str)> {
     let Some(ch) = world.get_character_info(sid) else {
-        return Err("Registration failed.");
+        return Err((RES_PLAIN, "Registration failed."));
     };
     let gm = is_gm(world, sid);
     let mut st = state().lock();
     if !st.open {
-        return Err("Full Moon Rift registration is not open.");
+        return Err((RES_NOT_TIME, "Full Moon Rift registration is not open."));
     }
     if st.registrants.iter().any(|(s, _)| *s == sid) {
-        return Err("You are already registered.");
+        return Err((RES_ALREADY, "You are already registered."));
     }
     if !gm {
         if ch.level < MIN_LEVEL {
-            return Err("You need to be level 70 or higher.");
+            return Err((RES_LEVEL, "You need to be level 70 or higher."));
         }
         if world.is_player_dead(sid) {
-            return Err("You cannot register while dead.");
+            return Err((RES_PLAIN, "You cannot register while dead."));
         }
         if world.get_event_room(sid) != 0 {
-            return Err("You are already in an event.");
+            return Err((RES_OTHER_EVENT, "You are already in an event."));
         }
         if !world.check_exist_item(sid, dd::DUNGEON_DEFENCE_RIFT_ITEM, 1) {
-            return Err("You need a Full Moon Rift Voucher.");
+            return Err((RES_PLAIN, "You need a Full Moon Rift Voucher."));
         }
     }
     st.registrants.push((sid, ch.name.clone()));
@@ -163,12 +171,14 @@ pub fn gm_open(world: &WorldState, minutes: Option<u64>) -> &'static str {
     st.open = true;
     st.deadline = now_unix() + minutes * 60;
     st.registrants.clear();
+    let title = Arc::new(super::survival::build_window_title("Full Moon Rift"));
     let open = Arc::new(crate::systems::event_room::build_event_start_broadcast(
         event_id(),
         (minutes * 60).min(u16::MAX as u64) as u16,
     ));
     let count = Arc::new(counter_packet(0));
     for sid in world.get_in_game_session_ids() {
+        world.send_to_session_arc(sid, Arc::clone(&title));
         world.send_to_session_arc(sid, Arc::clone(&open));
         world.send_to_session_arc(sid, Arc::clone(&count));
     }

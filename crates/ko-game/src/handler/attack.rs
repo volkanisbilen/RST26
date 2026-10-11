@@ -2922,7 +2922,7 @@ pub(crate) async fn handle_npc_death(
     // DD rewards (coins, jewels, tokens) and decrement the room's kill
     // counter. When counter reaches 0, advance to next stage or finish.
     if npc.zone_id == ZONE_DUNGEON_DEFENCE && npc.event_room > 0 && npc.is_monster {
-        dd_monster_kill(world, killer_sid, npc.event_room, npc.proto_id);
+        dd_monster_kill(world, killer_sid, npc.event_room, npc.proto_id).await;
     }
 
     // ── Juraid Mountain monster kill (C++ Npc.cpp:903-907) ──────────────
@@ -3750,7 +3750,7 @@ async fn draki_tower_update_rank(world: &WorldState, sid: SessionId, elapsed_sec
 /// 3. Give items to killer and party members.
 /// 4. Decrement the room's kill counter atomically.
 /// 5. When kill counter reaches 0, advance stage or trigger finish.
-fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, proto_id: u16) {
+async fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, proto_id: u16) {
     use crate::handler::dungeon_defence;
 
     // ── 1. Reward calculation ──────────────────────────────────────────
@@ -3830,6 +3830,20 @@ fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, p
             // Boss: 1 lunar token to ALL party members
             if reward.lunar_token {
                 world.give_item(msid, dungeon_defence::LUNAR_ORDER_TOKEN, 1);
+            }
+        }
+    }
+
+    // Bosses give their EXP to everybody fighting around them.
+    if reward.lunar_token {
+        if let (Some(tmpl), Some(pos)) = (world.get_npc_template(proto_id, true), world.get_position(killer_sid)) {
+            let exp = tmpl.exp as i64;
+            for sid in world.collect_sessions_by(|h| h.event_room == event_room && h.position.zone_id == ZONE_DUNGEON_DEFENCE) {
+                let Some(p) = world.get_position(sid) else { continue };
+                let (dx, dz) = (p.x - pos.x, p.z - pos.z);
+                if (dx * dx + dz * dz).sqrt() <= 40.0 && !world.is_player_dead(sid) {
+                    super::level::exp_change(world, sid, exp).await;
+                }
             }
         }
     }
