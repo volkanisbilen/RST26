@@ -708,6 +708,8 @@ pub fn start_event_system_task(
                         crate::handler::dungeon_defence::remove_player(&world, *sid);
                     }
 
+                    crate::handler::dungeon_defence::despawn_bots(&world, room_id);
+
                     // Despawn room NPCs and reset
                     world.despawn_room_npcs(dungeon_defence::ZONE_DUNGEON_DEFENCE, room_id);
 

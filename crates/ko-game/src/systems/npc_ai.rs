@@ -566,7 +566,7 @@ fn npc_standing(
         }
     }
 
-    // Full Moon Rift: with no player in sight the wave marches on the first standing tower.
+    // Full Moon Rift: with no player in sight the wave walks the lane towards the first standing tower.
     if ai.zone_id == crate::world::types::ZONE_DUNGEON_DEFENCE && tmpl.speed_1 > 0 {
         if let Some(inst) = world.get_npc_instance(npc_id) {
             if inst.is_monster && inst.event_room > 0 {
@@ -576,19 +576,8 @@ fn npc_standing(
                         return Some(1000); // at the tower: tower_tick makes it attack
                     }
                     let step = tmpl.speed_1 as f32 * (MONSTER_SPEED as f32 / 1000.0);
-                    let zone = world.get_zone(ai.zone_id);
-                    let (nx, nz) = match zone.as_ref().and_then(|z| z.map_data.as_ref()) {
-                        Some(map) => {
-                            let r = pathfind::find_path(map, ai.cur_x, ai.cur_z, gx, gz);
-                            if r.found && !r.waypoints.is_empty() {
-                                let (x, z, _) = pathfind::step_move(ai.cur_x, ai.cur_z, &r.waypoints, 0, step * 5.0);
-                                (x, z)
-                            } else {
-                                pathfind::step_no_path_move(ai.cur_x, ai.cur_z, gx, gz, step * 5.0)
-                            }
-                        }
-                        None => pathfind::step_no_path_move(ai.cur_x, ai.cur_z, gx, gz, step * 5.0),
-                    };
+                    let (tx, tz) = crate::handler::dungeon_defence::route_target(ai.cur_x, ai.cur_z);
+                    let (nx, nz) = pathfind::step_no_path_move(ai.cur_x, ai.cur_z, tx, tz, step * 5.0);
                     world.update_npc_ai(npc_id, |s| {
                         s.dest_x = nx;
                         s.dest_z = nz;

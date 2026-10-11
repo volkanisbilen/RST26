@@ -1100,14 +1100,17 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
     //         || (GetZoneID() == ZONE_DUNGEON_DEFENCE && iFlag == 0))
     //       m_MaxHp = 10000 / 10;   // = 1000
     if matches!(zone_id, ZONE_CHAOS_DUNGEON | ZONE_DUNGEON_DEFENCE) {
-        // Chaos 1000 HP; the Full Moon Rift equalizes everybody to 10 000 HP
-        let cap = if zone_id == ZONE_DUNGEON_DEFENCE { 10_000 } else { 1000 };
-        world.update_character_stats(sid, |ch| {
-            ch.max_hp = cap;
-            if ch.hp > cap {
-                ch.hp = cap;
-            }
-        });
+        if zone_id == ZONE_DUNGEON_DEFENCE {
+            // the Full Moon Rift equalizes everybody to 10 000 HP (and remembers the real values)
+            crate::handler::dungeon_defence::equalize(&world, sid);
+        } else {
+            world.update_character_stats(sid, |ch| {
+                ch.max_hp = 1000;
+                if ch.hp > 1000 {
+                    ch.hp = 1000;
+                }
+            });
+        }
     }
 
     // DD zone entry: remove any leftover Monster Coins from previous runs

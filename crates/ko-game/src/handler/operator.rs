@@ -9873,6 +9873,14 @@ async fn handle_event_bot_fill(session: &mut ClientSession, args: &[&str]) -> an
     let count = args.first().and_then(|a| a.parse::<usize>().ok()).unwrap_or(5).clamp(1, 200);
     let class = rand::random::<u16>() % 4 + 1;
 
+    if world.get_event_room(sid) > 0
+        && world.get_position(sid).is_some_and(|p| p.zone_id == crate::world::types::ZONE_DUNGEON_DEFENCE)
+    {
+        let msg = super::dungeon_defence::gm_spawn_bots(&world, sid, count, class);
+        send_help(session, &msg);
+        return Ok(());
+    }
+
     let in_room = world.get_event_room(sid) >= 200
         && world.get_position(sid).is_some_and(|p| p.zone_id == super::ultima::ZONE_ULTIMA);
     if in_room {

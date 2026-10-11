@@ -23,6 +23,7 @@
 //! - **Lunar Order Token**: 1 per party member when boss dies (10000, 10005, 10011, 10019)
 
 use std::collections::HashMap;
+use rand::Rng;
 use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU16, AtomicU32, Ordering};
 
 use ko_db::models::dungeon_defence::{DfMonsterRow, DfStageRow};
@@ -207,6 +208,8 @@ pub struct DdRoomInfo {
     pub users: parking_lot::RwLock<HashMap<usize, String>>,
     /// Deaths used per player (3 allowed).
     pub deaths: parking_lot::RwLock<HashMap<u16, u8>>,
+    /// GM-spawned test bots defending this room.
+    pub bots: parking_lot::RwLock<Vec<u32>>,
 }
 
 impl DdRoomInfo {
@@ -226,6 +229,7 @@ impl DdRoomInfo {
             is_finished: AtomicBool::new(false),
             users: parking_lot::RwLock::new(HashMap::new()),
             deaths: parking_lot::RwLock::new(HashMap::new()),
+            bots: parking_lot::RwLock::new(Vec::new()),
         }
     }
 
@@ -246,6 +250,7 @@ impl DdRoomInfo {
         self.difficulty.store(0, Ordering::Relaxed);
         self.users.write().clear();
         self.deaths.write().clear();
+        self.bots.write().clear();
     }
 
     /// Atomically claim and initialize a room for a new DD run.
@@ -595,10 +600,13 @@ pub fn remove_player(world: &crate::world::WorldState, sid: u16) {
 
 /// Undo the rift's 10 000 HP equalization: real max HP/MP back, full HP, client told.
 pub fn restore_stats(world: &crate::world::WorldState, sid: u16) {
-    world.set_user_ability(sid);
-    world.recalculate_max_hp_mp(sid);
+    if restore_saved(world, sid).is_none() {
+        world.set_user_ability(sid);
+        world.recalculate_max_hp_mp(sid);
+    }
     if let Some(ch) = world.get_character_info(sid) {
         world.update_character_hp(sid, ch.max_hp);
+        world.send_to_session_owned(sid, crate::handler::max_hp_change::build_max_hp_change(ch.max_hp as i32));
         world.send_to_session_owned(sid, crate::systems::regen::build_hp_change_packet(ch.max_hp, ch.max_hp));
     }
 }
@@ -648,6 +656,7 @@ pub fn tower_tick(world: &crate::world::WorldState) {
         }
         let room_id = room.room_id.load(Ordering::Relaxed);
         guard_lane(world, room_id);
+        bots_defend(world, room, room_id);
         for &(proto, x, z) in &GUARDIAN_NPCS {
             if !(OUTER_TOWER..=NEXUS_TOWER).contains(&proto) {
                 continue;
@@ -718,6 +727,170 @@ pub fn gm_open(world: &crate::world::WorldState, sid: u16, difficulty: DdDifficu
         ),
         None => "No free Full Moon Rift room.".to_string(),
     }
+}
+
+// ── Test bots (GM) ───────────────────────────────────────────────────────
+
+/// Damage one bot deals to a monster per second.
+const BOT_DPS: i32 = 1_500;
+/// Bots hold the line at the Outer Tower and hit anything within this many metres.
+const BOT_REACH: f32 = 12.0;
+
+/// `+eventbotfill <count>` inside a rift: bots join the GM's room and hold the Outer Tower.
+pub fn gm_spawn_bots(world: &crate::world::WorldState, gm_sid: u16, count: usize, class: u16) -> String {
+    let room_id = world.get_event_room(gm_sid);
+    let Some(room) = world
+        .dd_rooms()
+        .iter()
+        .find(|r| r.room_id.load(Ordering::Relaxed) == room_id && r.is_started.load(Ordering::Relaxed))
+    else {
+        return "You must be inside a Full Moon Rift room.".to_string();
+    };
+    let nation = world.get_character_info(gm_sid).map(|c| c.nation).unwrap_or(1);
+    let (ox, oz) = GUARDIAN_NPCS
+        .iter()
+        .find(|g| g.0 == OUTER_TOWER)
+        .map(|g| (g.1 as f32, g.2 as f32))
+        .unwrap_or((196.0, 54.0));
+    let mut rng = rand::thread_rng();
+    let mut n = 0;
+    for i in 0..count.clamp(1, 30) {
+        let id = crate::systems::bot_ai::spawn_gm_bot(
+            world,
+            crate::systems::bot_ai::SpawnGmBotParams {
+                zone_id: ZONE_DUNGEON_DEFENCE,
+                x: ox - 4.0 + rng.gen_range(-3.0..3.0),
+                y: 0.0,
+                z: oz + rng.gen_range(-4.0..4.0),
+                class: (i % 4) as u16 + 1 + 0 * class,
+                level: 83,
+                nation,
+                ai_state: crate::world::BotAiState::Afk,
+            },
+        );
+        room.bots.write().push(id);
+        n += 1;
+    }
+    format!("{n} bot(s) joined the rift ({} in total).", room.bots.read().len())
+}
+
+fn bots_defend(world: &crate::world::WorldState, room: &DdRoomInfo, room_id: u16) {
+    let bots: Vec<u32> = room.bots.read().clone();
+    for id in bots {
+        let Some(bot) = world.get_bot(id) else { continue };
+        if !bot.is_alive() {
+            continue;
+        }
+        let near = world.npcs_near(ZONE_DUNGEON_DEFENCE, bot.x, bot.z, BOT_REACH, room_id);
+        let Some(target) = near
+            .iter()
+            .filter(|n| n.is_monster && !world.is_npc_dead(n.nid))
+            .min_by(|a, b| {
+                let da = (a.x - bot.x).powi(2) + (a.z - bot.z).powi(2);
+                let db = (b.x - bot.x).powi(2) + (b.z - bot.z).powi(2);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+        else {
+            continue;
+        };
+        crate::systems::bot_ai::event_bot_swing(world, id, target.nid);
+        let hp = world.get_npc_hp(target.nid).unwrap_or(0) - BOT_DPS;
+        if hp > 0 {
+            world.update_npc_hp(target.nid, hp);
+        } else {
+            world.kill_npc(target.nid);
+            crate::handler::attack::dd_decrement_and_advance(world, room_id);
+        }
+    }
+}
+
+/// Remove the room's bots (room closed).
+pub fn despawn_bots(world: &crate::world::WorldState, room_id: u16) {
+    for room in world.dd_rooms() {
+        if room.room_id.load(Ordering::Relaxed) == room_id {
+            for id in room.bots.write().drain(..) {
+                crate::systems::bot_ai::despawn_bot(world, id);
+            }
+        }
+    }
+}
+
+/// The lane the waves walk: spawn corner, then the points the map's designer gave us.
+/// (Outer Tower 199,54 -> bend 205,109 -> Inner Tower 65,133 -> bend 73,212 -> Nexus 167,211.)
+const ROUTE: [(f32, f32); 6] = [
+    (60.0, 42.0),
+    (199.0, 54.0),
+    (205.0, 109.0),
+    (65.0, 133.0),
+    (73.0, 212.0),
+    (167.0, 211.0),
+];
+
+fn dist_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (abx, abz) = (b.0 - a.0, b.1 - a.1);
+    let len2 = abx * abx + abz * abz;
+    let t = if len2 <= f32::EPSILON {
+        0.0
+    } else {
+        (((p.0 - a.0) * abx + (p.1 - a.1) * abz) / len2).clamp(0.0, 1.0)
+    };
+    let (cx, cz) = (a.0 + abx * t, a.1 + abz * t);
+    ((p.0 - cx).powi(2) + (p.1 - cz).powi(2)).sqrt()
+}
+
+/// Where a monster standing at (x, z) walks next: the end of the lane segment it is on
+/// (the one after that when it is already at the bend).
+pub fn route_target(x: f32, z: f32) -> (f32, f32) {
+    let mut best = (f32::MAX, 0usize);
+    for i in 0..ROUTE.len() - 1 {
+        let d = dist_to_segment((x, z), ROUTE[i], ROUTE[i + 1]);
+        if d < best.0 {
+            best = (d, i);
+        }
+    }
+    let mut end = best.1 + 1;
+    let (ex, ez) = ROUTE[end];
+    if ((ex - x).powi(2) + (ez - z).powi(2)).sqrt() < 6.0 && end + 1 < ROUTE.len() {
+        end += 1;
+    }
+    ROUTE[end]
+}
+
+/// Players' equalized HP inside the rift.
+pub const RIFT_HP: i16 = 10_000;
+
+fn saved_stats() -> &'static parking_lot::Mutex<HashMap<u16, (i16, i16)>> {
+    static S: std::sync::OnceLock<parking_lot::Mutex<HashMap<u16, (i16, i16)>>> = std::sync::OnceLock::new();
+    S.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+/// Entering the rift: remember the real max HP/MP, give everybody 10 000 HP and tell the client.
+pub fn equalize(world: &crate::world::WorldState, sid: u16) {
+    if let Some(ch) = world.get_character_info(sid) {
+        saved_stats().lock().entry(sid).or_insert((ch.max_hp, ch.max_mp));
+    }
+    world.update_character_stats(sid, |ch| {
+        ch.max_hp = RIFT_HP;
+        ch.hp = RIFT_HP;
+    });
+    world.send_to_session_owned(sid, crate::handler::max_hp_change::build_max_hp_change(RIFT_HP as i32));
+    world.send_to_session_owned(sid, crate::systems::regen::build_hp_change_packet(RIFT_HP, RIFT_HP));
+}
+
+/// Put the remembered real max HP/MP back (no packets). Returns the values when there were any.
+pub fn restore_saved(world: &crate::world::WorldState, sid: u16) -> Option<(i16, i16)> {
+    let saved = saved_stats().lock().remove(&sid)?;
+    world.update_character_stats(sid, |ch| {
+        ch.max_hp = saved.0;
+        ch.max_mp = saved.1;
+        ch.hp = saved.0;
+    });
+    Some(saved)
+}
+
+/// Disconnect inside the rift: the saved character must not keep the equalized HP.
+pub fn restore_on_disconnect(world: &crate::world::WorldState, sid: u16) {
+    restore_saved(world, sid);
 }
 
 /// Players may not walk back past this line towards the monster spawn (x < 110 on the lane z < 70).
