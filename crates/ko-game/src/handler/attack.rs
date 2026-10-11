@@ -3774,6 +3774,15 @@ fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, p
         }
     };
 
+    tracing::info!(room = event_room, proto_id, stage = current_stage, "DD kill reward to {killer_sid}");
+    world.send_to_session_owned(
+        killer_sid,
+        crate::systems::timed_notice::build_notice_packet(
+            8,
+            &format!("+{} Full Moon Rift Jewel, +{} Monster Coin", reward.rift_jewel_count, reward.killer_coin_count),
+        ),
+    );
+
     // ── 2. Distribute rewards ──────────────────────────────────────────
     // C++ DungeonDefenceProcess lines 583-637
 

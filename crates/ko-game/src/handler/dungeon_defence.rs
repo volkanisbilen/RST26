@@ -638,6 +638,7 @@ pub fn tower_tick(world: &crate::world::WorldState) {
             continue;
         }
         let room_id = room.room_id.load(Ordering::Relaxed);
+        guard_lane(world, room_id);
         for &(proto, x, z) in &GUARDIAN_NPCS {
             if !(OUTER_TOWER..=NEXUS_TOWER).contains(&proto) {
                 continue;
@@ -683,8 +684,19 @@ pub fn gm_open(world: &crate::world::WorldState, sid: u16, difficulty: DdDifficu
     let Some(room_id) = try_claim_free_room(world.dd_rooms(), difficulty) else {
         return "No free Full Moon Rift room.".to_string();
     };
-    super::zone_change::server_teleport_to_zone(world, sid, ZONE_DUNGEON_DEFENCE, 0.0, 0.0);
-    world.update_session(sid, |h| h.event_room = room_id);
+    // the GM and the whole party go in
+    let mut members = world
+        .get_party_id(sid)
+        .and_then(|pid| world.get_party(pid))
+        .map(|p| p.active_members())
+        .unwrap_or_default();
+    if !members.contains(&sid) {
+        members.push(sid);
+    }
+    for &m in &members {
+        super::zone_change::server_teleport_to_zone(world, m, ZONE_DUNGEON_DEFENCE, 0.0, 0.0);
+        world.update_session(m, |h| h.event_room = room_id);
+    }
     for &(npc_id, x, z) in &GUARDIAN_NPCS {
         world.spawn_event_npc_ex(npc_id, false, ZONE_DUNGEON_DEFENCE, x as f32, z as f32, 1, room_id, 0);
     }
@@ -692,6 +704,41 @@ pub fn gm_open(world: &crate::world::WorldState, sid: u16, difficulty: DdDifficu
         "Full Moon Rift opened (room {room_id}, {} waves). First wave in {DD_INITIAL_SPAWN_TIME} s.",
         difficulty.max_stages()
     )
+}
+
+/// Players may not walk back past this line towards the monster spawn (x < 110 on the lane z < 70).
+const LANE_LIMIT_X: f32 = 110.0;
+const LANE_LIMIT_Z: f32 = 70.0;
+
+/// The tower the monsters head for: outer, then inner, then the Nexus (first one still standing).
+pub fn march_goal(world: &crate::world::WorldState, room_id: u16) -> Option<(f32, f32)> {
+    for want in [OUTER_TOWER, INNER_TOWER, NEXUS_TOWER] {
+        for &(proto, x, z) in &GUARDIAN_NPCS {
+            if proto != want {
+                continue;
+            }
+            let near = world.npcs_near(ZONE_DUNGEON_DEFENCE, x as f32, z as f32, 3.0, room_id);
+            if near.iter().any(|n| n.proto_id == proto && !n.is_monster && !world.is_npc_dead(n.nid)) {
+                return Some((x as f32, z as f32));
+            }
+        }
+    }
+    None
+}
+
+/// Players who walk past the lane limit towards the spawn are sent back to the defence area.
+pub fn guard_lane(world: &crate::world::WorldState, room_id: u16) {
+    let Some((gx, gz)) = march_goal(world, room_id) else { return };
+    for sid in world.collect_sessions_by(|h| h.event_room == room_id && h.position.zone_id == ZONE_DUNGEON_DEFENCE) {
+        let Some(pos) = world.get_position(sid) else { continue };
+        if pos.x < LANE_LIMIT_X && pos.z < LANE_LIMIT_Z {
+            super::region::relocate_user_within_zone(world, sid, gx + 2.0, pos.y, gz + 2.0);
+            world.send_to_session_owned(
+                sid,
+                crate::systems::timed_notice::build_notice_packet(8, "You cannot go any further towards the monster spawn."),
+            );
+        }
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
