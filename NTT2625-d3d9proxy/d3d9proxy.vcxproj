@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!-- d3d9 proxy (x86 DLL) for the 2625 client. Replaces build.bat: open d3d9proxy.sln in VS2022, Release | Win32, Build.
      New .cpp files: add them to the project (Solution Explorer > Add > Existing Item).
      Post-build: copies d3d9.dll into GameDir (old one kept as d3d9.dll.bak) only while the game is closed.
@@ -72,6 +72,7 @@ exit /b 0</Command>
     <ClCompile Include="pus_store.cpp" />
     <ClCompile Include="rce_store.cpp" />
     <ClCompile Include="cr_panel.cpp" />
+    <ClCompile Include="pack_icon.cpp" />
     <ClCompile Include="cape_gate.cpp" />
     <ClCompile Include="crash_trap.cpp" />
     <ClCompile Include="iat_fix.cpp" />

@@ -1,4 +1,4 @@
-// Collection Race panel for the XIGNCODE 2625 client, loaded through the d3d9 proxy
+﻿// Collection Race panel for the XIGNCODE 2625 client, loaded through the d3d9 proxy
 // (sibling of pus_store.cpp / rce_store.cpp). Same technique: a GDI layered overlay
 // window fed from the recv hook, no code patching of the packed exe.
 //
@@ -110,6 +110,7 @@ struct ReaderC
 // ---------------------------------------------------------------- drawing helpers
 struct SpriteC { HDC dc = nullptr; HBITMAP bmp = nullptr; int w = 0, h = 0; };
 static std::map<UINT32, SpriteC> g_iconsC;
+bool PackIcon_Load45(unsigned iconId, unsigned char* out45);   // pack_icon.cpp
 
 static bool LoadPusC(const char* path, SpriteC& s)
 {
@@ -141,7 +142,22 @@ static SpriteC* IconC(UINT32 iconId)
     SpriteC s; char path[MAX_PATH];
     if (iconId) sprintf_s(path, "%s\\icons\\%u.pus", g_uiDirC, iconId);
     else        sprintf_s(path, "%s\\noimage.pus", g_uiDirC);
-    if (!LoadPusC(path, s)) s = SpriteC();
+    if (!LoadPusC(path, s))
+    {
+        s = SpriteC();
+        // no pre-built .pus: take the icon straight from the client UI pack (itemicon_*.dxt)
+        BYTE px[45 * 45 * 4];
+        if (iconId && PackIcon_Load45(iconId, px))
+        {
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), 45, -45, 1, 32, BI_RGB };
+            void* bits = nullptr;
+            s.dc = CreateCompatibleDC(nullptr);
+            s.bmp = CreateDIBSection(s.dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            if (s.bmp && bits) { memcpy(bits, px, sizeof(px)); SelectObject(s.dc, s.bmp); s.w = 45; s.h = 45; }
+            else s = SpriteC();
+        }
+    }
     g_iconsC[key] = s;
     return s.dc ? &g_iconsC[key] : (iconId ? IconC(0) : nullptr);
 }
