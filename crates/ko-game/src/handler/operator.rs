@@ -2081,7 +2081,8 @@ fn handle_funclass_open(session: &mut ClientSession, args: &[&str]) -> anyhow::R
         }
     };
 
-    let zone_id = setting.zone_id as u16;
+    // Fun Class runs on the mini maps (107 / 115), like C++ GetCindirellaForcedZone
+    let zone_id = super::cinderella::forced_event_zone(setting.zone_id as u16);
     let prepare_secs = (setting.preparetime as u64) * 60;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2147,6 +2148,7 @@ fn handle_funclass_close(session: &mut ClientSession) -> anyhow::Result<()> {
         world.send_to_session_arc(sid, Arc::clone(&arc_finish));
     }
 
+    let event_zone = world.cinderella_zone_id();
     for &sid in &users {
         super::cinderella::cinderella_logout(&world, sid, false);
     }
@@ -2157,6 +2159,7 @@ fn handle_funclass_close(session: &mut ClientSession) -> anyhow::Result<()> {
         *ev = super::cinderella::CindirellaEventState::default();
     }
     world.set_cinderella_active(false, 0);
+    super::cinderella::kick_out_event_zone(&world, event_zone);
 
     // Announce
     let msg = "Fun Class Event has been closed by a GM.";

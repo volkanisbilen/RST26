@@ -706,6 +706,8 @@ pub struct WorldState {
     /// Set of session IDs that are participants in the active Cinderella War.
     ///
     cindwar_event_users: DashMap<SessionId, ()>,
+    /// Sessions whose client still shows the Fun Class identity; refreshed once the zone change lands.
+    cind_refresh_pending: DashMap<SessionId, ()>,
     /// Per-player Cinderella War state (original data backup, cooldowns, KDA).
     ///
     cindwar_player_states: DashMap<SessionId, crate::handler::cinderella::CindirellaPlayerState>,
@@ -1112,6 +1114,7 @@ impl WorldState {
             cindwar_active: std::sync::atomic::AtomicBool::new(false),
             cindwar_zone_id: AtomicU16::new(0),
             cindwar_event_users: DashMap::new(),
+            cind_refresh_pending: DashMap::new(),
             cindwar_player_states: DashMap::new(),
             cindwar_event_state: parking_lot::RwLock::new(
                 crate::handler::cinderella::CindirellaEventState::default(),
@@ -1352,6 +1355,7 @@ impl WorldState {
             cindwar_active: std::sync::atomic::AtomicBool::new(false),
             cindwar_zone_id: AtomicU16::new(0),
             cindwar_event_users: DashMap::new(),
+            cind_refresh_pending: DashMap::new(),
             cindwar_player_states: DashMap::new(),
             cindwar_event_state: parking_lot::RwLock::new(
                 crate::handler::cinderella::CindirellaEventState::default(),

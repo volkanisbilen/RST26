@@ -1176,6 +1176,18 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
     // Reset zone online reward timers for the new zone
     crate::systems::zone_rewards::zone_online_reward_change(&world, sid);
 
+    // Fun Class: leaving the event restores the player's own identity on the client;
+    // entering the event zone signs the player up with their current class (C++ CindirellaSign).
+    if world.take_cind_refresh_pending(sid) {
+        super::gamestart::send_myinfo_refresh(session).await?;
+        super::region::broadcast_user_appearance_update(&world, sid);
+    }
+    if world.is_cinderella_active()
+        && super::cinderella::is_cinderella_zone(zone_id, world.cinderella_zone_id())
+    {
+        super::cinderella::auto_join(session).await?;
+    }
+
     // Clear zone_changing flag
     world.set_zone_changing(sid, false);
     world.set_check_warp_zone_change(sid, false);

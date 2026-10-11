@@ -611,6 +611,16 @@ impl WorldState {
         self.cindwar_event_users.insert(sid, ());
     }
 
+    /// Mark a session whose client needs a full character refresh after leaving the event.
+    pub fn mark_cind_refresh_pending(&self, sid: SessionId) {
+        self.cind_refresh_pending.insert(sid, ());
+    }
+
+    /// Take (and clear) the pending-refresh mark.
+    pub fn take_cind_refresh_pending(&self, sid: SessionId) -> bool {
+        self.cind_refresh_pending.remove(&sid).is_some()
+    }
+
     /// Remove a player from the Cinderella War event user set.
     pub fn remove_cinderella_user(&self, sid: SessionId) {
         self.cindwar_event_users.remove(&sid);
