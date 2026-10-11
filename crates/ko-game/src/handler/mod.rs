@@ -658,6 +658,8 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
         ext_hook::EXT_SUB_PERKS => perks::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::KCUPDATE = 0xB9 — client requests current KC/TL balance
         knight_cash::EXT_SUB_KCUPDATE => knight_cash::handle_kcupdate_query(session).await,
+        // ExtSub::DAILY_QUEST = 0xD3 — daily quest UI panel requests
+        daily_quest::EXT_SUB_DAILY_QUEST => daily_quest::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::LOTTERY = 0xC7 — lottery event join/state
         lottery::EXT_SUB_LOTTERY => lottery::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::CR = 0xAF — Collection Race (server→client only, silently ignore)
