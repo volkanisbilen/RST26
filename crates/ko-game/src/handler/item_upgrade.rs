@@ -3285,10 +3285,10 @@ async fn pet_hatching(
         ..Default::default()
     };
 
-    // Store pet state on session
-    world.update_session(sid, |h| {
-        h.pet_data = Some(pet_state);
-    });
+    // A hatch only creates the pet record (DB + the item's serial); like the reference server it
+    // does not attach the pet to the session. Attaching it replaced / confused the state of a
+    // pet that was already summoned and made the new one look active.
+    drop(pet_state);
 
     // Send success response
     let mut pkt = Packet::new(Opcode::WizItemUpgrade as u8);
