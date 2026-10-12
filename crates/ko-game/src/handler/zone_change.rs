@@ -469,7 +469,7 @@ pub async fn trigger_zone_change(
         use crate::handler::dungeon_defence;
         if pos.zone_id == ZONE_DUNGEON_DEFENCE && dest_zone != ZONE_DUNGEON_DEFENCE {
             // Remove all Monster Coins from inventory
-            world.rob_all_of_item(sid, dungeon_defence::MONSTER_COIN_ITEM);
+            dungeon_defence::clear_rift_items(&world, sid);
 
             // Force HP recalculation with normal formula (iFlag=1 bypasses zone override)
             world.recalculate_max_hp_mp(sid);
@@ -1083,6 +1083,7 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
         10 // default BLINK_TIME
     };
     regene::activate_blink_with_duration(session, zone_id, blink_duration)?;
+    super::discord_presence::send(&world, sid);
 
     // Clear all buffs (without removing saved magic) then recast saved magic
     // Skip for Chaos Dungeon AND Cinderella War zones
@@ -1115,7 +1116,7 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
 
     // DD zone entry: remove any leftover Monster Coins from previous runs
     if zone_id == ZONE_DUNGEON_DEFENCE {
-        world.rob_all_of_item(sid, crate::handler::dungeon_defence::MONSTER_COIN_ITEM);
+        crate::handler::dungeon_defence::clear_rift_items(&world, sid);
     }
 
     // Send Delos siege packets if entering Delos during active siege

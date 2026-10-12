@@ -321,6 +321,16 @@ fn get_clan_leader_online_bonus(world: &WorldState, _sid: SessionId, ch: &Charac
 /// Supports both single-level increments (normal level-up) and multi-level
 /// jumps (GM commands like `/levelup 83`).
 pub fn level_change(world: &WorldState, sid: SessionId, level: u8, is_level_up: bool) {
+    if is_level_up {
+        // the character's level is stored a few lines below: show the new one on Discord
+        let (name, zone) = (
+            world.get_character_info(sid).map(|c| c.name),
+            world.get_position(sid).map(|p| p.zone_id),
+        );
+        if let (Some(name), Some(zone)) = (name, zone) {
+            world.send_to_session_owned(sid, super::discord_presence::build_packet(&name, level, zone));
+        }
+    }
     if level < 1 || (level as u16) > MAX_LEVEL {
         return;
     }

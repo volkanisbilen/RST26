@@ -60,6 +60,7 @@ pub mod dead;
 pub mod delchar;
 pub mod draki_tower;
 pub mod dungeon_defence;
+pub mod discord_presence;
 pub mod rift_entry;
 pub mod durability;
 pub mod edit_box;

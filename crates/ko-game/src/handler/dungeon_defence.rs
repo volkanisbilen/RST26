@@ -592,7 +592,7 @@ pub fn remove_player(world: &crate::world::WorldState, sid: u16) {
             h.lost_exp = 0;
         });
     }
-    world.rob_all_of_item(sid, MONSTER_COIN_ITEM);
+    clear_rift_items(world, sid);
     world.update_session(sid, |h| h.event_room = 0);
     super::zone_change::server_teleport_to_zone(world, sid, crate::world::types::ZONE_MORADON, 0.0, 0.0);
     restore_stats(world, sid);
@@ -856,6 +856,28 @@ pub fn route_target(x: f32, z: f32) -> (f32, f32) {
     ROUTE[end]
 }
 
+/// Items that only exist for the rift: Monster Coins and the skills bought with them.
+pub const RIFT_ITEMS: [u32; 11] = [
+    MONSTER_COIN_ITEM,
+    914059000, // Light Feet
+    914060000, // Drain Restore
+    914061000, // Fire Strike
+    914062000, // Bloody Arrow
+    914063000, // Ankle Freeze
+    914064000, // Inferior Guard Summon
+    914065000, // Guard Summon
+    914066000, // Summon Guard (default)
+    914077000, // Tear of Goddess
+    914078000, // God's Shield
+];
+
+/// Take every rift-only item (coins and bought skills) from the player.
+pub fn clear_rift_items(world: &crate::world::WorldState, sid: u16) {
+    for item in RIFT_ITEMS {
+        world.rob_all_of_item(sid, item);
+    }
+}
+
 /// Players' equalized HP inside the rift.
 pub const RIFT_HP: i16 = 10_000;
 
@@ -890,6 +912,9 @@ pub fn restore_saved(world: &crate::world::WorldState, sid: u16) -> Option<(i16,
 
 /// Disconnect inside the rift: the saved character must not keep the equalized HP.
 pub fn restore_on_disconnect(world: &crate::world::WorldState, sid: u16) {
+    if world.get_position(sid).is_some_and(|p| p.zone_id == ZONE_DUNGEON_DEFENCE) {
+        clear_rift_items(world, sid);
+    }
     restore_saved(world, sid);
 }
 
