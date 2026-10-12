@@ -348,18 +348,21 @@ async fn item_detail(headers: HeaderMap, State(app): State<App>, Path(id): Path<
 
 const PLACEHOLDER: &[u8] = include_bytes!("../assets/noimage.png");
 
-/// Icon file name the client uses for an `item_icon_id1`: itemicon_<d>_<dddd>_<dd>_<d>.jpg.
-/// 9-digit ids drop their first digit; the exact file list decides what is really there.
+/// Icon file the client uses for an `item_icon_id1`: itemicon_<lead>_<dddd>_<dd>_<d>.jpg, i.e. the last
+/// seven digits split 4/2/1 behind the leading digits. Colour variants fall back to the base icon.
 fn icon_candidates(id: &str) -> Vec<String> {
-    let fname = |s: &str| {
-        let s = format!("{:0>8}", s);
-        format!("itemicon_{}_{}_{}_{}.jpg", &s[0..1], &s[1..5], &s[5..7], &s[7..8])
+    let fname = |s: &str| -> Option<String> {
+        if s.len() < 8 {
+            return None;
+        }
+        let n = s.len();
+        Some(format!("itemicon_{}_{}_{}_{}.jpg", &s[..n - 7], &s[n - 7..n - 3], &s[n - 3..n - 1], &s[n - 1..]))
     };
-    if id.len() >= 9 {
-        vec![fname(&id[1..9.min(id.len())]), fname(&id[..8])]
-    } else {
-        vec![fname(id)]
+    let mut out: Vec<String> = fname(id).into_iter().collect();
+    if let Ok(v) = id.parse::<u64>() {
+        out.extend(fname(&(v / 10 * 10).to_string()));
     }
+    out
 }
 
 async fn icon(State(app): State<App>, Path(file): Path<String>) -> Response {
