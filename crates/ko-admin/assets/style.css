@@ -191,3 +191,10 @@ tr.click{cursor:pointer}tr.click:hover td{background:#10224d}
   :root{--slot:40px}
 }
 @media (max-width:480px){:root{--slot:35px}.dslots{grid-template-columns:1fr 1fr}.modal{padding:14px}}
+
+/* game-style inventory windows */
+.invgame .invwin{padding:12px 14px}
+.cbox{flex:none;width:calc(var(--slot)*3 + 8px);min-height:calc(var(--slot)*5 + 16px);border-radius:10px;border:1px solid #2a4f93;background:radial-gradient(120px 120px at 50% 28%,#1d3a7a66,transparent 70%),linear-gradient(180deg,#0c1a3f,#070f26);padding:10px;display:flex;flex-direction:column;gap:2px;text-align:center}
+.cbox b{font-size:15px}.cbox-sp{flex:1}
+.slot.trashcell{opacity:.45;cursor:not-allowed;color:#6b86c4;background:#0a1230}
+.slot.trashcell:hover{border-color:#1f3566;box-shadow:none}

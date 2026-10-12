@@ -1,7 +1,28 @@
 'use strict';
 /* ───────── item containers: character bags, banks, clan bank ───────── */
 const EQUIP=[[0,'Sağ küpe'],[1,'Başlık'],[2,'Sol küpe'],[3,'Kolye'],[4,'Göğüs'],[5,'Omuz'],[6,'Sağ el'],[7,'Kemer'],[8,'Sol el'],[9,'Sağ yüzük'],[10,'Bacak'],[11,'Sol yüzük'],[12,'Eldiven'],[13,'Ayakkabı'],null];
+/* cospre window, in the order of re_inventory.uif (3x3, then the three bag slots) -> absolute DB slot */
+const COSP=[[49,'Dövme'],[43,'Başlık'],[48,'Peri'],[44,'Sol eldiven'],[46,'Göğüs'],[45,'Sağ eldiven'],[50,'Tılsım'],[42,'Kanat'],[47,'Amblem']];
+const COSP_BAGS=[[51,'Çanta 1'],[52,'Çanta 2'],[96,'Çanta 3']];
 const range=(a,b)=>Array.from({length:b-a},(_,k)=>a+k);
+
+/* The game's two inventory windows. S(absSlot, sectionName, label) builds one slot element. */
+function invLayout(S,o){
+  const mb=o.mb||0;
+  const left=h('div',{class:'panel invwin'},h('h4',{},'Kostüm & Magic Bag'),
+    grid('b3',COSP.map(([i,l])=>S(i,'Kostüm: '+l,l))),
+    h('div',{class:'xs faint',style:'margin:10px 0 4px'},'Çantalar'),
+    grid('b3',COSP_BAGS.map(([i,l])=>S(i,'Kostüm: '+l,l))),
+    h('div',{class:'seg',style:'margin:12px 0 8px'},[0,1,2].map(k=>h('button',{class:mb===k?'on':'',onclick:()=>o.setMb(k)},'Bag '+(k+1)))),
+    grid('b3',range(53+mb*12,65+mb*12).map(i=>S(i,'Magic Bag '+(mb+1)))));
+  const right=h('div',{class:'panel invwin'},h('h4',{},'Envanter'),
+    h('div',{class:'row',style:'align-items:flex-start;flex-wrap:nowrap;gap:12px'},
+      o.charBox||h('div',{class:'cbox'},'Karakter'),
+      grid('eq',EQUIP.map(e=>e?S(e[0],'Ekipman: '+e[1],e[1]):h('div',{class:'slot trashcell',title:'Çöp / silme kilidi (item yuvası değil)'},ico('trash'))))),
+    h('p',{class:'xs faint',style:'margin:12px 0 6px'},'Ana çanta (14–41)'),grid('b7',range(14,42).map(i=>S(i,'Ana çanta'))),
+    o.kr===false?null:[h('p',{class:'xs faint',style:'margin:12px 0 6px'},'Knight Royale (89–95)'),grid('b7',range(89,96).map(i=>S(i,'Knight Royale')))]);
+  return h('div',{class:'invwrap invgame'},left,right);
+}
 
 async function loadContainer(type,owner,tab){
   if(owner==null)return null;
@@ -122,17 +143,7 @@ function containerView(ctx){
     if(ctx.moveFrom)wrap.append(h('div',{class:'banner'},'Taşıma modu: hedef yuvaya tıklayın.',h('button',{class:'btn sm',onclick:()=>{ctx.moveFrom=null;draw()}},'Vazgeç')));
     const r=()=>reload();
     if(ctx.type==='inv'){
-      const S=(i,sec,label)=>slotEl(ctx,i,sec,label,r);
-      const mb=ctx._mb||0;
-      wrap.append(h('div',{class:'invwrap'},
-        h('div',{class:'panel'},h('h4',{},'Kostüm (42–52) & Magic Bag'),
-          grid('b3',[...range(42,53).map(i=>S(i,'Cospre')),h('div',{class:'slot none'})]),
-          h('div',{class:'seg',style:'margin:12px 0 8px'},[0,1,2].map(k=>h('button',{class:mb===k?'on':'',onclick:()=>{ctx._mb=k;draw()}},'Bag '+(k+1)))),
-          grid('b3',range(53+mb*12,65+mb*12).map(i=>S(i,'Magic Bag '+(mb+1))))),
-        h('div',{class:'panel'},h('h4',{},'Envanter'),
-          h('p',{class:'xs faint',style:'margin:0 0 6px'},'Ekipman 0–13'),grid('eq',EQUIP.map(e=>e?S(e[0],'Ekipman: '+e[1],e[1]):h('div',{class:'slot none'}))),
-          h('p',{class:'xs faint',style:'margin:12px 0 6px'},'Ana çanta 14–41'),grid('b7',range(14,42).map(i=>S(i,'Ana çanta'))),
-          h('p',{class:'xs faint',style:'margin:12px 0 6px'},'Knight Royale 89–95'),grid('b7',range(89,96).map(i=>S(i,'Knight Royale'))))));
+      wrap.append(invLayout((i,sec,label)=>slotEl(ctx,i,sec,label,r),{mb:ctx._mb||0,setMb:k=>{ctx._mb=k;draw()},charBox:ctx.charBox}));
     }else{
       const per=24,pages=ctx.type==='wh'?8:ctx.type==='vip'?2:Math.max(1,ctx.extra.max_tabs||1);
       const page=ctx.type==='clan'?ctx.tab:(ctx._page||0);
@@ -170,6 +181,8 @@ PAGE.char=async function(main,[name,tab]){
   const owner=tab==='clan'?(clan.id?String(clan.id):null):c.name;
   const ctx=await loadContainer(tab,owner,0);
   if(!ctx)return body.append(h('div',{class:'card empty'},'Bu karakter bir klanda değil.'));
+  ctx.charBox=h('div',{class:'cbox'},h('b',{},c.name),h('div',{class:'muted sm'},className(c.class)),h('div',{class:'muted sm'},'Lv '+c.level+(c.rebirth?' · +'+c.rebirth:'')),
+    h('div',{class:'cbox-sp'}),h('div',{class:'sm'},'Noah'),h('b',{},fmt(c.gold)));
   body.append(containerView(ctx));
 };
 function charStats(body,c){

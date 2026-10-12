@@ -200,48 +200,130 @@ function npcPick(cb){
   close=modal('NPC / canavar seç',h('div',{},q,out),[{label:'Kapat',cls:'ghost'}]);
 }
 
-/* start settings */
-PAGE.start=async function(main){
-  let tab='pos';const body=h('div');
-  const seg=h('div',{class:'seg',style:'margin-bottom:14px'},[['pos','Başlangıç konumları'],['chars','Yeni karakter değerleri']].map(([k,l])=>h('button',{class:k===tab?'on':'',onclick:function(){tab=k;$$('button',seg).forEach(b=>b.classList.toggle('on',b===this));draw()}},l)));
-  main.append(head('Başlangıç Ayarları','Bölge doğma noktaları ve yeni karakter başlangıç değerleri'),seg,body);
-  async function draw(){
-    clear(body);
-    if(tab==='pos'){
-      const rows=await api('/start-positions');
-      body.append(h('div',{class:'card'},h('div',{class:'hint',style:'margin-bottom:10px'},'Doğma noktaları oyun sunucusu açılırken okunur; değişiklik için yeniden başlatma gerekir.'),h('div',{class:'tw'},h('table',{},h('thead',{},h('tr',{},['Bölge','Karus X/Z','El Morad X/Z','Karus kapı','El Morad kapı',''].map(x=>h('th',{},x)))),
-        h('tbody',{},rows.map(r=>h('tr',{},h('td',{},h('b',{},r.zone)),h('td',{},r.karus_x+' / '+r.karus_z),h('td',{},r.elmorad_x+' / '+r.elmorad_z),h('td',{},r.karus_gate_x+' / '+r.karus_gate_z),h('td',{},r.elmo_gate_x+' / '+r.elmo_gate_z),h('td',{},h('button',{class:'btn sm',onclick:()=>posDialog(r)},'Düzenle')))))))));
-    }else{
-      const rows=await api('/starting-character');
-      body.append(h('div',{class:'card'},h('div',{class:'tw'},h('table',{},h('thead',{},h('tr',{},['Sınıf','Tür','Seviye','EXP','Puan','Beceri puanı','Noah',''].map(x=>h('th',{},x)))),
-        h('tbody',{},rows.map(r=>h('tr',{},h('td',{},r.class),h('td',{},r.job),h('td',{},r.level),h('td',{},fmt(r.exp)),h('td',{},r.points),h('td',{},r.skill_points),h('td',{},fmt(r.gold)),h('td',{},h('button',{class:'btn sm',onclick:()=>charDialog(r)},'Düzenle'),' ',h('button',{class:'btn sm',onclick:()=>itemsDialog(r)},ico('bag'),'Itemler')))))))));
-    }
+/* start settings: beginner editor + spawn points */
+const BEGINNER_TYPES=[[0,'Standart'],[1,'Ardream'],[2,'Ronark Land Base'],[3,'Ronark Land'],[4,'62 Seviye']];
+const BEGINNER_CLASSES=[[1,'Savaşçı'],[2,'Rogue'],[3,'Büyücü'],[4,'Rahip'],[13,'Kurian']];
+PAGE.start=async function(main,[tabArg]){
+  let tab=tabArg||'beginner';
+  const body=h('div');
+  const seg=h('div',{class:'seg',style:'margin-bottom:14px'},[['beginner','Yeni karakter (Beginner)'],['pos','Doğma noktaları']].map(([k,l])=>h('button',{class:k===tab?'on':'',onclick:function(){tab=k;$$('button',seg).forEach(b=>b.classList.toggle('on',b===this));draw()}},l)));
+  main.append(head('Başlangıç Ayarları','Yeni karakterlerin eşyaları, statları ve bölge doğma noktaları'),seg,body);
+  const draw=()=>{clear(body);return tab==='pos'?posTab(body):beginnerTab(body)};
+  draw();
+};
+
+async function beginnerTab(body){
+  const ov=await api('/beginner');
+  let ty=ov.active,cls=1,set=null,pickedLib=null,mb=0;
+  const valFor=()=>ov.values.find(v=>v.class_type===cls&&v.job_type===ty);
+  const countOf=(c,t)=>((ov.counts.find(x=>x.class_type===c&&x.beginner_type===t)||{}).items)||0;
+  const legacyOf=c=>((ov.legacy.find(x=>x.class_type===c)||{}).items)||0;
+  const typeBar=h('div'),classBar=h('div'),work=h('div');
+  const lib=libraryPanel({onPick:it=>{pickedLib=it;toast('Seçili: '+it.name+' — yuvaya tıkla','ok')}});
+  body.append(h('div',{class:'card',style:'margin-bottom:14px'},h('h3',{},'Aktif başlangıç tipi'),typeBar,
+    h('div',{class:'hint',style:'margin-top:10px'},'Yeni açılan her karakter, aktif tipin eşya setini ve statlarını alır. Eşya seti anında geçerli olur; başlangıç statları sunucu yeniden başlayınca yüklenir. Aşağıda her tip ve sınıf için ayrı set düzenlenir.')),
+    classBar,
+    h('div',{class:'studio',style:'grid-template-columns:minmax(0,1fr) 330px'},work,h('div',{class:'panel lib'},lib.el)));
+
+  function drawBars(){
+    clear(typeBar).append(h('div',{class:'row'},BEGINNER_TYPES.map(([t,l])=>
+      h('button',{class:'btn'+(t===ty?' primary':''),onclick:()=>{ty=t;load()}},l+(t===ov.active?' ★':'')))),
+      ty!==ov.active?h('div',{class:'row',style:'margin-top:10px'},h('span',{class:'muted'},'Düzenlenen tip aktif değil.'),h('button',{class:'btn sm',onclick:()=>makeActive()},'“'+BEGINNER_TYPES[ty][1]+'” tipini aktif yap')):h('div',{class:'chip ok',style:'margin-top:10px'},'★ Bu tip şu an aktif'));
+    clear(classBar).append(h('div',{class:'seg',style:'margin-bottom:14px'},BEGINNER_CLASSES.map(([c,l])=>
+      h('button',{class:c===cls?'on':'',onclick:()=>{cls=c;load()}},l+' · '+(countOf(c,ty)||('eski '+legacyOf(c)))))));
   }
+  function makeActive(){
+    const why=h('input',{placeholder:'Sebep (zorunlu)'});
+    modal('Aktif tipi değiştir',h('div',{class:'col'},h('p',{},'Yeni karakterler artık “'+BEGINNER_TYPES[ty][1]+'” tipinin setini alacak.'),h('div',{class:'form'},field('Sebep',why,true))),[
+      {label:'İptal',cls:'ghost'},{label:'Aktif yap',cls:'primary',keep:true,fn:async close=>{
+        try{const d=await api('/beginner/active',{body:{ty,reason:why.value}});toast(d.note,'ok');ov.active=ty;close();drawBars()}catch(_){}return true}}]);
+  }
+  async function load(){
+    drawBars();
+    set=await api('/beginner/set?class='+cls+'&ty='+ty);
+    drawWork();
+  }
+  async function setSlot(abs,id,count,dur){
+    try{await api('/beginner/slot',{body:{class:cls,ty,slot:abs,item_id:id,count:count||1,durability:dur||0}});await reloadSet()}catch(_){}
+  }
+  async function reloadSet(){
+    set=await api('/beginner/set?class='+cls+'&ty='+ty);
+    const n=set.legacy?0:set.items.length;
+    const e=ov.counts.find(x=>x.class_type===cls&&x.beginner_type===ty);if(e)e.items=n;else ov.counts.push({class_type:cls,beginner_type:ty,items:n});
+    drawBars();drawWork();
+  }
+  function slotView(map,abs,sec,label){
+    const d=map.get(abs);
+    const el=h('div',{class:'slot '+(d?'full':'')+(label?' eqlabel':''),draggable:d?'true':null,'data-label':label||''},
+      d?h('img',{src:icon(d.icon),onerror:iconErr}):null,d&&d.count>1?h('span',{class:'cnt'},d.count):null,h('span',{class:'num'},abs));
+    if(d)attachTip(el,()=>({id:d.id,slot:{durability:d.durability,count:d.count},note:sec+' · slot '+abs}));else el.title=sec+' — boş (slot '+abs+')';
+    el.addEventListener('dragstart',e=>e.dataTransfer.setData('text/plain',JSON.stringify({bfrom:abs})));
+    el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('over')});
+    el.addEventListener('dragleave',()=>el.classList.remove('over'));
+    el.addEventListener('drop',async e=>{
+      e.preventDefault();el.classList.remove('over');let p;try{p=JSON.parse(e.dataTransfer.getData('text/plain'))}catch(_){return}
+      if(p.pick){if(p.pick.group)return toast('Başlangıç setine grup konamaz','err');return setSlot(abs,p.pick.id,1,0)}
+      if(p.bfrom!=null&&p.bfrom!==abs){try{await api('/beginner/move',{body:{class:cls,ty,from:p.bfrom,to:abs}});await reloadSet()}catch(_){}}
+    });
+    el.addEventListener('click',()=>{
+      if(pickedLib&&!pickedLib.group){const it=pickedLib;pickedLib=null;return setSlot(abs,it.id,1,0)}
+      slotDialog(abs,sec,d);
+    });
+    return el;
+  }
+  function slotDialog(abs,sec,d){
+    const id=h('input',{type:'number',value:d?d.id:0,min:'0'}),cnt=h('input',{type:'number',value:d?d.count:1,min:'1'}),dur=h('input',{type:'number',value:d?d.durability:0});
+    const card=h('div');
+    const show=async()=>{clear(card);const v=Number(id.value);if(!v)return;const it=await getItem(v);card.append(it?renderTip(it,null,null,true):h('div',{class:'hint warn'},'Bu ID item tablosunda yok.'))};
+    id.addEventListener('change',show);show();
+    modal(sec+' · slot '+abs,h('div',{class:'grid g2',style:'gap:16px'},card,h('div',{class:'form'},field('Item ID (0 = boşalt)',id),field('Adet',cnt),field('Dayanıklılık (0 = item varsayılanı)',dur))),[
+      {label:'İptal',cls:'ghost'},d?{label:'Sil',cls:'danger',fn:()=>setSlot(abs,0,1,0)}:null,
+      {label:'Kaydet',cls:'primary',keep:true,fn:async close=>{await setSlot(abs,Number(id.value),Number(cnt.value),Number(dur.value));close();return true}}].filter(Boolean),'wide');
+  }
+  function statsCard(){
+    const v=valFor();if(!v)return h('div',{class:'card empty'},'Bu sınıf/tip için stat satırı yok.');
+    const F=[['level','Seviye'],['exp','EXP'],['strength','STR'],['health','HP (STA)'],['dexterity','DEX'],['intelligence','INT'],['magic_power','MP (CHA)'],['free_points','Serbest stat puanı'],['skill_point_free','Serbest beceri puanı'],['skill_point_cat1','Beceri 1. kategori'],['skill_point_cat2','Beceri 2. kategori'],['skill_point_cat3','Beceri 3. kategori'],['skill_point_master','Usta beceri'],['gold','Noah']];
+    const I={};
+    return h('div',{class:'card',style:'margin-top:14px'},h('h3',{},BEGINNER_CLASSES.find(x=>x[0]===cls)[1]+' · '+BEGINNER_TYPES[ty][1]+' başlangıç statları'),
+      h('div',{class:'form'},F.map(([k,l])=>{I[k]=h('input',{type:'number',value:v[k]});return field(l,I[k])})),
+      h('div',{class:'row',style:'margin-top:14px'},h('button',{class:'btn primary',onclick:async()=>{
+        const p={class:cls,ty};for(const [k] of F)p[k]=Number(I[k].value);
+        try{const d=await api('/beginner/values',{body:p});Object.assign(v,Object.fromEntries(F.map(([k])=>[k,p[k]])));toast(d.note,'ok')}catch(_){}}},'Statları kaydet')));
+  }
+  function copyDialog(){
+    const fc=h('select',{},BEGINNER_CLASSES.map(([c,l])=>h('option',{value:c,selected:c===cls},l))),ft=h('select',{},BEGINNER_TYPES.map(([t,l])=>h('option',{value:t,selected:t===ty},l)));
+    const why=h('input',{placeholder:'Sebep (zorunlu)'});
+    modal('Seti kopyala',h('div',{class:'col'},h('p',{class:'muted'},'Seçtiğin kaynak set, şu an açık olan “'+BEGINNER_CLASSES.find(x=>x[0]===cls)[1]+' · '+BEGINNER_TYPES[ty][1]+'” setinin üzerine yazılır.'),h('div',{class:'form'},field('Kaynak sınıf',fc),field('Kaynak tip',ft),field('Sebep',why,true))),[
+      {label:'İptal',cls:'ghost'},{label:'Kopyala',cls:'primary',keep:true,fn:async close=>{
+        try{const d=await api('/beginner/copy',{body:{from_class:Number(fc.value),from_ty:Number(ft.value),to_class:cls,to_ty:ty,reason:why.value}});toast(d.rows+' yuva kopyalandı','ok');close();reloadSet()}catch(_){}return true}}]);
+  }
+  function drawWork(){
+    clear(work);
+    const map=new Map(set.items.map(i=>[i.slot,i]));
+    const trash=h('div',{class:'trash',style:'margin:12px 0'},ico('trash'),h('span',{class:'sm'},' Item\'ı buraya sürükle: setten çıkar'));
+    trash.addEventListener('dragover',e=>{e.preventDefault();trash.classList.add('over')});trash.addEventListener('dragleave',()=>trash.classList.remove('over'));
+    trash.addEventListener('drop',e=>{e.preventDefault();trash.classList.remove('over');let p;try{p=JSON.parse(e.dataTransfer.getData('text/plain'))}catch(_){return}if(p.bfrom!=null)setSlot(p.bfrom,0,1,0)});
+    const cname=BEGINNER_CLASSES.find(x=>x[0]===cls)[1];
+    work.append(...[
+      set.legacy?h('div',{class:'hint warn',style:'margin-bottom:12px'},'“'+cname+' · '+BEGINNER_TYPES[ty][1]+'” için özel set yok; sunucu eski sınıf setini kullanıyor. İlk düzenlemede bu set buraya kopyalanır.'):null,
+      h('div',{class:'row',style:'margin-bottom:12px'},h('h2',{},cname+' · '+BEGINNER_TYPES[ty][1]),h('span',{class:'chip'},set.items.length+' item'),h('span',{class:'grow'}),
+        h('button',{class:'btn',onclick:copyDialog},ico('copy'),'Başka setten kopyala')),
+      invLayout((abs,sec,label)=>slotView(map,abs,sec,label),{mb,setMb:k=>{mb=k;drawWork()},charBox:h('div',{class:'cbox'},h('b',{},cname),h('div',{class:'muted sm'},BEGINNER_TYPES[ty][1]),h('div',{class:'cbox-sp'}),h('div',{class:'sm'},'Başlangıç Noah'),h('b',{},fmt((valFor()||{}).gold)))}),
+      trash,statsCard()].filter(Boolean));
+  }
+  load();
+}
+
+async function posTab(body){
+  const rows=await api('/start-positions');
+  body.append(h('div',{class:'card'},h('div',{class:'hint',style:'margin-bottom:10px'},'Doğma noktaları oyun sunucusu açılırken okunur; değişiklik için yeniden başlatma gerekir.'),h('div',{class:'tw'},h('table',{},h('thead',{},h('tr',{},['Bölge','Karus X/Z','El Morad X/Z','Karus kapı','El Morad kapı',''].map(x=>h('th',{},x)))),
+    h('tbody',{},rows.map(r=>h('tr',{},h('td',{},h('b',{},r.zone)),h('td',{},r.karus_x+' / '+r.karus_z),h('td',{},r.elmorad_x+' / '+r.elmorad_z),h('td',{},r.karus_gate_x+' / '+r.karus_gate_z),h('td',{},r.elmo_gate_x+' / '+r.elmo_gate_z),h('td',{},h('button',{class:'btn sm',onclick:()=>posDialog(r)},'Düzenle')))))))));
   function posDialog(r){
     const keys=['karus_x','karus_z','elmorad_x','elmorad_z','karus_gate_x','karus_gate_z','elmo_gate_x','elmo_gate_z'];const F={};
     modal('Bölge '+r.zone,h('div',{class:'form'},keys.map(k=>{F[k]=h('input',{type:'number',value:r[k]});return field(k,F[k])})),[{label:'İptal',cls:'ghost'},{label:'Kaydet',cls:'primary',keep:true,fn:async close=>{
-      const p={};keys.forEach(k=>p[k]=Number(F[k].value));try{await api('/start-positions/'+r.zone,{body:p});toast('Kaydedildi','ok');close();draw()}catch(_){}return true}}]);
+      const p={};keys.forEach(k=>p[k]=Number(F[k].value));try{await api('/start-positions/'+r.zone,{body:p});toast('Kaydedildi','ok');close();route()}catch(_){}return true}}]);
   }
-  function charDialog(r){
-    const F={level:h('input',{type:'number',value:r.level}),exp:h('input',{type:'number',value:r.exp}),points:h('input',{type:'number',value:r.points}),skill_points:h('input',{type:'number',value:r.skill_points}),gold:h('input',{type:'number',value:r.gold})};
-    modal('Sınıf '+r.class+' · tür '+r.job,h('div',{class:'form'},field('Seviye',F.level),field('EXP',F.exp),field('Stat puanı',F.points),field('Beceri puanı',F.skill_points),field('Noah',F.gold)),[{label:'İptal',cls:'ghost'},{label:'Kaydet',cls:'primary',keep:true,fn:async close=>{
-      const p={};for(const k in F)p[k]=Number(F[k].value);try{await api('/starting-character/'+r.class+'/'+r.job,{body:p});toast('Kaydedildi','ok');close();draw()}catch(_){}return true}}]);
-  }
-  async function itemsDialog(r){
-    const items=await api('/starting-character/'+r.class+'/'+r.job+'/items');
-    const g=h('div',{class:'slots b7'},range(0,14).concat(range(14,42)).map(i=>{
-      const d=items.find(x=>x.slot===i);
-      const el=h('div',{class:'slot '+(d?'full':''),onclick:()=>edit(i,d)},d?h('img',{src:icon(d.icon),onerror:iconErr}):null,d&&d.count>1?h('span',{class:'cnt'},d.count):null,h('span',{class:'num'},i));
-      if(d)attachTip(el,()=>({id:d.id,slot:d,note:'başlangıç yuvası '+i}));return el}));
-    const close=modal('Başlangıç itemleri · sınıf '+r.class+' tür '+r.job,h('div',{},h('p',{class:'muted sm'},'Yuvaya tıklayıp item/adet değiştir (0 = boşalt).'),g),[{label:'Kapat',cls:'ghost'}],'wide');
-    function edit(slot,d){
-      const id=h('input',{type:'number',value:d?d.id:0}),cnt=h('input',{type:'number',value:d?d.count:1}),dur=h('input',{type:'number',value:d?d.durability:0});
-      modal('Yuva '+slot,h('div',{class:'form'},field('Item ID',id),field('Adet',cnt),field('Dayanıklılık',dur)),[{label:'İptal',cls:'ghost'},{label:'Kaydet',cls:'primary',keep:true,fn:async c2=>{
-        try{await api('/starting-character/'+r.class+'/'+r.job+'/items',{body:{slot,item_id:Number(id.value),count:Number(cnt.value),durability:Number(dur.value)}});toast('Kaydedildi','ok');c2();close();itemsDialog(r)}catch(_){}return true}}]);
-    }
-  }
-  draw();
-};
+}
 
 /* events */
 const DAYS=['Paz','Pzt','Sal','Çar','Per','Cum','Cmt'];

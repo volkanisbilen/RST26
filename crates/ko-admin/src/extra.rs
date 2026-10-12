@@ -475,7 +475,7 @@ impl Kind {
     }
     fn capacity(self) -> i32 {
         match self {
-            Self::Inv => 96,
+            Self::Inv => 97, // 0-95 plus the third cospre bag at 96
             Self::Wh => 192,
             Self::Vip => 48,
             Self::Clan => 24,
