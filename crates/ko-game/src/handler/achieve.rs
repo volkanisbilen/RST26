@@ -1121,6 +1121,8 @@ async fn handle_skill_title(
     world.update_session(sid, |h| {
         h.achieve_summary.skill_id = cover_id;
         h.achieve_summary.skill_title = main.title_id as u16;
+        h.achieve_summary.skill_title_row = title.s_index as u16;
+        h.achieve_title_idx = title.s_index;
         // Apply stat bonuses
         h.achieve_stat_bonuses = [
             title.str,
@@ -1143,6 +1145,7 @@ async fn handle_skill_title(
 
     // Recalculate stats with new title bonuses
     world.set_user_ability(sid);
+    world.send_item_move_refresh(sid);
     Ok(())
 }
 
@@ -1176,6 +1179,8 @@ async fn handle_skill_title_reset(session: &mut ClientSession) -> anyhow::Result
     world.update_session(sid, |h| {
         h.achieve_summary.skill_title = 0;
         h.achieve_summary.skill_id = 0;
+        h.achieve_summary.skill_title_row = 0;
+        h.achieve_title_idx = 0;
         h.achieve_stat_bonuses = [0i16; 7];
     });
 
@@ -1187,6 +1192,7 @@ async fn handle_skill_title_reset(session: &mut ClientSession) -> anyhow::Result
 
     // Recalculate stats after clearing title bonuses
     world.set_user_ability(sid);
+    world.send_item_move_refresh(sid);
     Ok(())
 }
 
@@ -1303,6 +1309,7 @@ mod tests {
             cover_title: 0,
             skill_id: 0,
             skill_title: 0,
+            skill_title_row: 0,
         };
         let type_counts = (5u16, 3u16, 2u16, 1u16, 0u16);
         let pkt = build_summary_packet(&summary, type_counts);

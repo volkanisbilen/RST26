@@ -411,6 +411,7 @@ impl ClientSession {
 
             // ── 0. Fun Class: restore the real character before it is saved ──
             crate::handler::dungeon_defence::restore_on_disconnect(&self.world, sid);
+            self.world.manes_survival_manager.leave_event(&self.world, sid, false);
             crate::handler::cinderella::cinderella_logout(&self.world, sid, true);
 
             // ── 1. Save character stats + position ────────────────────────
@@ -727,6 +728,7 @@ impl ClientSession {
                                     ],
                                     summary.cover_id as i16,
                                     summary.skill_id as i16,
+                                    summary.skill_title_row as i16,
                                 )
                                 .await
                             {
@@ -1329,6 +1331,7 @@ impl ClientSession {
 
             // ── 13b. Cinderella War cleanup ─────────────────────────────
             crate::handler::dungeon_defence::restore_on_disconnect(&self.world, sid);
+            self.world.manes_survival_manager.leave_event(&self.world, sid, false);
             crate::handler::cinderella::cinderella_logout(&self.world, sid, true);
 
             // ── 13c. Wanted event cleanup ────────────────────────────────

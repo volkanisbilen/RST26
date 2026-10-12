@@ -549,7 +549,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     match action {
         ACTION_APPLY => {
-            let registered = manager.register(sid);
+            let blocked = world.is_player_dead(sid) || world.get_event_room(sid) != 0;
+            let registered = !blocked && manager.register(sid);
             let participants = manager.participant_count().min(u16::MAX as usize) as u16;
             let result = if registered { 1 } else { -1 };
             // Refresh the participant count first. The apply result must be

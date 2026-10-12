@@ -114,8 +114,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     };
 
     // Determine respawn location
-    let (dest_zone, mut dest_x, mut dest_z) =
-        determine_respawn_location(&char_info, pos.zone_id, &world);
+    // A dead Manes participant stays in the event and returns to their nation's entry line.
+    let manes_point = world
+        .manes_survival_manager
+        .respawn_point(&world, sid, pos.zone_id);
+    let (dest_zone, mut dest_x, mut dest_z) = match manes_point {
+        Some((x, z)) => (pos.zone_id, x, z),
+        None => determine_respawn_location(&char_info, pos.zone_id, &world),
+    };
 
     // Reset state: set to standing, restore HP/MP
     world.update_res_hp_type(sid, crate::world::USER_STANDING);
@@ -132,7 +138,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     //   if (GetZoneID() == ZONE_UNDER_CASTLE) MSpChange(GetMaxMana());
     // Only ZONE_UNDER_CASTLE gets full MP restore on respawn
-    if dest_zone == ZONE_UNDER_CASTLE {
+    if dest_zone == ZONE_UNDER_CASTLE || manes_point.is_some() {
         world.update_character_mp(sid, char_info.max_mp);
     }
 

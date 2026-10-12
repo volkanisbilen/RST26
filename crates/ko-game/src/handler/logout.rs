@@ -42,6 +42,7 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
 
     // ── 0. Fun Class: give the character its own identity back BEFORE it is saved ──
     crate::handler::dungeon_defence::restore_on_disconnect(&world, sid);
+            world.manes_survival_manager.leave_event(&world, sid, false);
     crate::handler::cinderella::cinderella_logout(&world, sid, true);
 
     // ── 1. Save character stats + position to DB ────────────────────
@@ -480,6 +481,7 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
                         ],
                         summary.cover_id as i16,
                         summary.skill_id as i16,
+                        summary.skill_title_row as i16,
                     )
                     .await
                 {
@@ -918,6 +920,7 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
 
     // ── 7c. Cinderella War cleanup ──────────────────────────────────
     crate::handler::dungeon_defence::restore_on_disconnect(&world, sid);
+            world.manes_survival_manager.leave_event(&world, sid, false);
     crate::handler::cinderella::cinderella_logout(&world, sid, true);
 
     // ── 7d. Wanted event cleanup ────────────────────────────────────

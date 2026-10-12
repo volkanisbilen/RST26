@@ -444,6 +444,22 @@ pub async fn trigger_zone_change(
         super::logout::bdw_user_logout(&world, sid);
     }
 
+    // 0b2. Manes Survival: leaving the event zones hands the real HP/MP back and closes the
+    // client's temporary Survival mode.
+    {
+        use crate::systems::manes_survival::ZONES_MANES_SURVIVAL;
+        if ZONES_MANES_SURVIVAL.contains(&pos.zone_id)
+            && !ZONES_MANES_SURVIVAL.contains(&dest_zone)
+            && world.manes_survival_manager.leave_event(&world, sid, true)
+        {
+            if let Some(restore) =
+                crate::handler::survival::build_event_finish_restore(&world, sid).await
+            {
+                world.send_to_session_owned(sid, restore);
+            }
+        }
+    }
+
     // 0c. Monster Stone cleanup when warping out of a stone zone (81-83)
     // When ANY player exits, the entire room is disbanded.
     {
@@ -1423,6 +1439,16 @@ fn server_teleport_to_zone_impl(
     } else {
         (dest_x, dest_z)
     };
+
+    // Manes: a teleport out of the event zones gives the real HP/MP back (the scheduled
+    // evacuation already did it and finds nothing left to restore).
+    {
+        use crate::systems::manes_survival::ZONES_MANES_SURVIVAL;
+        if ZONES_MANES_SURVIVAL.contains(&pos.zone_id) && !ZONES_MANES_SURVIVAL.contains(&dest_zone)
+        {
+            world.manes_survival_manager.leave_event(world, sid, true);
+        }
+    }
 
     // Set zone_changing flag so the client triggers handle_loaded properly
     // QA Sprint 195 fix: without this, teleported users are invisible in

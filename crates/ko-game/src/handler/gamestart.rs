@@ -1560,17 +1560,28 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
                     ];
                     h.achieve_summary.cover_id = summary.cover_id as u16;
                     h.achieve_summary.skill_id = summary.skill_id as u16;
+                    h.achieve_summary.skill_title_row = summary.skill_title_row as u16;
                 });
 
                 // 14c. Restore skill title stat bonuses from DB
                 let skill_id = summary.skill_id as u16;
                 if skill_id > 0 {
                     let main_entry = world.achieve_main(skill_id as i32);
-                    let title_entry = main_entry
-                        .as_ref()
-                        .and_then(|m| world.achieve_title(m.title_id as i32));
+                    // The row the player picked; old saves (no row stored) fall back to the
+                    // achievement's own title row.
+                    let title_entry = world
+                        .achieve_title(summary.skill_title_row as i32)
+                        .or_else(|| {
+                            main_entry
+                                .as_ref()
+                                .and_then(|m| world.achieve_title(m.title_id as i32))
+                        });
+                    let display_title = main_entry.as_ref().map(|m| m.title_id as u16).unwrap_or(0);
                     if let Some(title) = title_entry {
                         world.update_session(sid, |h| {
+                            h.achieve_summary.skill_title = display_title;
+                            h.achieve_summary.skill_title_row = title.s_index as u16;
+                            h.achieve_title_idx = title.s_index;
                             h.achieve_stat_bonuses = [
                                 title.str,
                                 title.hp,
@@ -2337,7 +2348,7 @@ fn is_pk_zone_for_ishome(zone_id: u16) -> bool {
 fn is_in_total_temple_event_zone(zone_id: u16) -> bool {
     matches!(
         zone_id,
-        55 | 76 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 89 | 95
+        55 | 57 | 58 | 59 | 60 | 76 | 81 | 82 | 83 | 84 | 85 | 86 | 87 | 89 | 95
     )
 }
 

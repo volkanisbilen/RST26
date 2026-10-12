@@ -137,6 +137,11 @@ pub struct ManesSurvivalManager {
     unlocked_magic: DashMap<SessionId, DashSet<u32>>,
     selected_rows: DashMap<SessionId, DashMap<u16, u16>>,
     offers: DashMap<SessionId, ManesOffer>,
+    /// Real max HP/MP of every participant, put back exactly when they leave.
+    saved_vitals: DashMap<SessionId, (i16, i16)>,
+    /// Orb rewards that did not fit the bag at the end; handed over again on exit.
+    pending_rewards: DashMap<SessionId, u16>,
+    registration_deadline: RwLock<Option<Instant>>,
     started_at: RwLock<Option<Instant>>,
     final_boss_killed_at: RwLock<Option<Instant>>,
 }
@@ -153,6 +158,9 @@ impl Default for ManesSurvivalManager {
             unlocked_magic: DashMap::new(),
             selected_rows: DashMap::new(),
             offers: DashMap::new(),
+            saved_vitals: DashMap::new(),
+            pending_rewards: DashMap::new(),
+            registration_deadline: RwLock::new(None),
             started_at: RwLock::new(None),
             final_boss_killed_at: RwLock::new(None),
         }
@@ -217,6 +225,12 @@ impl ManesSurvivalManager {
             return false;
         }
         self.participants.clear();
+        *self.registration_deadline.write() = Some(
+            Instant::now()
+                + Duration::from_secs(u64::from(
+                    crate::handler::survival::REGISTRATION_DURATION_SECONDS,
+                )),
+        );
         !self.registration_open.swap(true, Ordering::AcqRel)
     }
 
@@ -323,9 +337,7 @@ impl ManesSurvivalManager {
             return;
         }
 
-        let participants = self.participant_ids();
-        let (rewarded, failed) = self.reward_rankings_and_stop(&world);
-        Self::schedule_participant_exit(world, participants);
+        let (rewarded, failed) = self.finish_event(&world);
         tracing::info!(
             rewarded,
             failed,
@@ -511,6 +523,152 @@ impl ManesSurvivalManager {
             .unwrap_or(false)
     }
 
+    /// While a participant plays, every recalculation (items, buffs, respawn, death)
+    /// must keep the event vitals instead of falling back to the real character's.
+    pub fn vitals_override(&self, session_id: SessionId) -> Option<(i16, i16)> {
+        if !self.is_active() {
+            return None;
+        }
+        let progress = self.progress(session_id)?;
+        let hp_bonus = self.combat_bonuses(session_id).hp.clamp(0, i16::MAX);
+        Some(vitals_for_level(progress.level, hp_bonus))
+    }
+
+    /// True while the player is a live participant (progress exists and the event runs).
+    pub fn is_participant_playing(&self, session_id: SessionId) -> bool {
+        self.is_active() && self.progress.contains_key(&session_id)
+    }
+
+    /// Drop every per-player event record (ranking, skills, offers).
+    fn forget(&self, session_id: SessionId) {
+        self.participants.remove(&session_id);
+        self.progress.remove(&session_id);
+        self.unlocked_magic.remove(&session_id);
+        self.selected_rows.remove(&session_id);
+        self.offers.remove(&session_id);
+    }
+
+    /// Entering the event: remember the real max HP/MP and clear event leftovers.
+    fn begin_for(&self, world: &WorldState, session_id: SessionId) {
+        self.cleanup_temporary_items_for_session(world, session_id);
+        if let Some(ch) = world.get_character_info(session_id) {
+            self.saved_vitals
+                .entry(session_id)
+                .or_insert((ch.max_hp, ch.max_mp));
+        }
+    }
+
+    /// Leaving the event by any road (finish, GM close, warp, disconnect): the real
+    /// max HP/MP come back exactly, event-only potions are taken, the player is no
+    /// longer a participant. With `notify` the client gets the new bars as well.
+    /// Returns false when the player was not inside the event.
+    pub fn leave_event(&self, world: &WorldState, session_id: SessionId, notify: bool) -> bool {
+        let saved = self.saved_vitals.remove(&session_id);
+        // Registered-only players and everybody who leaves lose their event records.
+        self.forget(session_id);
+        let Some((_, (max_hp, max_mp))) = saved else {
+            return false;
+        };
+        self.cleanup_temporary_items_for_session(world, session_id);
+        world.update_character_stats(session_id, |ch| {
+            ch.max_hp = max_hp;
+            ch.max_mp = max_mp;
+            ch.hp = max_hp;
+            ch.mp = max_mp;
+        });
+        if notify {
+            world.send_to_session_owned(
+                session_id,
+                crate::handler::max_hp_change::build_max_hp_change(i32::from(max_hp)),
+            );
+            world.send_to_session_owned(
+                session_id,
+                crate::systems::regen::build_hp_change_packet(max_hp, max_hp),
+            );
+            world.send_to_session_owned(
+                session_id,
+                crate::systems::regen::build_mp_change_packet(max_mp, max_mp),
+            );
+            world.send_item_move_refresh(session_id);
+        }
+        true
+    }
+
+    /// A dead participant comes back on their nation's entry line inside the same zone.
+    pub fn respawn_point(
+        &self,
+        world: &WorldState,
+        session_id: SessionId,
+        zone_id: u16,
+    ) -> Option<(f32, f32)> {
+        use rand::Rng;
+        if !ZONES_MANES_SURVIVAL.contains(&zone_id) || !self.is_participant_playing(session_id) {
+            return None;
+        }
+        let nation = world.get_character_info(session_id)?.nation;
+        let (start, end) = if nation == crate::world::NATION_KARUS {
+            (KARUS_ENTRY_START, KARUS_ENTRY_END)
+        } else {
+            (ELMORAD_ENTRY_START, ELMORAD_ENTRY_END)
+        };
+        let zone = world.get_zone(zone_id)?;
+        let mut rng = rand::thread_rng();
+        for _ in 0..8 {
+            let f: f32 = rng.gen_range(0.05..0.95);
+            let x = start.0 + (end.0 - start.0) * f;
+            let z = start.1 + (end.1 - start.1) * f;
+            if zone.is_valid_position(x, z) {
+                return Some((x, z));
+            }
+        }
+        None
+    }
+
+    /// Every second: the registration countdown starts the event, the 20 minutes end it.
+    pub fn tick(&self, world: &Arc<WorldState>) {
+        if self.is_registration_open() && !self.is_active() {
+            let due = self
+                .registration_deadline
+                .read()
+                .as_ref()
+                .map(|d| Instant::now() >= *d)
+                .unwrap_or(false);
+            if due {
+                self.registration_deadline.write().take();
+                match self.start_registered_event(world) {
+                    Ok((count, players)) => {
+                        tracing::info!(
+                            count,
+                            players,
+                            "Manes Survival started after the registration countdown"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!("Manes Survival could not start: {error:#}");
+                        let notice = Arc::new(crate::systems::timed_notice::build_notice_packet(
+                            8,
+                            "Manes Survival iptal edildi: yeterli katilimci yok.",
+                        ));
+                        world.broadcast_to_all(notice, None);
+                        self.stop(world);
+                    }
+                }
+            }
+        }
+        if self.is_active() && self.started_at.read().is_some() && self.remaining_seconds() == 0 {
+            tracing::info!("Manes Survival time is up");
+            self.finish_event(world);
+        }
+    }
+
+    /// Rewards, stop and the delayed evacuation of every participant.
+    pub fn finish_event(&self, world: &Arc<WorldState>) -> (usize, usize) {
+        let participants = self.participant_ids();
+        let result = self.reward_rankings_and_stop(world);
+        Self::schedule_participant_exit(world.clone(), participants);
+        result
+    }
+
     pub fn reset_progress(&self, session_id: SessionId) -> ManesProgress {
         let progress = ManesProgress {
             level: 1,
@@ -565,7 +723,10 @@ impl ManesSurvivalManager {
     /// Start the event and place every online registrant on the nation-specific
     /// outer entry line. The client-confirmed registration countdown sends this
     /// transition once it expires; the GM command uses this same path.
-    pub fn start_registered_event(&self, world: &WorldState) -> anyhow::Result<(usize, usize)> {
+    pub fn start_registered_event(
+        &self,
+        world: &Arc<WorldState>,
+    ) -> anyhow::Result<(usize, usize)> {
         let participants = self.active_participant_ids(world);
         if participants.len() < MIN_ACTIVE_PARTICIPANTS {
             anyhow::bail!(
@@ -578,26 +739,39 @@ impl ManesSurvivalManager {
             return Ok((0, participants.len()));
         }
 
-        if let Err(error) = self.place_participants(world, &participants) {
+        let placed = self.place_participants(world, &participants);
+        if placed == 0 {
             self.stop(world);
-            return Err(error);
+            anyhow::bail!("no registered participant could be placed in the event zones");
         }
 
-        Ok((monster_count, participants.len()))
+        Ok((monster_count, placed))
     }
 
-    fn place_participants(
-        &self,
-        world: &WorldState,
-        participants: &[SessionId],
-    ) -> anyhow::Result<()> {
+    /// Put every registrant on their nation's entry line. Players that went offline,
+    /// died or cannot be placed are dropped from the event instead of aborting it.
+    /// Returns how many players are inside.
+    fn place_participants(&self, world: &WorldState, participants: &[SessionId]) -> usize {
         let mut karus_index = 0usize;
         let mut elmorad_index = 0usize;
+        let mut placed = 0usize;
+        let skip_notice = |sid: SessionId, text: &str| {
+            world.send_to_session_owned(
+                sid,
+                crate::systems::timed_notice::build_notice_packet(8, text),
+            );
+        };
 
         for (zone_index, sid) in participants.iter().copied().enumerate() {
-            let character = world.get_character_info(sid).ok_or_else(|| {
-                anyhow::anyhow!("registered participant {sid} is no longer online")
-            })?;
+            let Some(character) = world.get_character_info(sid) else {
+                self.forget(sid);
+                continue;
+            };
+            if world.is_player_dead(sid) {
+                skip_notice(sid, "Manes Survival: olu oldugun icin etkinlige alinmadin.");
+                self.forget(sid);
+                continue;
+            }
             let nation = character.nation;
             let (start, end, nation_index) = match nation {
                 crate::world::NATION_KARUS => {
@@ -610,7 +784,11 @@ impl ManesSurvivalManager {
                     elmorad_index += 1;
                     (ELMORAD_ENTRY_START, ELMORAD_ENTRY_END, index)
                 }
-                _ => anyhow::bail!("registered participant {sid} has invalid nation {nation}"),
+                _ => {
+                    tracing::warn!(sid, nation, "Manes Survival participant has an invalid nation");
+                    self.forget(sid);
+                    continue;
+                }
             };
 
             // Golden-ratio spacing is deterministic, avoids stacked users and
@@ -619,14 +797,18 @@ impl ManesSurvivalManager {
             let x = start.0 + (end.0 - start.0) * fraction;
             let z = start.1 + (end.1 - start.1) * fraction;
             let zone_id = ZONES_MANES_SURVIVAL[zone_index % ZONES_MANES_SURVIVAL.len()];
-            let zone = world
+            let valid = world
                 .get_zone(zone_id)
-                .ok_or_else(|| anyhow::anyhow!("Manes Survival zone {zone_id} is not loaded"))?;
-            if !zone.is_valid_position(x, z) {
-                anyhow::bail!(
-                    "Manes Survival participant {sid} has invalid entry position in zone {zone_id}: ({x:.1}, {z:.1})"
-                );
+                .map(|zone| zone.is_valid_position(x, z))
+                .unwrap_or(false);
+            if !valid {
+                tracing::warn!(sid, zone_id, x, z, "Manes Survival entry position is invalid");
+                self.forget(sid);
+                continue;
             }
+
+            // Real max HP/MP are remembered first; leftovers of an older run are taken.
+            self.begin_for(world, sid);
 
             // The client keeps the registration countdown alive until this
             // exact event-state packet initialises CSurvival. Send it before
@@ -641,11 +823,10 @@ impl ManesSurvivalManager {
             // class, nation, race or gender. Row 3 is the client-confirmed
             // canonical loadout used by the last known-good test.
             const UNIFORM_MANES_LOADOUT: u8 = 3;
-            let survival_setting = UNIFORM_MANES_LOADOUT;
             world.send_to_session_owned(
                 sid,
                 crate::handler::survival::build_event_start(
-                    survival_setting,
+                    UNIFORM_MANES_LOADOUT,
                     crate::handler::survival::EVENT_DURATION_SECONDS,
                     0,
                     initial_max_exp,
@@ -655,9 +836,10 @@ impl ManesSurvivalManager {
             crate::handler::attack::sync_manes_vitals_and_level(world, sid, progress, true);
 
             crate::handler::zone_change::server_teleport_to_zone_force(world, sid, zone_id, x, z);
+            placed += 1;
         }
 
-        Ok(())
+        placed
     }
 
     /// Spawn the configured event population exactly once.
@@ -774,6 +956,7 @@ impl ManesSurvivalManager {
         self.active.store(false, Ordering::Release);
         self.registration_open.store(false, Ordering::Release);
         self.started_at.write().take();
+        self.registration_deadline.write().take();
         self.final_boss_killed_at.write().take();
         self.participants.clear();
         self.progress.clear();
@@ -815,6 +998,8 @@ impl ManesSurvivalManager {
         for (index, (sid, level, score, name)) in ranking.into_iter().enumerate() {
             let rank = index + 1;
             let count = orb_reward_for_rank(rank);
+            // The event potions may fill the bag; they are worthless after the event.
+            self.cleanup_temporary_items_for_session(world, sid);
             if world.give_item(sid, MANES_ORB_ITEM_ID, count) {
                 rewarded += 1;
                 tracing::info!(
@@ -829,13 +1014,14 @@ impl ManesSurvivalManager {
                 );
             } else {
                 failed += 1;
+                self.pending_rewards.insert(sid, count);
                 tracing::error!(
                     sid,
                     character = %name,
                     rank,
                     item_id = MANES_ORB_ITEM_ID,
                     item_count = count,
-                    "Manes Survival ranking reward could not be granted"
+                    "Manes Survival ranking reward could not be granted (retried on exit)"
                 );
             }
         }
@@ -886,22 +1072,33 @@ impl ManesSurvivalManager {
 
             for sid in participants {
                 let Some(position) = world.get_position(sid) else {
+                    world.manes_survival_manager.pending_rewards.remove(&sid);
                     continue;
                 };
+
+                // The real max HP/MP come back exactly, event potions go, the
+                // client gets the real bars before its Survival mode is closed.
+                world.manes_survival_manager.leave_event(&world, sid, true);
+
+                // An Orb reward that did not fit the bag is tried again now.
+                if let Some((_, count)) = world.manes_survival_manager.pending_rewards.remove(&sid)
+                {
+                    let text = if world.give_item(sid, MANES_ORB_ITEM_ID, count) {
+                        format!("Manes Survival odulu: {count} Manes Orb envanterine eklendi.")
+                    } else {
+                        format!(
+                            "Envanterin dolu: {count} Manes Orb verilemedi. Yer actiktan sonra bir GM ile gorus."
+                        )
+                    };
+                    world.send_to_session_owned(
+                        sid,
+                        crate::systems::timed_notice::build_notice_packet(8, &text),
+                    );
+                }
+
                 if !ZONES_MANES_SURVIVAL.contains(&position.zone_id) {
                     continue;
                 }
-
-                // Manes modifies only live derived values. Rebuild them from the
-                // persistent character, equipment and buffs before emitting the
-                // normal level/stat contract. The permanent Orb reward remains
-                // in the same authoritative inventory.
-                world.set_user_ability(sid);
-                world.recalculate_max_hp_mp(sid);
-                world.update_character_stats(sid, |character| {
-                    character.hp = character.max_hp;
-                    character.mp = character.max_mp;
-                });
 
                 let Some(character) = world.get_character_info(sid) else {
                     continue;
@@ -930,6 +1127,23 @@ impl ManesSurvivalManager {
                 level_packet.write_u32(equipped.item_weight);
                 world.send_to_session_owned(sid, level_packet);
                 world.send_item_move_refresh(sid);
+
+                // A dead player is brought back first, otherwise they would arrive dead.
+                if world.is_player_dead(sid) {
+                    world.update_res_hp_type(sid, crate::world::USER_STANDING);
+                    world.update_session(sid, |h| {
+                        h.who_killed_me = -1;
+                        h.lost_exp = 0;
+                    });
+                    world.update_character_hp(sid, character.max_hp);
+                    world.send_to_session_owned(
+                        sid,
+                        crate::systems::regen::build_hp_change_packet(
+                            character.max_hp,
+                            character.max_hp,
+                        ),
+                    );
+                }
 
                 let home_zone = crate::systems::war::nation_home_zone(character.nation);
                 crate::handler::zone_change::server_teleport_to_zone(
@@ -983,6 +1197,21 @@ mod tests {
         assert_eq!(orb_reward_for_rank(3), 50);
         assert_eq!(orb_reward_for_rank(4), 20);
         assert_eq!(orb_reward_for_rank(200), 20);
+    }
+
+    #[test]
+    fn vitals_override_only_while_a_participant_plays() {
+        let manager = ManesSurvivalManager::default();
+        assert_eq!(manager.vitals_override(1), None);
+        manager.reset_progress(1);
+        // event not running yet: the real vitals stay
+        assert_eq!(manager.vitals_override(1), None);
+        manager.active.store(true, Ordering::Release);
+        assert_eq!(manager.vitals_override(1), Some((1_060, 200)));
+        assert!(manager.is_participant_playing(1));
+        assert!(!manager.is_participant_playing(2));
+        manager.forget(1);
+        assert_eq!(manager.vitals_override(1), None);
     }
 
     #[test]

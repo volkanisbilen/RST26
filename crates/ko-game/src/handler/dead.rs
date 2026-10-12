@@ -394,6 +394,11 @@ pub async fn apply_npc_death_xp_loss(
         None => return,
     };
 
+    // Manes Survival runs on its own temporary level: a death never costs real EXP.
+    if crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&pos.zone_id) {
+        return;
+    }
+
     // C++ checks ONLY m_bExpLost — war_zone flag is independent (Unit.cpp:2162,2174).
     let should_lose_exp = world.get_zone(pos.zone_id).is_some_and(|zone| {
         zone.zone_info
@@ -443,6 +448,10 @@ fn is_no_gold_loss_zone(zone_id: u16) -> bool {
             | ZONE_CAITHAROS_ARENA
             | ZONE_ISILOON_ARENA
             | ZONE_FELANKOR_ARENA
+            | 57
+            | 58
+            | 59
+            | 60
     )
 }
 

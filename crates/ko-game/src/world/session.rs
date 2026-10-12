@@ -151,6 +151,7 @@ impl WorldState {
                 achieve_timed: HashMap::new(),
                 achieve_challenge_active: false,
                 achieve_stat_bonuses: [0i16; 7],
+                achieve_title_idx: 0,
                 requesting_challenge: 0,
                 challenge_requested: 0,
                 challenge_user: -1,

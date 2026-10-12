@@ -64,6 +64,10 @@ impl WorldState {
     /// `damage` is only used for `ACID_ALL`, `UTC_ATTACK`, and `UTC_DEFENCE` (exact amount);
     /// for `ATTACK` and `DEFENCE`, `rand(2..=5)` is used instead.
     pub fn item_wore_out(&self, sid: SessionId, wore_type: i32, damage: i32) {
+        // Manes plays with a temporary client-side loadout; the real equipment stays untouched.
+        if self.manes_survival_manager.is_participant_playing(sid) {
+            return;
+        }
         let worerate = match wore_type {
             WORE_TYPE_ACID_ALL | WORE_TYPE_UTC_ATTACK | WORE_TYPE_UTC_DEFENCE => damage,
             _ => {

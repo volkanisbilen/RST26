@@ -442,6 +442,8 @@ pub struct SessionHandle {
     /// Stat bonuses from equipped skill title [STR, STA, DEX, INT, CHA, Attack, Defence].
     ///
     pub achieve_stat_bonuses: [i16; 7],
+    /// ACHIEVE_TITLE row of the equipped skill title (extra bonuses: resist, element, exp/NP, weapon AC).
+    pub achieve_title_idx: i32,
 
     // â”€â”€ Challenge (Duel) State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     /// Non-zero when this player is the challenger (sent the request).
@@ -1919,6 +1921,8 @@ pub struct AchieveSummary {
     pub skill_id: u16,
     /// Equipped skill title ID (from achieve_main.title_id).
     pub skill_title: u16,
+    /// ACHIEVE_TITLE row selected by the client (stat bonus row, 0 = none).
+    pub skill_title_row: u16,
 }
 
 /// Lightweight snapshot of session data for regen tick processing.

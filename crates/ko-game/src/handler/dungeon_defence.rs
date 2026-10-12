@@ -899,6 +899,11 @@ pub fn equalize(world: &crate::world::WorldState, sid: u16) {
     world.send_to_session_owned(sid, crate::systems::regen::build_hp_change_packet(RIFT_HP, RIFT_HP));
 }
 
+/// True while the player holds the rift's equalized HP.
+pub fn is_equalized(sid: u16) -> bool {
+    saved_stats().lock().contains_key(&sid)
+}
+
 /// Put the remembered real max HP/MP back (no packets). Returns the values when there were any.
 pub fn restore_saved(world: &crate::world::WorldState, sid: u16) -> Option<(i16, i16)> {
     let saved = saved_stats().lock().remove(&sid)?;

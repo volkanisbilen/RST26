@@ -246,6 +246,7 @@ async fn save_all_characters(world: &WorldState, pool: &DbPool) {
                             ],
                             summary.cover_id as i16,
                             summary.skill_id as i16,
+                            summary.skill_title_row as i16,
                         )
                         .await
                     {
@@ -1145,6 +1146,7 @@ pub async fn save_single_character_sync(
                     ],
                     summary.cover_id as i16,
                     summary.skill_id as i16,
+                    summary.skill_title_row as i16,
                 )
                 .await
             {

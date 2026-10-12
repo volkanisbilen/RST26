@@ -25,6 +25,8 @@ impl WorldState {
     const WEAPON_KIND_2H_SPEAR: i32 = 52;
 
     const WEAPON_KIND_BOW: i32 = 70;
+    /// Pseudo slot key for the equipped skill title's elemental bonuses.
+    const ACHIEVE_BONUS_SLOT: usize = 200;
 
     const WEAPON_KIND_CROSSBOW: i32 = 71;
 
@@ -536,7 +538,7 @@ impl WorldState {
         }
 
         // ── Phase 1: Snapshot session data (brief read lock) ────────────
-        let (ch, inventory, perk_levels, achieve_stat, weight_buff, buff) = {
+        let (ch, inventory, perk_levels, mut achieve_stat, achieve_title_idx, weight_buff, buff) = {
             let handle = match self.sessions.get(&sid) {
                 Some(h) => h,
                 None => return,
@@ -548,6 +550,7 @@ impl WorldState {
             let inventory = handle.inventory.clone();
             let perk_levels = handle.perk_levels;
             let achieve_stat = handle.achieve_stat_bonuses;
+            let achieve_title_idx = handle.achieve_title_idx;
             let weight_buff = handle.weight_buff_amount;
 
             // Single-pass buff aggregation — replaces 5 separate iterations.
@@ -578,7 +581,7 @@ impl WorldState {
                     ba.mp_pct += b.max_mp_pct - 100;
                 }
             }
-            (ch, inventory, perk_levels, achieve_stat, weight_buff, ba)
+            (ch, inventory, perk_levels, achieve_stat, achieve_title_idx, weight_buff, ba)
         }; // Read lock dropped.
 
         // ── Phase 2: Compute stats (no session lock held) ───────────────
@@ -587,6 +590,48 @@ impl WorldState {
         let is_gm = ch.authority == 0;
         let coeff_row = self.get_coefficient(ch.class);
         let mut stats = self.compute_slot_item_values(&inventory);
+
+        // Equipped skill title: its stat bonuses count as item bonuses (so the client's
+        // stat window and every formula see them), plus resistances, weapon AC, element
+        // damage and EXP/NP bonus. The attack/defence part stays in `achieve_stat`.
+        if achieve_title_idx > 0 {
+            if let Some(t) = self.achieve_title(achieve_title_idx) {
+                stats.stat_bonuses[0] += achieve_stat[0];
+                stats.stat_bonuses[1] += achieve_stat[1];
+                stats.stat_bonuses[2] += achieve_stat[2];
+                stats.stat_bonuses[3] += achieve_stat[3];
+                stats.stat_bonuses[4] += achieve_stat[4];
+                achieve_stat[..5].fill(0);
+                stats.fire_r += t.s_fire_resist;
+                stats.cold_r += t.s_ice_resist;
+                stats.lightning_r += t.s_light_resist;
+                stats.magic_r += t.s_magic_resist;
+                stats.disease_r += t.s_curse_resist;
+                stats.poison_r += t.s_poison_resist;
+                stats.dagger_r += t.s_short_sword_ac;
+                stats.jamadar_r += t.s_jamadar_ac;
+                stats.sword_r += t.s_sword_ac;
+                stats.club_r += t.s_blow_ac;
+                stats.axe_r += t.s_axe_ac;
+                stats.spear_r += t.s_spear_ac;
+                stats.bow_r += t.s_arrow_ac;
+                stats.item_exp_bonus = stats.item_exp_bonus.saturating_add(t.s_exp_bonus.max(0) as u8);
+                stats.item_np_bonus = stats.item_np_bonus.saturating_add(t.s_loyalty_bonus.max(0) as u8);
+                let mut el: Vec<(u8, i32)> = Vec::new();
+                if t.s_fire_bonus > 0 {
+                    el.push((1, t.s_fire_bonus as i32));
+                }
+                if t.s_ice_bonus > 0 {
+                    el.push((2, t.s_ice_bonus as i32));
+                }
+                if t.s_light_bonus > 0 {
+                    el.push((3, t.s_light_bonus as i32));
+                }
+                if !el.is_empty() {
+                    stats.equipped_item_bonuses.insert(Self::ACHIEVE_BONUS_SLOT, el);
+                }
+            }
+        }
 
         // Pre-fetch perk definitions for all indices used in ability calculation.
         // Batches 5 DashMap lookups into one contiguous block instead of scattering
@@ -1067,6 +1112,16 @@ impl WorldState {
             buff.mp_flat + pct_amount
         };
         let new_max_mp = (mp_before_buff + buff_mp_bonus).clamp(0, i16::MAX as i32) as i16;
+
+        // Event vitals win over the real character's formula: Manes level vitals and the
+        // Full Moon Rift's equalized HP must survive every recalculation (item, buff, death).
+        let (new_max_hp, new_max_mp) = match self.manes_survival_manager.vitals_override(sid) {
+            Some((hp, mp)) => (hp, mp),
+            None if crate::handler::dungeon_defence::is_equalized(sid) => {
+                (crate::handler::dungeon_defence::RIFT_HP, new_max_mp)
+            }
+            None => (new_max_hp, new_max_mp),
+        };
 
         // ── Phase 3: Apply results (brief write lock) ───────────────
         let mut max_hp_changed: Option<i32> = None;
@@ -5190,6 +5245,58 @@ mod tests {
         // Base total_ac = 0.05 * (60 + 0) = 3
         // + 5 achievement defense = 8
         assert_eq!(stats.total_ac, 8);
+    }
+
+    /// A skill title counts as item bonus: stat window, resistances, weapon AC and EXP/NP bonus.
+    #[test]
+    fn test_achievement_title_full_bonus() {
+        let world = setup_equip_world();
+        world.coefficients.insert(101, make_test_coeff(101));
+        world.achieve_title.insert(
+            7,
+            ko_db::models::AchieveTitleRow {
+                s_index: 7,
+                str: 4,
+                hp: 3,
+                dex: 2,
+                int: 1,
+                mp: 5,
+                attack: 0,
+                defence: 0,
+                s_loyalty_bonus: 20,
+                s_exp_bonus: 10,
+                s_short_sword_ac: 1,
+                s_jamadar_ac: 0,
+                s_sword_ac: 2,
+                s_blow_ac: 0,
+                s_axe_ac: 0,
+                s_spear_ac: 0,
+                s_arrow_ac: 3,
+                s_fire_bonus: 6,
+                s_ice_bonus: 0,
+                s_light_bonus: 0,
+                s_fire_resist: 8,
+                s_ice_resist: 0,
+                s_light_resist: 0,
+                s_magic_resist: 9,
+                s_curse_resist: 0,
+                s_poison_resist: 0,
+            },
+        );
+        if let Some(mut h) = world.sessions.get_mut(&1) {
+            h.achieve_title_idx = 7;
+            h.achieve_stat_bonuses = [4, 3, 2, 1, 5, 0, 0];
+        }
+        world.set_user_ability(1);
+        let st = world.get_equipped_stats(1);
+        assert_eq!(st.stat_bonuses, [4, 3, 2, 1, 5]);
+        assert_eq!((st.fire_r, st.magic_r), (8, 9));
+        assert_eq!((st.dagger_r, st.sword_r, st.bow_r), (1, 2, 3));
+        assert_eq!((st.item_exp_bonus, st.item_np_bonus), (10, 20));
+        assert_eq!(st.equipped_item_bonuses.values().next(), Some(&vec![(1u8, 6)]));
+        // running it again must not stack the bonus
+        world.set_user_ability(1);
+        assert_eq!(world.get_equipped_stats(1).stat_bonuses, [4, 3, 2, 1, 5]);
     }
 
     /// Achievement bonuses with zero or negative values should not be applied.
