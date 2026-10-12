@@ -116,6 +116,8 @@ impl GameServer {
             admin_bind,
         ));
         info!("Admin control panel service initialized");
+        bg_tasks.push(crate::admin_queue::start(self.world.clone(), self.pool.clone()));
+        info!("Admin command queue started");
 
         bg_tasks.push(crate::systems::regen::start_regen_task(self.world.clone()));
         info!("HP/MP regen tick started");

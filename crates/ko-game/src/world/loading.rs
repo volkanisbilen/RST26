@@ -2159,6 +2159,11 @@ impl WorldState {
         }
     }
 
+    /// Re-read the event schedule tables (admin panel edits).
+    pub async fn reload_event_schedule(&self, pool: &DbPool) {
+        self.load_event_schedule(pool).await;
+    }
+
     /// Load event schedule, vroom opts, FT opts, rewards.
     async fn load_event_schedule(&self, pool: &DbPool) {
         use crate::systems::event_room::{EventScheduleEntry, ForgottenTempleOpts, VroomOpt};

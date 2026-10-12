@@ -959,6 +959,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ko-admin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "dashmap",
+ "hmac",
+ "ko-db",
+ "ko-tbl-import",
+ "mlua",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ko-core"
 version = "0.1.0"
 dependencies = [

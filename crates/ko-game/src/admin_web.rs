@@ -70,6 +70,10 @@ struct App {
 
 pub fn start(world: Arc<WorldState>, pool: DbPool, bind: String) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        if matches!(std::env::var("ADMIN_EMBEDDED").as_deref(), Ok("0") | Ok("off") | Ok("false")) {
+            info!("Embedded admin panel disabled (ADMIN_EMBEDDED=0): ko-admin serves the panel");
+            return;
+        }
         let app_state = App { world, pool };
         let router = Router::new()
             .route("/jstkoadminpanel/", get(index))
@@ -2351,91 +2355,10 @@ async fn control(
     Json(p): Json<Control>,
 ) -> Result<Json<Value>, ApiError> {
     let (_, s) = auth(&headers, true)?;
-    let mut detail = json!({"kind":p.kind,"action":p.action,"zone":p.zone});
-    match (p.kind.as_str(), p.action.as_str()) {
-        ("war", "start") => {
-            let z = p
-                .zone
-                .filter(|z| (1..=6).contains(z))
-                .ok_or(ApiError::BadRequest)?;
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i32;
-            let opened = app.world.update_battle_state(|state| {
-                if state.is_war_open() {
-                    crate::systems::war::reset_battle_zone(state);
-                }
-                crate::systems::war::battle_zone_open(
-                    state,
-                    crate::systems::war::BATTLEZONE_OPEN,
-                    z,
-                    now,
-                )
-            });
-            if !opened {
-                return Err(ApiError::Conflict);
-            };
-            app.world.change_ability_all_npcs(true);
-            crate::systems::war::broadcast_war_announcement(
-                &app.world,
-                "The war zone has opened!",
-                None,
-            );
-            detail["zone_id"] = json!(app.world.get_battle_state().battle_zone_id());
-        }
-        ("war", "stop") => {
-            let prev = app
-                .world
-                .update_battle_state(crate::systems::war::battle_zone_close);
-            if prev == crate::systems::war::NO_BATTLE {
-                return Err(ApiError::Conflict);
-            };
-            app.world.change_ability_all_npcs(false);
-            crate::systems::war::broadcast_war_announcement(&app.world, "The war has ended!", None);
-        }
-        ("event", "start") => {
-            let index = p.zone.filter(|z| *z <= 2).ok_or(ApiError::BadRequest)?;
-            let event_type = match index {
-                0 => TempleEventType::BorderDefenceWar,
-                1 => TempleEventType::ChaosDungeon,
-                _ => TempleEventType::JuraidMountain,
-            };
-            let opts = app.world.event_room_manager.vroom_opts.read()[index as usize]
-                .clone()
-                .unwrap_or(VroomOpt {
-                    name: format!("Event {index}"),
-                    sign: 5,
-                    play: 30,
-                    attack_open: 5,
-                    attack_close: 30,
-                    finish: 60,
-                });
-            let opened = event_system::open_virtual_event(
-                &app.world.event_room_manager,
-                &EventOpenParams {
-                    vroom_index: index,
-                    event_type,
-                    vroom_opts: opts,
-                    is_automatic: false,
-                    min_level: 0,
-                    max_level: 0,
-                    req_loyalty: 0,
-                    req_money: 0,
-                },
-            );
-            if !opened {
-                return Err(ApiError::Conflict);
-            };
-            detail["event_type"] = json!(event_type as i16);
-        }
-        ("event", "stop") => {
-            if !event_system::manual_close(&app.world.event_room_manager) {
-                return Err(ApiError::Conflict);
-            };
-        }
-        _ => return Err(ApiError::BadRequest),
-    };
+    let detail = execute_control(&app.world, &p.kind, &p.action, p.zone).map_err(|e| match e {
+        "conflict" => ApiError::Conflict,
+        _ => ApiError::BadRequest,
+    })?;
     let mut tx = app.pool.begin().await.map_err(|_| ApiError::Internal)?;
     audit(
         &mut tx,
@@ -2448,6 +2371,93 @@ async fn control(
     .await?;
     tx.commit().await.map_err(|_| ApiError::Internal)?;
     Ok(Json(json!({"ok":true})))
+}
+
+/// War / temple-event control, shared by the embedded panel and the `admin_command` queue.
+/// Errors are "bad_request" or "conflict".
+pub fn execute_control(
+    world: &WorldState,
+    kind: &str,
+    action: &str,
+    zone: Option<u8>,
+) -> Result<Value, &'static str> {
+    let mut detail = json!({"kind":kind,"action":action,"zone":zone});
+    match (kind, action) {
+        ("war", "start") => {
+            let z = zone.filter(|z| (1..=6).contains(z)).ok_or("bad_request")?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i32;
+            let opened = world.update_battle_state(|state| {
+                if state.is_war_open() {
+                    crate::systems::war::reset_battle_zone(state);
+                }
+                crate::systems::war::battle_zone_open(
+                    state,
+                    crate::systems::war::BATTLEZONE_OPEN,
+                    z,
+                    now,
+                )
+            });
+            if !opened {
+                return Err("conflict");
+            }
+            world.change_ability_all_npcs(true);
+            crate::systems::war::broadcast_war_announcement(world, "The war zone has opened!", None);
+            detail["zone_id"] = json!(world.get_battle_state().battle_zone_id());
+        }
+        ("war", "stop") => {
+            let prev = world.update_battle_state(crate::systems::war::battle_zone_close);
+            if prev == crate::systems::war::NO_BATTLE {
+                return Err("conflict");
+            }
+            world.change_ability_all_npcs(false);
+            crate::systems::war::broadcast_war_announcement(world, "The war has ended!", None);
+        }
+        ("event", "start") => {
+            let index = zone.filter(|z| *z <= 2).ok_or("bad_request")?;
+            let event_type = match index {
+                0 => TempleEventType::BorderDefenceWar,
+                1 => TempleEventType::ChaosDungeon,
+                _ => TempleEventType::JuraidMountain,
+            };
+            let opts = world.event_room_manager.vroom_opts.read()[index as usize]
+                .clone()
+                .unwrap_or(VroomOpt {
+                    name: format!("Event {index}"),
+                    sign: 5,
+                    play: 30,
+                    attack_open: 5,
+                    attack_close: 30,
+                    finish: 60,
+                });
+            let opened = event_system::open_virtual_event(
+                &world.event_room_manager,
+                &EventOpenParams {
+                    vroom_index: index,
+                    event_type,
+                    vroom_opts: opts,
+                    is_automatic: false,
+                    min_level: 0,
+                    max_level: 0,
+                    req_loyalty: 0,
+                    req_money: 0,
+                },
+            );
+            if !opened {
+                return Err("conflict");
+            }
+            detail["event_type"] = json!(event_type as i16);
+        }
+        ("event", "stop") => {
+            if !event_system::manual_close(&world.event_room_manager) {
+                return Err("conflict");
+            }
+        }
+        _ => return Err("bad_request"),
+    }
+    Ok(detail)
 }
 
 async fn audit(

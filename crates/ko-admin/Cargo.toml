@@ -1,0 +1,28 @@
+[package]
+name = "ko-admin"
+version.workspace = true
+edition.workspace = true
+description = "Standalone JstKO management panel (talks to PostgreSQL directly, works while the game server is down)"
+
+[[bin]]
+name = "ko-admin"
+path = "src/main.rs"
+
+[dependencies]
+ko-db = { workspace = true }
+ko-tbl-import = { path = "../ko-tbl-import" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+dashmap = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+axum = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+chrono = { workspace = true }
+mlua = { workspace = true }
