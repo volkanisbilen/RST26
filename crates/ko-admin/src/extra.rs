@@ -29,6 +29,7 @@ pub fn routes() -> Router<App> {
         .route("/jstkoadminpanel/api/clear-online/{name}", post(clear_online))
         .route("/jstkoadminpanel/api/item-search", get(item_search))
         .route("/jstkoadminpanel/api/item/{id}", get(item_detail))
+        .route("/jstkoadminpanel/api/icon-range", post(icon_range))
         .route("/jstkoadminpanel/api/clans", get(clans))
         .route("/jstkoadminpanel/api/clans/{id}", get(clan_detail))
         .route("/jstkoadminpanel/api/characters/{name}/clan", get(character_clan))
@@ -1021,4 +1022,43 @@ async fn static_file(Path(file): Path<String>) -> Response {
         Some((_, ct, body)) => ([(header::CONTENT_TYPE, *ct), (header::CACHE_CONTROL, "no-store")], *body).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct IconRange {
+    from: i32,
+    to: i32,
+    icon_id: i32,
+    reason: String,
+}
+
+/// Point a range of item numbers at one icon (for items whose DB icon id is wrong).
+async fn icon_range(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Json(p): Json<IconRange>,
+) -> R {
+    let (_, s) = auth(&headers, true)?;
+    if p.from <= 0 || p.to < p.from || p.to - p.from > 100_000_000 || p.icon_id < 10_000_000 || p.reason.trim().chars().count() < 3 {
+        return Err(ApiError::BadRequest);
+    }
+    let found = icon_candidates(&p.icon_id.to_string())
+        .iter()
+        .any(|n| app.icon_dir.join(n).is_file());
+    if !found {
+        return Err(ApiError::BadRequest);
+    }
+    let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
+    let n = sqlx::query("UPDATE item SET item_icon_id1=$3, item_icon_id2=$3 WHERE num BETWEEN $1 AND $2")
+        .bind(p.from)
+        .bind(p.to)
+        .bind(p.icon_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal("icon range"))?
+        .rows_affected();
+    audit(&mut tx, &s.actor, "item.icon_range", &format!("{}-{}", p.from, p.to), json!({"icon_id":p.icon_id,"rows":n,"reason":p.reason.trim()}), peer.ip()).await?;
+    tx.commit().await.map_err(internal("commit"))?;
+    Ok(Json(json!({"ok":true,"rows":n})))
 }

@@ -110,7 +110,16 @@ PAGE.items=async function(main,[idArg]){
     items.forEach(it=>{const s=itemSlot(it,{drag:false});s.addEventListener('click',()=>show(it.id));res.append(s)});
     if(!items.length)res.append(h('span',{class:'muted'},'Sonuç yok'));
   }
-  main.append(head('Item Veritabanı','Oyundaki gibi tooltip ile tüm item şablonları'),h('div',{class:'row',style:'margin-bottom:6px'},sb.el),chips,
+  const rangeBtn=h('button',{class:'btn',onclick:()=>{
+    const F={from:h('input',{type:'number',placeholder:'184430000'}),to:h('input',{type:'number',placeholder:'184439999'}),icon:h('input',{type:'number',placeholder:'18443000'}),why:h('input',{placeholder:'Sebep (zorunlu)'})};
+    const prev=h('div',{class:'slot full',style:'width:56px;height:56px'});
+    F.icon.addEventListener('input',()=>{clear(prev).append(h('img',{src:icon(Number(F.icon.value)),onerror:iconErr}))});
+    modal('Aralığa ikon ata',h('div',{class:'col'},h('div',{class:'hint'},'Item numarası aralığındaki tüm itemlerin ikon numarası değişir (varyantlar dahil). İkon numarası = itemicon_a_bbbb_cc_d dosyasındaki rakamlar birleşik: itemicon_1_8443_00_0 → 18443000.'),
+      h('div',{class:'form'},field('Item no (başlangıç)',F.from),field('Item no (bitiş)',F.to),field('İkon numarası',F.icon),field('Önizleme',prev),field('Sebep',F.why,true))),[
+      {label:'İptal',cls:'ghost'},{label:'Uygula',cls:'primary',keep:true,fn:async close=>{
+        try{const d=await api('/icon-range',{body:{from:Number(F.from.value),to:Number(F.to.value),icon_id:Number(F.icon.value),reason:F.why.value}});toast(d.rows+' item güncellendi','ok');itemCache.clear();close()}catch(_){}return true}}]);
+  }},ico('layers'),'Aralığa ikon ata');
+  main.append(head('Item Veritabanı','Oyundaki gibi tooltip ile tüm item şablonları',rangeBtn),h('div',{class:'row',style:'margin-bottom:6px'},sb.el),chips,
     h('div',{class:'grid',style:'grid-template-columns:minmax(0,1fr) minmax(300px,380px);align-items:start'},h('div',{class:'card'},res),detail));
   if(idArg){sb.input.value=idArg;run();show(Number(idArg))}
 };
