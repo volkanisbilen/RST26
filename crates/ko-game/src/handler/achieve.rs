@@ -593,6 +593,15 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         None => return Ok(()),
     };
 
+    if (16..=19).contains(&sub_opcode) {
+        tracing::info!(
+            sid = session.session_id(),
+            sub_opcode,
+            data = ?pkt.data,
+            "WIZ_USER_ACHIEVE title packet"
+        );
+    }
+
     match sub_opcode {
         2 => handle_gift_request(session, &mut r).await,
         3 => handle_detail_show(session, &mut r).await,
