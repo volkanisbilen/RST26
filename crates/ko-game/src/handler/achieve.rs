@@ -594,7 +594,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     };
 
     if (16..=19).contains(&sub_opcode) {
-        tracing::info!(
+        tracing::warn!(
             sid = session.session_id(),
             sub_opcode,
             data = ?pkt.data,
@@ -1113,7 +1113,7 @@ async fn handle_skill_title(
     } else {
         world.achieve_title(skill_id as i32)
     };
-    tracing::info!(
+    tracing::warn!(
         sid,
         cover_id,
         skill_id,
