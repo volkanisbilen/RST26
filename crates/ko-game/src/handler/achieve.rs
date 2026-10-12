@@ -1080,21 +1080,41 @@ async fn handle_skill_title(
     let sid = session.session_id();
 
     // Check achievement status
-    let status_ok = world.with_session(sid, |h| {
-        h.achieve_map.get(&cover_id).map(|info| {
-            info.status == AchieveStatus::Finished as u8
-                || info.status == AchieveStatus::Completed as u8
-        })
-    });
-
+    let finished = |h: &crate::world::SessionHandle, id: u16| {
+        h.achieve_map
+            .get(&id)
+            .map(|info| {
+                info.status == AchieveStatus::Finished as u8
+                    || info.status == AchieveStatus::Completed as u8
+            })
+            .unwrap_or(false)
+    };
+    let status_ok = world.with_session(sid, |h| finished(h, cover_id));
+    // `skill_id` is the achievement ticked in the "skill" column; its
+    // ACHIEVE_MAIN.title_id is the ACHIEVE_TITLE stat row (the Effect Description).
+    // A value that is not a finished achievement is taken as the stat row itself.
+    let skill_is_achievement = world
+        .with_session(sid, |h| finished(h, skill_id))
+        .unwrap_or(false);
     let main_entry = world.achieve_main(cover_id as i32);
-    // The client sends two different IDs: cover_id authorizes the completed
-    // achievement, while skill_id selects the actual ACHIEVE_TITLE stat row.
-    // Looking the bonus up through cover_id silently applied a different (or
-    // empty) title whenever the player selected an attack/defence variant.
-    let title_entry = world.achieve_title(skill_id as i32);
+    let title_entry = if skill_is_achievement {
+        world
+            .achieve_main(skill_id as i32)
+            .and_then(|m| world.achieve_title(m.title_id as i32))
+    } else {
+        world.achieve_title(skill_id as i32)
+    };
+    tracing::info!(
+        sid,
+        cover_id,
+        skill_id,
+        skill_is_achievement,
+        status_ok = ?status_ok,
+        title_row = ?title_entry.as_ref().map(|t| t.s_index),
+        "skill title equip request"
+    );
 
-    if !status_ok.flatten().unwrap_or(false) || main_entry.is_none() || title_entry.is_none() {
+    if !status_ok.unwrap_or(false) || main_entry.is_none() || title_entry.is_none() {
         // Reset skill title
         world.update_session(sid, |h| {
             h.achieve_summary.skill_title = 0;
