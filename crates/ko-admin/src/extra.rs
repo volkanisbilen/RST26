@@ -30,6 +30,7 @@ pub fn routes() -> Router<App> {
         .route("/jstkoadminpanel/api/item-search", get(item_search))
         .route("/jstkoadminpanel/api/item/{id}", get(item_detail))
         .route("/jstkoadminpanel/api/icon-range", post(icon_range))
+        .route("/jstkoadminpanel/api/icon-debug/{id}", get(icon_debug))
         .route("/jstkoadminpanel/api/clans", get(clans))
         .route("/jstkoadminpanel/api/clans/{id}", get(clan_detail))
         .route("/jstkoadminpanel/api/characters/{name}/clan", get(character_clan))
@@ -377,10 +378,11 @@ async fn icon(State(app): State<App>, Path(file): Path<String>) -> Response {
             }
         }
     }
-    // missing picture: the folder's own bos.jpg, else a tiny placeholder
+    // missing picture: the folder's own bos.jpg (never cached, so a later fix shows up at once)
+    let no_cache = (header::CACHE_CONTROL, "no-store");
     match tokio::fs::read(app.icon_dir.join("bos.jpg")).await {
-        Ok(bytes) => ([jpeg, cache], bytes).into_response(),
-        Err(_) => ([(header::CONTENT_TYPE, "image/png"), cache], PLACEHOLDER).into_response(),
+        Ok(bytes) => ([jpeg, no_cache], bytes).into_response(),
+        Err(_) => ([(header::CONTENT_TYPE, "image/png"), no_cache], PLACEHOLDER).into_response(),
     }
 }
 
@@ -1061,4 +1063,15 @@ async fn icon_range(
     audit(&mut tx, &s.actor, "item.icon_range", &format!("{}-{}", p.from, p.to), json!({"icon_id":p.icon_id,"rows":n,"reason":p.reason.trim()}), peer.ip()).await?;
     tx.commit().await.map_err(internal("commit"))?;
     Ok(Json(json!({"ok":true,"rows":n})))
+}
+
+/// Which file would be served for an icon id, and does it exist on this machine?
+async fn icon_debug(headers: HeaderMap, State(app): State<App>, Path(id): Path<String>) -> R {
+    auth(&headers, false)?;
+    let files: Vec<Value> = icon_candidates(&id)
+        .into_iter()
+        .map(|n| json!({"file": n, "exists": app.icon_dir.join(&n).is_file()}))
+        .collect();
+    let count = std::fs::read_dir(&app.icon_dir).map(|d| d.count()).unwrap_or(0);
+    Ok(Json(json!({"dir": app.icon_dir.display().to_string(), "dir_exists": app.icon_dir.is_dir(), "files_in_dir": count, "candidates": files})))
 }

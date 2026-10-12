@@ -23,7 +23,7 @@ const fmt=n=>Number(n||0).toLocaleString('tr-TR');
 const when=s=>s?new Date(s).toLocaleString('tr-TR'):'—';
 const debounce=(fn,ms=250)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}};
 const esc=s=>String(s??'');
-const icon=id=>BASE+'/icons/'+(id||0)+'.jpg';
+const icon=id=>BASE+'/icons/'+(id||0)+'.jpg?v=4';
 const iconErr=function(){this.onerror=null;this.src=icon(0)};
 
 /* icons */
