@@ -72,48 +72,55 @@ const confirmBox=(title,text,okLabel='Onayla',danger=false)=>new Promise(res=>{
 });
 
 /* ───────── item knowledge + game-style tooltip ───────── */
-const KIND={11:'Hançer',21:'Tek el kılıç',22:'Çift el kılıç',31:'Tek el balta',32:'Çift el balta',41:'Tek el gürz',42:'Çift el gürz',51:'Tek el mızrak',52:'Çift el mızrak',60:'Kalkan',70:'Yay',71:'Tatar yayı',91:'Küpe',92:'Kolye',93:'Yüzük',94:'Kemer',95:'Eşya',97:'Tüketilebilir',110:'Asa',120:'Pazubent',130:'Zırh parçası',140:'Pet',151:'Pet',252:'Cospre',255:'Unique'};
+const KIND={11:'Dagger',21:'Sword',22:'Two-handed Sword',31:'Axe',32:'Two-handed Axe',41:'Mace',42:'Two-handed Mace',51:'Spear',52:'Long Spear',60:'Shield',70:'Bow',71:'Crossbow',91:'Earring',92:'Necklace',93:'Ring',94:'Belt',95:'Item',97:'Consumable',110:'Staff',120:'Arm band',130:'Armor',140:'Pet',151:'Pet',252:'Cosplay',255:'Unique'};
 const itemCache=new Map();
 function getItem(id){
   if(!id)return Promise.resolve(null);
   if(!itemCache.has(id))itemCache.set(id,api('/item/'+id,{quiet:true}).catch(()=>null));
   return itemCache.get(id);
 }
-function tipLines(it,slot){
-  const n=(k)=>Number(it[k]||0);const L=[];
-  const line=(a,b,cls)=>L.push(h('div',{class:'ln '+(cls||'')},h('span',{},a),h('span',{},b)));
-  const kindName=KIND[it.kind]||('Tür '+it.kind);
-  if(n('damage')||n('min_damage')||n('max_damage'))line('Saldırı gücü',(n('min_damage')||n('damage'))+(n('max_damage')?' – '+n('max_damage'):''));
-  if(n('delay'))line('Saldırı hızı',n('delay'));
-  if(n('range'))line('Menzil',n('range'));
-  if(n('ac'))line('Savunma',n('ac'));
-  if(n('hitrate'))line('İsabet',n('hitrate'));
-  if(n('evasionrate'))line('Kaçınma',n('evasionrate'));
-  line('Ağırlık',(n('weight')/10).toFixed(1));
-  if(n('duration')||slot?.durability){line('Dayanıklılık',(slot&&slot.durability?slot.durability+' / ':'')+n('duration'))}
-  const bon=[['str_b','STR'],['sta_b','STA'],['dex_b','DEX'],['intel_b','INT'],['cha_b','CHA'],['max_hp_b','Maks. HP'],['max_mp_b','Maks. MP']].filter(([k])=>n(k)).map(([k,l])=>h('div',{class:'bn'},l+' '+(n(k)>0?'+':'')+n(k)));
-  const dmg=[['fire_damage','Ateş hasarı'],['ice_damage','Buz hasarı'],['lightning_damage','Şimşek hasarı'],['poison_damage','Zehir hasarı'],['hp_drain','HP çekme'],['mp_damage','MP hasarı'],['mp_drain','MP çekme'],['mirror_damage','Yansıtma']].filter(([k])=>n(k)).map(([k,l])=>h('div',{class:'bn'},l+' +'+n(k)));
-  const res=[['fire_r','Ateş direnci'],['cold_r','Buz direnci'],['lightning_r','Şimşek direnci'],['magic_r','Büyü direnci'],['poison_r','Zehir direnci'],['curse_r','Lanet direnci']].filter(([k])=>n(k)).map(([k,l])=>h('div',{class:'bn'},l+' +'+n(k)));
-  const ac2=[['dagger_ac','Hançer savunması'],['sword_ac','Kılıç savunması'],['club_ac','Gürz savunması'],['axe_ac','Balta savunması'],['spear_ac','Mızrak savunması'],['bow_ac','Yay savunması'],['jamadar_ac','Jamadar savunması']].filter(([k])=>n(k)).map(([k,l])=>h('div',{class:'bn'},l+' +'+n(k)));
-  const rq=[];
-  if(n('req_level'))rq.push(h('div',{class:'rq'},'Gerekli seviye: '+n('req_level')+(n('req_level_max')&&n('req_level_max')<255?' – '+n('req_level_max'):'')));
-  for(const [k,l] of [['req_str','STR'],['req_sta','STA'],['req_dex','DEX'],['req_intel','INT'],['req_cha','CHA']])if(n(k))rq.push(h('div',{class:'rq'},'Gerekli '+l+': '+n(k)));
-  if(n('class'))rq.push(h('div',{class:'rq'},'Sınıf kodu: '+n('class')));
-  if(n('req_rank'))rq.push(h('div',{class:'rq'},'Gerekli rütbe: '+n('req_rank')));
-  return {kindName,main:L,bonus:[...bon,...dmg,...res,...ac2],rq};
-}
-function renderTip(it,slot,slotInfo){
-  const t=tipLines(it,slot);
-  const grade=it.kind===255?'unique':(t.bonus.length?'magic':'');
-  const box=h('div',{},
-    h('div',{class:'nm '+grade},it.str_name||('#'+it.num)),
-    h('div',{class:'ty'},t.kindName+(it.countable?' · Yığılabilir':'')),
-    t.main,
-    t.bonus.length?[h('hr'),t.bonus]:null,
-    t.rq.length?[h('hr'),t.rq]:null,
-    it.description?h('div',{class:'ds'},String(it.description).replace(/\|/g,'\n').replace(/<[^>]+>/g,'')):null,
-    h('div',{class:'ft'},'#'+it.num+(slotInfo?' · '+slotInfo:'')+(slot&&slot.count>1?' · Adet '+slot.count:'')+(it.buy_price?' · Fiyat '+fmt(it.buy_price):'')));
-  return box;
+const STAT={str_b:['Strength Bonus','#ff8a70'],sta_b:['Stamina Bonus','#ffd166'],dex_b:['Dexterity Bonus','#7ee081'],intel_b:['Intelligence Bonus','#6cb6ff'],cha_b:['Charisma Bonus','#d3a0ff'],max_hp_b:['Max HP Bonus','#ff7a9a'],max_mp_b:['Max MP Bonus','#4fd1f5']};
+const ELEM={fire_damage:['Fire Damage','#ff9442'],ice_damage:['Ice Damage','#8fdcff'],lightning_damage:['Lightning Damage','#ffe45c'],poison_damage:['Poison Damage','#6fd36f'],hp_drain:['HP Drain','#ff7a9a'],mp_damage:['MP Damage','#4fd1f5'],mp_drain:['MP Drain','#4fd1f5'],mirror_damage:['Damage Reflect','#c4b5fd']};
+const RESIST={fire_r:['Fire Resistance','#ff9442'],cold_r:['Ice Resistance','#8fdcff'],lightning_r:['Lightning Resistance','#ffe45c'],magic_r:['Magic Resistance','#c4b5fd'],poison_r:['Poison Resistance','#6fd36f'],curse_r:['Curse Resistance','#d3a0ff']};
+const ACS={dagger_ac:'Dagger',sword_ac:'Sword',club_ac:'Mace',axe_ac:'Axe',spear_ac:'Spear',bow_ac:'Bow',jamadar_ac:'Jamadar'};
+const speedText=d=>d<=0?null:d<=60?'Very Fast':d<=90?'Fast':d<=130?'Normal':d<=170?'Slow':'Very Slow';
+function renderTip(it,slot,slotInfo,withIcon=true){
+  const n=k=>Number(it[k]||0);const body=[];
+  const row=(label,val,color)=>body.push(h('div',{class:'ln'},h('span',{style:color?'color:'+color:null},label+' : '+val)));
+  const maxDur=n('duration'),cur=slot&&slot.durability?slot.durability:maxDur;
+  const typeName=KIND[it.kind]||('Type '+it.kind);
+  const bonus=Object.keys(STAT).some(k=>n(k))||Object.keys(ELEM).some(k=>n(k));
+  const unique=it.kind===255||n('item_class')>=4;
+  const pct=maxDur?Math.max(0,Math.min(100,Math.round(cur*100/maxDur))):0;
+  const header=h('div',{class:'th'},
+    withIcon?h('div',{class:'slot full',style:'width:46px;height:46px;flex:none'},h('img',{src:icon(it.item_icon_id1),onerror:iconErr})):null,
+    h('div',{class:'tn'},h('div',{class:'nm'+(unique?' unique':bonus?' magic':'')},it.str_name||('#'+it.num)),
+      h('div',{class:'ty'},(unique?'Unique item. ':'')+typeName)),
+    maxDur?h('div',{class:'dbar',title:pct+'%'},h('i',{style:'width:'+pct+'%'})):null);
+  if(maxDur)row('Durability',(slot&&slot.durability?cur+' / ':'')+maxDur+(slot&&slot.durability?' ('+pct+'%)':''));
+  body.push(h('hr'));
+  const lo=n('min_damage')||n('damage'),hi=n('max_damage');
+  if(lo||hi)row('Attack Power',lo+(hi&&hi!==lo?' - '+hi:''));
+  if(n('delay'))row('Attack Speed',speedText(n('delay')));
+  if(n('range'))row('Effective Range',(n('range')/10).toFixed(2));
+  if(n('ac'))row('Defense',n('ac'));
+  if(n('hitrate'))row('Hit Rate',n('hitrate'));
+  if(n('evasionrate'))row('Evasion',n('evasionrate'));
+  for(const [k,[l,c]] of Object.entries(ELEM))if(n(k))row(l,n(k),c);
+  for(const [k,l] of Object.entries(ACS))if(n(k))row(l+' Defense','+'+n(k),'#9fc4ff');
+  for(const [k,[l,c]] of Object.entries(STAT))if(n(k))row(l,(n(k)>0?'+':'')+n(k),c);
+  for(const [k,[l,c]] of Object.entries(RESIST))if(n(k))row(l,'+'+n(k),c);
+  row('Weight',(n('weight')/10).toFixed(2));
+  if(n('req_level'))row('Required Level',n('req_level'));
+  for(const [k,l] of [['req_str','Strength'],['req_sta','Stamina'],['req_dex','Dexterity'],['req_intel','Intelligence'],['req_cha','Charisma']])if(n(k))row('Required '+l,n(k));
+  if(n('req_rank'))row('Required Rank',n('req_rank'));
+  const grade=n('by_grade');
+  const foot=[];
+  if(grade)foot.push(h('div',{class:'gd'},'Item Grade : Grade '+grade));
+  if(n('bound'))foot.push(h('div',{class:'gd'},'Sealed item'));
+  if(it.description){const d=String(it.description).replace(/\|/g,'\n').replace(/<[^>]+>/g,'').trim();if(d)foot.push(h('div',{class:'ds'},'*'+d+'*'))}
+  return h('div',{},header,body,foot.length?[h('hr',{class:'gold'}),foot]:null,
+    h('div',{class:'ft'},'#'+it.num+(slotInfo?' · '+slotInfo:'')+(slot&&slot.count>1?' · Count '+slot.count:'')+(it.buy_price?' · Price '+fmt(it.buy_price):'')));
 }
 const tipEl=()=>$('#tip');
 let tipToken=0;

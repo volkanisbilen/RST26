@@ -53,7 +53,7 @@ async function openSlot(ctx,idx,sec,reload,pick){
     clear(card);const v=Number(id.value);if(!v)return card.append(h('div',{class:'empty'},'Boş yuva'));
     const it=await getItem(v);
     card.append(it?h('div',{class:'row',style:'align-items:flex-start;flex-wrap:nowrap'},h('div',{class:'slot full',style:'width:64px;height:64px;flex:none'},h('img',{src:icon(it.item_icon_id1),onerror:iconErr})),
-      h('div',{style:'min-width:0'},renderTip(it,Number(id.value)===cur.id?d:null))):h('div',{class:'hint warn'},'Bu ID item tablosunda yok.'));
+      h('div',{style:'min-width:0'},renderTip(it,Number(id.value)===cur.id?d:null,null,false))):h('div',{class:'hint warn'},'Bu ID item tablosunda yok.'));
   }
   id.addEventListener('change',showCard);showCard();
   modal('Yuva '+idx+' · '+sec,h('div',{class:'grid g2',style:'gap:16px'},

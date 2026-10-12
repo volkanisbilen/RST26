@@ -101,7 +101,7 @@ PAGE.items=async function(main,[idArg]){
   async function show(id){
     const it=await getItem(id);clear(detail);if(!it)return detail.append(h('div',{class:'empty'},'Bulunamadı'));
     const nz=Object.entries(it).filter(([k,v])=>v!==0&&v!==null&&v!==''&&!['description'].includes(k));
-    detail.append(h('div',{class:'row',style:'flex-wrap:nowrap;align-items:flex-start'},h('div',{class:'slot full',style:'width:64px;height:64px;flex:none'},h('img',{src:icon(it.item_icon_id1),onerror:iconErr})),h('div',{style:'min-width:0;flex:1'},renderTip(it))),
+    detail.append(h('div',{class:'row',style:'flex-wrap:nowrap;align-items:flex-start'},h('div',{class:'slot full',style:'width:64px;height:64px;flex:none'},h('img',{src:icon(it.item_icon_id1),onerror:iconErr})),h('div',{style:'min-width:0;flex:1'},renderTip(it,null,null,false))),
       h('h4',{style:'margin:14px 0 6px'},'Tüm alanlar'),h('div',{class:'tw',style:'max-height:320px'},h('table',{},h('tbody',{},nz.map(([k,v])=>h('tr',{},h('td',{class:'muted xs'},k),h('td',{class:'mono xs'},String(v))))))));
   }
   async function run(){

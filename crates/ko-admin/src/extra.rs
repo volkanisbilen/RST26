@@ -348,19 +348,36 @@ async fn item_detail(headers: HeaderMap, State(app): State<App>, Path(id): Path<
 
 const PLACEHOLDER: &[u8] = include_bytes!("../assets/noimage.png");
 
+/// Icon file name the client uses for an `item_icon_id1`: itemicon_<d>_<dddd>_<dd>_<d>.jpg.
+/// 9-digit ids drop their first digit; the exact file list decides what is really there.
+fn icon_candidates(id: &str) -> Vec<String> {
+    let fname = |s: &str| {
+        let s = format!("{:0>8}", s);
+        format!("itemicon_{}_{}_{}_{}.jpg", &s[0..1], &s[1..5], &s[5..7], &s[7..8])
+    };
+    if id.len() >= 9 {
+        vec![fname(&id[1..9.min(id.len())]), fname(&id[..8])]
+    } else {
+        vec![fname(id)]
+    }
+}
+
 async fn icon(State(app): State<App>, Path(file): Path<String>) -> Response {
     let id: String = file.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let cache = [(header::CACHE_CONTROL, "public, max-age=86400")];
-    if !id.is_empty() {
-        for ext in ["jpg", "png"] {
-            let path = app.icon_dir.join(format!("{id}.{ext}"));
-            if let Ok(bytes) = tokio::fs::read(&path).await {
-                let ct = if ext == "jpg" { "image/jpeg" } else { "image/png" };
-                return ([(header::CONTENT_TYPE, ct), cache[0].clone()], bytes).into_response();
+    let cache = (header::CACHE_CONTROL, "public, max-age=86400");
+    let jpeg = (header::CONTENT_TYPE, "image/jpeg");
+    if !id.is_empty() && id != "0" {
+        for name in icon_candidates(&id) {
+            if let Ok(bytes) = tokio::fs::read(app.icon_dir.join(&name)).await {
+                return ([jpeg.clone(), cache.clone()], bytes).into_response();
             }
         }
     }
-    ([(header::CONTENT_TYPE, "image/png"), cache[0].clone()], PLACEHOLDER).into_response()
+    // missing picture: the folder's own bos.jpg, else a tiny placeholder
+    match tokio::fs::read(app.icon_dir.join("bos.jpg")).await {
+        Ok(bytes) => ([jpeg, cache], bytes).into_response(),
+        Err(_) => ([(header::CONTENT_TYPE, "image/png"), cache], PLACEHOLDER).into_response(),
+    }
 }
 
 // ── clans ────────────────────────────────────────────────────────────────

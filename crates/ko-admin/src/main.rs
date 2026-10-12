@@ -48,10 +48,17 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let icon_dir = PathBuf::from(
-        std::env::var("ITEM_ICON_DIR")
-            .unwrap_or_else(|_| "/var/www/jstkoadminpanel2/public/assets/img/itemicon".into()),
-    );
+    // itemicon/ lives next to the sources (crates/ko-admin/assets/itemicon); ITEM_ICON_DIR overrides it
+    let icon_dir = std::env::var("ITEM_ICON_DIR")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| {
+            ["/opt/ko26xx-build-2625/crates/ko-admin/assets/itemicon", "./crates/ko-admin/assets/itemicon", "./itemicon"]
+                .iter()
+                .map(PathBuf::from)
+                .find(|p| p.is_dir())
+        })
+        .unwrap_or_else(|| PathBuf::from("/opt/ko26xx-build-2625/crates/ko-admin/assets/itemicon"));
     if !icon_dir.is_dir() {
         warn!(dir = %icon_dir.display(), "ITEM_ICON_DIR not found: item icons fall back to a placeholder");
     }
