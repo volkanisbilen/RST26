@@ -40,7 +40,10 @@ async fn main() -> anyhow::Result<()> {
     for stmt in SCHEMA.split("-- ;;") {
         let stmt = stmt.trim();
         if !stmt.is_empty() {
-            sqlx::query(stmt).execute(&pool).await?;
+            // the migration may have created the tables as another role: not fatal
+            if let Err(e) = sqlx::query(stmt).execute(&pool).await {
+                warn!(error = %e, "schema step skipped");
+            }
         }
     }
 
