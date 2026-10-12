@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 ko-db = { workspace = true }
+ko-protocol = { workspace = true }
 ko-tbl-import = { path = "../ko-tbl-import" }
 tokio = { workspace = true }
 tracing = { workspace = true }

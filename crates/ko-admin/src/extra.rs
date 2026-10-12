@@ -30,6 +30,7 @@ pub fn routes() -> Router<App> {
         .route("/jstkoadminpanel/api/item-search", get(item_search))
         .route("/jstkoadminpanel/api/item/{id}", get(item_detail))
         .route("/jstkoadminpanel/api/clans", get(clans))
+        .route("/jstkoadminpanel/api/clans/{id}", get(clan_detail))
         .route("/jstkoadminpanel/api/characters/{name}/clan", get(character_clan))
         .route("/jstkoadminpanel/api/container", get(container))
         .route("/jstkoadminpanel/api/container/set", post(container_set))
@@ -39,6 +40,7 @@ pub fn routes() -> Router<App> {
         .route("/jstkoadminpanel/api/audit", get(audit_log))
         .route("/jstkoadminpanel/api/commands", get(commands).post(send_command))
         .route("/jstkoadminpanel/icons/{file}", get(icon))
+        .route("/jstkoadminpanel/static/{file}", get(static_file))
 }
 
 type R = Result<Json<Value>, ApiError>;
@@ -113,14 +115,18 @@ async fn accounts(headers: HeaderMap, State(app): State<App>, Query(q): Query<Q>
                    EXISTS(SELECT 1 FROM currentuser c WHERE c.str_account_id=t.str_account_id) online,
                    to_jsonb(ARRAY_REMOVE(ARRAY[ac.str_char_id1,ac.str_char_id2,ac.str_char_id3,ac.str_char_id4],NULL)) chars
             FROM tb_user t LEFT JOIN account_char ac ON ac.str_account_id=t.str_account_id
-            WHERE $1='' OR t.str_account_id ILIKE $2 OR ac.str_char_id1 ILIKE $2 OR ac.str_char_id2 ILIKE $2
-               OR ac.str_char_id3 ILIKE $2 OR ac.str_char_id4 ILIKE $2 OR t.email ILIKE $2
+            WHERE ($1='' OR t.str_account_id ILIKE $2 OR ac.str_char_id1 ILIKE $2 OR ac.str_char_id2 ILIKE $2
+               OR ac.str_char_id3 ILIKE $2 OR ac.str_char_id4 ILIKE $2 OR t.email ILIKE $2)
+              AND ($5='' OR ($5='banned' AND t.str_authority<0)
+                   OR ($5='online' AND EXISTS(SELECT 1 FROM currentuser c WHERE c.str_account_id=t.str_account_id))
+                   OR ($5='gm' AND t.str_authority=0))
             ORDER BY t.id DESC LIMIT $3 OFFSET $4) x"#,
     )
     .bind(&term)
     .bind(&like)
     .bind(q.limit.unwrap_or(50).clamp(1, 200))
     .bind(q.offset.unwrap_or(0).max(0))
+    .bind(q.kind.clone().unwrap_or_default())
     .fetch_one(&app.pool)
     .await
     .map_err(internal("accounts search"))?;
@@ -388,6 +394,24 @@ async fn character_clan(headers: HeaderMap, State(app): State<App>, Path(name): 
     .await
     .map_err(internal("character clan"))?;
     Ok(Json(v.unwrap_or_else(|| json!({}))))
+}
+
+async fn clan_detail(headers: HeaderMap, State(app): State<App>, Path(id): Path<i16>) -> R {
+    auth(&headers, false)?;
+    let v: Option<Value> = sqlx::query_scalar(
+        r#"SELECT jsonb_build_object('id',k.id_num,'name',k.id_name,'nation',k.nation,'chief',k.chief,'points',k.points,'gold',k.gold,
+            'members_count',k.members,'bank_gold',COALESCE(b.gold,0),'max_tabs',COALESCE(b.max_tabs,1),
+            'members',COALESCE((SELECT jsonb_agg(m ORDER BY m.level DESC, m.name) FROM (
+                SELECT u.str_user_id name,u.level,u.class,u.fame,u.loyalty,
+                       EXISTS(SELECT 1 FROM currentuser c WHERE lower(c.str_char_id)=lower(u.str_user_id)) online
+                FROM userdata u WHERE u.knights=k.id_num LIMIT 300) m),'[]'::jsonb))
+           FROM knights k LEFT JOIN guild_bank b ON b.knights_id=k.id_num WHERE k.id_num=$1"#,
+    )
+    .bind(id)
+    .fetch_optional(&app.pool)
+    .await
+    .map_err(internal("clan detail"))?;
+    v.map(Json).ok_or(ApiError::NotFound)
 }
 
 // ── item containers ──────────────────────────────────────────────────────
@@ -961,4 +985,20 @@ async fn send_command(
     audit(&mut tx, &s.actor, "command.queue", &p.command, p.args, peer.ip()).await?;
     tx.commit().await.map_err(internal("commit"))?;
     Ok(Json(json!({"ok":true,"id":id,"status":StatusCode::ACCEPTED.as_u16()})))
+}
+
+const ASSETS: [(&str, &str, &str); 6] = [
+    ("style.css", "text/css; charset=utf-8", include_str!("../assets/style.css")),
+    ("core.js", "text/javascript; charset=utf-8", include_str!("../assets/core.js")),
+    ("containers.js", "text/javascript; charset=utf-8", include_str!("../assets/containers.js")),
+    ("drops.js", "text/javascript; charset=utf-8", include_str!("../assets/drops.js")),
+    ("mapedit.js", "text/javascript; charset=utf-8", include_str!("../assets/mapedit.js")),
+    ("pages.js", "text/javascript; charset=utf-8", include_str!("../assets/pages.js")),
+];
+
+async fn static_file(Path(file): Path<String>) -> Response {
+    match ASSETS.iter().find(|(n, _, _)| *n == file) {
+        Some((_, ct, body)) => ([(header::CONTENT_TYPE, *ct), (header::CACHE_CONTROL, "no-store")], *body).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }

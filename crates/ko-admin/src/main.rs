@@ -6,6 +6,7 @@
 
 mod extra;
 mod legacy;
+mod world;
 
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -57,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     let bind = std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let app = App { pool, icon_dir };
-    let router: Router = legacy::routes().merge(extra::routes()).with_state(app);
+    let router: Router = legacy::routes().merge(extra::routes()).merge(world::routes()).with_state(app);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     info!(address = %bind, "ko-admin listening");
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await?;
