@@ -198,3 +198,24 @@ tr.click{cursor:pointer}tr.click:hover td{background:#10224d}
 .cbox b{font-size:15px}.cbox-sp{flex:1}
 .slot.trashcell{opacity:.45;cursor:not-allowed;color:#6b86c4;background:#0a1230}
 .slot.trashcell:hover{border-color:#1f3566;box-shadow:none}
+
+/* Character Info window */
+.cinfo{width:min(440px,100%);background:linear-gradient(180deg,#0f2150,#08122e);border:1px solid #3a66c0;border-radius:14px;padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
+.cinfo-h{display:flex;align-items:baseline;gap:10px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid #223f80}
+.cinfo-h b{font-size:18px}
+.crow{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.crow .cl{width:92px;flex:none;color:#cfe0ff;font-size:13px}
+.cbx{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:6px;background:#04091c;border:1px solid #1d3568;border-radius:6px;padding:3px 8px;min-height:30px;color:#fff;position:relative}
+.cbx.ro{color:#e8f0ff}
+.cbx .sl{color:#6b86c4}.cbx .bn{position:absolute;right:8px;font-size:11px;color:#7ee0ff}
+.cin{background:transparent!important;border:0!important;box-shadow:none!important;text-align:center;width:100%;padding:3px;color:#fff;font-weight:600}
+.cin:focus{outline:1px solid var(--primary);border-radius:4px}
+.ro-inline{color:#8da2d0}
+.cinfo-two{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:center;margin:4px 0 10px}
+.cinfo-two .crow{margin:0}.cinfo-two .cl{width:34px}
+.cinfo-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:12px 0;border-top:1px solid #223f80;border-bottom:1px solid #223f80;margin:6px 0 12px}
+.cpoints{display:flex;flex-direction:column;align-items:center;gap:6px;background:#04091c;border:1px solid #1d3568;border-radius:8px;padding:10px}
+.cpoints .cin{background:#0a1536!important;border:1px solid #1d3568!important;border-radius:6px;width:90px;font-size:18px;color:#ff9ec2}
+.cres{background:#070f26;border:1px solid #1d3568;border-radius:10px;padding:10px 12px}
+.cres-h{text-align:center;color:#cfe0ff;font-size:13px;margin-bottom:8px;border-bottom:1px solid #1d3568;padding-bottom:6px}
+.cres-g{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}.cres-g .cl{width:62px}

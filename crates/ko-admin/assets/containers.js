@@ -177,7 +177,7 @@ PAGE.char=async function(main,[name,tab]){
     h('div',{class:'seg',style:'margin-bottom:14px'},[['inv','Envanter'],['wh','Normal Banka'],['vip','VIP Kasa'],['clan','Klan Bankası'],['stats','Karakter Bilgileri']].map(([k,l])=>
       h('button',{class:tab===k?'on':'',onclick:()=>location.hash='#/char/'+encodeURIComponent(c.name)+'/'+k},l))));
   const body=h('div');main.append(body);
-  if(tab==='stats')return charStats(body,c);
+  if(tab==='stats')return charSheet(body,c);
   const owner=tab==='clan'?(clan.id?String(clan.id):null):c.name;
   const ctx=await loadContainer(tab,owner,0);
   if(!ctx)return body.append(h('div',{class:'card empty'},'Bu karakter bir klanda değil.'));
@@ -195,4 +195,55 @@ function charStats(body,c){
       const p={};for(const [k] of F)if(Number(inputs[k].value)!==Number(c[k]))p[k]=Number(inputs[k].value);
       if(!Object.keys(p).length)return toast('Değişiklik yok');
       try{await api('/characters/'+encodeURIComponent(c.name),{body:p});toast('Kaydedildi','ok');route()}catch(_){}}},'Kaydet')));
+}
+
+/* the game's Character Info window */
+async function charSheet(body,c){
+  const d=await api('/characters/'+encodeURIComponent(c.name)+'/sheet');
+  const lock=d.online;const eq=d.equip||{};
+  const box=(cls,...k)=>h('div',{class:'cbx '+(cls||'')},...k);
+  const num=(v,w)=>h('input',{type:'number',value:v??0,disabled:lock||null,class:'cin',style:w?'width:'+w:null});
+  const I={level:num(d.level,'62px'),rebirth:num(d.rebirth,'62px'),exp:num(d.exp),loyalty:num(d.loyalty),monthly:num(d.loyalty_monthly),manner:num(d.manner),
+    str:num(d.str),sta:num(d.sta),dex:num(d.dex),intel:num(d.intel),cha:num(d.cha),points:num(d.points)};
+  const ro=(v,extra)=>box('ro',String(v??0),extra?h('span',{class:'bn'},' '+extra):null);
+  const bonus=v=>v?'+'+v:null;
+  const row=(label,node,cls)=>h('div',{class:'crow '+(cls||'')},h('span',{class:'cl'},label),node);
+  const stat=(label,inp,b,color)=>h('div',{class:'crow'},h('span',{class:'cl',style:color?'color:'+color:null},label),h('div',{class:'cbx'},inp,b?h('span',{class:'bn'},b):null));
+  const kcBtn=h('button',{class:'btn sm',disabled:!d.account||null,onclick:()=>balanceDialog({account:d.account,kc:d.kc,tl:d.tl})},'KC / TL düzenle');
+  const why=h('input',{placeholder:'Sebep (zorunlu)',style:'flex:1;min-width:200px'});
+  const win=h('div',{class:'cinfo'},
+    h('div',{class:'cinfo-h'},h('b',{},d.name),h('span',{class:'muted'},className(d.class)),h('span',{class:'grow'}),
+      lock?h('span',{class:'chip bad'},'çevrimiçi — kilitli'):null),
+    row('Level',h('div',{class:'cbx'},I.level,h('span',{class:'sl'},'/'),I.rebirth)),
+    row('Ulus',ro((NATION[d.nation]||['?'])[0])),
+    row('EXP',h('div',{class:'cbx'},I.exp,h('span',{class:'sl'},'/'),h('span',{class:'ro-inline'},d.exp_max==null?'—':fmt(d.exp_max)))),
+    row('Katkı (NP)',h('div',{class:'cbx'},I.loyalty,h('span',{class:'sl'},'/'),I.monthly)),
+    h('div',{class:'cinfo-two'},
+      h('div',{class:'crow'},h('span',{class:'cl'},'KC'),ro(d.kc==null?'—':fmt(d.kc))),
+      h('div',{class:'crow'},h('span',{class:'cl'},'TL'),ro(d.tl==null?'—':fmt(d.tl))),
+      h('div',{},kcBtn)),
+    h('div',{class:'cinfo-grid'},
+      h('div',{class:'col',style:'gap:8px'},
+        row('Saldırı',ro(eq.attack)),row('Savunma',ro(eq.defence)),row('Manner',h('div',{class:'cbx'},I.manner)),
+        h('div',{class:'cpoints'},h('span',{class:'cl'},'Stat Puanı'),I.points,
+          h('button',{class:'btn sm danger',disabled:lock||null,onclick:resetStats},'Stat Sıfırla'))),
+      h('div',{class:'col',style:'gap:8px'},
+        stat('STR',I.str,bonus(eq.str_b),'#ff8a70'),stat('HP',I.sta,bonus(eq.sta_b),'#ffd166'),stat('DEX',I.dex,bonus(eq.dex_b),'#7ee081'),
+        stat('MP',I.cha,bonus(eq.cha_b),'#4fd1f5'),stat('INT',I.intel,bonus(eq.intel_b),'#6cb6ff'))),
+    h('div',{class:'cres'},h('div',{class:'cres-h'},'Direnç (ekipmandan)'),
+      h('div',{class:'cres-g'},[['Ateş',eq.fire,'#ff9442'],['Büyü',eq.magic,'#c4b5fd'],['Buz',eq.cold,'#8fdcff'],['Lanet',eq.curse,'#d3a0ff'],['Şimşek',eq.lightning,'#ffe45c'],['Zehir',eq.poison,'#6fd36f']].map(([l,v,col])=>
+        h('div',{class:'crow'},h('span',{class:'cl',style:'color:'+col},l),ro(v))))),
+    h('div',{class:'row',style:'margin-top:16px'},why,h('button',{class:'btn primary',disabled:lock||null,onclick:save},'Kaydet')),
+    h('p',{class:'xs muted',style:'margin:10px 0 0'},'Saldırı, savunma ve dirençler giyili ekipmandaki item değerlerinin toplamıdır (oyun içi hesap; buff ve skill etkileri dahil değildir). Yeşil/renkli +n değerleri ekipman bonusudur.'));
+  async function save(){
+    const g=k=>Number(I[k].value);
+    try{await api('/characters/'+encodeURIComponent(d.name)+'/stats',{body:{level:g('level'),rebirth:g('rebirth'),exp:g('exp'),loyalty:g('loyalty'),loyalty_monthly:g('monthly'),manner:g('manner'),str:g('str'),sta:g('sta'),dex:g('dex'),intel:g('intel'),cha:g('cha'),points:g('points'),reason:why.value}});toast('Kaydedildi','ok');route()}catch(_){}
+  }
+  async function resetStats(){
+    if(why.value.trim().length<3)return toast('Önce sebep yazın','err');
+    if(!await confirmBox('Stat sıfırla','Dağıtılmış statlar sınıfın başlangıç değerine döner, fazlası Stat Puanı olur.','Sıfırla',true))return;
+    try{const r=await api('/characters/'+encodeURIComponent(d.name)+'/stat-reset',{body:{reason:why.value}});toast(r.refund+' puan iade edildi','ok');route()}catch(_){}
+  }
+  body.append(win);
+  charStats(body,c);   // the remaining raw fields (HP/MP, gold, zone, position, authority)
 }
