@@ -2132,6 +2132,8 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
     // loading, so they are sent again once it is in the world
     super::region::send_region_npc_info_for_me(session).await?;
     super::region::send_nearby_npc_inouts(session).await?;
+    super::region::send_region_user_in_out_for_me(session).await?;
+    super::region::send_merchant_user_in_out_for_me(session).await?;
     super::region::schedule_npc_resend(world.clone(), session.session_id());
 
     // (WIZ_ITEM_GET workaround removed — testing RENTAL+SERVER_INDEX fix instead)

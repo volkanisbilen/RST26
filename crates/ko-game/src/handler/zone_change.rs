@@ -1057,6 +1057,8 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
     // what made NPCs and monsters appear only after walking into another region.
     region::send_region_npc_info_for_me(session).await?;
     region::send_nearby_npc_inouts(session).await?;
+    region::send_region_user_in_out_for_me(session).await?;
+    region::send_merchant_user_in_out_for_me(session).await?;
     if let Some(bag) = super::survival::build_bag_refresh(&world, sid).await {
         session.send_packet(&bag).await?;
     }

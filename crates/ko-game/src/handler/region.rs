@@ -561,16 +561,24 @@ pub fn write_user_info(
 pub async fn send_region_user_in_out_for_me(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
+    for packet in region_user_in_out_packets(&world, sid) {
+        session.send_packet(&packet).await?;
+    }
+    Ok(())
+}
 
+/// The three WIZ_REGIONCHANGE packets (start, compressed id list, end) of `send_region_user_in_out_for_me`.
+/// The client finishes its region refresh (and asks for the NPCs and users it is missing) when
+/// the end marker arrives, so the NPC list only counts as sent after these.
+pub fn region_user_in_out_packets(world: &crate::world::WorldState, sid: SessionId) -> Vec<Packet> {
     let (pos, my_event_room) = match world.with_session(sid, |h| (h.position, h.event_room)) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Vec::new(),
     };
 
     // Phase 0: START
     let mut start = Packet::new(Opcode::WizRegionChange as u8);
     start.write_u8(0);
-    session.send_packet(&start).await?;
 
     // Phase 1: DATA — list of nearby session IDs (event_room filtered)
     let nearby = world.get_nearby_session_ids(
@@ -598,20 +606,14 @@ pub async fn send_region_user_in_out_for_me(session: &mut ClientSession) -> anyh
     for bot in &nearby_bots {
         data.write_u32(bot.id);
     }
-
     // Send compressed (C++ uses SendCompressed)
-    let to_send = match data.to_compressed() {
-        Some(compressed) => compressed,
-        None => data,
-    };
-    session.send_packet(&to_send).await?;
+    let data = data.to_compressed().unwrap_or(data);
 
     // Phase 2: END
     let mut end = Packet::new(Opcode::WizRegionChange as u8);
     end.write_u8(2);
-    session.send_packet(&end).await?;
 
-    Ok(())
+    vec![start, data, end]
 }
 
 /// Send merchant INOUT info for nearby player/bot merchants.
@@ -1058,6 +1060,9 @@ pub fn schedule_npc_resend(world: Arc<crate::world::WorldState>, sid: SessionId)
                 };
                 let template = world.npc_visual_template(&instance, &template);
                 world.send_to_session_owned(sid, build_npc_inout(NPC_IN, &instance, &template));
+            }
+            for packet in region_user_in_out_packets(&world, sid) {
+                world.send_to_session_owned(sid, packet);
             }
             tracing::warn!(sid, zone = pos.zone_id, npcs = npc_ids.len(), "NPC list resent after load");
         }
