@@ -47,3 +47,13 @@ SELECT * FROM (VALUES
     ('ft',     FALSE, 127, 18::smallint,  0::smallint, '',    0, 'Forgotten Temple (kapalı, isteğe bağlı)')
 ) AS v(event_key, enabled, days, hour, minute, arg, duration_min, note)
 WHERE NOT EXISTS (SELECT 1 FROM event_auto_schedule);
+
+-- The game server and the panel run as the koserver role: they must own what this file creates
+-- (psql runs as postgres here, otherwise "permission denied for table admin_event_state").
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'koserver') THEN
+    ALTER TABLE admin_event_state OWNER TO koserver;
+    ALTER TABLE event_auto_schedule OWNER TO koserver;
+    ALTER SEQUENCE event_auto_schedule_id_seq OWNER TO koserver;
+  END IF;
+END $$;
