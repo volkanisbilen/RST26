@@ -94,6 +94,9 @@ pub struct ClientSession {
     // --- In-game: channel-based sending ---
     /// Outbound packet channel (Some after upgrade).
     tx: Option<mpsc::UnboundedSender<Arc<Packet>>>,
+
+    /// The native warehouse window currently shows the clan warehouse.
+    clan_wh_native: bool,
 }
 
 impl ClientSession {
@@ -123,7 +126,16 @@ impl ClientSession {
             aes_owned: Some(AesCryption::new()),
             aes_shared: None,
             tx: None,
+            clan_wh_native: false,
         }
+    }
+
+    pub fn clan_wh_native(&self) -> bool {
+        self.clan_wh_native
+    }
+
+    pub fn set_clan_wh_native(&mut self, on: bool) {
+        self.clan_wh_native = on;
     }
 
     /// Main session loop: read packets and dispatch to handlers.
@@ -276,6 +288,17 @@ impl ClientSession {
                 hex
             );
         }
+
+        // The native warehouse window only understands WIZ_WAREHOUSE: show the clan warehouse in it.
+        let rewritten;
+        let packet = if self.clan_wh_native && packet.opcode == ko_protocol::Opcode::WizClanWarehouse as u8 {
+            let mut p = packet.clone();
+            p.opcode = ko_protocol::Opcode::WizWarehouse as u8;
+            rewritten = p;
+            &rewritten
+        } else {
+            packet
+        };
 
         if let Some(ref tx) = self.tx {
             // In-game: send via channel to writer task

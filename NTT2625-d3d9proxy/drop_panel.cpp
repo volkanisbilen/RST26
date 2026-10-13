@@ -739,3 +739,6 @@ void Drop_Init()
     InitializeCriticalSection(&g_blockLock);
     CloseHandle(CreateThread(nullptr, 0, WindowThread, nullptr, 0, nullptr));
 }
+
+// other panels (clan_kasa.cpp) queue their own packets through the same game-thread flush
+void Drop_SendRaw(const std::vector<BYTE>& p) { QueueSend(p); }

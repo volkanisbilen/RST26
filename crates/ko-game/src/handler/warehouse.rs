@@ -82,6 +82,16 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let mut reader = PacketReader::new(&pkt.data);
     let opcode = reader.read_u8().unwrap_or(0);
 
+    // The window was opened from the clan window button: it shows the clan warehouse.
+    // A normal warehouse open (NPC) switches back to the personal warehouse.
+    if session.clan_wh_native() {
+        if opcode == WAREHOUSE_OPEN {
+            session.set_clan_wh_native(false);
+        } else {
+            return super::clan_warehouse::handle_native(session, pkt).await;
+        }
+    }
+
     // Genie state check — must happen AFTER reading opcode so error packet includes it.
     if world.with_session(sid, |h| h.genie_active).unwrap_or(false) {
         return session

@@ -61,6 +61,79 @@ fn build_result(sub_opcode: u8, result: u8) -> Packet {
     pkt
 }
 
+/// The classic clan warehouse needs the player to stand next to a warehouse NPC; the native
+/// window opened from the clan window button has no NPC.
+fn npc_in_range(session: &ClientSession, npc_id: u16) -> bool {
+    session.clan_wh_native()
+        || session
+            .world()
+            .is_in_npc_range(session.session_id(), npc_id as u32)
+}
+
+/// Clan premium is required for the clan warehouse.
+fn clan_has_premium(world: &crate::world::WorldState, sid: u16) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    world
+        .get_character_info(sid)
+        .filter(|c| c.knights_id > 0)
+        .and_then(|c| world.get_knights(c.knights_id))
+        .map(|k| k.premium_time > now || k.premium_in_use > 0)
+        .unwrap_or(false)
+}
+
+/// "Clan warehouse" button of the clan window (hook packet): open the native warehouse window
+/// showing the clan warehouse. Needs a clan and an active clan premium.
+pub async fn open_native(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    if world.is_player_dead(sid) || world.is_trading(sid) || world.is_merchanting(sid) {
+        return Ok(());
+    }
+    let in_clan = world
+        .get_character_info(sid)
+        .map(|c| c.knights_id > 0)
+        .unwrap_or(false);
+    if !in_clan {
+        return session
+            .send_packet(&crate::systems::timed_notice::build_notice_packet(
+                8,
+                "Clan kasasi icin bir clana uye olmalisin.",
+            ))
+            .await;
+    }
+    if !clan_has_premium(&world, sid) {
+        return session
+            .send_packet(&crate::systems::timed_notice::build_notice_packet(
+                8,
+                "Clan kasasi icin Clan Premium gerekli.",
+            ))
+            .await;
+    }
+    session.set_clan_wh_native(true);
+    let mut open = Packet::new(Opcode::WizClanWarehouse as u8);
+    open.data.push(CLAN_BANK_OPEN);
+    open.data.extend_from_slice(&0u16.to_le_bytes());
+    warn!("[{}] clan warehouse opened in the native window", session.addr());
+    handle(session, open).await
+}
+
+/// A packet of the native warehouse window while it shows the clan warehouse:
+/// `[op][u32 npc][...]` becomes the clan format `[op][u16 npc][...]`.
+pub async fn handle_native(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
+    let mut data = pkt.data;
+    if data.len() >= 5 {
+        data.drain(3..5); // u32 npc id -> u16
+    } else if data.len() == 1 {
+        data.extend_from_slice(&0u16.to_le_bytes());
+    }
+    let mut out = Packet::new(Opcode::WizClanWarehouse as u8);
+    out.data = data;
+    handle(session, out).await
+}
+
 /// Handle WIZ_CLAN_WAREHOUSE from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
@@ -91,7 +164,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         .get_server_settings()
         .map(|s| s.clan_bank_premium != 0)
         .unwrap_or(false);
-    if clan_bank_premium {
+    if clan_bank_premium || session.clan_wh_native() {
         let clan_id = world.get_character_info(sid).and_then(|ch| {
             if ch.knights_id > 0 {
                 Some(ch.knights_id)
@@ -101,7 +174,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         });
         let has_premium = clan_id
             .and_then(|cid| world.get_knights(cid))
-            .map(|k| k.premium_in_use > 0)
+            .map(|k| k.premium_in_use > 0 || k.premium_time > now_secs())
             .unwrap_or(false);
         if !has_premium {
             return session.send_packet(&build_result(sub_opcode, 0)).await;
@@ -123,6 +196,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             Ok(())
         }
     }
+}
+
+fn now_secs() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32
 }
 
 /// Common validation: must be in-game, not dead, not trading, not merchanting,
@@ -208,10 +288,7 @@ async fn handle_open(
     let npc_id = reader.read_u16().unwrap_or(0);
 
     // NPC range check — prevent remote clan warehouse access
-    if !session
-        .world()
-        .is_in_npc_range(session.session_id(), npc_id as u32)
-    {
+    if !npc_in_range(session, npc_id) {
         return session.send_packet(&build_result(CLAN_BANK_OPEN, 0)).await;
     }
 
@@ -334,10 +411,7 @@ async fn handle_input(
     let npc_id = reader.read_u16().unwrap_or(0);
 
     // NPC range check — prevent remote clan warehouse deposit
-    if !session
-        .world()
-        .is_in_npc_range(session.session_id(), npc_id as u32)
-    {
+    if !npc_in_range(session, npc_id) {
         session
             .send_packet(&build_result(CLAN_BANK_INPUT, 0))
             .await?;
@@ -642,10 +716,7 @@ async fn handle_output(
     let npc_id = reader.read_u16().unwrap_or(0);
 
     // NPC range check — prevent remote clan warehouse withdrawal
-    if !session
-        .world()
-        .is_in_npc_range(session.session_id(), npc_id as u32)
-    {
+    if !npc_in_range(session, npc_id) {
         session
             .send_packet(&build_result(CLAN_BANK_OUTPUT, 0))
             .await?;
@@ -939,10 +1010,7 @@ async fn handle_move(
     let npc_id = reader.read_u16().unwrap_or(0);
 
     // NPC range check — prevent remote clan warehouse move
-    if !session
-        .world()
-        .is_in_npc_range(session.session_id(), npc_id as u32)
-    {
+    if !npc_in_range(session, npc_id) {
         session
             .send_packet(&build_result(CLAN_BANK_MOVE, 0))
             .await?;
@@ -1070,10 +1138,7 @@ async fn handle_inventory_move(
     let npc_id = reader.read_u16().unwrap_or(0);
 
     // NPC range check — prevent remote clan warehouse inventory move
-    if !session
-        .world()
-        .is_in_npc_range(session.session_id(), npc_id as u32)
-    {
+    if !npc_in_range(session, npc_id) {
         session
             .send_packet(&build_result(CLAN_BANK_INVENTORY_MOVE, 0))
             .await?;

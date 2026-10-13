@@ -93,6 +93,8 @@ void PriceFix_Init();
 void PriceFix_OnRecv(const BYTE* p, size_t len);
 void ItemTip_FlushSendQueue();
 void DropBtn_Tick();
+void ClanKasa_Tick();
+void ClanKasa_Init();
 bool DropMini_ForwardWheel(WPARAM wp);
 void SoloCapeIcon_OnRecv(const BYTE* p, size_t len);
 void SoloCapeIcon_FlushSendQueue();
@@ -232,7 +234,7 @@ static const UINT WM_PROXY_FLUSH = WM_APP + 0x2F1;
 
 static LRESULT CALLBACK ProxyWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
-    if (GetCurrentThreadId() == g_gameTid) { Genie_Tick(h); Anvil_Tick(); Tag_Tick(); DropBtn_Tick(); ItemTip_Tick(); ResetBar_Tick(); NameFlag_Tick(); }
+    if (GetCurrentThreadId() == g_gameTid) { Genie_Tick(h); Anvil_Tick(); Tag_Tick(); DropBtn_Tick(); ClanKasa_Tick(); ItemTip_Tick(); ResetBar_Tick(); NameFlag_Tick(); }
     if ((m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN) && GetCurrentThreadId() == g_gameTid) Genie_OnMouseDown((short)LOWORD(l), (short)HIWORD(l));
     if (m == WM_LBUTTONDOWN && GetCurrentThreadId() == g_gameTid) HoldRepeat_OnMouseDown(h, (short)LOWORD(l), (short)HIWORD(l));   // stat / skill "+" hold to repeat
     if (m == WM_TIMER && GetCurrentThreadId() == g_gameTid && HoldRepeat_OnTimer(h, (UINT_PTR)w)) return 0;   // HopeGuard Genie field hint / settings push
@@ -512,6 +514,7 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
         Register_Init();
         SoloCapeIcon_Init();
         ItemTip_Init();         // inventory style item tooltip for our panels (item_tooltip.cpp)
+        ClanKasa_Init();        // "Clan Kasasi" button on the clan window (clan_kasa.cpp)
         DropBtn_Init();         // "Drop" button next to the target bar (drop_button.cpp)
         CamRange_Init();        // Camera Range slider under the F10 options window (camera_range.cpp)
         InfStone_Init();        // Infinite Stone alone passes the client's class stone check (infinite_stone.cpp)

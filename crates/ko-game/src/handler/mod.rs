@@ -710,7 +710,7 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
             ext_hook::handle_drop_request(session, &pkt.data[1..]).await
         }
         ext_hook::EXT_SUB_RESET => ext_hook::handle_reset(session, &pkt.data[1..]),
-        ext_hook::EXT_SUB_CLANBANK => ext_hook::handle_clanbank(session, &pkt.data[1..]),
+        ext_hook::EXT_SUB_CLANBANK => clan_warehouse::open_native(session).await,
         ext_hook::EXT_SUB_CHAOTIC_EXCHANGE => {
             ext_hook::handle_chaotic_exchange(session, &pkt.data[1..]).await
         }

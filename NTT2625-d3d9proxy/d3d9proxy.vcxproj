@@ -114,6 +114,7 @@ exit /b 0</Command>
     <ClCompile Include="hopeguard_banner.cpp" />
     <ClCompile Include="solocape_icon.cpp" />
     <ClCompile Include="drop_button.cpp" />
+    <ClCompile Include="clan_kasa.cpp" />
     <ClCompile Include="item_tooltip.cpp" />
     <ClCompile Include="camera_range.cpp" />
     <ClCompile Include="price_fix.cpp" />
