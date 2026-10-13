@@ -79,6 +79,7 @@ pub mod helmet;
 pub mod home;
 pub mod drop_box;
 pub mod item_drop;
+pub mod solo_cape;
 pub mod slave_priest;
 pub mod manner_store;
 pub mod jobchange_hook;
@@ -740,6 +741,8 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
                 ext_hook::handle_daily_reward(session, &pkt.data[1..]).await
             }
         }
+        solo_cape::EXT_SUB_SOLOCAPEICON => solo_cape::handle_icon(session, repack_ext_data(&pkt)).await,
+        solo_cape::EXT_SUB_HGGENIE => solo_cape::handle_hggenie(session, repack_ext_data(&pkt)).await,
         slave_priest::EXT_SUB_SLAVEPRIEST => slave_priest::handle(session, repack_ext_data(&pkt)).await,
         manner_store::EXT_SUB_MANNER => manner_store::handle(session, repack_ext_data(&pkt)).await,
         ext_hook::EXT_SUB_RESETREBSTAT => ext_hook::handle_resetrebstat(session),

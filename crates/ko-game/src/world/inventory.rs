@@ -682,6 +682,15 @@ impl WorldState {
                 }
             }
 
+            // ── Solo Cape bonuses: +300 HP, +5 % attack, +5 % defence ──
+            if crate::handler::solo_cape::has(&ch.name) {
+                stats.item_max_hp += crate::handler::solo_cape::BONUS_HP;
+                stats.ap_bonus_amount = stats
+                    .ap_bonus_amount
+                    .saturating_add(crate::handler::solo_cape::BONUS_ATTACK_PCT);
+                stats.item_ac += (stats.item_ac as i32 * crate::handler::solo_cape::BONUS_DEFENCE_PCT / 100) as i16;
+            }
+
             // Weapon power calculation
             let weapon_dmg_bonus = buff.weapon_damage;
             let mut rightpower: u16 = 0;

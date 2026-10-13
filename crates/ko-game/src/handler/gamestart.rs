@@ -1705,6 +1705,9 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
         }
     }
 
+    // 16c. Solo Cape top-bar icon
+    super::solo_cape::send_icon(&world, sid);
+
     // 17. ChangeFame — promote commander back to chief if still clan leader
     // if (GetFame() == COMMAND_CAPTAIN && isClanLeader()) ChangeFame(CHIEF);
     // After a war ends, commanders should revert to CHIEF if they're the clan leader.

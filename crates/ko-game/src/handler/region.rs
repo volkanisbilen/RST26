@@ -423,7 +423,14 @@ pub fn write_user_info(
 
             // Cape data — C++ UserInfoSystem.cpp:286-352
             // King always gets nation cape (97 Karus, 98 Elmo) regardless of clan/alliance
-            if is_king {
+            if let (false, Some((sc, sr, sg, sb))) = (is_king, super::solo_cape::get(&ch.name)) {
+                // character-bound Solo Cape replaces the clan cape
+                pkt.write_u16(sc);
+                pkt.write_u8(sr);
+                pkt.write_u8(sg);
+                pkt.write_u8(sb);
+                pkt.write_u8(0);
+            } else if is_king {
                 let king_cape = if ch.nation == 1 { 97u16 } else { 98u16 };
                 pkt.write_u16(king_cape);
                 pkt.write_u32(0);
@@ -470,17 +477,28 @@ pub fn write_user_info(
             pkt.write_u8(0); // ranking
             pkt.write_u16(0); // mark_version
                               // King cape: C++ line 274-275 — isKing() writes nation-specific cape ID
+            let solo = if is_king { None } else { super::solo_cape::get(&ch.name) };
             let cape_id = if is_king {
                 if ch.nation == 1 {
                     97u16
                 } else {
                     98u16
                 }
+            } else if let Some((sc, _, _, _)) = solo {
+                sc
             } else {
                 0xFFFF // -1 = no cape
             };
             pkt.write_u16(cape_id);
-            pkt.write_u32(0); // cape R,G,B,pad
+            match solo {
+                Some((_, sr, sg, sb)) => {
+                    pkt.write_u8(sr);
+                    pkt.write_u8(sg);
+                    pkt.write_u8(sb);
+                    pkt.write_u8(0);
+                }
+                None => pkt.write_u32(0), // cape R,G,B,pad
+            }
             pkt.write_u8(0); // symbol flag
         }
     }

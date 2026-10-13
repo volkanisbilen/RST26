@@ -98,6 +98,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         None => return Ok(()),
     };
 
+    // Solo Cape designs are bought by the character, not the clan
+    let is_leader = ch.fame == CHIEF && ch.knights_id != 0;
+    if super::solo_cape::try_buy(session, cape_id, r, g, b, is_leader).await? {
+        return Ok(());
+    }
+
     // Must be: in game, alive, clan leader, not busy, in a clan
     let sid = session.session_id();
     let world = session.world();

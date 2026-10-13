@@ -1318,6 +1318,7 @@ impl WorldState {
     /// Load NPC templates and spawn instances.
     async fn load_npcs_and_monsters(&self, pool: &DbPool) -> anyhow::Result<()> {
         crate::monster_behavior::load();
+        crate::handler::solo_cape::load_all(pool).await;
         let npc_repo = NpcRepository::new(pool);
 
         let template_rows = npc_repo.load_all_templates().await?;
