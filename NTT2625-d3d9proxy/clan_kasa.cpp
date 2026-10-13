@@ -18,7 +18,7 @@ namespace
     HWND g_hBtn = nullptr;
     bool g_hover = false, g_track = false;
     volatile LONG g_vis = 0, g_wl = 0, g_wt = 0, g_wr = 0, g_wb = 0;   // written on the game thread
-    int g_x = 192, g_y = 203, g_w = 64, g_h = 22;
+    int g_x = 364, g_y = 266, g_w = 80, g_h = 22;   // right of the Notice button
 
     void LoadIni()
     {
@@ -32,16 +32,16 @@ namespace
     {
         PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
         RECT rc; GetClientRect(h, &rc);
-        HBRUSH bg = CreateSolidBrush(g_hover ? RGB(120, 84, 24) : RGB(70, 48, 14));
+        HBRUSH bg = CreateSolidBrush(g_hover ? RGB(34, 78, 112) : RGB(18, 42, 66));
         FillRect(dc, &rc, bg); DeleteObject(bg);
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(230, 190, 90)); HGDIOBJ op = SelectObject(dc, pen);
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(112, 192, 222)); HGDIOBJ op = SelectObject(dc, pen);
         HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
         Rectangle(dc, 0, 0, rc.right, rc.bottom);
         SelectObject(dc, ob); SelectObject(dc, op); DeleteObject(pen);
-        HFONT font = CreateFontW(-12, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        HFONT font = CreateFontW(-11, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Verdana");
         HGDIOBJ of = SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 230, 150));
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(205, 238, 252));
         DrawTextW(dc, L"Clan Kasasi", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         SelectObject(dc, of); DeleteObject(font);
         EndPaint(h, &ps);
