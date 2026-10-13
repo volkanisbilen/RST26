@@ -79,6 +79,7 @@ pub mod helmet;
 pub mod home;
 pub mod drop_box;
 pub mod item_drop;
+pub mod manner_store;
 pub mod jobchange_hook;
 pub mod item_get;
 pub mod item_move;
@@ -738,6 +739,7 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
                 ext_hook::handle_daily_reward(session, &pkt.data[1..]).await
             }
         }
+        manner_store::EXT_SUB_MANNER => manner_store::handle(session, repack_ext_data(&pkt)).await,
         ext_hook::EXT_SUB_RESETREBSTAT => ext_hook::handle_resetrebstat(session),
         // Sprint 26: BANSYSTEM (0xBF) — life skill data query (C++ repurposed this sub-opcode)
         ext_hook::EXT_SUB_BANSYSTEM => ext_hook::handle_bansystem(session, &pkt.data[1..]).await,
