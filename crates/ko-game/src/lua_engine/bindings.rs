@@ -4408,6 +4408,16 @@ fn lua_give_clan_premium(lua: &Lua, (uid, _premium_type, days): (i32, u8, u32)) 
             h.clan_premium_in_use = 13; // CLAN_PREMIUM
         });
         w.send_to_session(*msid, &pkt);
+        // The 2625 client has no "Clan Premium" label of its own, so tell the members in a notice.
+        let text = format!(
+            "Clan Premium aktif: {} gun {} saat kaldi (EXP, NP, drop ve tamir indirimi).",
+            remaining_minutes / 1440,
+            (remaining_minutes % 1440) / 60
+        );
+        w.send_to_session_owned(
+            *msid,
+            crate::systems::timed_notice::build_notice_packet(8, &text),
+        );
     }
 
     tracing::warn!(sid, clan_id, days, members = member_sids.len(), "GiveClanPremium applied");

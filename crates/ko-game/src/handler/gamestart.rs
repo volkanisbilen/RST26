@@ -1686,6 +1686,14 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
                 });
                 let pkt = super::premium::build_clan_premium_packet(true, remaining_minutes);
                 session.send_packet(&pkt).await?;
+                let text = format!(
+                    "Clan Premium aktif: {} gun {} saat kaldi.",
+                    remaining_minutes / 1440,
+                    (remaining_minutes % 1440) / 60
+                );
+                session
+                    .send_packet(&crate::systems::timed_notice::build_notice_packet(8, &text))
+                    .await?;
             } else {
                 // No premium or expired — send inactive packet
                 world.update_session(sid, |h| {
