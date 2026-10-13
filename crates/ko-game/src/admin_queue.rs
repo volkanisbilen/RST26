@@ -23,6 +23,7 @@ pub fn start(world: Arc<WorldState>, pool: DbPool) -> tokio::task::JoinHandle<()
                 // table not created yet (ko-admin creates it on first start)
                 continue;
             }
+            crate::event_control::publish_states(&world, &pool).await;
             // commands older than ten minutes are stale (the server was down when they were queued)
             let _ = sqlx::query("UPDATE admin_command SET status='expired' WHERE status='pending' AND created_at < NOW() - INTERVAL '10 minutes'")
                 .execute(&pool)
@@ -54,7 +55,7 @@ pub fn start(world: Arc<WorldState>, pool: DbPool) -> tokio::task::JoinHandle<()
     })
 }
 
-async fn run(world: &WorldState, pool: &DbPool, command: &str, args: &serde_json::Value) -> Result<String, String> {
+async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde_json::Value) -> Result<String, String> {
     let s = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     match command {
         "reload" => match s("what").as_str() {
@@ -124,6 +125,16 @@ async fn run(world: &WorldState, pool: &DbPool, command: &str, args: &serde_json
                 None,
             );
             Ok("announced".into())
+        }
+        "event" => {
+            let key = s("key");
+            let arg = s("arg");
+            match s("action").as_str() {
+                "start" => crate::event_control::start(world, pool, &key, &arg, false).await,
+                "startnow" => crate::event_control::start(world, pool, &key, &arg, true).await,
+                "stop" => crate::event_control::stop(world, pool, &key).await,
+                other => Err(format!("unknown event action {other}")),
+            }
         }
         "control" => {
             let zone = args.get("zone").and_then(|v| v.as_u64()).map(|z| z as u8);

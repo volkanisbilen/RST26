@@ -856,6 +856,18 @@ pub fn route_target(x: f32, z: f32) -> (f32, f32) {
     ROUTE[end]
 }
 
+/// GM/panel stop: every running rift room is closed on the next tick (players go to Moradon).
+pub fn gm_close_rooms(world: &crate::world::WorldState) -> usize {
+    let mut closed = 0;
+    for room in world.dd_rooms() {
+        if room.is_started.load(Ordering::Relaxed) {
+            room.room_close.store(0, Ordering::Relaxed);
+            closed += 1;
+        }
+    }
+    closed
+}
+
 /// Items that only exist for the rift: Monster Coins and the skills bought with them.
 pub const RIFT_ITEMS: [u32; 11] = [
     MONSTER_COIN_ITEM,

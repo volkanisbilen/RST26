@@ -12,6 +12,7 @@ pub mod admin_queue;
 pub mod admin_web;
 pub mod attack_constants;
 pub mod buff_constants;
+pub mod event_control;
 pub mod clan_constants;
 pub mod handler;
 pub mod inventory_constants;

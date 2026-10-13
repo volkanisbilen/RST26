@@ -236,6 +236,15 @@ impl ManesSurvivalManager {
         !self.registration_open.swap(true, Ordering::AcqRel)
     }
 
+    /// Seconds left of the registration countdown (0 when closed).
+    pub fn registration_remaining_seconds(&self) -> u32 {
+        self.registration_deadline
+            .read()
+            .as_ref()
+            .map(|d| d.saturating_duration_since(Instant::now()).as_secs() as u32)
+            .unwrap_or(0)
+    }
+
     pub fn register(&self, session_id: SessionId) -> bool {
         self.is_registration_open() && self.participants.insert(session_id)
     }

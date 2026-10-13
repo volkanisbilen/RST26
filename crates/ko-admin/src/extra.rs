@@ -1000,7 +1000,7 @@ async fn send_command(
     Json(p): Json<CommandIn>,
 ) -> R {
     let (_, s) = auth(&headers, true)?;
-    if !matches!(p.command.as_str(), "reload" | "announce" | "kick" | "control") {
+    if !matches!(p.command.as_str(), "reload" | "announce" | "kick" | "control" | "event") {
         return Err(ApiError::BadRequest);
     }
     let id = queue_command(&app.pool, &p.command, p.args.clone()).await?;
@@ -1010,13 +1010,14 @@ async fn send_command(
     Ok(Json(json!({"ok":true,"id":id,"status":StatusCode::ACCEPTED.as_u16()})))
 }
 
-const ASSETS: [(&str, &str, &str); 6] = [
+const ASSETS: [(&str, &str, &str); 7] = [
     ("style.css", "text/css; charset=utf-8", include_str!("../assets/style.css")),
     ("core.js", "text/javascript; charset=utf-8", include_str!("../assets/core.js")),
     ("containers.js", "text/javascript; charset=utf-8", include_str!("../assets/containers.js")),
     ("drops.js", "text/javascript; charset=utf-8", include_str!("../assets/drops.js")),
     ("mapedit.js", "text/javascript; charset=utf-8", include_str!("../assets/mapedit.js")),
     ("pages.js", "text/javascript; charset=utf-8", include_str!("../assets/pages.js")),
+    ("events.js", "text/javascript; charset=utf-8", include_str!("../assets/events.js")),
 ];
 
 async fn static_file(Path(file): Path<String>) -> Response {

@@ -734,6 +734,7 @@ pub fn start_event_system_task(
             crate::handler::rift_entry::tick(&world);
             crate::handler::golem_war::tick(&world);
             world.manes_survival_manager.tick(&world);
+            crate::event_control::tick(&world);
 
             // ── Ultima's Dungeon timer tick ──────────────────────────────
             crate::handler::ultima::tick(&world);

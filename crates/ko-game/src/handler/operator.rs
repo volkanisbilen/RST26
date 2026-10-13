@@ -372,6 +372,10 @@ pub async fn process_chat_command(
         "riftend" => {
             let msg = super::rift_entry::gm_cancel(session.world());
             send_help(session, msg);
+            let closed = super::dungeon_defence::gm_close_rooms(session.world());
+            if closed > 0 {
+                send_help(session, &format!("{closed} running rift room(s) are closing."));
+            }
         }
         "riftid" => {
             if let Some(id) = args.first().and_then(|a| a.parse::<i16>().ok()) {
@@ -627,33 +631,178 @@ fn handle_achieve_unlock(session: &mut ClientSession, args: &[&str]) -> anyhow::
 }
 /// Send a help/feedback message to the GM via PUBLIC_CHAT.
 /// Uses WIZ_CHAT with PUBLIC_CHAT type, sent only to the GM who issued the command.
-fn send_help(session: &mut ClientSession, message: &str) {
-    let world = session.world().clone();
-    let sid = session.session_id();
+fn send_help<C: GmCtx + ?Sized>(session: &mut C, message: &str) {
+    session.say(message);
+}
 
-    let char_info = match world.get_character_info(sid) {
-        Some(ch) => ch,
-        None => return,
-    };
+/// What an event/GM command handler needs from whoever runs it: a GM's game session, or the
+/// web panel and the scheduler (which only collect the answer lines).
+pub(crate) trait GmCtx {
+    fn world(&self) -> &Arc<crate::world::WorldState>;
+    fn pool(&self) -> &ko_db::DbPool;
+    fn addr(&self) -> String;
+    fn say(&mut self, message: &str);
+}
 
-    // C++ builds: Packet result(WIZ_CHAT, (uint8)ChatType::PUBLIC_CHAT);
-    //             result << pUser->GetNation() << uint32(pUser->GetSocketID()) << uint8(0) << sHelpMessage;
-    let mut pkt = Packet::new(Opcode::WizChat as u8);
-    pkt.write_u8(7); // PUBLIC_CHAT
-    pkt.write_u8(char_info.nation);
-    pkt.write_u32(sid as u32);
-    pkt.write_u8(0); // name length (SByte empty)
-    pkt.write_string(message); // DByte message
-    pkt.write_i8(0); // personal_rank
-    pkt.write_u8(0); // authority
-    pkt.write_u8(0); // system_msg
+impl GmCtx for ClientSession {
+    fn world(&self) -> &Arc<crate::world::WorldState> {
+        ClientSession::world(self)
+    }
+    fn pool(&self) -> &ko_db::DbPool {
+        ClientSession::pool(self)
+    }
+    fn addr(&self) -> String {
+        ClientSession::addr(self).to_string()
+    }
+    fn say(&mut self, message: &str) {
+        let world = ClientSession::world(self).clone();
+        let sid = self.session_id();
 
-    world.send_to_session_owned(sid, pkt);
+        let char_info = match world.get_character_info(sid) {
+            Some(ch) => ch,
+            None => return,
+        };
+
+        // C++ builds: Packet result(WIZ_CHAT, (uint8)ChatType::PUBLIC_CHAT);
+        //             result << pUser->GetNation() << uint32(pUser->GetSocketID()) << uint8(0) << sHelpMessage;
+        let mut pkt = Packet::new(Opcode::WizChat as u8);
+        pkt.write_u8(7); // PUBLIC_CHAT
+        pkt.write_u8(char_info.nation);
+        pkt.write_u32(sid as u32);
+        pkt.write_u8(0); // name length (SByte empty)
+        pkt.write_string(message); // DByte message
+        pkt.write_i8(0); // personal_rank
+        pkt.write_u8(0); // authority
+        pkt.write_u8(0); // system_msg
+
+        world.send_to_session_owned(sid, pkt);
+    }
+}
+
+/// Runs event commands for the web panel and the scheduler; the answer lines are collected.
+pub(crate) struct VirtualGm {
+    world: Arc<crate::world::WorldState>,
+    pool: ko_db::DbPool,
+    pub lines: Vec<String>,
+}
+
+impl VirtualGm {
+    pub(crate) fn new(world: Arc<crate::world::WorldState>, pool: ko_db::DbPool) -> Self {
+        Self {
+            world,
+            pool,
+            lines: Vec::new(),
+        }
+    }
+}
+
+impl GmCtx for VirtualGm {
+    fn world(&self) -> &Arc<crate::world::WorldState> {
+        &self.world
+    }
+    fn pool(&self) -> &ko_db::DbPool {
+        &self.pool
+    }
+    fn addr(&self) -> String {
+        "panel".to_string()
+    }
+    fn say(&mut self, message: &str) {
+        self.lines.push(message.to_string());
+    }
+}
+
+/// The GM event commands, runnable without a game session. Returns false for any other word.
+pub(crate) async fn run_event_command<C: GmCtx>(
+    ctx: &mut C,
+    command: &str,
+    args: &[&str],
+) -> anyhow::Result<bool> {
+    match command {
+        "open1" => handle_nation_war_open(ctx, 1)?,
+        "open2" => handle_nation_war_open(ctx, 2)?,
+        "open3" => handle_nation_war_open(ctx, 3)?,
+        "open4" => handle_nation_war_open(ctx, 4)?,
+        "open5" => handle_nation_war_open(ctx, 5)?,
+        "open6" => handle_nation_war_open(ctx, 6)?,
+        "snow" => handle_snow_war_open(ctx)?,
+        "close" => handle_nation_war_close(ctx).await?,
+        "beefopen" => handle_beef_open(ctx)?,
+        "beefclose" => handle_beef_close(ctx)?,
+        "ftopen" => handle_ft_open(ctx, args)?,
+        "ftclose" => handle_ft_close(ctx)?,
+        "utcopen" => handle_under_castle_open(ctx, args)?,
+        "utcclose" => handle_under_castle_close(ctx)?,
+        "cropen" => handle_cr_open(ctx, args).await?,
+        "crclose" => handle_cr_close(ctx)?,
+        "lottery" => handle_lottery_start(ctx, args).await?,
+        "lotteryclose" => handle_lottery_close(ctx)?,
+        "csw" => handle_csw_start(ctx, args).await?,
+        "chaosopen" => handle_temple_event_open(ctx, TempleEventKind::Chaos)?,
+        "chaosclose" => handle_temple_event_close(ctx, TempleEventKind::Chaos)?,
+        "borderopen" => handle_temple_event_open(ctx, TempleEventKind::Bdw)?,
+        "borderclose" => handle_temple_event_close(ctx, TempleEventKind::Bdw)?,
+        "juraidopen" => handle_temple_event_open(ctx, TempleEventKind::Juraid)?,
+        "juraidstart" => handle_juraid_event_start(ctx)?,
+        "juraidclose" => handle_temple_event_close(ctx, TempleEventKind::Juraid)?,
+        "manesopen" => handle_manes_survival_open(ctx)?,
+        "manesstart" => handle_manes_survival_start(ctx)?,
+        "manesclose" => handle_manes_survival_close(ctx)?,
+        "attendanceopen" => handle_native_event_toggle(ctx, "attendance", true).await?,
+        "attendanceclose" => handle_native_event_toggle(ctx, "attendance", false).await?,
+        "rouletteopen" => handle_native_event_toggle(ctx, "roulette", true).await?,
+        "rouletteclose" => handle_native_event_toggle(ctx, "roulette", false).await?,
+        "puzzleopen" => handle_native_event_toggle(ctx, "jigsaw", true).await?,
+        "puzzleclose" => handle_native_event_toggle(ctx, "jigsaw", false).await?,
+        "coinopen" => handle_native_event_toggle(ctx, "coin", true).await?,
+        "coinclose" => handle_native_event_toggle(ctx, "coin", false).await?,
+        "marbleopen" => handle_native_event_toggle(ctx, "marble", true).await?,
+        "marbleclose" => handle_native_event_toggle(ctx, "marble", false).await?,
+        "ultimaopen" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::ultima::gm_open(ctx.world(), minutes);
+            send_help(ctx, msg);
+        }
+        "ultimastart" => {
+            let msg = super::ultima::gm_start(ctx.world());
+            send_help(ctx, msg);
+        }
+        "ultimaend" => {
+            let msg = super::ultima::gm_end(ctx.world());
+            send_help(ctx, msg);
+        }
+        "riftreg" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::rift_entry::gm_open(ctx.world(), minutes);
+            send_help(ctx, msg);
+        }
+        "riftstart" => {
+            let msg = super::rift_entry::gm_start(ctx.world());
+            send_help(ctx, msg);
+        }
+        "riftend" => {
+            let msg = super::rift_entry::gm_cancel(ctx.world());
+            send_help(ctx, msg);
+            let closed = super::dungeon_defence::gm_close_rooms(ctx.world());
+            if closed > 0 {
+                send_help(ctx, &format!("{closed} running rift room(s) are closing."));
+            }
+        }
+        "golemopen" => {
+            let msg = super::golem_war::gm_open(ctx.world());
+            send_help(ctx, msg);
+        }
+        "golemend" => {
+            let msg = super::golem_war::gm_end(ctx.world());
+            send_help(ctx, msg);
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 /// Enable/disable one of the v2615 native client event panels.
-async fn handle_native_event_toggle(
-    session: &mut ClientSession,
+async fn handle_native_event_toggle<C: GmCtx>(
+    session: &mut C,
     event_key: &str,
     active: bool,
 ) -> anyhow::Result<()> {
@@ -2834,7 +2983,7 @@ fn handle_tournament_close(session: &mut ClientSession, args: &[&str]) -> anyhow
 /// GM command: `+cswstart [PrepMinutes] [WarMinutes]`
 /// Starts Castle Siege War with preparation phase followed by war phase.
 /// Defaults: PrepMinutes=10, WarMinutes=40 (read from DB if available).
-async fn handle_csw_start(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+async fn handle_csw_start<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     let world = session.world().clone();
 
     // Check if already active
@@ -3893,7 +4042,7 @@ fn kick_out_zone_users(world: &std::sync::Arc<crate::world::WorldState>, zone_id
 
 /// Handle +open1..+open6 — Open a nation battle war zone.
 /// calls `BattleZoneOpen(BATTLEZONE_OPEN, zone_index)`.
-fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow::Result<()> {
+fn handle_nation_war_open<C: GmCtx>(session: &mut C, zone_index: u8) -> anyhow::Result<()> {
     use crate::systems::war;
     let world = session.world().clone();
 
@@ -3950,7 +4099,7 @@ fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow
 
 /// Handle +snow — Open a snow battle war zone.
 /// calls `BattleZoneOpen(SNOW_BATTLE)`.
-fn handle_snow_war_open(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_snow_war_open<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     use crate::systems::war;
     let world = session.world().clone();
 
@@ -3977,7 +4126,7 @@ fn handle_snow_war_open(session: &mut ClientSession) -> anyhow::Result<()> {
 
 /// Handle +close — Close the active nation/snow war.
 /// calls `BattleZoneClose()`.
-async fn handle_nation_war_close(session: &mut ClientSession) -> anyhow::Result<()> {
+async fn handle_nation_war_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     use crate::systems::war;
     let world = session.world().clone();
 
@@ -6000,7 +6149,7 @@ fn handle_change_room(session: &mut ClientSession, args: &[&str]) -> anyhow::Res
 }
 
 /// +beefopen — start the Beef/Monument event in Bifrost zone.
-fn handle_beef_open(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_beef_open<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
 
     let state = world.get_beef_event();
@@ -6015,7 +6164,7 @@ fn handle_beef_open(session: &mut ClientSession) -> anyhow::Result<()> {
 }
 
 /// +beefclose — close the Beef/Monument event.
-fn handle_beef_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_beef_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
 
     // Reset beef event state
@@ -6086,7 +6235,7 @@ fn handle_mode_gamemaster(session: &mut ClientSession) -> anyhow::Result<()> {
 /// +ftopen [Type] — open Forgotten Temple event.
 /// Calls `ForgettenTempleManuelOpening(Type)` which validates ptimeopt,
 /// resets state, then calls `ForgettenTempleStart(1, MinLevel, MaxLevel)`.
-fn handle_ft_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+fn handle_ft_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     let _event_type: u16 = if !args.is_empty() {
         match args[0].parse::<u16>() {
             Ok(t) if t > 0 => t,
@@ -6161,7 +6310,7 @@ fn handle_ft_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
 /// +ftclose — close Forgotten Temple event.
 /// If active: kicks zone users, resets state, announces close.
 /// If not active: just resets state.
-fn handle_ft_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_ft_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     let ft = world.forgotten_temple_state();
 
@@ -6186,7 +6335,7 @@ fn handle_ft_close(session: &mut ClientSession) -> anyhow::Result<()> {
 /// +lottery <ID> — start lottery event from DB settings.
 /// Loads lottery config from `lottery_event_settings` table by ID,
 /// then starts the lottery event.
-async fn handle_lottery_start(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+async fn handle_lottery_start<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     if args.is_empty() {
         send_help(session, "Usage: +lottery ID");
         return Ok(());
@@ -6267,7 +6416,7 @@ async fn handle_lottery_start(session: &mut ClientSession, args: &[&str]) -> any
 /// +lotteryclose — close the running lottery event, refunding participants.
 /// If active: refunds all participants' required items, resets state, broadcasts end.
 /// If not active: sends error message.
-fn handle_lottery_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_lottery_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     let lottery = world.lottery_process();
 
@@ -6381,7 +6530,7 @@ async fn handle_reset_loyalty(session: &mut ClientSession) -> anyhow::Result<()>
 
 /// +cropen <EventID> — start Collection Race event.
 /// Loads event definition from WorldState settings, then starts the event.
-async fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+async fn handle_cr_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     if args.is_empty() {
         send_help(session, "Usage: +cropen EventID");
         return Ok(());
@@ -6445,7 +6594,7 @@ async fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::R
 }
 
 /// +crclose — close the active Collection Race event.
-fn handle_cr_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_cr_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     let cr = world.collection_race_event();
 
@@ -6730,8 +6879,8 @@ impl TempleEventKind {
 /// +chaosopen / +borderopen / +juraidopen — manually start a temple event.
 /// `BorderDefenceWarManuelOpening`, `JuraidMountainManuelOpening`.
 /// Validates timer opts, resets state, sets fields, broadcasts sign-up packet.
-fn handle_temple_event_open(
-    session: &mut ClientSession,
+fn handle_temple_event_open<C: GmCtx>(
+    session: &mut C,
     kind: TempleEventKind,
 ) -> anyhow::Result<()> {
     let world = session.world().clone();
@@ -6808,7 +6957,7 @@ fn handle_temple_event_open(
 }
 
 /// +juraidstart — skip the Juraid registration countdown and enter on next event tick.
-fn handle_juraid_event_start(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_juraid_event_start<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     use crate::systems::event_room::TempleEventType;
 
     let world = session.world().clone();
@@ -6861,7 +7010,7 @@ fn handle_juraid_event_start(session: &mut ClientSession) -> anyhow::Result<()> 
 }
 
 /// +utcstart [minutes] (or +utcopen) — start Under The Castle using the loaded DB spawn table.
-fn handle_under_castle_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+fn handle_under_castle_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     let world = session.world().clone();
     let duration_minutes = args
         .first()
@@ -6910,7 +7059,7 @@ fn handle_under_castle_open(session: &mut ClientSession, args: &[&str]) -> anyho
 }
 
 /// +utcclose — stop Under The Castle on the next UTC timer tick.
-fn handle_under_castle_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_under_castle_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     let state = world.under_the_castle_state();
     if !state.is_active.load(std::sync::atomic::Ordering::Relaxed) {
@@ -6938,8 +7087,8 @@ fn handle_under_castle_close(session: &mut ClientSession) -> anyhow::Result<()> 
 /// `BorderDefenceWarManuelClosed`, `JuraidMountainManuelClosed`.
 /// Sets the manual close flag and timer finish control to trigger cleanup
 /// on the next event system tick.
-fn handle_temple_event_close(
-    session: &mut ClientSession,
+fn handle_temple_event_close<C: GmCtx>(
+    session: &mut C,
     kind: TempleEventKind,
 ) -> anyhow::Result<()> {
     let world = session.world().clone();
@@ -9719,7 +9868,7 @@ mod tests {
 }
 
 /// +manesopen — open the verified 2615 registration window without spawning monsters.
-fn handle_manes_survival_open(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_manes_survival_open<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     if !world.manes_survival_manager.open_registration() {
         let state = if world.manes_survival_manager.is_active() {
@@ -9753,7 +9902,7 @@ fn handle_manes_survival_open(session: &mut ClientSession) -> anyhow::Result<()>
 }
 
 /// +manesstart — test-only transition from registration to the active monster phase.
-fn handle_manes_survival_start(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_manes_survival_start<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     match world.manes_survival_manager.start_registered_event(&world) {
         Ok((0, _)) => send_help(session, "Manes Survival is already active."),
@@ -9781,7 +9930,7 @@ fn handle_manes_survival_start(session: &mut ClientSession) -> anyhow::Result<()
 }
 
 /// +manesclose — close registration and remove only Manes-owned runtime NPCs.
-fn handle_manes_survival_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_manes_survival_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     if !world.manes_survival_manager.is_active()
         && !world.manes_survival_manager.is_registration_open()

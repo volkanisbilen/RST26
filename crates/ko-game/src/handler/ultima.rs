@@ -185,6 +185,15 @@ fn reply(op: u8, result: u8) -> Packet {
     pkt
 }
 
+/// "idle" | "registration" | "running" (for the event list of the web panel).
+pub fn phase_name() -> &'static str {
+    match state().lock().phase {
+        Phase::Idle => "idle",
+        Phase::Registration => "registration",
+        Phase::Running => "running",
+    }
+}
+
 /// Is the Ultima registration window currently open?
 pub fn registration_open() -> bool {
     state().lock().phase == Phase::Registration
