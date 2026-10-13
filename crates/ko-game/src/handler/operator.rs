@@ -9966,7 +9966,7 @@ fn handle_manes_survival_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> 
 }
 
 
-/// +killnear [radius=5] - really kill every monster within `radius` metres of the GM (death
+/// +killnear [radius=50] - really kill every monster within `radius` metres of the GM (death
 /// broadcast, experience, drops/loot box), instead of just removing them.
 async fn handle_kill_near(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     let world = session.world().clone();
@@ -9974,8 +9974,8 @@ async fn handle_kill_near(session: &mut ClientSession, args: &[&str]) -> anyhow:
     let radius = args
         .first()
         .and_then(|a| a.parse::<f32>().ok())
-        .unwrap_or(5.0)
-        .clamp(1.0, 60.0);
+        .unwrap_or(50.0)
+        .clamp(1.0, 100.0);
     let Some(pos) = world.get_position(sid) else {
         return Ok(());
     };
