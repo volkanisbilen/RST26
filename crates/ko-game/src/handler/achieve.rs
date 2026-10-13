@@ -1099,20 +1099,23 @@ async fn handle_skill_title(
             .unwrap_or(false)
     };
     let status_ok = world.with_session(sid, |h| finished(h, cover_id));
-    // `skill_id` is the achievement ticked in the "skill" column; its
-    // ACHIEVE_MAIN.title_id is the ACHIEVE_TITLE stat row (the Effect Description).
-    // A value that is not a finished achievement is taken as the stat row itself.
-    let skill_is_achievement = world
-        .with_session(sid, |h| finished(h, skill_id))
-        .unwrap_or(false);
+    // Client contract (confirmed from packets): `cover_id` is the ACHIEVE_MAIN id, while
+    // `skill_id` is the ACHIEVE_TITLE row of the ticked title (its stat bonuses). Only when
+    // no such row exists is it read as an achievement id and resolved through its title.
+    let skill_is_achievement = false;
     let main_entry = world.achieve_main(cover_id as i32);
-    let title_entry = if skill_is_achievement {
-        world
-            .achieve_main(skill_id as i32)
-            .and_then(|m| world.achieve_title(m.title_id as i32))
-    } else {
-        world.achieve_title(skill_id as i32)
-    };
+    let title_entry = world.achieve_title(skill_id as i32).or_else(|| {
+        let finished_skill = world
+            .with_session(sid, |h| finished(h, skill_id))
+            .unwrap_or(false);
+        if finished_skill {
+            world
+                .achieve_main(skill_id as i32)
+                .and_then(|m| world.achieve_title(m.title_id as i32))
+        } else {
+            None
+        }
+    });
     tracing::warn!(
         sid,
         cover_id,

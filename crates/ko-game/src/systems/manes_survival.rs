@@ -576,6 +576,7 @@ impl ManesSurvivalManager {
             ch.hp = max_hp;
             ch.mp = max_mp;
         });
+        tracing::warn!(session_id, max_hp, max_mp, notify, "Manes Survival: real vitals restored");
         if notify {
             world.send_to_session_owned(
                 session_id,
@@ -592,6 +593,25 @@ impl ManesSurvivalManager {
             world.send_item_move_refresh(session_id);
         }
         true
+    }
+
+    /// Tell the client the character's current bars (max HP change, HP, MP).
+    pub fn send_vitals(world: &WorldState, session_id: SessionId) {
+        let Some(ch) = world.get_character_info(session_id) else {
+            return;
+        };
+        world.send_to_session_owned(
+            session_id,
+            crate::handler::max_hp_change::build_max_hp_change(i32::from(ch.max_hp)),
+        );
+        world.send_to_session_owned(
+            session_id,
+            crate::systems::regen::build_hp_change_packet(ch.max_hp, ch.hp),
+        );
+        world.send_to_session_owned(
+            session_id,
+            crate::systems::regen::build_mp_change_packet(ch.max_mp, ch.mp),
+        );
     }
 
     /// A dead participant comes back on their nation's entry line inside the same zone.
@@ -1151,6 +1171,9 @@ impl ManesSurvivalManager {
                 level_packet.write_u32(equipped.item_weight);
                 world.send_to_session_owned(sid, level_packet);
                 world.send_item_move_refresh(sid);
+                // The client's own Survival shutdown restores values it cached before the
+                // event; the real bars are sent again after it.
+                Self::send_vitals(&world, sid);
 
                 // A dead player is brought back first, otherwise they would arrive dead.
                 if world.is_player_dead(sid) {
@@ -1173,6 +1196,13 @@ impl ManesSurvivalManager {
                 crate::handler::zone_change::server_teleport_to_zone(
                     &world, sid, home_zone, 0.0, 0.0,
                 );
+                for wait_ms in [1_500u64, 3_000] {
+                    let w = world.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                        Self::send_vitals(&w, sid);
+                    });
+                }
                 tracing::info!(
                     sid,
                     character = %character.name,
