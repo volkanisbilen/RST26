@@ -881,25 +881,19 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
             // MANES_MAGIC contains several offensive rows with zero/very short
             // recast values because the original Survival runtime supplies its
-            // own gate. Enforce that gate server-side and retain a real miss
-            // chance instead of allowing guaranteed 150ms damage spam.
+            // own gate. Keep a 900 ms minimum gap between casts. Event skills never
+            // miss: the table's success rate (30 % for the mage skills) made most
+            // casts fail with "Missed".
             if is_manes_offensive_magic {
                 const MANES_MIN_RECAST_MS: u64 = 900;
-                let success_rate = skill.success_rate.unwrap_or(100).clamp(1, 85) as u32;
-                let landed = rand::thread_rng().gen_range(1..=100) <= success_rate;
-                if !landed {
-                    let now = std::time::Instant::now();
-                    world.update_session(sid, |h| {
-                        h.skill_cooldowns.insert(
-                            skill_id,
-                            now + std::time::Duration::from_millis(MANES_MIN_RECAST_MS),
-                        );
-                    });
-                    instance.data[3] = SKILLMAGIC_FAIL_ATTACKZERO;
-                    world.send_to_session_owned(sid, instance.build_fail_packet());
-                    tracing::debug!(sid, skill_id, success_rate, "Manes offensive skill missed");
-                    return Ok(());
-                }
+                let ready_again = std::time::Instant::now()
+                    + std::time::Duration::from_millis(MANES_MIN_RECAST_MS);
+                world.update_session(sid, |h| {
+                    let slot = h.skill_cooldowns.entry(skill_id).or_insert(ready_again);
+                    if *slot < ready_again {
+                        *slot = ready_again;
+                    }
+                });
             }
 
             // Check mana for non-type2 skills (type2 already deducted in FLYING)

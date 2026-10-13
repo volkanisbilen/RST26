@@ -661,6 +661,27 @@ impl ManesSurvivalManager {
         }
     }
 
+    /// The client empties its bag when the Survival mode starts. Once everybody has loaded
+    /// the zone, the real bag is sent again (twice, in case the first one raced the load).
+    fn schedule_bag_refresh(world: Arc<WorldState>) {
+        tokio::spawn(async move {
+            for wait_ms in [2_500u64, 4_000] {
+                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                let playing: Vec<SessionId> = world
+                    .manes_survival_manager
+                    .participant_ids()
+                    .into_iter()
+                    .filter(|sid| world.manes_survival_manager.is_participant_playing(*sid))
+                    .collect();
+                for sid in playing {
+                    if let Some(pkt) = crate::handler::survival::build_bag_refresh(&world, sid).await {
+                        world.send_to_session_owned(sid, pkt);
+                    }
+                }
+            }
+        });
+    }
+
     /// Rewards, stop and the delayed evacuation of every participant.
     pub fn finish_event(&self, world: &Arc<WorldState>) -> (usize, usize) {
         let participants = self.participant_ids();
@@ -740,6 +761,9 @@ impl ManesSurvivalManager {
         }
 
         let placed = self.place_participants(world, &participants);
+        if placed > 0 {
+            Self::schedule_bag_refresh(world.clone());
+        }
         if placed == 0 {
             self.stop(world);
             anyhow::bail!("no registered participant could be placed in the event zones");

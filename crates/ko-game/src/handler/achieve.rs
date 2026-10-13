@@ -1175,6 +1175,15 @@ async fn handle_skill_title(
     // Recalculate stats with new title bonuses
     world.set_user_ability(sid);
     world.send_item_move_refresh(sid);
+    // the client rebuilds its own title display after the answer: send the stats once more
+    {
+        let w = world.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            w.set_user_ability(sid);
+            w.send_item_move_refresh(sid);
+        });
+    }
     Ok(())
 }
 
@@ -1222,6 +1231,15 @@ async fn handle_skill_title_reset(session: &mut ClientSession) -> anyhow::Result
     // Recalculate stats after clearing title bonuses
     world.set_user_ability(sid);
     world.send_item_move_refresh(sid);
+    // the client rebuilds its own title display after the answer: send the stats once more
+    {
+        let w = world.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            w.set_user_ability(sid);
+            w.send_item_move_refresh(sid);
+        });
+    }
     Ok(())
 }
 

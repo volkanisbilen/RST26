@@ -189,6 +189,45 @@ pub async fn build_event_finish_restore(
     Some(pkt)
 }
 
+/// Full refresh of the 28 bag slots (WIZ_ITEM_MOVE type 2). The client's Survival mode
+/// clears its bag on start; this puts the real inventory (and the event potions) back on
+/// screen, like it looks in the Full Moon Rift.
+pub async fn build_bag_refresh(
+    world: &crate::world::WorldState,
+    sid: crate::zone::SessionId,
+) -> Option<Packet> {
+    use crate::inventory_constants::{HAVE_MAX, SLOT_MAX};
+
+    let character = world.get_character_info(sid)?;
+    let inventory = world.get_inventory(sid);
+    let mut pkt = Packet::new(ko_protocol::Opcode::WizItemMove as u8);
+    pkt.write_u8(2);
+    pkt.write_u8(1);
+    for index in SLOT_MAX..SLOT_MAX + HAVE_MAX {
+        let slot = inventory.get(index).cloned().unwrap_or_default();
+        pkt.write_u32(slot.item_id);
+        pkt.write_i16(slot.durability);
+        pkt.write_u16(slot.count);
+        pkt.write_u8(slot.flag);
+        pkt.write_u16(slot.remaining_rental_minutes());
+        if let Some(pool) = world.db_pool() {
+            crate::handler::unique_item_info::write_unique_item_info(
+                world,
+                pool,
+                slot.item_id,
+                slot.serial_num,
+                character.rebirth_level,
+                &mut pkt,
+            )
+            .await;
+        } else {
+            pkt.write_u32(0);
+        }
+        pkt.write_u32(slot.expire_time);
+    }
+    Some(pkt)
+}
+
 /// Open the v2615 Manes skill-choice window.
 ///
 /// Verified against `sub_716A10 -> sub_714AB0`, operation 1. The client reads
