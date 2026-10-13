@@ -89,6 +89,19 @@ enum UpgradeResult {
     Rental = 5,
 }
 
+/// `WIZ_EXT_HOOK / 0xC4`: `[u32 rate 0..10000][u32 coins]` for the anvil window (0 / 0 = no recipe).
+async fn send_upgrade_rate(
+    session: &mut ClientSession,
+    rate: u32,
+    coins: u32,
+) -> anyhow::Result<()> {
+    let mut pkt = Packet::new(Opcode::EXT_HOOK_S2C);
+    pkt.write_u8(super::ext_hook::EXT_SUB_UPGRADE_RATE);
+    pkt.write_u32(rate);
+    pkt.write_u32(coins);
+    session.send_packet(&pkt).await
+}
+
 async fn send_upgrade_fail(
     session: &mut ClientSession,
     upgrade_type: u8,
@@ -873,6 +886,7 @@ async fn item_upgrade(
     }
 
     if !settings_found || gen_rate == 0 {
+        send_upgrade_rate(session, 0, 0).await?; // HopeGuard anvil window: no recipe -> "-"
         debug!(
             "[{}] ItemUpgrade fail: type={} reason=settings not found origin={} new_item={} scroll={} scroll_type={:?} item_type={} grade={} recipe_grade={} matched_req={}",
             session.addr(),
@@ -920,6 +934,8 @@ async fn item_upgrade(
     // C++ myrand(0, 10000) is inclusive [0, 10000] → use 10001 for exclusive upper
     let rand_val = rand_range(0, 10001);
     let effective_rate = if has_logos { 3300 } else { gen_rate };
+    // HopeGuard anvil window: show the success rate and the coins before / while upgrading
+    send_upgrade_rate(session, effective_rate, req_coins).await?;
 
     let mut result_items = items.clone();
     let b_result;
