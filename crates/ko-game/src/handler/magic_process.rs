@@ -7319,6 +7319,12 @@ fn cure_type3_dots(world: &WorldState, target_sid: SessionId) -> bool {
     removed
 }
 
+/// Slave Priest cure: harmful DOTs and Type4 debuffs.
+pub(crate) fn cure_player(world: &WorldState, target_sid: SessionId) {
+    cure_type3_dots(world, target_sid);
+    cure_type4_debuffs(world, target_sid);
+}
+
 /// Remove all Type4 debuffs from a player, with per-type cleanup and expiry notices for the
 /// owner only, then restore scroll buffs the debuffs had displaced.
 fn cure_type4_debuffs(world: &WorldState, target_sid: SessionId) -> Vec<i32> {
@@ -7623,7 +7629,7 @@ async fn execute_type5(
 /// 2. Initialize stealth (reset invisibility)
 /// 3. Cure DOT & Poison status effects
 /// 4. Activate blink (10s invulnerability)
-fn post_resurrection_sequence(world: &WorldState, sid: SessionId, zone_id: u16) {
+pub(crate) fn post_resurrection_sequence(world: &WorldState, sid: SessionId, zone_id: u16) {
     // ── 1. Broadcast INOUT_RESPAWN to 3×3 region ─────────────────────
     if let Some((pos, my_char, event_room)) =
         world.with_session(sid, |h| (h.position, h.character.clone(), h.event_room))
