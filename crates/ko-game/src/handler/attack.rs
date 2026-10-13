@@ -2299,11 +2299,27 @@ pub(crate) fn flush_manes_progress(world: &WorldState, sid: SessionId) {
         )),
     );
     if progress.leveled_up {
-        let offer = world.manes_survival_manager.create_offer(sid);
-        world.send_to_session_owned(
-            sid,
-            crate::handler::survival::build_skill_selection_open(&offer.skills, &offer.potions),
-        );
+        // A window left open from an earlier level only gets its skill list replaced.
+        let open_window = if world.manes_survival_manager.has_pending_offer(sid) {
+            world.manes_survival_manager.refresh_offer_skills(sid)
+        } else {
+            None
+        };
+        if let Some(offer) = open_window {
+            world.send_to_session_owned(
+                sid,
+                crate::handler::survival::build_skill_list_refresh(&offer.skills),
+            );
+        } else {
+            let offer = world.manes_survival_manager.create_offer(sid);
+            world.send_to_session_owned(
+                sid,
+                crate::handler::survival::build_skill_selection_open(
+                    &offer.skills,
+                    &offer.potions,
+                ),
+            );
+        }
         tracing::info!(
             sid,
             survival_level = progress.level,

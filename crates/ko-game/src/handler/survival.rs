@@ -41,7 +41,10 @@ const STATUS_SCORE: u8 = 3;
 const CATEGORY_SKILL: u8 = 6;
 const SKILL_OPEN: u8 = 1;
 const SELECTION_SUBMIT: u8 = 2;
+const SKILL_LIST_REFRESH: u8 = 4;
 const SKILL_COMPLETE: u8 = 5;
+/// `D0 06 05` state byte: the player closed the window without choosing.
+const COMPLETE_STATE_SKIP: u8 = 2;
 const SKILL_RESULT_FAILURE: u8 = 0;
 const SELECTION_LIST_SKILL: u8 = 1;
 const SELECTION_LIST_POTION: u8 = 2;
@@ -287,6 +290,18 @@ pub fn build_skill_selection_open(skill_choices: &[u16], potion_choices: &[u16])
     pkt.write_u8(potion_choices.len() as u8);
     for potion_id in potion_choices {
         pkt.write_u16(*potion_id);
+    }
+    pkt
+}
+
+/// Replace only the skill list of the open choice window (`D0 06 04 u8 count [u16 id]`).
+pub fn build_skill_list_refresh(skill_choices: &[u16]) -> Packet {
+    let mut pkt = Packet::new(WIZ_SURVIVAL);
+    pkt.write_u8(CATEGORY_SKILL);
+    pkt.write_u8(SKILL_LIST_REFRESH);
+    pkt.write_u8(skill_choices.len() as u8);
+    for skill_id in skill_choices {
+        pkt.write_u16(*skill_id);
     }
     pkt
 }
@@ -540,6 +555,18 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     if category == CATEGORY_SKILL && operation == SKILL_COMPLETE {
         let requested_state = reader.read_u8().unwrap_or(SKILL_RESULT_FAILURE);
+        if requested_state == COMPLETE_STATE_SKIP {
+            // Closing the window without a pick still needs the accept answer, otherwise the
+            // client keeps the choice UI half open and the next level's window is locked.
+            session
+                .world()
+                .manes_survival_manager
+                .complete_offer(session.session_id());
+            session
+                .send_packet(&build_skill_selection_result(1))
+                .await?;
+            return Ok(());
+        }
         let skill_id = reader.read_u16().unwrap_or(0);
         let valid = requested_state != SKILL_RESULT_FAILURE
             && reader.remaining() == 0
@@ -548,6 +575,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 .manes_survival_manager
                 .offered_skill(session.session_id(), skill_id);
         if valid {
+            session
+                .world()
+                .manes_survival_manager
+                .complete_offer(session.session_id());
             session
                 .send_packet(&build_skill_selection_result(1))
                 .await?;

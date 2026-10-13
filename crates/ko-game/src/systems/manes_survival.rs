@@ -61,6 +61,8 @@ pub struct ManesProgress {
 pub struct ManesOffer {
     pub skills: Vec<u16>,
     pub potions: Vec<u16>,
+    /// The choice window is open on the client and has not been completed or skipped.
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -389,13 +391,19 @@ impl ManesSurvivalManager {
         Some(magic_id)
     }
 
-    pub fn create_offer(&self, session_id: SessionId) -> ManesOffer {
+    /// Skill rows the player may still take: the next tier of an owned branch, or tier 1 of
+    /// a new one. Active skills are kinds 1..=4, passives kind 5.
+    fn eligible_rows(&self, session_id: SessionId, passive: bool) -> Vec<u16> {
         let selected = self.selected_rows.get(&session_id);
         let rows = self.magic.read();
-        let mut skills: Vec<u16> = rows
-            .iter()
+        rows.iter()
             .filter_map(|row| {
-                if !(1..=5).contains(&row.kind) {
+                let wanted = if passive {
+                    row.kind == 5
+                } else {
+                    (1..=4).contains(&row.kind)
+                };
+                if !wanted {
                     return None;
                 }
                 let id = u16::try_from(row.selection_id).ok()?;
@@ -410,20 +418,66 @@ impl ManesSurvivalManager {
                     _ => None,
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    /// Every level-up offers two active skills and one passive (plus two potions).
+    fn pick_skills(&self, session_id: SessionId) -> Vec<u16> {
+        let mut rng = rand::thread_rng();
+        let mut active = self.eligible_rows(session_id, false);
+        let mut passive = self.eligible_rows(session_id, true);
+        active.shuffle(&mut rng);
+        passive.shuffle(&mut rng);
+        active.truncate(2);
+        passive.truncate(1);
+        active.extend(passive);
+        active
+    }
+
+    pub fn create_offer(&self, session_id: SessionId) -> ManesOffer {
+        let rows = self.magic.read();
         let mut potions: Vec<u16> = rows
             .iter()
             .filter(|row| row.kind == 100)
             .filter_map(|row| u16::try_from(row.selection_id).ok())
             .collect();
-        let mut rng = rand::thread_rng();
-        skills.shuffle(&mut rng);
-        potions.shuffle(&mut rng);
-        skills.truncate(3);
+        drop(rows);
+        potions.shuffle(&mut rand::thread_rng());
         potions.truncate(2);
-        let offer = ManesOffer { skills, potions };
+        let offer = ManesOffer {
+            skills: self.pick_skills(session_id),
+            potions,
+            pending: true,
+        };
         self.offers.insert(session_id, offer.clone());
         offer
+    }
+
+    /// The choice window is still open from an earlier level: swap its skill list for the
+    /// new level's (keeping the potions shown) instead of opening a second window.
+    pub fn refresh_offer_skills(&self, session_id: SessionId) -> Option<ManesOffer> {
+        let potions = self.offers.get(&session_id)?.potions.clone();
+        let offer = ManesOffer {
+            skills: self.pick_skills(session_id),
+            potions,
+            pending: true,
+        };
+        self.offers.insert(session_id, offer.clone());
+        Some(offer)
+    }
+
+    pub fn has_pending_offer(&self, session_id: SessionId) -> bool {
+        self.offers
+            .get(&session_id)
+            .map(|offer| offer.pending)
+            .unwrap_or(false)
+    }
+
+    /// The player took a skill or closed the window: the next level opens a fresh one.
+    pub fn complete_offer(&self, session_id: SessionId) {
+        if let Some(mut offer) = self.offers.get_mut(&session_id) {
+            offer.pending = false;
+        }
     }
 
     pub fn offered_skill(&self, session_id: SessionId, selection_id: u16) -> bool {
@@ -1266,6 +1320,52 @@ mod tests {
         assert!(!manager.is_participant_playing(2));
         manager.forget(1);
         assert_eq!(manager.vitals_override(1), None);
+    }
+
+    fn magic_row(selection_id: i64, kind: i16) -> ManesSurvivalMagicRow {
+        ManesSurvivalMagicRow {
+            selection_id,
+            kind,
+            magic_id: 491_000 + selection_id,
+            item_id: 0,
+            item_count: 0,
+            price: 0,
+            hp_bonus: 0,
+            attack_bonus_pct: 0,
+            reduction_pct: 0,
+        }
+    }
+
+    #[test]
+    fn every_offer_has_two_active_skills_one_passive_and_two_potions() {
+        let manager = ManesSurvivalManager::default();
+        let mut rows = vec![];
+        for branch in [301, 401, 501, 601] {
+            rows.push(magic_row(branch, 1));
+            rows.push(magic_row(branch + 1, 2));
+        }
+        for passive in [5901, 6001, 6101] {
+            rows.push(magic_row(passive, 5));
+            rows.push(magic_row(passive + 1, 5));
+        }
+        for potion in [6201, 6301, 6401] {
+            rows.push(magic_row(potion, 100));
+        }
+        *manager.magic.write() = rows;
+        for _ in 0..30 {
+            let offer = manager.create_offer(1);
+            let passives = offer.skills.iter().filter(|id| **id >= 5900).count();
+            assert_eq!(offer.skills.len(), 3, "{:?}", offer.skills);
+            assert_eq!(passives, 1, "{:?}", offer.skills);
+            assert_eq!(offer.potions.len(), 2);
+            assert!(offer.pending);
+        }
+        // an open window only gets a new skill list, the potions stay
+        let first = manager.create_offer(1);
+        let refreshed = manager.refresh_offer_skills(1).unwrap();
+        assert_eq!(first.potions, refreshed.potions);
+        manager.complete_offer(1);
+        assert!(!manager.has_pending_offer(1));
     }
 
     #[test]
