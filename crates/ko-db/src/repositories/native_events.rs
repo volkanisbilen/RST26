@@ -274,6 +274,24 @@ impl<'a> NativeEventsRepository<'a> {
         .await
     }
 
+    /// Chance cards left today (8 a day; every piece placed uses one).
+    pub async fn jigsaw_cards_left(&self, character: &str) -> Result<i32, sqlx::Error> {
+        self.jigsaw_state(character).await?;
+        sqlx::query(
+            "UPDATE native_jigsaw_user SET pieces_today=0,reset_date=CURRENT_DATE              WHERE character_name=$1 AND reset_date<>CURRENT_DATE",
+        )
+        .bind(character)
+        .execute(self.pool)
+        .await?;
+        let used: i16 = sqlx::query_scalar(
+            "SELECT pieces_today FROM native_jigsaw_user WHERE character_name=$1",
+        )
+        .bind(character)
+        .fetch_one(self.pool)
+        .await?;
+        Ok((8 - i32::from(used)).max(0))
+    }
+
     /// The nine reward boxes of the puzzle: (pieces needed, item, count) in box order.
     pub async fn jigsaw_rewards(&self) -> Result<Vec<(i16, i32, i16)>, sqlx::Error> {
         sqlx::query_as(
@@ -303,7 +321,7 @@ impl<'a> NativeEventsRepository<'a> {
             "UPDATE native_jigsaw_user SET \
                piece_counts[$2 + 1]=LEAST(piece_counts[$2 + 1] + 1,255), \
                pieces_today=pieces_today+1,last_piece_at=NOW(),updated_at=NOW() \
-             WHERE character_name=$1 AND pieces_today<64 \
+             WHERE character_name=$1 AND pieces_today<8 \
                AND (last_piece_at IS NULL OR last_piece_at < NOW()-INTERVAL '900 milliseconds') \
              RETURNING piece_counts,reward_claimed",
         )

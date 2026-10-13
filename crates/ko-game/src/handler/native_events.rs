@@ -113,6 +113,9 @@ pub async fn handle_roulette(session: &mut ClientSession, pkt: Packet) -> anyhow
     }
     let mut reader = PacketReader::new(&pkt.data);
     let sub = reader.read_u8().unwrap_or(0);
+    if sub != EVENT_HUB_SUB {
+        warn!("[{}] native 0x9C request sub={sub} data={:?}", session.addr(), pkt.data);
+    }
     let pool = session.pool().clone();
     let repo = NativeEventsRepository::new(&pool);
     if sub == EVENT_HUB_SUB {
@@ -1136,6 +1139,7 @@ pub async fn handle_jigsaw_coin(session: &mut ClientSession, pkt: Packet) -> any
     let Some(name) = character_name(session) else {
         return Ok(());
     };
+    warn!("[{}] native 0xCC request sub={sub} data={:?}", session.addr(), pkt.data);
     match sub {
         1 if repo.is_active("jigsaw").await.unwrap_or(false) => {
             jigsaw_open(session, &repo, &name).await
@@ -1182,7 +1186,8 @@ async fn jigsaw_open(
             .sum::<i32>()
             .min(255) as u8,
     );
-    out.write_u8(8);
+    // chance cards left today (the client enables the card button while this is above 0)
+    out.write_u8(repo.jigsaw_cards_left(name).await.unwrap_or(0).clamp(0, 255) as u8);
     for i in 0..8 {
         out.write_u8(
             state
@@ -1209,26 +1214,40 @@ async fn jigsaw_open(
     Ok(())
 }
 
+/// A chance card is used on piece `piece` (`CC 05 [piece]`). The answer is `[1][5][1][cards left][piece]`
+/// (client `sub_ACE090`, case 5); 2 = no cards left, 3 = cannot use it. Afterwards the whole
+/// panel is sent again so the collected total and the reward boxes stay in step.
 async fn jigsaw_piece(
     session: &mut ClientSession,
     repo: &NativeEventsRepository<'_>,
     name: &str,
     piece: u8,
 ) -> anyhow::Result<()> {
-    let Some(_state) = repo.add_jigsaw_piece(name, piece as i16).await? else {
-        let mut out = Packet::new(Opcode::WizEnchant as u8);
-        out.write_u8(1);
-        out.write_u8(4);
-        out.write_u8(2);
-        session.send_packet(&out).await?;
-        return Ok(());
+    let left = repo.jigsaw_cards_left(name).await.unwrap_or(0);
+    let placed = if left > 0 {
+        repo.add_jigsaw_piece(name, piece as i16).await?.is_some()
+    } else {
+        false
     };
     let mut out = Packet::new(Opcode::WizEnchant as u8);
     out.write_u8(1);
-    out.write_u8(3);
-    out.write_u8(piece);
-    out.write_u8(0);
+    out.write_u8(5);
+    if placed {
+        out.write_u8(1);
+        out.write_u8((left - 1).clamp(0, 255) as u8);
+        out.write_u8(piece);
+    } else {
+        out.write_u8(if left <= 0 { 2 } else { 3 });
+    }
     session.send_packet(&out).await?;
+    if placed {
+        jigsaw_open(session, repo, name).await?;
+    }
+    warn!(
+        "[{}] jigsaw card: {name} piece={piece} placed={placed} cards_left={}",
+        session.addr(),
+        if placed { left - 1 } else { left }
+    );
     Ok(())
 }
 
@@ -1262,6 +1281,7 @@ async fn jigsaw_claim(
         }
     }
     session.send_packet(&out).await?;
+    warn!("[{}] jigsaw reward claim: {name} box={index} success={success}", session.addr());
     Ok(())
 }
 
