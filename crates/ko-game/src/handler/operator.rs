@@ -6294,7 +6294,7 @@ fn handle_ft_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()
     );
 
     // C++ calls Announcement(IDS_MONSTER_CHALLENGE_OPEN)
-    broadcast_war_system_chat(&world, "Monster Challenge has started!");
+    broadcast_war_system_chat(&world, "Forgotten Temple has started!");
 
     info!(
         "[{}] +ftopen: FT event started (level {}-{}, {}min)",
@@ -6325,7 +6325,7 @@ fn handle_ft_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
 
     ft.reset();
 
-    broadcast_war_system_chat(&world, "Monster Challenge has been closed!");
+    broadcast_war_system_chat(&world, "Forgotten Temple has been closed!");
 
     info!("[{}] +ftclose: FT event closed", session.addr());
 

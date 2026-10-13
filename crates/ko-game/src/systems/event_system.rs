@@ -2271,9 +2271,9 @@ pub async fn distribute_ft_rewards(world: &WorldState) {
             (FT_GREEN_CHEST, "Green Treasure Chest")
         };
         let msg = if world.give_item(*sid, chest, FT_CHEST_COUNT) {
-            format!("Monster Challenge cleared! Reward: {FT_CHEST_COUNT} {name}.")
+            format!("Forgotten Temple cleared! Reward: {FT_CHEST_COUNT} {name}.")
         } else {
-            format!("Monster Challenge cleared! Your bag is full, {name} could not be given.")
+            format!("Forgotten Temple cleared! Your bag is full, {name} could not be given.")
         };
         world.send_to_session_owned(*sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
         rewarded += 1;
