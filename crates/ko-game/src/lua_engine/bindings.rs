@@ -4370,6 +4370,7 @@ fn lua_give_clan_premium(lua: &Lua, (uid, _premium_type, days): (i32, u8, u32)) 
         .unwrap_or((0, false));
 
     if clan_id == 0 || !is_leader || w.get_knights(clan_id).is_none() {
+        tracing::warn!(sid, clan_id, is_leader, "GiveClanPremium refused");
         return Ok(false);
     }
 
@@ -4409,6 +4410,7 @@ fn lua_give_clan_premium(lua: &Lua, (uid, _premium_type, days): (i32, u8, u32)) 
         w.send_to_session(*msid, &pkt);
     }
 
+    tracing::warn!(sid, clan_id, days, members = member_sids.len(), "GiveClanPremium applied");
     Ok(true)
 }
 
