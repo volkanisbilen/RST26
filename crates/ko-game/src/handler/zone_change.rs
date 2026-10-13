@@ -1052,6 +1052,15 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
 
+    // The client reports the map as loaded: what was sent during the loading screen (NPC
+    // list, NPCs, bag) may have been dropped, so send it again now that it is ready. This is
+    // what made NPCs and monsters appear only after walking into another region.
+    region::send_region_npc_info_for_me(session).await?;
+    region::send_nearby_npc_inouts(session).await?;
+    if let Some(bag) = super::survival::build_bag_refresh(&world, sid).await {
+        session.send_packet(&bag).await?;
+    }
+
     if !world.is_zone_changing(sid) {
         return Ok(());
     }

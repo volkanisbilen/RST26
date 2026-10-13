@@ -235,6 +235,17 @@ impl<'a> NativeEventsRepository<'a> {
         Ok(pending)
     }
 
+    /// Seconds until the daily free spin is available again (0 = available now).
+    pub async fn roulette_free_wait_seconds(&self, character: &str) -> Result<i32, sqlx::Error> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "SELECT GREATEST(1, EXTRACT(EPOCH FROM (CURRENT_DATE + INTERVAL '1 day' - NOW()))::int)              FROM native_roulette_user WHERE character_name=$1 AND last_free_spin_date = CURRENT_DATE",
+        )
+        .bind(character)
+        .fetch_optional(self.pool)
+        .await?;
+        Ok(row.map(|r| r.0).unwrap_or(0))
+    }
+
     pub async fn roulette_history(
         &self,
         character: &str,
@@ -260,6 +271,15 @@ impl<'a> NativeEventsRepository<'a> {
         )
         .bind(character)
         .fetch_one(self.pool)
+        .await
+    }
+
+    /// The nine reward boxes of the puzzle: (pieces needed, item, count) in box order.
+    pub async fn jigsaw_rewards(&self) -> Result<Vec<(i16, i32, i16)>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT required_total,item_id,item_count FROM native_jigsaw_reward ORDER BY reward_index",
+        )
+        .fetch_all(self.pool)
         .await
     }
 

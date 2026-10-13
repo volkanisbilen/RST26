@@ -139,6 +139,13 @@ pub async fn handle_roulette(session: &mut ClientSession, pkt: Packet) -> anyhow
     if sub == BOARD_REPLY_SUB && pkt.data.len() > 1 {
         return board_reply(session, &repo, &mut reader).await;
     }
+    // The attendance claim is `[5][i32][i32 tile][u8]`; the hub's Marble selector is a bare `[5]`.
+    if sub == 5 && pkt.data.len() >= 10 {
+        if repo.is_active("attendance").await.unwrap_or(false) {
+            return attendance_claim(session, &mut reader).await;
+        }
+        return Ok(());
+    }
     if matches!(
         sub,
         EVENT_HUB_COIN
@@ -159,7 +166,7 @@ pub async fn handle_roulette(session: &mut ClientSession, pkt: Packet) -> anyhow
         return Ok(());
     };
     match sub {
-        6 => roulette_open(session, &repo).await,
+        6 => roulette_open(session, &repo, &name).await,
         7 => roulette_spin(session, &repo, &name, reader.read_i32().unwrap_or(1)).await,
         8 => roulette_reveal(session, &repo, &name, reader.read_i32().unwrap_or(1)).await,
         9 => roulette_history(session, &repo, &name, reader.read_i32().unwrap_or(1)).await,
@@ -250,7 +257,12 @@ async fn native_event_hub_select(
 
     let result = match event_id {
         EVENT_HUB_ATTENDANCE | EVENT_HUB_ATTENDANCE_SELECT => attendance_open(session).await,
-        EVENT_HUB_ROULETTE => roulette_open(session, repo).await,
+        EVENT_HUB_ROULETTE => {
+            let Some(name) = character_name(session) else {
+                return Ok(());
+            };
+            roulette_open(session, repo, &name).await
+        }
         EVENT_HUB_JIGSAW => {
             let Some(name) = character_name(session) else {
                 return Ok(());
@@ -770,30 +782,24 @@ fn board_reply_packet(board_id: i32, result: i32, history: &[(String, i32, i32)]
 ///
 /// `outer=4` selects `CUIAttendanceCheck` at UI-manager offset `+0x66C`;
 /// `error=0, result=1` loads the complete calendar and shows it.
-async fn attendance_open(session: &mut ClientSession) -> anyhow::Result<()> {
+/// Attendance calendar body shared by the open (`selector 4`) and the claim answer (`selector 5`).
+///
+/// Wire format verified against the client's panel parser (`sub_978BE0`):
+/// `i32 error, i32 result(1), i32 time, i16 25, 25 x (i32 tile key, u8 state),
+///  i16 3, 3 x (i32 tile key, u8 state), i32 seconds left`.
+/// Tile states: 1 = taken (stamp), 3 = can be taken now, 4 = today's reward is already taken,
+/// 5 = a later day. The client only sends a claim for states >= 3.
+async fn attendance_panel_packet(
+    session: &mut ClientSession,
+    selector: u8,
+) -> anyhow::Result<Packet> {
     const TOTAL_DAYS: usize = 25;
-
-    // The native v2615 panel does not send the legacy WIZ_ATTENDANCE claim
-    // request. Claim today's next sequential reward on open; the shared claim
-    // routine enforces one reward per calendar day and inventory capacity.
-    let granted = crate::handler::attendance::claim_for_native_open(session).await?;
 
     let pool = session.pool().clone();
     let repo = ko_db::repositories::daily_reward::DailyRewardRepository::new(&pool);
     let rewards = repo.load_all().await.unwrap_or_else(|e| {
         warn!(
             "[{}] native attendance load_all DB error: {e}",
-            session.addr()
-        );
-        Vec::new()
-    });
-
-    let Some(name) = character_name(session) else {
-        return Ok(());
-    };
-    let progress = repo.load_user_progress(&name).await.unwrap_or_else(|e| {
-        warn!(
-            "[{}] native attendance load_user_progress DB error: {e}",
             session.addr()
         );
         Vec::new()
@@ -805,24 +811,16 @@ async fn attendance_open(session: &mut ClientSession) -> anyhow::Result<()> {
         );
         None
     });
-
-    let mut claimed = [false; TOTAL_DAYS];
-    for row in &progress {
-        let index = row.day_index as usize;
-        if index < TOTAL_DAYS {
-            claimed[index] = row.claimed;
-        }
-    }
-
+    let (claimed, claimed_today) = super::attendance::native_state(session).await;
     let next_claimable = claimed.iter().position(|value| !*value);
 
     let now = chrono::Utc::now();
     let seconds_remaining = attendance_seconds_remaining(now);
 
     let mut out = Packet::new(Opcode::WizContinousPacketData as u8);
-    out.write_u8(EVENT_HUB_ATTENDANCE_SELECT); // outer selector: CUIAttendanceCheck
+    out.write_u8(selector);
     out.write_i32(0); // error
-    out.write_i32(1); // result: load/show panel
+    out.write_i32(1); // result: show / refresh the panel
     out.write_i32(now.timestamp().clamp(0, i32::MAX as i64) as i32);
     out.write_i16(TOTAL_DAYS as i16);
 
@@ -836,14 +834,16 @@ async fn attendance_open(session: &mut ClientSession) -> anyhow::Result<()> {
         } else {
             0
         });
-        // Native CUIAttendanceCheck hides the reward group when state is 0.
-        // State 3 keeps a future/locked reward visible but inactive.
         let state = if claimed[day] {
             1
         } else if Some(day) == next_claimable {
-            3
+            if claimed_today {
+                4
+            } else {
+                3
+            }
         } else {
-            3
+            5
         };
         out.write_u8(state);
     }
@@ -866,25 +866,49 @@ async fn attendance_open(session: &mut ClientSession) -> anyhow::Result<()> {
         });
         let milestone = [7usize, 14, 21][index];
         let completed = claimed.iter().take(milestone).all(|value| *value);
-        let state = if completed {
-            1
-        } else if claimed.iter().filter(|value| **value).count() + 1 == milestone {
-            3
-        } else {
-            3
-        };
-        out.write_u8(state);
+        out.write_u8(if completed { 1 } else { 5 });
     }
     out.write_i32(seconds_remaining);
 
-    session.send_packet(&out).await?;
     info!(
-        "[{}] native attendance opened: rewards={} claimed={} granted_today={} seconds_remaining={}",
+        "[{}] native attendance panel: rewards={} claimed={} claimed_today={} seconds_remaining={}",
         session.addr(),
         rewards.len(),
         claimed.iter().filter(|value| **value).count(),
-        granted,
+        claimed_today,
         seconds_remaining
+    );
+    Ok(out)
+}
+
+/// Opening the window only shows the calendar; the reward is taken by clicking a tile.
+async fn attendance_open(session: &mut ClientSession) -> anyhow::Result<()> {
+    let out = attendance_panel_packet(session, EVENT_HUB_ATTENDANCE_SELECT).await?;
+    session.send_packet(&out).await
+}
+
+/// `9C 05 [i32 0][i32 tile key][u8 state-2]`: the player clicked a tile.
+async fn attendance_claim(
+    session: &mut ClientSession,
+    reader: &mut PacketReader<'_>,
+) -> anyhow::Result<()> {
+    let _zero = reader.read_i32().unwrap_or(0);
+    let tile_key = reader.read_i32().unwrap_or(0);
+    let granted = super::attendance::claim_native_tile(session, tile_key).await?;
+    if granted {
+        let out = attendance_panel_packet(session, 5).await?;
+        session.send_packet(&out).await?;
+    } else {
+        // result 0 = "cannot receive": the client shows its own message
+        let mut out = Packet::new(Opcode::WizContinousPacketData as u8);
+        out.write_u8(5);
+        out.write_i32(0);
+        out.write_i32(0);
+        session.send_packet(&out).await?;
+    }
+    info!(
+        "[{}] native attendance claim tile={tile_key} granted={granted}",
+        session.addr()
     );
     Ok(())
 }
@@ -900,9 +924,16 @@ fn native_event_hub_packet(active: &[(u8, u8)]) -> Packet {
     out
 }
 
+/// Open answer of the roulette window (`[6][i32 1]` + two rows, the free and the paid spin).
+///
+/// Each row is `[i32 coin price][i32 item price][i32 wait seconds]` (client `sub_9940D0` and the
+/// panel refresh `sub_9954xx`): a non-zero first value is printed as the coin cost of that spin,
+/// a non-zero item id is shown as `Item(count)`, and a zero price with a wait time counts the
+/// seconds down until the spin is free again. The wheel slots come from the client's Roulette.tbl.
 async fn roulette_open(
     session: &mut ClientSession,
     repo: &NativeEventsRepository<'_>,
+    name: &str,
 ) -> anyhow::Result<()> {
     let free = repo.roulette_rewards(7).await.unwrap_or_default();
     let paid = repo.roulette_rewards(8).await.unwrap_or_default();
@@ -911,14 +942,18 @@ async fn roulette_open(
         session.send_packet(&response).await?;
         return Ok(());
     }
+    let free_wait = repo.roulette_free_wait_seconds(name).await.unwrap_or(0);
     let mut out = Packet::new(Opcode::WizContinousPacketData as u8);
     out.write_u8(6);
     out.write_i32(1);
-    for reward in [&free[0], &paid[0]] {
-        out.write_i32(reward.item_id);
-        out.write_i32(reward.item_count as i32);
-        out.write_i32(0);
-    }
+    // free spin: no price, the countdown shows when the daily free spin is back
+    out.write_i32(0);
+    out.write_i32(0);
+    out.write_i32(free_wait);
+    // paid spin: the coin (Knight Cash) price
+    out.write_i32(ROULETTE_KC_COST as i32);
+    out.write_i32(0);
+    out.write_i32(0);
     session.send_packet(&out).await?;
     Ok(())
 }
@@ -959,7 +994,8 @@ async fn roulette_spin(
         let mut out = Packet::new(Opcode::WizContinousPacketData as u8);
         out.write_u8(7);
         out.write_i32(client_type);
-        out.write_i32(20);
+        // client text 37435 "No permission for wheel 2 (condition not met)": not enough coins
+        out.write_i32(6);
         session.send_packet(&out).await?;
         return Ok(());
     }
@@ -973,6 +1009,21 @@ async fn roulette_spin(
         }
     }
     if !repo.reserve_roulette_result(name, selected).await? {
+        // the paid spin already took its coins above: give them back
+        if client_type == ROULETTE_KC_TYPE {
+            knight_cash::cash_gain(
+                session.world(),
+                &session.pool().clone(),
+                session.session_id(),
+                ROULETTE_KC_COST,
+            );
+        }
+        let mut out = Packet::new(Opcode::WizContinousPacketData as u8);
+        out.write_u8(7);
+        out.write_i32(client_type);
+        // 5 = "No permission for wheel 1": the daily free spin is used; 2 = "Re-request time error"
+        out.write_i32(if client_type == ROULETTE_KC_TYPE { 2 } else { 5 });
+        session.send_packet(&out).await?;
         return Ok(());
     }
     let mut out = Packet::new(Opcode::WizContinousPacketData as u8);
@@ -1145,7 +1196,15 @@ async fn jigsaw_open(
     for i in 0..9 {
         out.write_u8(state.reward_claimed.get(i).copied().unwrap_or(false) as u8);
     }
-    out.write_u8(0);
+    // The reward boxes: `u8 count`, then per box `u8 pieces needed, u32 item id` (client
+    // `sub_ACE090`; the box asks for `needed <= pieces collected` before it sends a claim).
+    // With an empty list the bottom row stays blank.
+    let rewards = repo.jigsaw_rewards().await.unwrap_or_default();
+    out.write_u8(rewards.len().min(9) as u8);
+    for (needed, item_id, _count) in rewards.iter().take(9) {
+        out.write_u8((*needed).clamp(0, 255) as u8);
+        out.write_u32((*item_id).max(0) as u32);
+    }
     session.send_packet(&out).await?;
     Ok(())
 }
@@ -1306,10 +1365,27 @@ async fn marble_roll(
         return Ok(());
     };
     if tile.item_id > 0 && tile.item_count > 0 {
-        let _ = session.world().give_item(
-            session.session_id(),
-            tile.item_id as u32,
-            tile.item_count as u16,
+        let world = session.world().clone();
+        let sid = session.session_id();
+        let given = world.give_item(sid, tile.item_id as u32, tile.item_count as u16);
+        let item_name = world
+            .get_item(tile.item_id as u32)
+            .and_then(|i| i.str_name.clone())
+            .unwrap_or_else(|| format!("#{}", tile.item_id));
+        let text = if given {
+            format!("Knight Marble: {item_name} x{} kazandin.", tile.item_count)
+        } else {
+            warn!(
+                "[{}] marble reward not given: {name} tile={} item={} (bag full or unknown item)",
+                session.addr(),
+                tile.board_index,
+                tile.item_id
+            );
+            format!("Knight Marble: {item_name} verilemedi (envanter dolu).")
+        };
+        world.send_to_session_owned(
+            sid,
+            crate::systems::timed_notice::build_notice_packet(8, &text),
         );
     }
     let mut ack = Packet::new(Opcode::WizAbility as u8);

@@ -328,13 +328,58 @@ async fn handle_claim(session: &mut ClientSession) -> anyhow::Result<()> {
     handle_claim_impl(session, true).await.map(|_| ())
 }
 
-/// Claim the next daily reward for the native v2615 Attendance window.
-///
-/// `CUIAttendanceCheck` is opened through opcode `0x9C` and does not emit the
-/// legacy `0xB7/sub=8` claim request when its reward tile is clicked.  The
-/// server therefore performs the same once-per-calendar-day claim while the
-/// native window is opened, without sending legacy `0xB7` UI packets.
-pub(super) async fn claim_for_native_open(session: &mut ClientSession) -> anyhow::Result<bool> {
+/// Calendar state of the native Attendance window: which of the 25 days are taken and whether
+/// a reward was already taken today (one reward per calendar day). A new month starts over.
+pub(super) async fn native_state(session: &mut ClientSession) -> ([bool; TOTAL_DAYS], bool) {
+    let pool = session.pool().clone();
+    let repo = ko_db::repositories::daily_reward::DailyRewardRepository::new(&pool);
+    let name = session
+        .world()
+        .get_character_info(session.session_id())
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    let mut taken = [false; TOTAL_DAYS];
+    if name.is_empty() {
+        return (taken, false);
+    }
+    let mut rows = repo.load_user_progress(&name).await.unwrap_or_default();
+    let now = chrono::Utc::now();
+    if needs_monthly_reset(&rows, now.month() as i16) {
+        if repo.reset_user_progress(&name).await.is_ok() {
+            rows = repo.load_user_progress(&name).await.unwrap_or_default();
+        }
+    }
+    let today = now.day() as i16;
+    let mut claimed_today = false;
+    for row in &rows {
+        let idx = row.day_index as usize;
+        if idx < TOTAL_DAYS && row.claimed {
+            taken[idx] = true;
+            if row.day_of_month == today {
+                claimed_today = true;
+            }
+        }
+    }
+    (taken, claimed_today)
+}
+
+/// The player clicked one reward tile of the native Attendance window (`9C 05`, tile key
+/// 1..=25 for the daily rewards). Only today's next tile can be taken; anything else is refused.
+pub(super) async fn claim_native_tile(
+    session: &mut ClientSession,
+    tile_key: i32,
+) -> anyhow::Result<bool> {
+    if !(1..=TOTAL_DAYS as i32).contains(&tile_key) {
+        // the 7/14/21-day bonus is handed over together with the daily reward that completes it
+        return Ok(false);
+    }
+    let (taken, claimed_today) = native_state(session).await;
+    let Some(next) = taken.iter().position(|t| !*t) else {
+        return Ok(false);
+    };
+    if claimed_today || next as i32 + 1 != tile_key {
+        return Ok(false);
+    }
     handle_claim_impl(session, false).await
 }
 
