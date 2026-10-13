@@ -21,6 +21,22 @@ if [ "${1:-}" = "admin" ]; then
   cargo build --release -p ko-admin
 fi
 
+echo "== quest scripts"
+# The server runs in /opt/ko26xx and reads its Lua scripts from /opt/ko26xx/Quests (the panel's
+# Quest Studio edits that folder too), so only the scripts that changed in git since the last
+# deploy are copied; scripts edited in the panel are never overwritten wholesale.
+MARK=/opt/ko26xx/.deployed_commit
+LAST=$(cat "$MARK" 2>/dev/null || echo a2e720c)
+if git cat-file -e "$LAST^{commit}" 2>/dev/null; then
+  for f in $(git diff --name-only "$LAST" HEAD -- Quests); do
+    if [ -f "$f" ]; then
+      mkdir -p /opt/ko26xx/Quests
+      cp "$f" "/opt/ko26xx/$f" && echo "script updated: $f"
+    fi
+  done
+fi
+git rev-parse HEAD > "$MARK"
+
 echo "== install"
 systemctl stop ko-server
 cp target/release/ko-server /opt/ko26xx/ko-server
