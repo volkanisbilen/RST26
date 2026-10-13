@@ -2128,6 +2128,11 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
     );
     world.set_user_ability(session.session_id());
     world.send_item_move_refresh(session.session_id());
+    // NPCs and monsters of the first region: phase 1 sent them while the client was still
+    // loading, so they are sent again once it is in the world
+    super::region::send_region_npc_info_for_me(session).await?;
+    super::region::send_nearby_npc_inouts(session).await?;
+    super::region::schedule_npc_resend(world.clone(), session.session_id());
 
     // (WIZ_ITEM_GET workaround removed — testing RENTAL+SERVER_INDEX fix instead)
 

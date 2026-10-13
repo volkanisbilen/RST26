@@ -4341,14 +4341,14 @@ fn lua_give_switch_premium(lua: &Lua, (uid, premium_type, days): (i32, u8, u16))
     Ok(())
 }
 
-/// GiveClanPremium(uid, premium_type, days) -> ()
+/// GiveClanPremium(uid, premium_type, days) -> bool (true when the clan premium was applied)
 /// Updates knights premium time/type and sends clan premium packet to all online members.
-fn lua_give_clan_premium(lua: &Lua, (uid, _premium_type, days): (i32, u8, u32)) -> LuaResult<()> {
+fn lua_give_clan_premium(lua: &Lua, (uid, _premium_type, days): (i32, u8, u32)) -> LuaResult<bool> {
     let w = get_world(lua)?;
     let sid = uid as SessionId;
 
     if days == 0 {
-        return Ok(());
+        return Ok(false);
     }
 
     // Must be in clan and be leader
@@ -4357,21 +4357,20 @@ fn lua_give_clan_premium(lua: &Lua, (uid, _premium_type, days): (i32, u8, u32)) 
             h.character
                 .as_ref()
                 .map(|c| {
-                    let is_leader = if c.knights_id > 0 {
-                        w.get_knights(c.knights_id)
-                            .map(|k| k.chief == c.name)
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
+                    // the same rule as isClanLeader(): the clan leader has fame 1
+                    let is_leader = c.knights_id > 0
+                        && (c.fame == 1
+                            || w.get_knights(c.knights_id)
+                                .map(|k| k.chief.eq_ignore_ascii_case(&c.name))
+                                .unwrap_or(false));
                     (c.knights_id, is_leader)
                 })
                 .unwrap_or((0, false))
         })
         .unwrap_or((0, false));
 
-    if clan_id == 0 || !is_leader {
-        return Ok(());
+    if clan_id == 0 || !is_leader || w.get_knights(clan_id).is_none() {
+        return Ok(false);
     }
 
     let now = std::time::SystemTime::now()
@@ -4410,7 +4409,7 @@ fn lua_give_clan_premium(lua: &Lua, (uid, _premium_type, days): (i32, u8, u32)) 
         w.send_to_session(*msid, &pkt);
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// GivePremiumItem(uid, premium_type) -> ()

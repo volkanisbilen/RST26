@@ -163,7 +163,7 @@ end
 ----------------------------------------------------------------------------------------------------------------------
 
 if (EVENT == 400) then--7803,404,10005,405,8574,406, -- Premium Menu
-	SelectMsg(UID, 3, -1, 9527, NPC, 7197, 401, 7198, 402, 7252, 403,8390,600, 45241,750,4296,100);
+	SelectMsg(UID, 3, -1, 9527, NPC, 7197, 401, 7198, 402, 7252, 403,8390,600, 60010,750,4296,100);
 end
 
 if (EVENT == 401) then -- DISC Premium
@@ -370,18 +370,22 @@ end
 ----------------------------------------------------------------------------------------
 
 if (EVENT == 750) then -- Clan Premium
-    CheckLeader = isClanLeader(UID) 
+    CheckLeader = isClanLeader(UID)
     if (CheckLeader == false) then
         SelectMsg(UID, 2, -1, 707, NPC, 10, -1);
     else
-    CLANPREM = HowmuchItem(UID, 399300914);
-    if (CLANPREM < 1) then
-        SelectMsg(UID, 2, -1, 4121, NPC, 18, -1);
-    else
-        RobItem(UID, 399300914, 1);
-        GiveClanPremium(UID,2,30)
-		SelectMsg(UID, 2, -1, 8094, NPC, 10, -1);
-		end
+        CLANPREM = HowmuchItem(UID, 399300914);
+        if (CLANPREM < 1) then
+            SelectMsg(UID, 2, -1, 4121, NPC, 18, -1);
+        else
+            -- the item is only taken when the clan premium was really applied
+            if (GiveClanPremium(UID, 2, 30) == true) then
+                RobItem(UID, 399300914, 1);
+                SelectMsg(UID, 2, -1, 8094, NPC, 10, -1);
+            else
+                SelectMsg(UID, 2, -1, 707, NPC, 10, -1);
+            end
+        end
     end
 end
 

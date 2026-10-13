@@ -1029,6 +1029,41 @@ pub async fn send_region_npc_info_for_me(session: &mut ClientSession) -> anyhow:
     Ok(())
 }
 
+/// Send the NPC list and the NPCs of the player's region again, a moment after login / a map
+/// change. The first copy goes out while the client is still on its loading screen, where it can
+/// be dropped; this one arrives when the world is on screen (NPCs and monsters then show at once
+/// instead of after walking into the next region).
+pub fn schedule_npc_resend(world: Arc<crate::world::WorldState>, sid: SessionId) {
+    tokio::spawn(async move {
+        for wait_ms in [1_200u64, 3_500] {
+            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+            let Some((pos, room)) = world.with_session(sid, |h| (h.position, h.event_room)) else {
+                return;
+            };
+            let npc_ids = world.get_nearby_npc_ids(pos.zone_id, pos.region_x, pos.region_z, room);
+            let mut list = Packet::new(Opcode::WizNpcRegion as u8);
+            list.write_u16(npc_ids.len() as u16);
+            for &nid in &npc_ids {
+                list.write_u32(nid);
+            }
+            let list = list.to_compressed().unwrap_or(list);
+            world.send_to_session_owned(sid, list);
+            for &nid in &npc_ids {
+                let Some(instance) = world.get_npc_instance(nid) else {
+                    continue;
+                };
+                let Some(template) = world.get_npc_template(instance.proto_id, instance.is_monster)
+                else {
+                    continue;
+                };
+                let template = world.npc_visual_template(&instance, &template);
+                world.send_to_session_owned(sid, build_npc_inout(NPC_IN, &instance, &template));
+            }
+            tracing::warn!(sid, zone = pos.zone_id, npcs = npc_ids.len(), "NPC list resent after load");
+        }
+    });
+}
+
 /// Send WIZ_NPC_INOUT(IN) for all nearby NPCs to a player.
 /// Called during game entry so the player sees all NPCs in their vicinity.
 pub async fn send_nearby_npc_inouts(session: &mut ClientSession) -> anyhow::Result<()> {

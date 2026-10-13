@@ -1060,6 +1060,7 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
     if let Some(bag) = super::survival::build_bag_refresh(&world, sid).await {
         session.send_packet(&bag).await?;
     }
+    region::schedule_npc_resend(world.clone(), sid);
 
     if !world.is_zone_changing(sid) {
         return Ok(());
