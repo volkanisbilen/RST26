@@ -968,6 +968,7 @@ dependencies = [
  "dashmap",
  "hmac",
  "ko-db",
+ "ko-protocol",
  "ko-tbl-import",
  "mlua",
  "rand",

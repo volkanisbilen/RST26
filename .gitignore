@@ -102,3 +102,21 @@ db_backup/
 # Local deployment staging and client executable backups
 /.codex-tmp/
 *.exe.pus-backup
+
+# Build leftovers and editor backups (never part of the repo)
+*.obj
+*.exp
+*.lib
+*.before_*
+*_before_ref/
+*.dll.new
+.vs/
+NTT2625-d3d9proxy/obj/
+_obj/
+__junk_list.txt
+
+# Review packages generated on request
+docs/ko-admin-paket/
+docs/ko-admin-paket.zip
+docs/rift_review/
+docs/rift_review.zip

@@ -16,7 +16,7 @@ namespace
     const BYTE SUBOP = 0xF6;
     CRITICAL_SECTION g_lock;
     bool g_inited = false, g_lockReady = false;
-    std::string g_app, g_image = "logo", g_details = "HopeGuard 26XX", g_state;
+    std::string g_app, g_image = "logo", g_details = "JstKO 2625", g_state;
     int64_t g_start = 0;
 
     std::string Utf8(const std::string& cp1254)
