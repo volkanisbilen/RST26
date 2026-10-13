@@ -96,16 +96,25 @@ namespace
         return 0;
     }
 
+    // the running client is not the decompiled build: CUIInventory is at +472 (not +476), so the clan window
+    // (+1392 in the decompile) is probably at +1388; the first candidate that is visible with a sane rect wins
     bool ReadWindow()
     {
-        DWORD mgr = *(DWORD*)0x0111463C;
+        DWORD mgr = *(DWORD*)0x011158FC;
         if (!mgr) return false;
-        BYTE* w = (BYTE*)*(DWORD*)(mgr + 1392);
-        if (!w || !w[0xEA]) return false;
-        const float* f = (const float*)(w + 0xC8);
-        InterlockedExchange(&g_wl, (LONG)f[0]); InterlockedExchange(&g_wt, (LONG)f[1]);
-        InterlockedExchange(&g_wr, (LONG)f[2]); InterlockedExchange(&g_wb, (LONG)f[3]);
-        return f[2] > f[0] && f[3] > f[1];
+        static const DWORD offs[] = { 1388, 1392 };
+        for (DWORD off : offs)
+        {
+            BYTE* w = (BYTE*)*(DWORD*)(mgr + off);
+            if (!w || (DWORD)w < 0x10000 || !w[0xEA]) continue;
+            const float* f = (const float*)(w + 0xC8);
+            float ww = f[2] - f[0], hh = f[3] - f[1];
+            if (ww < 100 || ww > 900 || hh < 100 || hh > 900) continue;
+            InterlockedExchange(&g_wl, (LONG)f[0]); InterlockedExchange(&g_wt, (LONG)f[1]);
+            InterlockedExchange(&g_wr, (LONG)f[2]); InterlockedExchange(&g_wb, (LONG)f[3]);
+            return true;
+        }
+        return false;
     }
 }
 
@@ -125,7 +134,7 @@ static void ScanVisible()
     char cur[1024] = ""; int n = 0;
     __try
     {
-        DWORD mgr = *(DWORD*)0x0111463C;
+        DWORD mgr = *(DWORD*)0x011158FC;
         for (DWORD off = 4; mgr && off < 2400 && n < 40; off += 4)
         {
             DWORD o = *(DWORD*)(mgr + off);
