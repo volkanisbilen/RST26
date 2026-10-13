@@ -94,6 +94,8 @@ void PriceFix_OnRecv(const BYTE* p, size_t len);
 void ItemTip_FlushSendQueue();
 void DropBtn_Tick();
 void ClanKasa_Tick();
+void TargetHp_Init();
+void TargetHp_OnRecv(const BYTE* pkt, int len);
 void ClanKasa_Init();
 bool DropMini_ForwardWheel(WPARAM wp);
 void SoloCapeIcon_OnRecv(const BYTE* p, size_t len);
@@ -310,6 +312,7 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
             InterlockedIncrement(&g_opCount[pkt[0]]);
             NetTrace_Packet("recv", pkt, (int)(data[1] - *offset));
             if (pkt[0] == 0x3D) Rce_OnRecv(pkt, data[1] - *offset);
+            if (pkt[0] == 0x22 || pkt[0] == 0xE9) TargetHp_OnRecv(pkt, (int)(data[1] - *offset));   // level + HP numbers on the target bar
             // 0x5B sub 4 (Chaotic Generator NPC) is left to the native client: it opens its own
             // Chaotic Generator window (CUIPieceChange). It used to be swallowed here and answered
             // with the Cross Exchange panel.
@@ -514,6 +517,7 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
         Register_Init();
         SoloCapeIcon_Init();
         ItemTip_Init();         // inventory style item tooltip for our panels (item_tooltip.cpp)
+        TargetHp_Init();        // level + HP numbers on the target bar (target_hp.cpp)
         ClanKasa_Init();        // "Clan Kasasi" button on the clan window (clan_kasa.cpp)
         DropBtn_Init();         // "Drop" button next to the target bar (drop_button.cpp)
         CamRange_Init();        // Camera Range slider under the F10 options window (camera_range.cpp)

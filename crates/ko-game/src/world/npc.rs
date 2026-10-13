@@ -291,7 +291,7 @@ impl WorldState {
     /// target set to the caller's target and transitions to Attacking state.
     fn find_friends(&self, caller_nid: NpcId, is_boss: bool) {
         // Snapshot the caller's state needed for friend search.
-        let (target_id, zone_id, cur_x, cur_z, family_type, tracing_range) = {
+        let (target_id, zone_id, cur_x, cur_z, family_type, tracing_range, caller_proto) = {
             let ai = match self.npc_ai.get(&caller_nid) {
                 Some(a) => a,
                 None => return,
@@ -326,7 +326,9 @@ impl WorldState {
                 ai.cur_x,
                 ai.cur_z,
                 ai.family_type,
-                tmpl.tracing_range as f32,
+                // monsters call their own kind within a few metres (monster_behavior.cfg)
+                crate::monster_behavior::assist_range(),
+                inst.proto_id,
             )
         };
         // ^ DashMap ref dropped here
@@ -374,7 +376,14 @@ impl WorldState {
             } else {
                 // MonSearchSameFamily: only same-family NPCs with has_friends
                 //   if (pNpc->m_bHasFriends && pNpc->m_proto->m_byFamilyType == m_proto->m_byFamilyType)
-                if !friend_ai.has_friends || friend_ai.family_type != family_type {
+                if !friend_ai.has_friends {
+                    continue;
+                }
+                let same_family = family_type != 0 && friend_ai.family_type == family_type;
+                let same_species = self
+                    .get_npc_instance(friend_nid)
+                    .is_some_and(|i| i.proto_id == caller_proto);
+                if !same_family && !same_species {
                     continue;
                 }
             }
@@ -575,6 +584,32 @@ impl WorldState {
     pub(crate) fn insert_npc_ai(&self, nid: NpcId, ai: NpcAiState) {
         self.npc_ai.insert(nid, ai);
     }
+    /// Recompute aggression / assist flags of every monster after `monster_behavior` changed.
+    pub fn reapply_monster_behavior(&self) -> usize {
+        let mut changed = 0;
+        for mut entry in self.npc_ai.iter_mut() {
+            let nid = *entry.key();
+            let Some(inst) = self.get_npc_instance(nid) else {
+                continue;
+            };
+            if !inst.is_monster {
+                continue;
+            }
+            let Some(tmpl) = self.get_npc_template(inst.proto_id, true) else {
+                continue;
+            };
+            let (aggressive, attack_type, has_friends) =
+                crate::monster_behavior::ai_flags(&tmpl, entry.zone_id);
+            if entry.is_aggressive != aggressive || entry.has_friends != has_friends {
+                changed += 1;
+            }
+            entry.is_aggressive = aggressive;
+            entry.attack_type = attack_type;
+            entry.has_friends = has_friends;
+        }
+        changed
+    }
+
     /// Update an NPC's AI state via a closure.
     pub fn update_npc_ai(&self, nid: NpcId, updater: impl FnOnce(&mut NpcAiState)) {
         if let Some(mut entry) = self.npc_ai.get_mut(&nid) {
@@ -1002,11 +1037,8 @@ impl WorldState {
 
             // Initialize AI state for monsters with search range
             if is_monster && tmpl.search_range > 0 {
-                let has_friends = matches!(tmpl.act_type, 3 | 4)
-                    && !matches!(
-                        zone_id,
-                        ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
-                    );
+                let (is_aggressive, attack_type, has_friends) =
+                    crate::monster_behavior::ai_flags(&tmpl, zone_id);
                 self.npc_ai.insert(
                     nid,
                     NpcAiState {
@@ -1020,7 +1052,7 @@ impl WorldState {
                         delay_ms: tmpl.stand_time as u64,
                         last_tick_ms: 0,
                         regen_time_ms: 0, // event NPCs don't auto-respawn
-                        is_aggressive: !matches!(tmpl.act_type, 1..=4),
+                        is_aggressive,
                         zone_id,
                         region_x,
                         region_z,
@@ -1034,7 +1066,7 @@ impl WorldState {
                         skill_cooldown_ms: 0,
                         nation: tmpl.group,
                         is_tower_owner: false,
-                        attack_type: map_act_type(tmpl.act_type),
+                        attack_type,
                         last_combat_time_ms: 0,
                         duration_secs: 0,
                         spawned_at_ms: 0,
@@ -2471,7 +2503,7 @@ mod tests {
             5,    // friend same family
             true, // friend has_friends
             NpcState::Standing,
-            10.0, // within range
+            4.0, // within the 5 m assist range
         );
 
         world.notify_npc_damaged(caller_nid, 42);
@@ -3205,7 +3237,7 @@ mod tests {
                 proto_id: 801 + i as u16,
                 is_monster: true,
                 zone_id: 21,
-                x: 100.0 + (i as f32 * 5.0),
+                x: 100.0 + (i as f32 * 1.5),
                 y: 0.0,
                 z: 100.0,
                 direction: 0,
@@ -3233,7 +3265,7 @@ mod tests {
                     has_friends: true,
                     family_type: 5,
                     zone_id: 21,
-                    cur_x: 100.0 + (i as f32 * 5.0),
+                    cur_x: 100.0 + (i as f32 * 1.5),
                     cur_z: 100.0,
                     ..test_ai_state()
                 },

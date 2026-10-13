@@ -19,6 +19,9 @@
 
 use ko_protocol::{Opcode, Packet, PacketReader};
 
+/// Hook sub-opcode: `[u32 target id][u16 level]` (answers every target HP poll).
+pub const EXT_SUB_TARGET_LEVEL: u8 = 0xB6;
+
 use crate::npc::NPC_BAND;
 use crate::session::{ClientSession, SessionState};
 use crate::zone::SessionId;
@@ -68,10 +71,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     let world = session.world().clone();
 
-    let (max_hp, current_hp) = if let Some(bot) = world.get_bot(target_id) {
+    let (max_hp, current_hp, target_level) = if let Some(bot) = world.get_bot(target_id) {
         // Resolve runtime bots before numeric bands. This remains correct if a
         // future shard changes its bot ID allocation.
-        (bot.max_hp as u32, bot.hp.max(0) as u32)
+        (bot.max_hp as u32, bot.hp.max(0) as u32, bot.level as u16)
     } else if target_id >= NPC_BAND {
         // NPC/Monster target
         let instance = match world.get_npc_instance(target_id) {
@@ -86,7 +89,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         let current = world
             .get_npc_hp(target_id)
             .unwrap_or(template.max_hp as i32);
-        (template.max_hp, current.max(0) as u32)
+        (template.max_hp, current.max(0) as u32, template.level as u16)
     } else {
         // Player target
         let other_sid = target_id as SessionId;
@@ -94,7 +97,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             Some(c) => c,
             None => return Ok(()),
         };
-        (ch.max_hp as u32, ch.hp as u32)
+        (ch.max_hp as u32, ch.hp as u32, ch.level as u16)
     };
 
     // C++ stores m_targetID for use by GM commands like +npcinfo.  Its target
@@ -125,6 +128,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let response = build_target_hp_packet(target_id, echo, max_hp, current_hp, 0, 0);
 
     session.send_packet(&response).await?;
+
+    // HopeGuard client: the level of the target, drawn on its HP bar together with the HP numbers
+    let mut info = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
+    info.write_u8(EXT_SUB_TARGET_LEVEL);
+    info.write_u32(target_id);
+    info.write_u16(target_level);
+    session.send_packet(&info).await?;
 
     tracing::debug!(
         "[{}] TARGET_HP: target={}, hp={}/{}",

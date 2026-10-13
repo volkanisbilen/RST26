@@ -21,6 +21,7 @@ pub mod login_server;
 pub mod login_session;
 pub mod lua_engine;
 pub mod magic_constants;
+pub mod monster_behavior;
 pub mod npc;
 pub mod npc_type_constants;
 pub mod object_event_constants;

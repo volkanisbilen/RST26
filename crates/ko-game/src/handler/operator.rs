@@ -413,6 +413,7 @@ pub async fn process_chat_command(
             send_help(session, &msg);
         }
         "killnear" => handle_kill_near(session, &args).await?,
+        "aggro" => handle_aggro(session, &args),
         "ultimaid" => {
             match args.first().and_then(|a| a.parse::<i16>().ok()) {
                 Some(id) => {
@@ -9965,6 +9966,38 @@ fn handle_manes_survival_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> 
     Ok(())
 }
 
+
+/// +aggro [level <n> | assist <metres> | gm on|off] - monster behaviour (monster_behavior.cfg):
+/// monsters of level >= n attack passing players, hit monsters call their kind within `metres`,
+/// `gm on` lets monsters attack GM characters too.
+fn handle_aggro(session: &mut ClientSession, args: &[&str]) {
+    use crate::monster_behavior as mb;
+    match (args.first().map(|a| a.to_ascii_lowercase()), args.get(1)) {
+        (Some(k), Some(v)) if k == "level" => {
+            if let Ok(n) = v.parse::<u32>() {
+                mb::set_aggro_min_level(n);
+            }
+        }
+        (Some(k), Some(v)) if k == "assist" => {
+            if let Ok(m) = v.parse::<f32>() {
+                mb::set_assist_range(m);
+            }
+        }
+        (Some(k), Some(v)) if k == "gm" => mb::set_gm_aggro(v.eq_ignore_ascii_case("on")),
+        _ => {}
+    }
+    let changed = session.world().reapply_monster_behavior();
+    send_help(
+        session,
+        &format!(
+            "Monsters level {}+ are aggressive, assist range {} m, GM aggro {} ({} monsters updated). Use: +aggro level <n> | assist <m> | gm on/off",
+            mb::aggro_min_level(),
+            mb::assist_range(),
+            if mb::gm_aggro() { "ON" } else { "OFF" },
+            changed
+        ),
+    );
+}
 
 /// +killnear [radius=50] - really kill every monster within `radius` metres of the GM (death
 /// broadcast, experience, drops/loot box), instead of just removing them.

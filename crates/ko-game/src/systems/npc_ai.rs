@@ -2621,20 +2621,22 @@ fn alert_pack(
             continue;
         }
 
-        if !pack_family_matches(
-            ai.family_type,
-            ally_ai.family_type,
-            is_boss,
-            ally_ai.has_friends,
-        ) {
-            continue;
-        }
-
         // Skip gate NPCs — they should not be called as friends
         let ally_inst = match world.get_npc_instance(ally_nid) {
             Some(n) => n,
             None => continue,
         };
+
+        // same family, or simply the same kind of monster
+        if !(pack_family_matches(
+            ai.family_type,
+            ally_ai.family_type,
+            is_boss,
+            ally_ai.has_friends,
+        ) || (!is_boss && ally_ai.has_friends && ally_inst.proto_id == caller_inst.proto_id))
+        {
+            continue;
+        }
         let ally_tmpl = match world.get_npc_template(ally_inst.proto_id, ally_inst.is_monster) {
             Some(t) => t,
             None => continue,
@@ -2655,12 +2657,7 @@ fn alert_pack(
         let dz = ai.cur_z - ally_ai.cur_z;
         let dist = (dx * dx + dz * dz).sqrt();
 
-        if caller_template.search_range == 0
-            || dist
-                > caller_template
-                    .search_range
-                    .min(caller_template.tracing_range) as f32
-        {
+        if caller_template.search_range == 0 || dist > crate::monster_behavior::assist_range() {
             continue;
         }
 
@@ -2837,8 +2834,8 @@ fn find_enemy(world: &WorldState, ai: &NpcAiState, npc_id: NpcId) -> Option<Sess
                 return None;
             }
 
-            // Skip GMs (authority == 0)
-            if ch.authority == 0 {
+            // Skip GMs (authority == 0) unless `+aggro gm on`
+            if ch.authority == 0 && !crate::monster_behavior::gm_aggro() {
                 return None;
             }
 

@@ -55,8 +55,7 @@ use crate::zone::{calc_region, ObjectEventInfo, ZoneState};
 use super::{
     events_from_rows, is_gate_npc_type, is_guard_npc_type, map_act_type, zone_info_from_row,
     BurningFeatureRates, ElectionListEntry, KingSystem, KnightsAlliance, KnightsInfo,
-    NominationEntry, NpcAiState, NpcState, SiegeWarfare, WorldState, ZONE_ARDREAM,
-    ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+    NominationEntry, NpcAiState, NpcState, SiegeWarfare, WorldState,
 };
 
 impl WorldState {
@@ -1318,11 +1317,12 @@ impl WorldState {
 
     /// Load NPC templates and spawn instances.
     async fn load_npcs_and_monsters(&self, pool: &DbPool) -> anyhow::Result<()> {
+        crate::monster_behavior::load();
         let npc_repo = NpcRepository::new(pool);
 
         let template_rows = npc_repo.load_all_templates().await?;
         for row in &template_rows {
-            let tmpl = Arc::new(NpcTemplate {
+            let mut tmpl = NpcTemplate {
                 s_sid: row.s_sid as u16,
                 is_monster: row.is_monster,
                 name: row.str_name.clone().unwrap_or_default(),
@@ -1366,7 +1366,9 @@ impl WorldState {
                 money: row.i_money.max(0) as u32,
                 item_table: row.s_item,
                 area_range: row.area_range,
-            });
+            };
+            crate::monster_behavior::adjust_template(&mut tmpl);
+            let tmpl = Arc::new(tmpl);
             self.npc_templates
                 .insert((tmpl.s_sid, tmpl.is_monster), tmpl);
         }
@@ -1474,11 +1476,8 @@ impl WorldState {
                     } else {
                         30_000
                     };
-                    let has_friends = matches!(tmpl.act_type, 3 | 4)
-                        && !matches!(
-                            zone_id,
-                            ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
-                        );
+                    let (is_aggressive, attack_type, has_friends) =
+                        crate::monster_behavior::ai_flags(&tmpl, zone_id);
                     self.npc_ai.insert(
                         nid,
                         NpcAiState {
@@ -1492,7 +1491,7 @@ impl WorldState {
                             delay_ms: tmpl.stand_time as u64,
                             last_tick_ms: 0,
                             regen_time_ms: regen_ms,
-                            is_aggressive: !matches!(tmpl.act_type, 1..=4),
+                            is_aggressive,
                             zone_id,
                             region_x,
                             region_z,
@@ -1506,7 +1505,7 @@ impl WorldState {
                             skill_cooldown_ms: 0,
                             nation: tmpl.group,
                             is_tower_owner: false,
-                            attack_type: map_act_type(tmpl.act_type),
+                            attack_type,
                             last_combat_time_ms: 0,
                             duration_secs: 0,
                             spawned_at_ms: 0,
