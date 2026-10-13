@@ -118,6 +118,31 @@ void ClanKasa_Init()
     CloseHandle(CreateThread(nullptr, 0, WindowThread, nullptr, 0, nullptr));
 }
 
+// diagnostics: which UI windows hanging off the UI manager are visible (logged whenever the set changes)
+static void ScanVisible()
+{
+    static char last[1024] = "";
+    char cur[1024] = ""; int n = 0;
+    __try
+    {
+        DWORD mgr = *(DWORD*)0x0111463C;
+        for (DWORD off = 4; mgr && off < 2400 && n < 40; off += 4)
+        {
+            DWORD o = *(DWORD*)(mgr + off);
+            if (o < 0x10000 || o > 0x7FFF0000 || (o & 3)) continue;
+            DWORD vt = *(DWORD*)o;
+            if (vt < 0x400000 || vt > 0x1200000) continue;
+            if (!*(BYTE*)(o + 0xEA)) continue;
+            const float* f = (const float*)(o + 0xC8);
+            char b[64]; sprintf_s(b, "%u:%d,%d,%d,%d ", off, (int)f[0], (int)f[1], (int)f[2], (int)f[3]);
+            if (strlen(cur) + strlen(b) < sizeof(cur)) strcat_s(cur, b);
+            n++;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (strcmp(cur, last)) { strcpy_s(last, cur); char b[1100]; sprintf_s(b, "CLANKASA: visible windows %s", cur); Log(b); }
+}
+
 // game thread (ProxyWndProc)
 void ClanKasa_Tick()
 {
@@ -134,6 +159,7 @@ void ClanKasa_Tick()
         char b[96]; sprintf_s(b, "CLANKASA: clan window %s rect %d,%d-%d,%d", vis ? "open" : "closed", (int)g_wl, (int)g_wt, (int)g_wr, (int)g_wb); Log(b);
     }
     InterlockedExchange(&g_vis, vis ? 1 : 0);
+    ScanVisible();
 }
 
 bool ClanKasa_CursorOverPanel()
