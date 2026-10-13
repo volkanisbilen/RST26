@@ -559,7 +559,9 @@ pub fn generate_npc_loot(
         drop_time: Instant::now(),
         items,
     };
+    let dropbox_copy = bundle.clone();
     world.add_ground_bundle(bundle);
+    super::drop_box::notify_new_box(world, &dropbox_copy);
 
     // -- Send WIZ_ITEM_DROP to killer (and party) --
     // C++ format for NPC drops: [u32 npc_id][u32 bundle_id][u8 1]

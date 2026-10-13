@@ -77,6 +77,7 @@ pub mod guild_bank;
 pub mod hacktool;
 pub mod helmet;
 pub mod home;
+pub mod drop_box;
 pub mod item_drop;
 pub mod item_get;
 pub mod item_move;
