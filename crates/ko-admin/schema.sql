@@ -51,3 +51,61 @@ ALTER TABLE admin_event_state ADD COLUMN IF NOT EXISTS has_now BOOLEAN NOT NULL 
 ALTER TABLE admin_event_state ADD COLUMN IF NOT EXISTS can_stop BOOLEAN NOT NULL DEFAULT TRUE
 -- ;;
 ALTER TABLE admin_event_state ADD COLUMN IF NOT EXISTS sort_no INTEGER NOT NULL DEFAULT 0
+-- ;;
+CREATE TABLE IF NOT EXISTS pus_code_batch (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    label       VARCHAR(80) NOT NULL DEFAULT '',
+    kc          INTEGER NOT NULL DEFAULT 0,
+    tl          INTEGER NOT NULL DEFAULT 0,
+    quantity    INTEGER NOT NULL DEFAULT 0,
+    note        VARCHAR(200) NOT NULL DEFAULT '',
+    created_by  VARCHAR(40) NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at  TIMESTAMPTZ
+)
+-- ;;
+CREATE TABLE IF NOT EXISTS pus_code (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    code          VARCHAR(24) NOT NULL UNIQUE,
+    batch_id      BIGINT NOT NULL REFERENCES pus_code_batch(id) ON DELETE CASCADE,
+    kc            INTEGER NOT NULL DEFAULT 0,
+    tl            INTEGER NOT NULL DEFAULT 0,
+    note          VARCHAR(200) NOT NULL DEFAULT '',
+    disabled      BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at    TIMESTAMPTZ,
+    used_at       TIMESTAMPTZ,
+    used_account  VARCHAR(40),
+    used_char     VARCHAR(40),
+    used_ip       VARCHAR(45)
+)
+-- ;;
+CREATE INDEX IF NOT EXISTS idx_pus_code_used ON pus_code (used_account, used_at)
+-- ;;
+CREATE INDEX IF NOT EXISTS idx_pus_code_batch ON pus_code (batch_id)
+-- ;;
+CREATE TABLE IF NOT EXISTS pus_code_attempt (
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    account    VARCHAR(40) NOT NULL DEFAULT '',
+    char_name  VARCHAR(40) NOT NULL DEFAULT '',
+    ip         VARCHAR(45) NOT NULL DEFAULT '',
+    code       VARCHAR(40) NOT NULL DEFAULT '',
+    result     VARCHAR(16) NOT NULL DEFAULT ''
+)
+-- ;;
+CREATE INDEX IF NOT EXISTS idx_pus_code_attempt_acc ON pus_code_attempt (account, at DESC)
+-- ;;
+CREATE TABLE IF NOT EXISTS kc_ledger (
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    account    VARCHAR(40) NOT NULL,
+    char_name  VARCHAR(40) NOT NULL DEFAULT '',
+    kc_delta   INTEGER NOT NULL DEFAULT 0,
+    tl_delta   INTEGER NOT NULL DEFAULT 0,
+    kc_after   BIGINT NOT NULL DEFAULT 0,
+    tl_after   BIGINT NOT NULL DEFAULT 0,
+    reason     VARCHAR(20) NOT NULL DEFAULT '',
+    ref        VARCHAR(60) NOT NULL DEFAULT ''
+)
+-- ;;
+CREATE INDEX IF NOT EXISTS idx_kc_ledger_acc ON kc_ledger (account, at DESC)

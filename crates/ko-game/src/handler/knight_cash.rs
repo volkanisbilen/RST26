@@ -199,6 +199,10 @@ pub async fn give_balance(
         }
     });
 
+    // esn redeems write their own ledger row (with the code)
+    if !super::pus_codes::in_esn() {
+        super::pus_codes::ledger(session.pool(), &account_id, &world.get_session_name(sid).unwrap_or_default(), cash_amount as i64, tl_amount as i64, new_kc, new_tl, "give", "");
+    }
     // Send KCUPDATE packet to client
     let pkt = build_kcupdate_packet(new_kc, new_tl);
     session.send_packet(&pkt).await?;
@@ -285,6 +289,7 @@ pub async fn deduct_kc(session: &mut ClientSession, amount: i32) -> anyhow::Resu
         }
     });
 
+    super::pus_codes::ledger(session.pool(), &account_id, &world.get_session_name(sid).unwrap_or_default(), -(amount as i64), 0, new_kc, new_tl, "buy_kc", "");
     // Send CASHCHANGE packet to client
     let pkt = build_cashchange_packet(new_kc, new_tl);
     session.send_packet(&pkt).await?;
@@ -364,6 +369,7 @@ pub async fn deduct_tl(session: &mut ClientSession, amount: i32) -> anyhow::Resu
         }
     });
 
+    super::pus_codes::ledger(session.pool(), &account_id, &world.get_session_name(sid).unwrap_or_default(), 0, -(amount as i64), new_kc, new_tl, "buy_tl", "");
     // Send CASHCHANGE packet to client
     let pkt = build_cashchange_packet(new_kc, new_tl);
     session.send_packet(&pkt).await?;

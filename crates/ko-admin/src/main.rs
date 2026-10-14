@@ -7,6 +7,7 @@
 mod extra;
 mod beginner;
 mod events;
+mod pus;
 mod legacy;
 mod sheet;
 mod world;
@@ -68,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
 
     let bind = std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let app = App { pool, icon_dir };
-    let router: Router = legacy::routes().merge(extra::routes()).merge(world::routes()).merge(beginner::routes()).merge(sheet::routes()).merge(events::routes()).with_state(app);
+    let router: Router = legacy::routes().merge(extra::routes()).merge(world::routes()).merge(beginner::routes()).merge(sheet::routes()).merge(events::routes()).merge(pus::routes()).with_state(app);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     info!(address = %bind, "ko-admin listening");
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await?;

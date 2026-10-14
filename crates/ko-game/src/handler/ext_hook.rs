@@ -1000,6 +1000,7 @@ pub async fn handle_pus(session: &mut ClientSession, data: &[u8]) -> anyhow::Res
         1 => handle_pus_purchase(session, rest).await,
         2 => Ok(()),
         3 => handle_pus_gift(session, rest).await,
+        4 => crate::handler::pus_codes::handle_redeem(session, rest).await,
         _ => Ok(()),
     }
 }
