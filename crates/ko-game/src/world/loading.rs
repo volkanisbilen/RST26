@@ -2160,6 +2160,49 @@ impl WorldState {
     }
 
     /// Re-read the event schedule tables (admin panel edits).
+    /// Hot reload of the reward tables edited in the web panel ("Ödül Merkezi").
+    pub async fn reload_reward_tables(&self, pool: &DbPool, what: &str) -> Result<String, String> {
+        match what {
+            "event_rewards" => {
+                let rows = EventScheduleRepository::new(pool).load_rewards().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.event_rewards.clear();
+                for r in rows {
+                    self.event_rewards.entry(r.local_id).or_default().push(r);
+                }
+                Ok(format!("{n} event reward rows"))
+            }
+            "chaos_rewards" => {
+                let rows = ChaosStoneRepository::new(pool).load_all_rewards().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                *self.chaos_stone_rewards.write() = rows;
+                Ok(format!("{n} chaos reward rows"))
+            }
+            "daily_quests" => {
+                let rows = DailyQuestRepository::new(pool).load_all_definitions().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.daily_quests.clear();
+                for row in rows {
+                    self.daily_quests.insert(row.id, row);
+                }
+                Ok(format!("{n} daily quests"))
+            }
+            "cinderella" => {
+                self.load_cinderella_war(pool).await;
+                Ok("cinderella rewards reloaded".into())
+            }
+            "zone_rewards" => {
+                self.load_zone_rewards(pool).await;
+                Ok("zone rewards reloaded".into())
+            }
+            "collection_race" => {
+                self.load_collection_race(pool).await;
+                Ok("collection race reloaded".into())
+            }
+            other => Err(format!("unknown reward table {other}")),
+        }
+    }
+
     pub async fn reload_event_schedule(&self, pool: &DbPool) {
         self.load_event_schedule(pool).await;
     }

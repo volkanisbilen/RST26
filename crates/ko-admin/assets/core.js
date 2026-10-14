@@ -155,7 +155,7 @@ function itemSlot(it,opts={}){
 const NAV=[
   ['Genel',[['dashboard','Genel Bakış','home'],['players','Hesaplar & Oyuncular','users'],['clans','Klanlar','clan']]],
   ['Oyun İçeriği',[['items','Item Veritabanı','box'],['drops','Drop Editörü','sword'],['groups','Grup Yöneticisi','layers'],['maps','Harita Editörü','map'],['quest','Quest Stüdyosu','scroll'],['start','Başlangıç Ayarları','pin']]],
-  ['Etkinlikler',[['events','Etkinlik Merkezi','cal'],['race','Collection Race','flag'],['letters','Mektup / Ödül','mail']]],
+  ['Etkinlikler',[['events','Etkinlik Merkezi','cal'],['race','Collection Race','flag'],['letters','Mektup / Ödül','mail'],['rewards','Ödül Merkezi','gift']]],
   ['Mağaza',[['pus','KC / TL Kodları','gift']]],
   ['Sistem',[['system','Sistem & Yöneticiler','cog'],['audit','Denetim Kaydı','list']]],
 ];
