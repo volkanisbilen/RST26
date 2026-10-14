@@ -177,7 +177,9 @@ pub(crate) fn sync_daily_quests_into_normal_map(world: &WorldState, sid: Session
         .unwrap_or_default();
     let mirrored_ids = selected
         .iter()
-        .filter(|(_, progress)| progress.status == DailyQuestStatus::Ongoing as i16)
+        .filter(|(_, progress)| {
+            progress.status == DailyQuestStatus::Ongoing as i16 && progress.kill_count > 0
+        })
         .map(|(daily_id, _)| daily_quest_tip_id(*daily_id))
         .collect::<Vec<_>>();
     world.update_session(sid, |handle| {
@@ -185,7 +187,7 @@ pub(crate) fn sync_daily_quests_into_normal_map(world: &WorldState, sid: Session
             !(*quest_id > DAILY_QUEST_TIP_ID_BASE && *quest_id <= DAILY_QUEST_TIP_ID_BASE + 200)
         });
         for (daily_id, progress) in selected {
-            if progress.status != DailyQuestStatus::Ongoing as i16 {
+            if progress.status != DailyQuestStatus::Ongoing as i16 || progress.kill_count <= 0 {
                 continue;
             }
             handle.quests.insert(
@@ -399,6 +401,55 @@ pub async fn handle_daily_quest_manager_event(
     Ok(())
 }
 
+/// Every daily quest that fits the player's level starts by itself (no accepting, no slot limit).
+/// Quests that are completed, cooling down or already running are left alone. Returns true when
+/// something was started.
+pub fn auto_start_all(world: &WorldState, sid: SessionId) -> bool {
+    let Some((name, level)) = world.with_session(sid, |h| {
+        h.character
+            .as_ref()
+            .map(|c| (c.name.clone(), c.level as i16))
+    }).flatten() else {
+        return false;
+    };
+    let selected = world
+        .with_session(sid, |h| h.daily_quests.clone())
+        .unwrap_or_default();
+    let mut rows = Vec::new();
+    for quest in world.get_all_daily_quests() {
+        if selected.contains_key(&quest.id) || !quest_level_check(&quest, level) {
+            continue;
+        }
+        rows.push(UserDailyQuestRow {
+            character_id: name.clone(),
+            quest_id: quest.id,
+            kill_count: 0,
+            status: DailyQuestStatus::Ongoing as i16,
+            replay_time: 0,
+        });
+    }
+    if rows.is_empty() {
+        return false;
+    }
+    world.update_session(sid, |h| {
+        for row in &rows {
+            h.daily_quests.insert(row.quest_id, row.clone());
+        }
+    });
+    if let Some(pool) = world.db_pool() {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let repo = ko_db::repositories::daily_quest::DailyQuestRepository::new(&pool);
+            for row in rows {
+                if let Err(e) = repo.save_user_quest(&row).await {
+                    tracing::warn!(quest_id = row.quest_id, %e, "Daily quest auto start save failed");
+                }
+            }
+        });
+    }
+    true
+}
+
 /// Insert + persist an accepted quest and mirror it into Quest Tips.
 /// Returns false (after notifying the player) when saving failed.
 async fn accept_quest(session: &mut crate::session::ClientSession, quest: &DailyQuestRow) -> bool {
@@ -507,9 +558,11 @@ pub struct DqListEntry {
     pub name: String,
     pub desc: String,
     pub rewards: String,
+    /// `(icon id, name, count text)` of up to 4 rewards for the panel's reward boxes.
+    pub reward_items: Vec<(u32, String, String)>,
 }
 
-/// op 0: `[0][u16 n]{u8 id,u8 timeType,u8 minLv,u8 maxLv,u16 kills,u16 replayH,str,str,str}`
+/// op 0: `[0][u16 n]{u8 id,u8 timeType,u8 minLv,u8 maxLv,u16 kills,u16 replayH,str,str,str,u8 n,n x {u32 icon,str name,str count}}`
 pub fn build_list_packet(entries: &[DqListEntry]) -> Packet {
     let mut pkt = build_dq_base();
     pkt.write_u8(DQ_OP_SENDLIST);
@@ -524,6 +577,12 @@ pub fn build_list_packet(entries: &[DqListEntry]) -> Packet {
         pkt.write_string(&e.name);
         pkt.write_string(&e.desc);
         pkt.write_string(&e.rewards);
+        pkt.write_u8(e.reward_items.len().min(4) as u8);
+        for (icon, name, count) in e.reward_items.iter().take(4) {
+            pkt.write_u32(*icon);
+            pkt.write_string(name);
+            pkt.write_string(count);
+        }
     }
     pkt
 }
@@ -617,6 +676,37 @@ pub fn parse_request(data: &[u8]) -> Option<DqRequest> {
     }
 }
 
+/// The reward boxes of the panel: icon id, name and count text of every reward.
+fn reward_items(world: &WorldState, def: &DailyQuestRow) -> Vec<(u32, String, String)> {
+    get_quest_rewards(def)
+        .iter()
+        .map(|&(item, count)| {
+            let id = item as u32;
+            if id == ITEM_EXP {
+                (0, "EXP".to_string(), count.to_string())
+            } else if id == ITEM_GOLD {
+                (0, "Gold".to_string(), count.to_string())
+            } else if id == ITEM_COUNT || id == ITEM_LADDERPOINT {
+                (0, "NP".to_string(), count.to_string())
+            } else if id == ITEM_RANDOM {
+                (0, "Random reward".to_string(), String::new())
+            } else {
+                let def_item = world.get_item(id);
+                let name = def_item
+                    .as_ref()
+                    .and_then(|i| i.str_name.clone())
+                    .unwrap_or_else(|| format!("Item {item}"));
+                let icon = def_item
+                    .as_ref()
+                    .and_then(|i| i.item_icon_id1)
+                    .unwrap_or(0)
+                    .max(0) as u32;
+                (icon, name, format!("x{count}"))
+            }
+        })
+        .collect()
+}
+
 /// Human-readable reward text.
 fn describe_rewards(world: &WorldState, def: &DailyQuestRow) -> String {
     get_quest_rewards(def)
@@ -694,6 +784,7 @@ pub fn send_list(world: &WorldState, sid: SessionId) {
                 .unwrap_or_else(|| format!("Daily Quest {}", d.id)),
             desc: describe_objective(world, d),
             rewards: describe_rewards(world, d),
+            reward_items: reward_items(world, d),
         })
         .collect();
     world.send_to_session_owned(sid, build_list_packet(&entries));
@@ -743,7 +834,7 @@ fn send_native_slots(world: &WorldState, sid: SessionId) {
             break;
         }
         if let Some(uq) = user_quests.get(key) {
-            if uq.status == DailyQuestStatus::Ongoing as i16 {
+            if uq.status == DailyQuestStatus::Ongoing as i16 && uq.kill_count > 0 {
                 // Find the quest definition for NPC ID
                 let npc_id = all_defs
                     .iter()
@@ -766,7 +857,7 @@ fn send_native_slots(world: &WorldState, sid: SessionId) {
     // Send display-only WIZ_QUEST entries for the selected dailies as well.
     for key in &keys {
         if let Some(uq) = user_quests.get(key) {
-            if uq.status == DailyQuestStatus::Ongoing as i16 {
+            if uq.status == DailyQuestStatus::Ongoing as i16 && uq.kill_count > 0 {
                 send_daily_quest_tip(world, sid, *key, uq.kill_count);
             }
         }
@@ -1943,6 +2034,7 @@ mod tests {
             name: "AB".into(),
             desc: "Kill 50 X".into(),
             rewards: "EXP 5".into(),
+            reward_items: vec![(0, "EXP".into(), "5".into())],
         };
         let pkt = build_list_packet(&[e]);
         let d = &pkt.data;

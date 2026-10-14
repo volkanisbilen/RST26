@@ -12,6 +12,9 @@ OFF = (1, 0)
 W, H = 888, 582
 
 nodes = S.load_uif('re_dailyquest.uif')
+for e in S.walk(nodes):
+    if e.type == 'STRING' and e.text == 'Time':
+        e.text = 'Kills'            # the column shows kills / needed
 DYN_STR = ('txt_quest_', 'text_page', 'text_quest_name', 'text_zone', 'text_hunt_', 'str_count', 'str_name')
 
 

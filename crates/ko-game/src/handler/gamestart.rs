@@ -1437,6 +1437,7 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
 
     // Quest Tips reads the normal per-user quest map. Mirror selected daily
     // quests into it before sending the combined quest list.
+    super::daily_quest::auto_start_all(&world, session.session_id());
     super::daily_quest::sync_daily_quests_into_normal_map(&world, session.session_id());
 
     // Send one combined Quest Tips list only after both normal and selected

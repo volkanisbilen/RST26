@@ -335,6 +335,11 @@ pub fn level_change(world: &WorldState, sid: SessionId, level: u8, is_level_up: 
         return;
     }
 
+    if is_level_up && super::daily_quest::auto_start_all(world, sid) {
+        super::daily_quest::send_list(world, sid);
+        super::daily_quest::send_progress(world, sid);
+    }
+
     // Update max_exp for the new level
     let new_max_exp = world.get_exp_by_level(level, 0);
 

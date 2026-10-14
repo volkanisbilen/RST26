@@ -30,7 +30,8 @@ static const BYTE  DQ_SUBOP = 0xD3;
 struct Rc { int l, t, r, b; };
 static Rc R4(const int a[4]) { return { a[0], a[1], a[2], a[3] }; }
 
-struct Quest { BYTE id = 0, timeType = 0, minLv = 0, maxLv = 0; UINT16 kill = 0, replay = 0; std::string name, desc, rewards; };
+struct Rew { UINT32 icon = 0; std::string name, count; };
+struct Quest { BYTE id = 0, timeType = 0, minLv = 0, maxLv = 0; UINT16 kill = 0, replay = 0; std::string name, desc, rewards; std::vector<Rew> rew; };
 struct Prog { BYTE status = 0; UINT16 kills = 0; UINT32 secs = 0; DWORD at = 0; };
 
 static const int ROWS_VIS = DQ_ROWS;   // quests per page
@@ -42,6 +43,12 @@ static std::map<BYTE, Prog> g_prog;
 static int  g_sel = -1;            // quest id
 static int  g_page = 0;            // visible page (15 quests each)
 static int  g_lastRow = -1; static DWORD g_lastClick = 0;   // double click detection
+struct HudLine { BYTE id; DWORD at; };
+static std::vector<HudLine> g_hud;   // quests that just got a kill (screen counter)
+static HWND g_hHud = nullptr; static HDC g_hudDC = nullptr; static void* g_hudBits = nullptr;
+static const int HUD_W = 250, HUD_H = 96, HUD_LINES = 4; static const DWORD HUD_MS = 12000;
+static std::map<UINT32, void*> g_iconCache;
+static HWND FindGameWindow();
 static std::string g_msg; DWORD g_msgAt = 0; bool g_msgOk = false;
 static bool g_visible = false;
 static POINT g_panelPos = { -1, -1 };
@@ -246,6 +253,35 @@ static int HitTest(int x, int y)
     return C_NONE;
 }
 
+static std::string ZoneOf(const std::string& desc)
+{
+    size_t p = desc.rfind(" in ");
+    if (p == std::string::npos) return "-";
+    std::string z = desc.substr(p + 4);
+    size_t q = z.find(" (");
+    if (q != std::string::npos) z = z.substr(0, q);
+    return z.empty() ? "-" : z;
+}
+
+// item icon (pus_ui\icons\<id>.pus, made by make_icons.py) or the "no image" sprite
+static Sprite* IconSprite(UINT32 icon)
+{
+    if (!icon) return nullptr;
+    auto it = g_iconCache.find(icon);
+    if (it != g_iconCache.end()) return (Sprite*)it->second;
+    char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\pus_ui\\icons\\%u.pus", g_dir, icon);
+    Sprite* sp = new Sprite();
+    if (!LoadPus(p, *sp)) { delete sp; sp = nullptr; }
+    g_iconCache[icon] = sp;
+    return sp;
+}
+static void DrawIcon(UINT32 icon, const int r[4])
+{
+    Sprite* sp = IconSprite(icon);
+    if (sp) Blit(sp, r[0], r[1], r[2] - r[0], r[3] - r[1]);
+    else Skin("noimage", r[0], r[1], r[2] - r[0], r[3] - r[1]);
+}
+
 static int PageCount(size_t n) { return max(1, (int)((n + DQ_ROWS - 1) / DQ_ROWS)); }
 
 // "Experience 50, Blessed Upgrade Scroll x1, ..." -> up to 4 (name, count) pairs
@@ -295,22 +331,25 @@ static void Paint()
         const Quest& q = quests[qi];
         int ry = DQ_ROW_Y[i];
         auto pi = prog.find(q.id);
-        COLORREF col = RGB(160, 220, 255); std::string status = "Available", tm = "-";
+        COLORREF col = RGB(160, 220, 255); std::string status = "Available", tm;
+        UINT32 kills = 0;
         if (pi != prog.end())
         {
             BYTE st = pi->second.status;
-            if (st == 0) { col = RGB(255, 220, 120); sprintf_s(b, "%u/%u", pi->second.kills, q.kill); status = b; }
-            else if (st == 1) { col = RGB(170, 170, 170); status = "Cooldown"; UINT32 sl = SecsLeft(pi->second); sprintf_s(b, "%02u:%02u:%02u", sl / 3600, (sl % 3600) / 60, sl % 60); tm = b; }
-            else { col = RGB(140, 255, 140); status = "Completed"; }
+            kills = pi->second.kills;
+            if (st == 0) { col = RGB(255, 220, 120); status = "Ongoing"; }
+            else if (st == 1) { col = RGB(170, 170, 170); UINT32 sl = SecsLeft(pi->second); sprintf_s(b, "%02u:%02u:%02u", sl / 3600, (sl % 3600) / 60, sl % 60); status = b; kills = q.kill; }
+            else { col = RGB(140, 255, 140); status = "Completed"; kills = q.kill; }
         }
+        sprintf_s(b, "%u / %u", kills, (unsigned)q.kill); tm = b;
         if (q.id == sel) Skin("row_a", DQ_ROW_L, ry, DQ_ROW_R - DQ_ROW_L, DQ_ROW_H);
         else if (g_hover == C_ROW0 + i) Skin("row_b", DQ_ROW_L, ry, DQ_ROW_R - DQ_ROW_L, DQ_ROW_H);
         Text(q.name, { DQ_COL_NAME[0], ry, DQ_COL_NAME[1], ry + DQ_ROW_H }, col, 8, DT_LEFT | DT_VCENTER, true);
         Text(status, { DQ_COL_STATUS[0], ry, DQ_COL_STATUS[1], ry + DQ_ROW_H }, col, 8, DT_CENTER | DT_VCENTER);
-        Text(tm, { DQ_COL_TIME[0], ry, DQ_COL_TIME[1], ry + DQ_ROW_H }, RGB(235, 235, 235), 8, DT_CENTER | DT_VCENTER);
+        Text(tm, { DQ_COL_TIME[0], ry, DQ_COL_TIME[1], ry + DQ_ROW_H }, col, 8, DT_CENTER | DT_VCENTER);
         sprintf_s(b, "Hunt  Lv%u-%u", q.minLv, q.maxLv);
         Text(b, { DQ_COL_TYPE[0], ry, DQ_COL_TYPE[1], ry + DQ_ROW_H }, RGB(235, 235, 235), 8, DT_CENTER | DT_VCENTER);
-        Text("-", { DQ_COL_ZONE[0], ry, DQ_COL_ZONE[1], ry + DQ_ROW_H }, RGB(235, 235, 235), 8, DT_CENTER | DT_VCENTER);
+        Text(ZoneOf(q.desc), { DQ_COL_ZONE[0], ry, DQ_COL_ZONE[1], ry + DQ_ROW_H }, RGB(235, 235, 235), 8, DT_CENTER | DT_VCENTER);
     }
     if (quests.empty()) Text("No quests received.", { DQ_ROW_L, DQ_ROW_Y[0], DQ_ROW_R, DQ_ROW_Y[5] }, RGB(170, 170, 170), 9, DT_CENTER | DT_VCENTER);
     sprintf_s(b, "%d", page + 1);
@@ -334,7 +373,7 @@ static void Paint()
     if (sq)
     {
         Text(sq->name, R4(DQ_QNAME), RGB(255, 220, 120), 9, DT_CENTER | DT_VCENTER, true);
-        sprintf_s(b, "Level %u-%u", sq->minLv, sq->maxLv);
+        sprintf_s(b, "Level %u-%u  %s", sq->minLv, sq->maxLv, ZoneOf(sq->desc).c_str());
         Text(b, R4(DQ_QZONE), RGB(255, 150, 30), 8, DT_CENTER | DT_VCENTER, true);
 
         UINT16 kills = sp ? sp->kills : 0;
@@ -345,15 +384,27 @@ static void Paint()
         Text(b, R4(hunt[0].count), RGB(255, 225, 120), 8, DT_LEFT | DT_VCENTER, true);
         Text(sq->desc, { DQ_HUNT2_ICON[0] - 18, DQ_HUNT2_BOX[1] + 6, DQ_HUNT2_NAME[2] + 16, DQ_HUNT4_BOX[3] - 6 }, RGB(225, 225, 225), 7, DT_LEFT | DT_TOP, false, true);
 
-        auto rw = SplitRewards(sq->rewards);
-        for (size_t i = 0; i < rw.size(); i++)
+        if (!sq->rew.empty())
         {
-            Skin("noimage", rew[i].icon[0], rew[i].icon[1], rew[i].icon[2] - rew[i].icon[0], rew[i].icon[3] - rew[i].icon[1]);
-            Text(rw[i].first, R4(rew[i].name), RGB(160, 235, 160), 8, DT_LEFT | DT_VCENTER, true);
-            Text(rw[i].second, R4(rew[i].count), RGB(255, 225, 120), 8, DT_LEFT | DT_VCENTER, true);
+            for (size_t i = 0; i < sq->rew.size() && i < 4; i++)
+            {
+                DrawIcon(sq->rew[i].icon, rew[i].icon);
+                Text(sq->rew[i].name, R4(rew[i].name), RGB(160, 235, 160), 8, DT_LEFT | DT_VCENTER, true);
+                Text(sq->rew[i].count, R4(rew[i].count), RGB(255, 225, 120), 8, DT_LEFT | DT_VCENTER, true);
+            }
         }
-        if (!sp) hint = "Double-click the quest (or click the Hunt box) to accept it.";
-        else if (sp->status == 0) hint = "Ongoing - right-click the quest to abandon it.";
+        else
+        {
+            auto rw = SplitRewards(sq->rewards);
+            for (size_t i = 0; i < rw.size(); i++)
+            {
+                Skin("noimage", rew[i].icon[0], rew[i].icon[1], rew[i].icon[2] - rew[i].icon[0], rew[i].icon[3] - rew[i].icon[1]);
+                Text(rw[i].first, R4(rew[i].name), RGB(160, 235, 160), 8, DT_LEFT | DT_VCENTER, true);
+                Text(rw[i].second, R4(rew[i].count), RGB(255, 225, 120), 8, DT_LEFT | DT_VCENTER, true);
+            }
+        }
+        if (!sp) hint = "Not started: reach the quest level (the quests start by themselves).";
+        else if (sp->status == 0) hint = "Ongoing - kill the monsters of this quest.";
         else if (sp->status == 2) hint = "Completed - click a reward (or double-click the quest) to claim.";
         else { sprintf_s(b, "On cooldown: %s", FmtTime(SecsLeft(*sp)).c_str()); hint = b; }
     }
@@ -369,6 +420,84 @@ static void Paint()
     SIZE sz = { DQ_W, DQ_H };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     UpdateLayeredWindow(g_hWnd, nullptr, &dst, &sz, g_memDC, &src, 0, &bf, ULW_ALPHA);
+}
+
+// ---------------------------------------------------------------- screen counter (kills of the quests just hit)
+static void HudSync()
+{
+    if (!g_hHud) return;
+    HWND game = FindGameWindow();
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    bool fg = game && !IsIconic(game) && pid == GetCurrentProcessId();
+
+    std::vector<std::pair<Quest, Prog>> lines;
+    EnterCriticalSection(&g_lock);
+    DWORD now = GetTickCount();
+    for (size_t i = 0; i < g_hud.size();)
+    {
+        if (now - g_hud[i].at > HUD_MS) { g_hud.erase(g_hud.begin() + i); continue; }
+        i++;
+    }
+    for (auto it = g_hud.rbegin(); it != g_hud.rend() && (int)lines.size() < HUD_LINES; ++it)
+        for (auto& q : g_quests)
+            if (q.id == it->id) { Prog pr; auto pi = g_prog.find(q.id); if (pi != g_prog.end()) pr = pi->second; lines.push_back({ q, pr }); break; }
+    LeaveCriticalSection(&g_lock);
+
+    if (!fg || lines.empty()) { if (IsWindowVisible(g_hHud)) ShowWindow(g_hHud, SW_HIDE); return; }
+
+    // draw into the HUD bitmap: Text()/Fill() write to g_bits / DQ_W x DQ_H, so use a small local renderer
+    memset(g_hudBits, 0, (size_t)HUD_W * HUD_H * 4);
+    for (size_t i = 0; i < lines.size(); i++)
+    {
+        const Quest& q = lines[i].first; const Prog& pr = lines[i].second;
+        char t[96];
+        bool done = pr.status == 2 || pr.kills >= q.kill;
+        if (done) sprintf_s(t, "%s  Completed!", q.name.c_str()); else sprintf_s(t, "%s  %u / %u", q.name.c_str(), pr.kills, (unsigned)q.kill);
+        int w = HUD_W, h = 22;
+        BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB };
+        void* bits = nullptr; HDC dc = CreateCompatibleDC(nullptr);
+        HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        HGDIOBJ ob = SelectObject(dc, bmp);
+        HFONT font = CreateFontA(-12, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Verdana");
+        HGDIOBJ of = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+        RECT rc = { 0, 0, w, h };
+        DrawTextA(dc, t, -1, &rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        GdiFlush();
+        COLORREF color = done ? RGB(140, 255, 140) : RGB(255, 225, 120);
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int o = pass ? 0 : 1;
+            BYTE cr = pass ? GetRValue(color) : 0, cg = pass ? GetGValue(color) : 0, cb = pass ? GetBValue(color) : 0;
+            for (int y = 0; y < h; y++)
+            {
+                int dy = (int)i * 22 + y + o; if (dy >= HUD_H) continue;
+                const BYTE* src = (const BYTE*)bits + y * w * 4;
+                for (int x = 0; x < w; x++, src += 4)
+                {
+                    int dx = x + o; int a = max(src[0], max(src[1], src[2]));
+                    if (!a || dx >= HUD_W) continue;
+                    BYTE* d = (BYTE*)g_hudBits + (dy * HUD_W + dx) * 4;
+                    d[0] = (BYTE)((cb * a + d[0] * (255 - a)) / 255); d[1] = (BYTE)((cg * a + d[1] * (255 - a)) / 255);
+                    d[2] = (BYTE)((cr * a + d[2] * (255 - a)) / 255); d[3] = (BYTE)(a + d[3] * (255 - a) / 255);
+                }
+            }
+        }
+        SelectObject(dc, of); DeleteObject(font); SelectObject(dc, ob); DeleteObject(bmp); DeleteDC(dc);
+    }
+    static int offX = -9999, offY = -9999;
+    if (offX == -9999)
+    {
+        char ip[MAX_PATH]; sprintf_s(ip, "%sHopeGuard\\daily_hud.ini", g_dir);
+        offX = GetPrivateProfileIntA("hud", "x", 270, ip);     // distance of the right edge from the game's right edge
+        offY = GetPrivateProfileIntA("hud", "y", 200, ip);     // top
+    }
+    RECT gr; GetClientRect(game, &gr); MapWindowPoints(game, nullptr, (POINT*)&gr, 2);
+    POINT dst = { gr.right - offX + 10, gr.top + offY }, src = { 0, 0 }; SIZE sz = { HUD_W, HUD_H };
+    BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    UpdateLayeredWindow(g_hHud, nullptr, &dst, &sz, g_hudDC, &src, 0, &bf, ULW_ALPHA);
+    if (!IsWindowVisible(g_hHud)) SetWindowPos(g_hHud, HWND_TOPMOST, dst.x, dst.y, HUD_W, HUD_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 // ---------------------------------------------------------------- window plumbing
@@ -556,7 +685,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         while (ShowCursor(TRUE) < 0) {}
         SetCursor(g_gameCursor ? g_gameCursor : LoadCursor(nullptr, IDC_ARROW));
         return TRUE;
-    case WM_TIMER: SyncVisibility(); return 0;
+    case WM_TIMER: SyncVisibility(); HudSync(); return 0;
     case WM_DQ_REFRESH:
         if (wp == 1 && !g_visible) SetVisible(true);
         else if (g_visible && IsWindowVisible(h)) Paint();
@@ -583,6 +712,18 @@ static DWORD WINAPI WindowThread(LPVOID)
     HBITMAP bmp = CreateDIBSection(g_memDC, &bmi, DIB_RGB_COLORS, &g_bits, nullptr, 0);
     SelectObject(g_memDC, bmp);
     Log("DAILY: window ready");
+    {
+        WNDCLASSEXW hc = { sizeof(hc) };
+        hc.lpfnWndProc = DefWindowProcW; hc.hInstance = wc.hInstance; hc.lpszClassName = L"NTT_DailyHud";
+        RegisterClassExW(&hc);
+        g_hHud = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            hc.lpszClassName, L"DailyHud", WS_POPUP, 0, 0, HUD_W, HUD_H, nullptr, nullptr, hc.hInstance, nullptr);
+        g_hudDC = CreateCompatibleDC(nullptr);
+        BITMAPINFO hb = {};
+        hb.bmiHeader = { sizeof(BITMAPINFOHEADER), HUD_W, -HUD_H, 1, 32, BI_RGB };
+        HBITMAP hbmp = CreateDIBSection(g_hudDC, &hb, DIB_RGB_COLORS, &g_hudBits, nullptr, 0);
+        SelectObject(g_hudDC, hbmp);
+    }
     SetTimer(g_hWnd, 1, 150, nullptr);
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0)) { TranslateMessage(&m); DispatchMessageW(&m); }
@@ -618,6 +759,14 @@ void Daily_OnRecv(const BYTE* buf, size_t len)
             ok = Get(buf, len, pos, q.id) && Get(buf, len, pos, q.timeType) && Get(buf, len, pos, q.minLv) && Get(buf, len, pos, q.maxLv) &&
                  Get(buf, len, pos, q.kill) && Get(buf, len, pos, q.replay) && GetStr(buf, len, pos, q.name) &&
                  GetStr(buf, len, pos, q.desc) && GetStr(buf, len, pos, q.rewards);
+            BYTE rn = 0;
+            ok = ok && Get(buf, len, pos, rn);
+            for (BYTE k = 0; ok && k < rn && k < 4; k++)
+            {
+                Rew r;
+                ok = Get(buf, len, pos, r.icon) && GetStr(buf, len, pos, r.name) && GetStr(buf, len, pos, r.count);
+                if (ok) q.rew.push_back(r);
+            }
             if (ok) v.push_back(q);
         }
         if (ok)
@@ -643,7 +792,13 @@ void Daily_OnRecv(const BYTE* buf, size_t len)
     else if (op == 2)
     {
         BYTE id = 0; UINT16 k = 0;
-        if (Get(buf, len, pos, id) && Get(buf, len, pos, k)) { auto it = g_prog.find(id); if (it != g_prog.end()) it->second.kills = k; }
+        if (Get(buf, len, pos, id) && Get(buf, len, pos, k))
+        {
+            auto it = g_prog.find(id); if (it != g_prog.end()) it->second.kills = k;
+            bool found = false;                              // screen counter: this quest just got a kill
+            for (auto& h : g_hud) if (h.id == id) { h.at = GetTickCount(); found = true; }
+            if (!found) g_hud.push_back({ id, GetTickCount() });
+        }
     }
     else if (op == 3) open = true;
     else if (op == 4)
