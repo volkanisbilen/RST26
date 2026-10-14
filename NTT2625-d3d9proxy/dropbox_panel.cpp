@@ -112,7 +112,7 @@ static void LoadSkin()
     *(strrchr(g_dir, '\\') + 1) = 0;
     for (const char* n : { "cell", "head", "take_n", "take_o", "take_d" })
     {
-        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\dropbox_ui\\%s.pus", g_dir, n);
+        char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\dropbox_ui\\%s.pus", g_dir, n);
         Sprite s; if (LoadPus(p, s)) g_skin[n] = s;
     }
 }
@@ -122,7 +122,7 @@ static Sprite* Icon(UINT32 icon)
     if (!icon) return nullptr;
     auto it = g_icons.find(icon);
     if (it != g_icons.end()) return it->second.dc ? &it->second : nullptr;
-    char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\pus_ui\\icons\\%u.pus", g_dir, icon);
+    char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\pus_ui\\icons\\%u.pus", g_dir, icon);
     Sprite s; if (!LoadPus(p, s)) s = Sprite();
     g_icons[icon] = s;
     return s.dc ? &g_icons[icon] : nullptr;

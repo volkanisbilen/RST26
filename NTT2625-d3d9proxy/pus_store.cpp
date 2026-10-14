@@ -117,7 +117,7 @@ struct Reader
     }
 };
 
-// --- Window: skinned from re_powerupstore.uif (sprites in <game>\HopeGuard\pus_ui, layout in pus_layout.h,
+// --- Window: skinned from re_powerupstore.uif (sprites in <game>\JstKO\pus_ui, layout in pus_layout.h,
 //     both built by build_pus_uif.py) ---------------------------------------------------------------------
 #include "pus_layout.h"
 #pragma comment(lib, "msimg32.lib")
@@ -694,7 +694,7 @@ static HCURSOR BuildFallbackCursor()
     return c ? c : LoadCursor(nullptr, IDC_ARROW);
 }
 
-// the "Buy Cash Code" page: HopeGuard\pus_buycode.txt (first line = URL) when present
+// the "Buy Cash Code" page: JstKO\pus_buycode.txt (first line = URL) when present
 static void OpenBuyCode()
 {
     char path[MAX_PATH];
@@ -952,7 +952,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 static DWORD WINAPI WindowThread(LPVOID)
 {
     GetModuleFileNameA(nullptr, g_uiDir, MAX_PATH);
-    strcpy_s(strrchr(g_uiDir, '\\') + 1, 48, "HopeGuard\\pus_ui");
+    strcpy_s(strrchr(g_uiDir, '\\') + 1, 48, "JstKO\\pus_ui");
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = WndProc;

@@ -1,4 +1,4 @@
-// d3d9 proxy: forwards to the system d3d9.dll and loads HopeGuard.dll from the game folder.
+// d3d9 proxy: forwards to the system d3d9.dll and loads JstKO.dll from the game folder.
 // Goal: get our DLL into the 2625 client without touching the XIGNCODE-packed exe.
 #include <windows.h>
 #include <stdio.h>
@@ -79,8 +79,8 @@ void LaunchGuard_Init();
 void LaunchGuard_OnRecv(const BYTE* p, size_t len);
 void LaunchGuard_FlushSendQueue();
 void Tag_Init();
-void HopeGuardBanner_Init();
-void HopeGuardSplash_Wait();
+void JstKOBanner_Init();
+void JstKOSplash_Wait();
 void SoloCapeIcon_Init();
 void DropBtn_Init();
 void CamRange_Init();
@@ -116,7 +116,7 @@ void QuoteKeyBlock_Init();   // " key hidden from the game: no native panel (quo
 void QuoteKeyBlock_LayoutChanged();
 void GmPanel_Init();   // GM panel, " key, GMs only (gm_panel.cpp)
 void Discord_InitProxy();   // Discord Rich Presence (discord_presence.cpp)
-void PackOverride_Init();   // HopeGuard\pack_override files replace pack entries while the game reads them (pack_override.cpp)
+void PackOverride_Init();   // JstKO\pack_override files replace pack entries while the game reads them (pack_override.cpp)
 void Discord_OnRecv(const BYTE* p, size_t len);
 void GmPanel_FlushSendQueue();
 void GmPanel_OnRecv(const BYTE* p, size_t len);
@@ -156,8 +156,8 @@ static void LoadReal()
 
 static DWORD WINAPI LoadGuard(LPVOID)
 {
-    HMODULE h = LoadLibraryA("HopeGuard.dll");
-    const char* loadedName = "HopeGuard.dll";
+    HMODULE h = LoadLibraryA("JstKO.dll");
+    const char* loadedName = "JstKO.dll";
     if (!h)
     {
         // Existing client installs may still ship the asset/pack reader under its former name.
@@ -171,21 +171,21 @@ static DWORD WINAPI LoadGuard(LPVOID)
     return 0;
 }
 
-// HopeGuardUI.dll (was OPSGUARD.dll: the old HSACSX client module ported to this exe, OPS_COEXIST build): optional, loaded only when the
+// JstKOUI.dll (was OPSGUARD.dll: the old HSACSX client module ported to this exe, OPS_COEXIST build): optional, loaded only when the
 // file is in the game folder. It installs no send / recv / tick hooks of its own and leaves every panel this proxy
 // already has switched off, so the two do not meet. From a thread: nothing here waits for it.
 static DWORD WINAPI LoadOpsGuard(LPVOID)
 {
-    HMODULE h = LoadLibraryA("HopeGuardUI.dll");
+    HMODULE h = LoadLibraryA("JstKOUI.dll");
     char buf[128];
-    sprintf_s(buf, "HopeGuardUI.dll load -> %p (err=%lu)", h, h ? 0 : GetLastError());
+    sprintf_s(buf, "JstKOUI.dll load -> %p (err=%lu)", h, h ? 0 : GetLastError());
     Log(buf);
     return 0;
 }
 
 // Launcher hand-over: a running Launcher.exe cannot overwrite itself, so a patch brings the new launcher as
 // <game>\Launcher.upd. The launcher quits right after it starts the game; here, in the game, the file takes its place.
-// (Our own launcher replaces itself, HopeGuardLauncher\hg_launcher.cpp; this is for clients that still run the stock one.)
+// (Our own launcher replaces itself, JstKOLauncher\hg_launcher.cpp; this is for clients that still run the stock one.)
 static DWORD WINAPI LauncherSwap(LPVOID)
 {
     wchar_t dir[MAX_PATH]; GetModuleFileNameW(nullptr, dir, MAX_PATH);
@@ -205,9 +205,9 @@ static DWORD WINAPI LauncherSwap(LPVOID)
 
 extern "C" {
 __declspec(dllexport) void* WINAPI Direct3DCreate9(UINT v)
-{ HopeGuardSplash_Wait(); LoadReal(); return g_fn[0] ? ((void*(WINAPI*)(UINT))g_fn[0])(v) : nullptr; }   // HopeGuard ACS loading bar first
+{ JstKOSplash_Wait(); LoadReal(); return g_fn[0] ? ((void*(WINAPI*)(UINT))g_fn[0])(v) : nullptr; }   // JstKO ACS loading bar first
 __declspec(dllexport) HRESULT WINAPI Direct3DCreate9Ex(UINT v, void** p)
-{ HopeGuardSplash_Wait(); LoadReal(); return g_fn[1] ? ((HRESULT(WINAPI*)(UINT, void**))g_fn[1])(v, p) : E_FAIL; }
+{ JstKOSplash_Wait(); LoadReal(); return g_fn[1] ? ((HRESULT(WINAPI*)(UINT, void**))g_fn[1])(v, p) : E_FAIL; }
 __declspec(dllexport) int WINAPI D3DPERF_BeginEvent(DWORD c, LPCWSTR n)
 { LoadReal(); return g_fn[2] ? ((int(WINAPI*)(DWORD, LPCWSTR))g_fn[2])(c, n) : 0; }
 __declspec(dllexport) int WINAPI D3DPERF_EndEvent()
@@ -243,7 +243,7 @@ static LRESULT CALLBACK ProxyWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     if (GetCurrentThreadId() == g_gameTid) { Genie_Tick(h); Anvil_Tick(); Tag_Tick(); DropBtn_Tick(); ClanKasa_Tick(); ChaoticOpts_Tick(); ItemTip_Tick(); ResetBar_Tick(); NameFlag_Tick(); }
     if ((m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN) && GetCurrentThreadId() == g_gameTid) Genie_OnMouseDown((short)LOWORD(l), (short)HIWORD(l));
     if (m == WM_LBUTTONDOWN && GetCurrentThreadId() == g_gameTid) HoldRepeat_OnMouseDown(h, (short)LOWORD(l), (short)HIWORD(l));   // stat / skill "+" hold to repeat
-    if (m == WM_TIMER && GetCurrentThreadId() == g_gameTid && HoldRepeat_OnTimer(h, (UINT_PTR)w)) return 0;   // HopeGuard Genie field hint / settings push
+    if (m == WM_TIMER && GetCurrentThreadId() == g_gameTid && HoldRepeat_OnTimer(h, (UINT_PTR)w)) return 0;   // JstKO Genie field hint / settings push
     if (m == WM_TIMER && GetCurrentThreadId() == g_gameTid && Reconnect_OnTimer(h, (UINT_PTR)w)) return 0;   // soft re-connect steps
     if (m == WM_TIMER && GetCurrentThreadId() == g_gameTid && Tag_OnTimer((UINT_PTR)w)) return 0;   // tag tick timer (Tag_Tick ran above)
     // drop viewer: '\' (US layout) or Ctrl+D; first open also loads the current target's drops
@@ -479,15 +479,15 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH && IsGameHost())
     {
         Log("d3d9 proxy attached");
-        // HopeGuard.dll (was OPSGUARD.dll) first and at once: it redirects this DLL's file imports, so the encrypted HopeGuard\ skins read
+        // JstKO.dll (was OPSGUARD.dll) first and at once: it redirects this DLL's file imports, so the encrypted JstKO\ skins read
         // plain by the time the panels load them (loaded from a thread it came after the first skin loads).
-        if (GetFileAttributesA("HopeGuard.dll") != INVALID_FILE_ATTRIBUTES ||
+        if (GetFileAttributesA("JstKO.dll") != INVALID_FILE_ATTRIBUTES ||
             GetFileAttributesA("OPSGUARD.dll") != INVALID_FILE_ATTRIBUTES)
             LoadGuard(nullptr);
         else
-            Log("HopeGuard.dll / OPSGUARD.dll not present, proxy-only test");
+            Log("JstKO.dll / OPSGUARD.dll not present, proxy-only test");
         LaunchGuard_Init();   // not started by Launcher.exe -> message + exit
-        HopeGuardBanner_Init();   // HopeGuard ACS splash + 10 s loading bar (the game waits for it in Direct3DCreate9)
+        JstKOBanner_Init();   // JstKO ACS splash + 10 s loading bar (the game waits for it in Direct3DCreate9)
         CrashTrap_Init();
         PackOverride_Init();    // before the game reads its packs
         IatFix_Init();
@@ -528,7 +528,7 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
         DropBtn_Init();         // "Drop" button next to the target bar (drop_button.cpp)
         CamRange_Init();        // Camera Range slider under the F10 options window (camera_range.cpp)
         InfStone_Init();        // Infinite Stone alone passes the client's class stone check (infinite_stone.cpp)
-        if (GetFileAttributesA("HopeGuardUI.dll") != INVALID_FILE_ATTRIBUTES)
+        if (GetFileAttributesA("JstKOUI.dll") != INVALID_FILE_ATTRIBUTES)
             CloseHandle(CreateThread(nullptr, 0, LoadOpsGuard, nullptr, 0, nullptr));   // optional, see LoadOpsGuard
         CloseHandle(CreateThread(nullptr, 0, LauncherSwap, nullptr, 0, nullptr));       // Launcher.upd -> Launcher.exe
         // PriceFix_Init();     // NPC shop prices as the server charges them (price_fix.cpp): switched off 2026-10-04, the shop shows the client's own prices again

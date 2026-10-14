@@ -2,7 +2,7 @@
 // the open-source discord-rpc (discord_rpc\, copied from cyber's DiscordSDK) talks to the local Discord app over its pipe.
 // Server: GameServer XGuard.cpp SendDiscordPresence, GameServer.ini [DISCORD] APP_ID / IMAGE / DETAILS, sent at game start,
 // zone loaded and level up:  E9 F6 [str app id][str image][str details][str state]   (u16 length, CP1254)
-// The last application id is kept in HopeGuard\discord.dat so the login screen shows the presence too.
+// The last application id is kept in JstKO\discord.dat so the login screen shows the presence too.
 #include <windows.h>
 #include <stdio.h>
 #include <string>
@@ -31,7 +31,7 @@ namespace
     std::string DatPath()
     {
         char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH);
-        strcpy_s(strrchr(p, '\\') + 1, 48, "HopeGuard\\discord.dat");
+        strcpy_s(strrchr(p, '\\') + 1, 48, "JstKO\\discord.dat");
         return p;
     }
     // caller holds g_lock

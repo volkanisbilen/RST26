@@ -4,10 +4,10 @@
 //   - Game server challenge, WIZ_HSACS_HOOK + LAUNCHGUARD (0xF2), server LaunchGuard.cpp:
 //       S->C 1 [u32 nonce]                  sent at game start (also after a soft re-connect)
 //       C->S 2 [u32 answer][u32 proxyVer]   answer = LgAnswer(nonce); no / wrong answer -> the server disconnects
-//   - HopeGuard ACS heartbeat (server LaunchGuard.cpp / HopeGuard.cpp), same channel:
+//   - JstKO ACS heartbeat (server LaunchGuard.cpp / JstKO.cpp), same channel:
 //       S->C 3 [u32 nonce]                  every HEARTBEAT_INTERVAL s; no answer -> disconnect
 //       C->S 4 [u32 answer][u32 tickMs][u32 qpcMs][u32 flags][u32 tblHash][str details]
-//       S->C 6 [str reason]                 HopeGuard ACS disconnects us right after: no soft / hard re-connect
+//       S->C 6 [str reason]                 JstKO ACS disconnects us right after: no soft / hard re-connect
 //         tickMs / qpcMs: our GetTickCount / QueryPerformanceCounter clocks (the server compares them with its own:
 //         speed hack); flags 1 debugger, 2 cheat tool (process / window), 4 foreign DLLs in the game, 8 tables unreadable;
 //         tblHash: FNV-1a over Data\*.tbl (names + contents). A scan thread refreshes the flags every 20 s.
@@ -38,7 +38,7 @@ static DWORD HgAnswer(DWORD nonce, DWORD tick, DWORD qpc, DWORD flags, DWORD tbl
     return x;
 }
 
-// ---------------------------------------------------------------- HopeGuard ACS client checks
+// ---------------------------------------------------------------- JstKO ACS client checks
 enum : DWORD { HG_DEBUGGER = 1, HG_CHEATTOOL = 2, HG_MODULE = 4, HG_NOTABLES = 8 };
 static CRITICAL_SECTION g_hgLock;
 static DWORD g_hgFlags = 0;
@@ -78,7 +78,7 @@ static void HashTables()
     }
     g_hgTbl = ok ? hash : 0;
     InterlockedExchange(&g_hgTblReady, ok ? 1 : 2);
-    char b[96]; sprintf_s(b, "HOPEGUARD: %u tables, hash %08lX%s", (unsigned)names.size(), hash, ok ? "" : " (unreadable)"); Log(b);
+    char b[96]; sprintf_s(b, "JSTKO: %u tables, hash %08lX%s", (unsigned)names.size(), hash, ok ? "" : " (unreadable)"); Log(b);
 }
 
 static void ScanOnce()
@@ -123,7 +123,7 @@ static void ScanOnce()
     EnterCriticalSection(&g_hgLock);
     if (flags != g_hgFlags || details != g_hgDetails)
     {
-        char b[200]; sprintf_s(b, "HOPEGUARD: flags %lX %.150s", flags, details.c_str()); Log(b);
+        char b[200]; sprintf_s(b, "JSTKO: flags %lX %.150s", flags, details.c_str()); Log(b);
     }
     g_hgFlags = flags; g_hgDetails = details;
     LeaveCriticalSection(&g_hgLock);
@@ -161,7 +161,7 @@ void LaunchGuard_Init()
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     const wchar_t* name = wcsrchr(exe, L'\\'); name = name ? name + 1 : exe;
     if (_wcsicmp(name, L"KnightOnLine.exe") != 0) return;   // Option.exe etc. load d3d9.dll too
-    CloseHandle(CreateThread(nullptr, 0, ScanThread, nullptr, 0, nullptr));   // HopeGuard ACS checks
+    CloseHandle(CreateThread(nullptr, 0, ScanThread, nullptr, 0, nullptr));   // JstKO ACS checks
 
     LaunchTicket t = {};
     DWORD type = 0, cb = sizeof(t);
@@ -199,7 +199,7 @@ void LaunchGuard_Init()
 }
 
 // ---------------------------------------------------------------- server challenge
-// HopeGuard ACS heartbeat (game thread)
+// JstKO ACS heartbeat (game thread)
 static void HeartbeatAnswer(DWORD nonce)
 {
     DWORD tick = GetTickCount(), qpc = QpcMs(), tbl = g_hgTbl, flags;
@@ -220,12 +220,12 @@ static void HeartbeatAnswer(DWORD nonce)
 void LaunchGuard_OnRecv(const BYTE* p, size_t len)
 {
     if (len >= 7 && p[0] == 0xE9 && p[1] == LG_SUBOP && p[2] == 3) { HeartbeatAnswer(*(const DWORD*)(p + 3)); return; }
-    if (len >= 3 && p[0] == 0xE9 && p[1] == LG_SUBOP && p[2] == 6)          // HopeGuard ACS is about to disconnect us
+    if (len >= 3 && p[0] == 0xE9 && p[1] == LG_SUBOP && p[2] == 6)          // JstKO ACS is about to disconnect us
     {
         std::string why;
         if (len >= 5) { WORD n = *(const WORD*)(p + 3); if (5 + (size_t)n <= len) why.assign((const char*)p + 5, n); }
         Reconnect_Block();
-        char b[160]; sprintf_s(b, "HOPEGUARD: disconnected by the server (%.120s), re-connect off", why.c_str()); Log(b);
+        char b[160]; sprintf_s(b, "JSTKO: disconnected by the server (%.120s), re-connect off", why.c_str()); Log(b);
         return;
     }
     if (len < 7 || p[0] != 0xE9 || p[1] != LG_SUBOP || p[2] != 1) return;

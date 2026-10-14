@@ -7,7 +7,7 @@ import sys
 import uifrender as U
 import uifview as V
 
-game = sys.argv[1] if len(sys.argv) > 1 else r'D:\ai\2625_Client'
+game = sys.argv[1] if len(sys.argv) > 1 else r'D:\ai\JstKO Client'
 t = U.Tex(game)
 for f in sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uif_in', '*.uif'))):
     texs = set()

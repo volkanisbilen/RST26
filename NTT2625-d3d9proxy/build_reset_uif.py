@@ -4,7 +4,7 @@ r"""Stat / skill reset as native controls of the game's own windows (the proxy p
                       Text_Level, button = clone of btn_preset "Stat Preset")
   re_skill.uif      : hg_skill_reset "Skill Reset" = clone of btn_preset, right above it
 Base = genie_out\<name>.orig.uif (the game's originals: python PatchTools\uif_crypt.py extract <client> <name>.uif ...).
-Output: genie_out\<name>.uif (plain) + genie_out\enc\<name>.uif (HopeGuard encrypted, what goes into the pack / patch)
+Output: genie_out\<name>.uif (plain) + genie_out\enc\<name>.uif (JstKO encrypted, what goes into the pack / patch)
         ->  python pack_replace.py <client>\UI ui genie_out\enc\re_page_state.uif genie_out\enc\re_skill.uif
 """
 import os, sys

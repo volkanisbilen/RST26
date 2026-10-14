@@ -166,7 +166,7 @@ static void LoadSkin()
     if (g_skinLoaded) return;
     g_skinLoaded = true;
     char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH);
-    strcpy_s(strrchr(dir, '\\') + 1, 48, "HopeGuard\\csw_ui");
+    strcpy_s(strrchr(dir, '\\') + 1, 48, "JstKO\\csw_ui");
     static const char* names[] = { "frame", "row_me", "close_n", "close_o", "close_d" };
     int ok = 0;
     for (const char* n : names)

@@ -1,9 +1,9 @@
-// HopeGuard ACS start splash. When KnightOnLine.exe starts (Launcher -> Start) the "HopeGuard ACS" banner shows in the
+// JstKO ACS start splash. When KnightOnLine.exe starts (Launcher -> Start) the "JstKO ACS" banner shows in the
 // middle of the screen with the game's loading bar right under it, filling in SPLASH_MS. The game waits for it:
-// Direct3DCreate9(Ex) (d3d9proxy.cpp, game main thread, before the game draws anything) calls HopeGuardSplash_Wait(),
+// Direct3DCreate9(Ex) (d3d9proxy.cpp, game main thread, before the game draws anything) calls JstKOSplash_Wait(),
 // which returns when the bar is full; then the splash closes and the game opens. Meanwhile the ACS scan thread
 // (launch_guard.cpp) hashes the tables and does its first check.
-// Skin: build_hopeguard_banner.py (hg_ui\banner.pus, bar_empty.pus, bar_full.pus: green message box + ui_loding.dxt).
+// Skin: build_jstko_banner.py (hg_ui\banner.pus, bar_empty.pus, bar_full.pus: green message box + ui_loding.dxt).
 #include <windows.h>
 #include <stdio.h>
 #include <string>
@@ -29,9 +29,9 @@ namespace
 
     bool LoadPus(const char* name, Sprite& s)
     {
-        char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH); sprintf_s(strrchr(p, '\\') + 1, 64, "HopeGuard\\hg_ui\\%s.pus", name);
+        char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH); sprintf_s(strrchr(p, '\\') + 1, 64, "JstKO\\hg_ui\\%s.pus", name);
         FILE* f = nullptr;
-        if (fopen_s(&f, p, "rb") != 0 || !f) { char b[MAX_PATH + 32]; sprintf_s(b, "HOPEGUARD: missing %s", p); Log(b); return false; }
+        if (fopen_s(&f, p, "rb") != 0 || !f) { char b[MAX_PATH + 32]; sprintf_s(b, "JSTKO: missing %s", p); Log(b); return false; }
         char magic[4]; UINT32 w = 0, h = 0; bool ok = false;
         if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "PUSI", 4) && fread(&w, 4, 1, f) == 1 && fread(&h, 4, 1, f) == 1 && w && h && w < 4096 && h < 4096)
         {
@@ -98,7 +98,7 @@ namespace
         Blit(g_empty, HG_BAR[0], HG_BAR[1]);
         Blit(g_full, HG_BAR[0], HG_BAR[1], g_full.w * pct / 100);
         GdiFlush();
-        Text(L"HopeGuard ACS", HG_TITLE, RGB(255, 170, 60), 13, true);
+        Text(L"JstKO ACS", HG_TITLE, RGB(255, 170, 60), 13, true);
         wchar_t line[96];
         if (pct < 100) swprintf_s(line, L"Scanning your system...  %d%%", pct);
         else wcscpy_s(line, L"Activated - your game is protected");
@@ -130,12 +130,12 @@ namespace
     DWORD WINAPI SplashThread(LPVOID)
     {
         WNDCLASSEXW wc = { sizeof(wc) };
-        wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"NTT_HopeGuardSplash";
+        wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"NTT_JstKOSplash";
         RegisterClassExW(&wc);
         // the middle of the screen
         int x = (GetSystemMetrics(SM_CXSCREEN) - HG_W) / 2, y = (GetSystemMetrics(SM_CYSCREEN) - HG_H) / 2;
         g_hWnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
-            wc.lpszClassName, L"HopeGuard ACS", WS_POPUP, x, y, HG_W, HG_H, nullptr, nullptr, wc.hInstance, nullptr);
+            wc.lpszClassName, L"JstKO ACS", WS_POPUP, x, y, HG_W, HG_H, nullptr, nullptr, wc.hInstance, nullptr);
         if (!g_hWnd) { SetEvent(g_done); InterlockedExchange(&g_active, 0); return 0; }
         g_memDC = CreateCompatibleDC(nullptr);
         BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), HG_W, -HG_H, 1, 32, BI_RGB };
@@ -145,18 +145,18 @@ namespace
         Paint(0);
         SetWindowPos(g_hWnd, HWND_TOPMOST, x, y, HG_W, HG_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         SetTimer(g_hWnd, 1, 40, nullptr);
-        Log("HOPEGUARD: splash shown");
+        Log("JSTKO: splash shown");
         MSG m;
         while (GetMessageW(&m, nullptr, 0, 0)) { TranslateMessage(&m); DispatchMessageW(&m); }
         SetEvent(g_done);
         g_hWnd = nullptr;
         InterlockedExchange(&g_active, 0);
-        Log("HOPEGUARD: splash closed");
+        Log("JSTKO: splash closed");
         return 0;
     }
 }
 
-void HopeGuardBanner_Init()
+void JstKOBanner_Init()
 {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     const wchar_t* name = wcsrchr(exe, L'\\'); name = name ? name + 1 : exe;
@@ -168,7 +168,7 @@ void HopeGuardBanner_Init()
 
 // Direct3DCreate9(Ex), game main thread: hold the game until the bar is full, then close the splash. The game's own
 // windows are hidden meanwhile (nothing drawn yet; a visible window that does not answer would turn "not responding").
-void HopeGuardSplash_Wait()
+void JstKOSplash_Wait()
 {
     static volatile LONG once = 0;
     if (!g_active || !g_done || InterlockedExchange(&once, 1)) return;   // only the first device creation waits

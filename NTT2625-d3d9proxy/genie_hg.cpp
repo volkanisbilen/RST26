@@ -1,5 +1,5 @@
-// HopeGuard Genie: two tabs (Main / Misc) on top of the game's five-tab Knight Genie (CUIGenie_Main),
-// plus the extra controls of the HopeGuard window (ids hg_* in re_genie.uif, built by build_genie.py).
+// JstKO Genie: two tabs (Main / Misc) on top of the game's five-tab Knight Genie (CUIGenie_Main),
+// plus the extra controls of the JstKO window (ids hg_* in re_genie.uif, built by build_genie.py).
 //
 // Tabs (native tab switching shows exactly one base and one icon group):
 //   Main = "attack" + "assist" bases, attack/recovery skill icons + support icons (0..15 by style, 20..31)
@@ -59,7 +59,7 @@ namespace
 
     // ---------------------------------------------------------------- settings
     // Stored where the game keeps its own genie options: the save packet (0x97 01 03, built by
-    // CUIGenie_Main::SaveOptions 0xB1FFE0) gets the HopeGuard block appended at blob offset 180, the server
+    // CUIGenie_Main::SaveOptions 0xB1FFE0) gets the JstKO block appended at blob offset 180, the server
     // writes the 400-byte blob to USER_GENIE_DATA.strGenieOptions and sends it back on load (0x97 01 02).
     //   +0 'H' 'G' ver  +3 leader  +4 goRange  +5 autoParty  +6 partyHeal%  +7 codeLen  +8 code[20]
     //   +28 mobCount  +29 mobs (9 x [len][19 chars])
@@ -507,7 +507,7 @@ namespace
         }
         if (IsGenieSave(buf, len))
         {
-            // 0x97 01 03 + game options (padded to 180) + HopeGuard block = the server's 400-byte blob
+            // 0x97 01 03 + game options (padded to 180) + JstKO block = the server's 400-byte blob
             std::vector<BYTE> p(3 + HG_NATIVE + HG_BLOCK, 0);
             memcpy(p.data(), buf, min(len, 3 + HG_NATIVE));
             BuildBlock(p.data() + 3 + HG_NATIVE);
@@ -620,7 +620,7 @@ namespace
         static const BYTE kCallAtt[5] = { 0xE8, 0x91, 0x68, 0xFF, 0xFF };
         static const BYTE kCallEtc[5] = { 0xE8, 0xFA, 0x65, 0xFF, 0xFF };
         // the three must go in together: a half-patched window would show empty tabs
-        if (memcmp((void*)0x00B1E950, kExplain, 5) != 0 && *(BYTE*)0x00B1E950 != 0xE9) { Log("GENIE: client differs, HopeGuard tabs off"); return 0; }
+        if (memcmp((void*)0x00B1E950, kExplain, 5) != 0 && *(BYTE*)0x00B1E950 != 0xE9) { Log("GENIE: client differs, JstKO tabs off"); return 0; }
         if (memcmp((void*)0x00B1D08A, kCallAtt, 5) != 0 && *(BYTE*)0x00B1D08A != 0xE8) return 0;
         PatchRel(0x00B1D08A, 0xE8, kCallAtt, 5, (void*)HG_RefreshMain, "Main tab refresh");
         PatchRel(0x00B1D321, 0xE8, kCallEtc, 5, (void*)HG_RefreshMisc, "Misc tab refresh");
@@ -1119,7 +1119,7 @@ void Genie_OnRecv(const BYTE* pkt, int len)
         g_leaderTarget = *(const DWORD*)(pkt + 3);           // leader's monster, selected on the game thread
         return;
     }
-    // HopeGuard block, sent by the server right after the game's own genie options (which stay 100 bytes:
+    // JstKO block, sent by the server right after the game's own genie options (which stay 100 bytes:
     // the client copies them into a fixed buffer)
     if (len >= 3 + HG_BLOCK && pkt[0] == WIZ_HSACS_HOOK && pkt[1] == HG_SUBOP && pkt[2] == 4)
     {

@@ -1,4 +1,4 @@
-"""HopeGuard pack-entry cipher for UI\\ui.src *.uif (port of OPSGUARD\\hgcrypt.h).
+"""JstKO pack-entry cipher for UI\\ui.src *.uif (port of OPSGUARD\\hgcrypt.h).
 
 Encrypted entry = [payload ^ keystream][u32 nonce][u32 tag]; the .hdr size covers all of it.
 Usage:
@@ -53,7 +53,7 @@ def decrypt(entry):
     size = len(entry)
     nonce, tg = struct.unpack_from('<II', entry, size - TRAILER)
     if tg != tag(nonce, size):
-        raise ValueError('not a HopeGuard-encrypted entry (tag mismatch)')
+        raise ValueError('not a JstKO-encrypted entry (tag mismatch)')
     return crypt(entry[:-TRAILER], seed(nonce, size))
 
 

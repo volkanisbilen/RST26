@@ -1,5 +1,5 @@
 """Daily Quest panel skin from the supplied re_dailyquest.uif (uif_in\\).
-Output: daily_ui\\*.pus + daily_layout.h   (client folder: HopeGuard\\daily_ui)
+Output: daily_ui\\*.pus + daily_layout.h   (client folder: JstKO\\daily_ui)
 Usage: python build_daily_uif.py
 """
 import os

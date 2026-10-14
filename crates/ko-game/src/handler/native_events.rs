@@ -190,7 +190,7 @@ pub async fn handle_roulette(session: &mut ClientSession, pkt: Packet) -> anyhow
 /// after the subcommand is `i16 count`, followed by `u8 event_id, u8 enabled`
 /// pairs. Disabled entries must be omitted: the client only adds pairs whose
 /// enabled byte is non-zero to its selection list.
-/// Taskbar buttons of the HopeGuard taskbar (hook `0xE7`: `[u8 event id]`): open that event directly,
+/// Taskbar buttons of the JstKO taskbar (hook `0xE7`: `[u8 event id]`): open that event directly,
 /// as if it had been picked in the star menu.
 pub async fn direct_select(session: &mut ClientSession, event_id: u8) -> anyhow::Result<()> {
     session.world().update_session(session.session_id(), |h| {
@@ -222,7 +222,7 @@ async fn native_event_hub_open(
         }
     }
 
-    // client entry 4 (the old Coin Shop) is relabelled "Manner Store" and opened by the HopeGuard DLL
+    // client entry 4 (the old Coin Shop) is relabelled "Manner Store" and opened by the JstKO DLL
     active.push((EVENT_HUB_MANNER, 1u8));
 
     let out = native_event_hub_packet(&active);

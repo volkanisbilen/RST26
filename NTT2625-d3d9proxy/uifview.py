@@ -19,7 +19,7 @@ _raw = U.Tex.raw
 def _raw_dec(self, name):
     b = _raw(self, name)
     try:
-        return uif_crypt.decrypt(b)       # the client pack is HopeGuard-encrypted
+        return uif_crypt.decrypt(b)       # the client pack is JstKO-encrypted
     except ValueError:
         return b
 
@@ -120,7 +120,7 @@ if __name__ == '__main__':
     for t in tops:
         dump(t)
     if len(sys.argv) > 2:
-        game = sys.argv[3] if len(sys.argv) > 3 else r'D:\ai\2625_Client'
+        game = sys.argv[3] if len(sys.argv) > 3 else r'D:\ai\JstKO Client'
         tex = U.Tex(game)
         base = os.path.splitext(sys.argv[2])[0]
         groups = [[t] for t in tops] if all(t.type == 'BASE' for t in tops) else [tops]

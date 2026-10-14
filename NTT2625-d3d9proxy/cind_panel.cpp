@@ -131,7 +131,7 @@ static void LoadSkin()
     if (g_skinLoaded) return;
     g_skinLoaded = true;
     char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH);
-    strcpy_s(strrchr(dir, '\\') + 1, 48, "HopeGuard\\cind_ui");
+    strcpy_s(strrchr(dir, '\\') + 1, 48, "JstKO\\cind_ui");
     int ok = 0;
     for (const CisSprite& s : CIS_SPRITES)
     {

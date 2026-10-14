@@ -1,4 +1,4 @@
-"""Builds the HopeGuard Genie window (re_genie.uif) from the game's own Knight Genie UIF.
+"""Builds the JstKO Genie window (re_genie.uif) from the game's own Knight Genie UIF.
 
 Native code finds every control by id among the direct children of its tab base (CN3UIBase
 child list, non-recursive), so each control stays in its base; only positions change.
@@ -148,7 +148,7 @@ for b in B.values(): b.rect = [0, 0, W, H]
 
 # title + close
 park(get(genie, 'str_genie_name'))
-t = text(genie, 'hg_title', 'HopeGuard Genie', [197, 27, 366, 47], 0xFFEDEA72, center=True, h=10, bold=True,
+t = text(genie, 'hg_title', 'JstKO Genie', [197, 27, 366, 47], 0xFFEDEA72, center=True, h=10, bold=True,
          tmpl=get(genie, 'str_genie_name'))
 close = get(genie, 'btn_close'); fit(close, [492, 12, 526, 45])
 
@@ -336,7 +336,7 @@ for (key, label, area, cnt, col), x in zip(cols, CX):
 brs = get(recovery, 'base_recovery_slot_num'); brs.rect = [0, 0, W, H]
 for c in brs.children: park(c)
 
-text(etc, 'hg_note', 'HopeGuard Genie', [X0, 540, X1, 556], 0xFF6B7333, center=True, h=9)
+text(etc, 'hg_note', 'JstKO Genie', [X0, 540, X1, 556], 0xFF6B7333, center=True, h=9)
 
 # assist after attack: the transform dropdown opens over the monster list
 genie.children.remove(assist); genie.children.insert(genie.children.index(attack) + 1, assist)
@@ -351,7 +351,7 @@ label = [c for c in sub.children if c.type == 'IMAGE' and c.rect == [31, 11, 106
 label.remove()
 tmpl = next(e for e in sub.walk() if e.typ is not None and e.id == 'str_NameOne')
 st = tmpl.clone(); st.children = []
-st.id = 'hg_sub_title'; st.text = 'HopeGuard'; st.rect = [28, 11, 108, 25]
+st.id = 'hg_sub_title'; st.text = 'JstKO'; st.rect = [28, 11, 108, 25]
 st.color = 0xFFFFC85A; st.fstyle = 1; st.fontH = 9; st.style = 0x04900000
 sub.add(st)
 uifed.save(sub, OUT_SUB)

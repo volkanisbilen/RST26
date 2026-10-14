@@ -1,4 +1,4 @@
-// Stream cipher for HopeGuard-encrypted pack entries (UI\ui.src *.uif).
+// Stream cipher for JstKO-encrypted pack entries (UI\ui.src *.uif).
 // Keep in sync with PatchTools\uif_crypt.py.
 //
 // Encrypted entry = [payload ^ keystream][u32 nonce][u32 tag]; the .hdr size covers all of it.
@@ -23,7 +23,7 @@ inline uint32_t Mix(uint32_t x)
 inline uint32_t Seed(uint32_t nonce, uint32_t size) { return Mix(Mix(nonce ^ kSeed) + size); }
 inline uint32_t Tag(uint32_t nonce, uint32_t size)  { return Mix(Mix(nonce + kTag) ^ size); }
 
-// Loose proxy assets (HopeGuard\*_ui\*.pus) are XORed in place, same size, no trailer: the key comes
+// Loose proxy assets (JstKO\*_ui\*.pus) are XORed in place, same size, no trailer: the key comes
 // from the file size and the lower-case file name, and a decrypted "PUSI" magic tells them from plain ones.
 // Keep in sync with PatchTools\asset_crypt.py.
 const uint32_t kAsset = 0xC2B2AE35;

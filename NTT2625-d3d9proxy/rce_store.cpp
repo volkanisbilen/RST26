@@ -989,10 +989,10 @@ static DWORD WINAPI WindowThreadR(LPVOID)
 {
     GetModuleFileNameA(nullptr, g_uiDirR, MAX_PATH);
     strcpy_s(g_skinDirR, g_uiDirR);
-    strcpy_s(strrchr(g_uiDirR, '\\') + 1, 48, "HopeGuard\\pus_ui");   // reuse the PUS icon set
+    strcpy_s(strrchr(g_uiDirR, '\\') + 1, 48, "JstKO\\pus_ui");   // reuse the PUS icon set
     strcpy_s(g_skinDirX, g_skinDirR);
-    strcpy_s(strrchr(g_skinDirR, '\\') + 1, 48, "HopeGuard\\rce_ui");
-    strcpy_s(strrchr(g_skinDirX, '\\') + 1, 48, "HopeGuard\\cross_ui");
+    strcpy_s(strrchr(g_skinDirR, '\\') + 1, 48, "JstKO\\rce_ui");
+    strcpy_s(strrchr(g_skinDirX, '\\') + 1, 48, "JstKO\\cross_ui");
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = WndProcR;

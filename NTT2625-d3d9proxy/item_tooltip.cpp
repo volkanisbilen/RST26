@@ -1,6 +1,6 @@
 // Item tooltip for our panels (Power Up Store, drop lists ...), drawn by the proxy with the pieces of the game's own
 // inventory tooltip (re_newtooltip.uif: background ui_message.dxt, separator co_pat_ui_02.dxt ->
-// HopeGuard\itemtip_ui\*.pus, build_itemtip_assets.py). Calling the game's tooltip function (0x8DBF70) from here
+// JstKO\itemtip_ui\*.pus, build_itemtip_assets.py). Calling the game's tooltip function (0x8DBF70) from here
 // returned without an error but nothing was drawn, so the window is ours: a click-through layered window.
 // Content:
 //   name + description: the client's own item table in memory (basic row: map [0x1115804]+0x10, key num/1000*1000;
@@ -181,7 +181,7 @@ namespace
         auto it = g_icons.find(icon);
         if (it != g_icons.end()) return it->second;
         Sprite s;
-        LoadPus(GameDir() + "HopeGuard\\pus_ui\\icons\\" + std::to_string(icon) + ".pus", s);
+        LoadPus(GameDir() + "JstKO\\pus_ui\\icons\\" + std::to_string(icon) + ".pus", s);
         return g_icons[icon] = s;
     }
 
@@ -313,9 +313,9 @@ namespace
         SelectObject(g_dc, bmp);
         g_font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Tahoma");
         g_fontBold = CreateFontW(-13, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Tahoma");
-        std::string dir = GameDir() + "HopeGuard\\itemtip_ui\\";
+        std::string dir = GameDir() + "JstKO\\itemtip_ui\\";
         bool a = LoadPus(dir + "back.pus", g_back), b = LoadPus(dir + "bar.pus", g_bar);
-        Log(a && b ? "ITEMTIP: own tooltip window ready (game skin loaded)" : "ITEMTIP: own tooltip window ready, SKIN MISSING (HopeGuard\\itemtip_ui)");
+        Log(a && b ? "ITEMTIP: own tooltip window ready (game skin loaded)" : "ITEMTIP: own tooltip window ready, SKIN MISSING (JstKO\\itemtip_ui)");
         g_hWnd = wnd;
         MSG m;
         while (GetMessageW(&m, nullptr, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }

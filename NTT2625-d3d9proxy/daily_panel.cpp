@@ -121,11 +121,11 @@ static void LoadSkin()
     int ok = 0;
     for (const char* n : names)
     {
-        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\daily_ui\\%s.pus", g_dir, n);
+        char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\daily_ui\\%s.pus", g_dir, n);
         Sprite s; if (LoadPus(p, s)) { g_skin[n] = s; ok++; }
     }
     {
-        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\pus_ui\\noimage.pus", g_dir);
+        char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\pus_ui\\noimage.pus", g_dir);
         Sprite s; if (LoadPus(p, s)) { g_skin["noimage"] = s; ok++; }
     }
     char b[64]; sprintf_s(b, "DAILY: skin %d/10", ok); Log(b);
@@ -269,7 +269,7 @@ static Sprite* IconSprite(UINT32 icon)
     if (!icon) return nullptr;
     auto it = g_iconCache.find(icon);
     if (it != g_iconCache.end()) return (Sprite*)it->second;
-    char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\pus_ui\\icons\\%u.pus", g_dir, icon);
+    char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\pus_ui\\icons\\%u.pus", g_dir, icon);
     Sprite* sp = new Sprite();
     if (!LoadPus(p, *sp)) { delete sp; sp = nullptr; }
     g_iconCache[icon] = sp;
@@ -489,7 +489,7 @@ static void HudSync()
     static int offX = -9999, offY = -9999;
     if (offX == -9999)
     {
-        char ip[MAX_PATH]; sprintf_s(ip, "%sHopeGuard\\daily_hud.ini", g_dir);
+        char ip[MAX_PATH]; sprintf_s(ip, "%sJstKO\\daily_hud.ini", g_dir);
         offX = GetPrivateProfileIntA("hud", "x", 270, ip);     // distance of the right edge from the game's right edge
         offY = GetPrivateProfileIntA("hud", "y", 200, ip);     // top
     }

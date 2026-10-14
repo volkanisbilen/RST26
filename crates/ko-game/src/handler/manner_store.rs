@@ -1,4 +1,4 @@
-//! HopeGuard "Special Store [Loyalty & Manner]" (hook `WIZ_EXT_HOOK` 0xE9 / sub `MANNER` 0xF0).
+//! JstKO "Special Store [Loyalty & Manner]" (hook `WIZ_EXT_HOOK` 0xE9 / sub `MANNER` 0xF0).
 //!
 //! - C2S 1 open → S2C 1 `[u32 manner][u32 loyalty][u32 daily secs left][u16 daily points][u16 n]`
 //!   + n x `[u16 index][u8 tab][u32 item][u16 count][u32 price][u8 currency][u32 days]`

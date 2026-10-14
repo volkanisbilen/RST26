@@ -116,7 +116,7 @@ static bool LoadPus(const char* path, Sprite& s)
 static void LoadSkin()
 {
     GetModuleFileNameA(nullptr, g_skinDir, MAX_PATH);
-    strcpy_s(strrchr(g_skinDir, '\\') + 1, 48, "HopeGuard\\sp_ui");
+    strcpy_s(strrchr(g_skinDir, '\\') + 1, 48, "JstKO\\sp_ui");
     int ok = 0;
     for (const SpSprite& s : SP_SPRITES)
     {

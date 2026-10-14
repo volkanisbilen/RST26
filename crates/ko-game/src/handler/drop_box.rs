@@ -1,4 +1,4 @@
-//! HopeGuard "Drop Box" panel (hook `WIZ_EXT_HOOK` 0xE9 / sub `DROPBOX` 0xF1): the items of the last
+//! JstKO "Drop Box" panel (hook `WIZ_EXT_HOOK` 0xE9 / sub `DROPBOX` 0xF1): the items of the last
 //! box a monster dropped are listed on the right side of the screen; a click takes an item with the
 //! game's own `WIZ_ITEM_GET`. The panel itself keeps the 60 s countdown.
 //!

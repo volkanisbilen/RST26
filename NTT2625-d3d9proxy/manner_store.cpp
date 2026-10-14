@@ -145,10 +145,10 @@ static void LoadSkin()
     int ok = 0;
     for (const char* n : names)
     {
-        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\manner_ui\\%s.pus", g_dir, n);
+        char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\manner_ui\\%s.pus", g_dir, n);
         Sprite s; if (LoadPus(p, s)) { g_skin[n] = s; ok++; }
     }
-    char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\manner_ui\\items.txt", g_dir);
+    char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\manner_ui\\items.txt", g_dir);
     FILE* f = nullptr;
     if (fopen_s(&f, p, "r") == 0 && f)
     {
@@ -179,9 +179,9 @@ static Sprite* Icon(UINT32 item)
     if (!icon) return nullptr;
     auto ic = g_icons.find(icon);
     if (ic != g_icons.end()) return ic->second.dc ? &ic->second : nullptr;
-    char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\manner_ui\\icons\\%u.pus", g_dir, icon);
+    char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\manner_ui\\icons\\%u.pus", g_dir, icon);
     Sprite s;
-    if (!LoadPus(p, s)) { sprintf_s(p, "%sHopeGuard\\pus_ui\\icons\\%u.pus", g_dir, icon); if (!LoadPus(p, s)) s = Sprite(); }
+    if (!LoadPus(p, s)) { sprintf_s(p, "%sJstKO\\pus_ui\\icons\\%u.pus", g_dir, icon); if (!LoadPus(p, s)) s = Sprite(); }
     g_icons[icon] = s;
     return s.dc ? &g_icons[icon] : nullptr;
 }

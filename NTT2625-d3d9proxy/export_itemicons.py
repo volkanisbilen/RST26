@@ -18,7 +18,7 @@ def raw_tex(name):
     b, src = _orig_raw(name)
     nl = struct.unpack_from('<i', b, 0)[0]
     if not (0 <= nl < 260 and b[4 + nl:7 + nl] == b'NTF'):
-        b = uif_crypt.decrypt(b)        # HopeGuard pack-entry cipher
+        b = uif_crypt.decrypt(b)        # JstKO pack-entry cipher
     return b, src
 
 os.makedirs(OUT, exist_ok=True)

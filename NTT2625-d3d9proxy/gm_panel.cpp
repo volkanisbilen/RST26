@@ -1,5 +1,5 @@
 ﻿// GM panel = the cyber001 CyberACS GM tools window (DAT-19.uif "Knight Game Master Manage") drawn with its own images
-// (build_gm_assets.py -> HopeGuard\gm_ui\*.pus + gm_layout.h). Server: GameServer\GmPanel.cpp.
+// (build_gm_assets.py -> JstKO\gm_ui\*.pus + gm_layout.h). Server: GameServer\GmPanel.cpp.
 // Opened with the " key (WM_CHAR, any keyboard layout) and only for GMs (player authority +0x6DC == 0), never
 // while a game edit (chat) has the focus. Tabs: Home, User Editor, Start Event, Reload Tables, Lottery, GM Commands, Bots.
 // The buttons send the server's existing "+command" / "/command" text; the server checks the GM itself. Slots the cyber
@@ -243,7 +243,7 @@ namespace
     void LoadSkin()
     {
         char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH);
-        strcpy_s(strrchr(dir, '\\') + 1, 48, "HopeGuard\\gm_ui");
+        strcpy_s(strrchr(dir, '\\') + 1, 48, "JstKO\\gm_ui");
         int ok = 0, all = 0;
         for (const GmuSprite& s : GMU_SPRITES)
         {
@@ -352,7 +352,7 @@ namespace
     }
     void SendBots()
     {
-        // Leader / Genie / Class: HopeGuard tab, Bot Options
+        // Leader / Genie / Class: JstKO tab, Bot Options
         std::string c = Or("edit_count", "1"), t = Or("edit_Time", "60"), l = Or("edit_lvl", "1"), pkl = Or("edit_lvl", "83");
         std::string lead = Or("x_bleader", "0"), genie = Or("x_bgenie", "1"), cls = Or("x_bclass", "0");
         switch (atoi(Or("edit_Type", "0").c_str()))
@@ -902,7 +902,7 @@ namespace
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"NTT_GmPanel";
         RegisterClassExW(&wc);
         g_hWnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName,
-            L"HopeGuard GM", WS_POPUP, 0, 0, W, H, nullptr, nullptr, wc.hInstance, nullptr);
+            L"JstKO GM", WS_POPUP, 0, 0, W, H, nullptr, nullptr, wc.hInstance, nullptr);
         if (!g_hWnd) { Log("GMPANEL: window creation failed"); return 0; }
         g_memDC = CreateCompatibleDC(nullptr);
         BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };

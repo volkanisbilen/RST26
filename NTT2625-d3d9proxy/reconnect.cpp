@@ -51,7 +51,7 @@ namespace
     HDC   g_memDC = nullptr;
     void* g_bits = nullptr;
     volatile LONG g_open = 0;
-    volatile LONG g_blocked = 0;                            // HopeGuard ACS disconnected us: no re-connect
+    volatile LONG g_blocked = 0;                            // JstKO ACS disconnected us: no re-connect
     volatile LONG g_softRequest = 0;                        // window thread asks the game thread for a soft attempt
     bool RequestSoft(const char* why);                      // below
     DWORD g_openedAt = 0;
@@ -118,7 +118,7 @@ namespace
         char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH); *(strrchr(dir, '\\') + 1) = 0;
         for (const char* n : { "bg", "btn_n", "btn_o", "btn_d" })
         {
-            char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\reconnect_ui\\%s.pus", dir, n);
+            char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\reconnect_ui\\%s.pus", dir, n);
             Sprite s; if (LoadPus(p, s)) g_skin[n] = s;
         }
     }
@@ -556,7 +556,7 @@ namespace
     {
         bool haveToken;
         EnterCriticalSection(&g_tokLock); haveToken = g_tok.valid; LeaveCriticalSection(&g_tokLock);
-        if (g_blocked) return false;                      // kicked by HopeGuard ACS: the game's own message
+        if (g_blocked) return false;                      // kicked by JstKO ACS: the game's own message
         if (g_rs != RS_IDLE)
         {
             DropInAttempt();
@@ -585,7 +585,7 @@ namespace
 
     void __fastcall HkDisconnected(void* self, void*)
     {
-        if (g_blocked) { Log("RECONNECT: kicked by HopeGuard ACS, no re-connect"); if (g_tramp) g_tramp(self); return; }
+        if (g_blocked) { Log("RECONNECT: kicked by JstKO ACS, no re-connect"); if (g_tramp) g_tramp(self); return; }
         if (SoftTakeDrop("message")) return;
         if (!g_open)
         {
@@ -744,7 +744,7 @@ bool Reconnect_FilterSend(void* sock, const BYTE* buf, int len, void(__thiscall*
     return true;
 }
 
-// launch_guard.cpp: the server announced a HopeGuard ACS disconnect
+// launch_guard.cpp: the server announced a JstKO ACS disconnect
 void Reconnect_Block() { InterlockedExchange(&g_blocked, 1); }
 
 bool Reconnect_CursorOverPanel()

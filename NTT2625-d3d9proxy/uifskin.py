@@ -16,7 +16,7 @@ import uifrender as U
 import uifview as V
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CLIENT = r'D:\ai\2625_Client'
+CLIENT = r'D:\ai\JstKO Client'
 _tex = None
 
 

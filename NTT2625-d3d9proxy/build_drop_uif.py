@@ -1,5 +1,5 @@
 """Advanced Drop Search skin from the supplied re_search_monster_drop.uif (uif_in\\).
-Output: drop_ui\\*.pus + drop_layout.h   (client folder: HopeGuard\\drop_ui)
+Output: drop_ui\\*.pus + drop_layout.h   (client folder: JstKO\\drop_ui)
 Usage: python build_drop_uif.py
 """
 import os

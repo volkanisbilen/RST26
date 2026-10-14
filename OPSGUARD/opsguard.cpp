@@ -1,4 +1,4 @@
-// HopeGuard.dll (formerly OPSGUARD.dll): decrypts HopeGuard-encrypted pack entries (UI\ui.src *.uif) while the game reads them.
+// JstKO.dll (formerly OPSGUARD.dll): decrypts JstKO-encrypted pack entries (UI\ui.src *.uif) while the game reads them.
 // The d3d9 proxy loads this DLL from the game folder when it exists.
 //
 // Every pack read in the 2625 client goes through one function (0x00631CC0 in the unpacked exe):
@@ -17,7 +17,7 @@ static void Log(const char* fmt, ...)
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     char* slash = strrchr(path, '\\');
     if (!slash) return;
-    strcpy_s(slash + 1, MAX_PATH - (slash + 1 - path), "hopeguard.log");
+    strcpy_s(slash + 1, MAX_PATH - (slash + 1 - path), "jstko.log");
     FILE* f = _fsopen(path, "a", _SH_DENYNO);
     if (!f) return;
     SYSTEMTIME t; GetLocalTime(&t);
@@ -142,7 +142,7 @@ static void Install()
     Log("PAK: decrypt hook installed at %p", call);
 }
 
-// ---- proxy assets: HopeGuard\*_ui\*.pus -------------------------------------------------------------
+// ---- proxy assets: JstKO\*_ui\*.pus -------------------------------------------------------------
 // The d3d9 proxy reads them with fopen/fread, i.e. CreateFileW + ReadFile through its own import table.
 // Those imports are redirected here, so encrypted files are decrypted as they are read.
 
@@ -160,14 +160,14 @@ static void AssetForget(HANDLE h)
     ReleaseSRWLockExclusive(&g_assetLock);
 }
 
-// name: "...\HopeGuard\...\file.pus" -> lower-case file name, or false
+// name: "...\JstKO\...\file.pus" -> lower-case file name, or false
 static bool AssetName(const wchar_t* path, char* out, size_t cap)
 {
     size_t n = wcslen(path);
     if (n < 5 || (_wcsicmp(path + n - 4, L".pus") != 0 && _wcsicmp(path + n - 4, L".txt") != 0)) return false;
     bool inDir = false;
     for (const wchar_t* p = path; *p; p++)
-        if ((*p == L'\\' || *p == L'/') && _wcsnicmp(p + 1, L"HopeGuard", 9) == 0 && (p[10] == L'\\' || p[10] == L'/')) { inDir = true; break; }
+        if ((*p == L'\\' || *p == L'/') && _wcsnicmp(p + 1, L"JstKO", 5) == 0 && (p[6] == L'\\' || p[6] == L'/')) { inDir = true; break; }
     if (!inDir) return false;
     const wchar_t* base = path + n;
     while (base > path && base[-1] != L'\\' && base[-1] != L'/') base--;
@@ -302,7 +302,7 @@ static void InstallAssets()
     GetSystemDirectoryA(sys, MAX_PATH);
     if (_strnicmp(path, sys, strlen(sys)) == 0) { Log("ASSET: d3d9.dll is the system one, nothing to hook"); return; }
     int n = PatchImports(proxy);
-    Log("ASSET: %d proxy import(s) redirected%s", n, n >= 3 ? "" : " -> encrypted HopeGuard\\ files will not load");
+    Log("ASSET: %d proxy import(s) redirected%s", n, n >= 3 ? "" : " -> encrypted JstKO\\ files will not load");
 }
 
 // Imported by the patched d3d9.dll so that this DLL is initialized before the proxy's own DllMain.

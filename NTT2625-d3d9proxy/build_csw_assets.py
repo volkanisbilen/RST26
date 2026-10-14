@@ -4,7 +4,7 @@ the game's textures (rows, close button and scrollbar left out) and writes the c
 Output: csw_ui\\*.pus + csw_layout.h.
 Usage: python build_csw_assets.py [uif] [packDir]
   uif     plain re_siege_warfare_challenge.uif   (default: PatchTools\\uif_plain_20261004_0205 copy)
-  packDir folder with a ui.hdr / ui.src whose .dxt are not HopeGuard-encrypted (default: PatchTools\\ui_pack_before_all_20261004)
+  packDir folder with a ui.hdr / ui.src whose .dxt are not JstKO-encrypted (default: PatchTools\\ui_pack_before_all_20261004)
 """
 import os, sys, struct
 from PIL import Image

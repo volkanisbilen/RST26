@@ -2,7 +2,7 @@
 //
 // The original Launcher.exe runs <game>\XIGNCODE\xldr_KnightOnline_NA_loader_win32.exe and WAITS for it, then starts
 // KnightOnline.exe and quits. Our xldr checks that its parent is the original Launcher.exe of this client (path + FNV-1a
-// hash of the file) and leaves a one-shot ticket in HKCU\Software\HopeGuard\Launch. The game (d3d9 proxy, DllMain)
+// hash of the file) and leaves a one-shot ticket in HKCU\Software\JstKO\Launch. The game (d3d9 proxy, DllMain)
 // reads and deletes it; no ticket / old ticket / bad MAC -> "start the game with Launcher.exe" and exit.
 // The game server checks the proxy itself (LaunchGuard.cpp, WIZ_HSACS_HOOK + LAUNCHGUARD 0xF2), so deleting d3d9.dll
 // does not get around this either.
@@ -11,7 +11,7 @@
 #include <tlhelp32.h>
 #include <wchar.h>
 
-#define LT_REG_KEY    L"Software\\HopeGuard"
+#define LT_REG_KEY    L"Software\\JstKO"
 #define LT_REG_VALUE  L"Launch"
 static const DWORD LT_MAGIC = 0x544C4748;           // 'HGLT'
 static const DWORD LT_MAX_AGE = 90;                 // seconds between xldr and the game's d3d9.dll

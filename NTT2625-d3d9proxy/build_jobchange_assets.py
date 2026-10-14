@@ -2,7 +2,7 @@
 (4 class cards, a button under each, close button), scaled to fit a 1024 wide game window. The captions are drawn
 by the panel itself (the uif's own say "Death Match Event").
 uif reader + texture loader: the head of build_gm_assets.py.
-Output: jc_ui\\*.pus (client: HopeGuard\\jc_ui) + jc_layout.h
+Output: jc_ui\\*.pus (client: JstKO\\jc_ui) + jc_layout.h
 Usage: python build_jobchange_assets.py [uif] [textureDir]"""
 import os, sys
 from PIL import Image

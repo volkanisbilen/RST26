@@ -181,12 +181,12 @@ fn refresh_appearance(world: &WorldState, sid: SessionId) {
     );
 }
 
-/// Hook 0xED (HopeGuard genie channel): op 3 = open the cape shop from the Solo Cape Scroll.
+/// Hook 0xED (JstKO genie channel): op 3 = open the cape shop from the Solo Cape Scroll.
 pub async fn handle_hggenie(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     let mut r = PacketReader::new(&pkt.data);
     let op = r.read_u8().unwrap_or(0);
     if op == 5 {
-        // genie window feedback: the buttons of the HopeGuard genie answer with a chat line
+        // genie window feedback: the buttons of the JstKO genie answer with a chat line
         use super::operator::GmCtx;
         let text = match r.read_u8().unwrap_or(0) {
             1 => "[Genie] Ayarlar kaydedildi.",

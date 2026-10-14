@@ -152,7 +152,7 @@ namespace
         char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH); *(strrchr(dir, '\\') + 1) = 0;
         for (const char* n : { "bg", "palette", "btn_n", "btn_o", "btn_d" })
         {
-            char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\tag_ui\\%s.pus", dir, n);
+            char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\tag_ui\\%s.pus", dir, n);
             Sprite s; if (LoadPus(p, s)) g_skin[n] = s;
             else { char b[MAX_PATH + 32]; sprintf_s(b, "TAG: missing %s", p); Log(b); }
         }

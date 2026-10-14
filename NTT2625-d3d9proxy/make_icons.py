@@ -1,5 +1,5 @@
 """Creates the missing pus_ui\\icons\\<iconId>.pus (45x45) for every item icon id of the server's item table,
-from the itemicon_*.dxt textures of the client's UI pack (HopeGuard-decrypted).
+from the itemicon_*.dxt textures of the client's UI pack (JstKO-decrypted).
 
 Usage: python make_icons.py <item table dump>   [clientDir]
   <item table dump> = db_backup\\ko_server_full.sql (COPY public.item) or a text file with one icon id per line
@@ -12,7 +12,7 @@ from PIL import Image
 import uifskin as S
 
 client = sys.argv[2] if len(sys.argv) > 2 else S.CLIENT
-out_dir = os.path.join(client, 'HopeGuard', 'pus_ui', 'icons')
+out_dir = os.path.join(client, 'JstKO', 'pus_ui', 'icons')
 os.makedirs(out_dir, exist_ok=True)
 have = {os.path.splitext(n)[0] for n in os.listdir(out_dir)}
 

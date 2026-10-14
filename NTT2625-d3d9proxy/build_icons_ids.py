@@ -1,4 +1,4 @@
-r"""Builds HopeGuard\pus_ui\icons\<iconId>.pus from the itemicon_*.dxt textures inside the client's UI\ui.src.
+r"""Builds JstKO\pus_ui\icons\<iconId>.pus from the itemicon_*.dxt textures inside the client's UI\ui.src.
 Usage: python build_icons_ids.py <clientDir> [--tbl Item_Org_us.tbl.txt] [iconId ...]
   --ids : file with one icon id per line (export from the server DB: item_icon_id1 / item_icon_id2)
   --tbl : text dump of the client item table (tbl_dump output); every c6/c7 icon id in it is built
@@ -33,7 +33,7 @@ def fn(i):
     s = str(i)
     return 'itemicon_%s_%s_%s_%s.dxt' % (s[:-7], s[-7:-3], s[-3:-1], s[-1])
 
-dst_dir = os.path.join(GAME, 'HopeGuard', 'pus_ui', 'icons')
+dst_dir = os.path.join(GAME, 'JstKO', 'pus_ui', 'icons')
 os.makedirs(dst_dir, exist_ok=True)
 made = missing = skipped = 0
 for i in sorted(ids):

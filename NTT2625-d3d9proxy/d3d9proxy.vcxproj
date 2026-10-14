@@ -26,7 +26,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
-    <GameDir Condition="'$(GameDir)'==''">D:\ai\2625_Client</GameDir>
+    <GameDir Condition="'$(GameDir)'==''">D:\ai\JstKO Client</GameDir>
     <Deploy Condition="'$(Deploy)'==''">true</Deploy>
     <OutDir>$(ProjectDir)</OutDir>
     <IntDir>$(ProjectDir)obj\$(Configuration)\</IntDir>
@@ -111,7 +111,7 @@ exit /b 0</Command>
     <ClCompile Include="discord_rpc\src\discord_register_win.cpp"><AdditionalIncludeDirectories>discord_rpc\include;discord_rpc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><WarningLevel>TurnOffAllWarnings</WarningLevel></ClCompile>
     <ClCompile Include="quote_key_block.cpp" />
     <ClCompile Include="register_panel.cpp" />
-    <ClCompile Include="hopeguard_banner.cpp" />
+    <ClCompile Include="jstko_banner.cpp" />
     <ClCompile Include="solocape_icon.cpp" />
     <ClCompile Include="drop_button.cpp" />
     <ClCompile Include="clan_kasa.cpp" />

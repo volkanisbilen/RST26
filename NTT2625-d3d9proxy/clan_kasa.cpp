@@ -2,7 +2,7 @@
 // asks the server (hook 0xE9 / 0xB0) to open the clan warehouse in the native warehouse window.
 // The button follows the clan window: [[0x111463C] + 1392] is the window, +0xEA its visible flag and
 // +0xC8 its rect (4 floats, game-client coordinates). The position inside the window can be tuned
-// without a rebuild in HopeGuard\clan_kasa.ini ([button] x=, y=, w=, h= relative to the window's top left).
+// without a rebuild in JstKO\clan_kasa.ini ([button] x=, y=, w=, h= relative to the window's top left).
 #include <windows.h>
 #include <windowsx.h>
 #include <stdio.h>
@@ -23,7 +23,7 @@ namespace
     void LoadIni()
     {
         char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH); *(strrchr(p, '\\') + 1) = 0;
-        strcat_s(p, "HopeGuard\\clan_kasa.ini");
+        strcat_s(p, "JstKO\\clan_kasa.ini");
         g_x = GetPrivateProfileIntA("button", "x", g_x, p); g_y = GetPrivateProfileIntA("button", "y", g_y, p);
         g_w = GetPrivateProfileIntA("button", "w", g_w, p); g_h = GetPrivateProfileIntA("button", "h", g_h, p);
     }

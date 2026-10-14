@@ -1,11 +1,11 @@
 // Pack overrides: replace files inside the game's packs (Object / Item / fx / UI / Snd .src + .hdr, Path.ini [Dir])
 // without shipping a new multi-hundred-MB .src. A loose copy next to the pack is NOT used by the client (the pack wins),
 // so the bytes are swapped while the game reads them:
-//   HopeGuard\pack_override\<pack dir>\<name as in the .hdr>   e.g. HopeGuard\pack_override\fx\billboard\gng\empires_p_128_0000.dxt
+//   JstKO\pack_override\<pack dir>\<name as in the .hdr>   e.g. JstKO\pack_override\fx\billboard\gng\empires_p_128_0000.dxt
 // At start-up every such file is matched with its .hdr entry (offset, size); it must not be larger than the entry (the
 // game reads exactly the entry size; the rest is zero padded). KernelBase!ReadFile is hooked: a read from a pack .src
 // handle (recognised by its path, once per handle) gets the override bytes over the overlapping part.
-// First use (2026-10-09): the [Empires Emblem] item (931719000) shows the HopeGuard emblem (build_hg_emblem.py).
+// First use (2026-10-09): the [Empires Emblem] item (931719000) shows the JstKO emblem (build_hg_emblem.py).
 #include <windows.h>
 #include <stdio.h>
 #include <string>
@@ -58,7 +58,7 @@ namespace
 
     void LoadOverrides()
     {
-        std::string game = GameDir(), root = game + "HopeGuard\\pack_override";
+        std::string game = GameDir(), root = game + "JstKO\\pack_override";
         static const char* kPacks[] = { "object", "item", "fx", "ui", "snd" };
         for (const char* pk : kPacks)
         {

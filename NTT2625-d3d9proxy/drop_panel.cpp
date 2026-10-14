@@ -96,7 +96,7 @@ static void RequestSearch(const std::string& q)
 
 // ---------------------------------------------------------------- drop block list
 // Right click on a drop (here or in the compact list) = that item no longer drops for this character (solo kills;
-// the auto looter skips it in a party). At most 10. Kept per character in HopeGuard\dropblock\<name>.txt
+// the auto looter skips it in a party). At most 10. Kept per character in JstKO\dropblock\<name>.txt
 // ("item|icon|name" lines); the server keeps the list for the session only and asks for it at game start (E9 AE 09).
 static const size_t BLOCK_MAX = 10;
 static CRITICAL_SECTION g_blockLock;
@@ -108,7 +108,7 @@ static const UINT WM_DROP_REFRESH = WM_APP + 31;
 static std::string BlockFile()
 {
     char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH);
-    strcpy_s(strrchr(dir, '\\') + 1, 32, "HopeGuard\\dropblock");
+    strcpy_s(strrchr(dir, '\\') + 1, 32, "JstKO\\dropblock");
     CreateDirectoryA(dir, nullptr);
     std::string name;
     for (char c : g_blockChar) if (isalnum((unsigned char)c) || c == '_') name.push_back(c);
@@ -287,7 +287,7 @@ static void LoadSkin()
     for (const char* b : base) for (const char* k : { "n", "d", "o", "x" }) names.push_back(std::string(b) + "_" + k);
     for (auto& n : names)
     {
-        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\drop_ui\\%s.pus", dir, n.c_str());
+        char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\drop_ui\\%s.pus", dir, n.c_str());
         Sprite s; if (LoadPus(p, s)) { g_skin[n] = s; ok++; }
     }
     char b[64]; sprintf_s(b, "DROP: skin %d/%d", ok, (int)names.size()); Log(b);
@@ -639,7 +639,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 static DWORD WINAPI WindowThread(LPVOID)
 {
     GetModuleFileNameA(nullptr, g_iconDir, MAX_PATH);
-    strcpy_s(strrchr(g_iconDir, '\\') + 1, 48, "HopeGuard\\pus_ui\\icons");
+    strcpy_s(strrchr(g_iconDir, '\\') + 1, 48, "JstKO\\pus_ui\\icons");
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleW(nullptr); wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"NTT_DropPanel";

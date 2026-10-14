@@ -5,7 +5,7 @@
 //   view mode 3      : distance     [eng+0x1AC], kept in 2 .. 10 (20 / 30 in a few zones)
 //   [eng+0x1EC] != 0 (observer)     : up to 200 in both
 // That function is replaced by ZoomImpl below: the same rules with the upper limits multiplied by the Camera Range
-// (100 .. 300 %). The value lives in Option.ini [HopeGuard] CameraRange.
+// (100 .. 300 %). The value lives in Option.ini [JstKO] CameraRange.
 //
 // (100 .. 300 %, default 200).
 // The slider is a small GDI layered window (same technique as login_remember.cpp) drawn with the native slider's
@@ -122,14 +122,14 @@ namespace
     void LoadRange()
     {
         char p[MAX_PATH]; IniPath(p);
-        int v = (int)GetPrivateProfileIntA("HopeGuard", "CameraRange", RANGE_DEFAULT, p);
+        int v = (int)GetPrivateProfileIntA("JstKO", "CameraRange", RANGE_DEFAULT, p);
         InterlockedExchange(&g_range, v < RANGE_MIN ? RANGE_MIN : v > RANGE_MAX ? RANGE_MAX : v);
     }
     void SaveRange()
     {
         char p[MAX_PATH], v[16]; IniPath(p);
         sprintf_s(v, "%ld", g_range);
-        WritePrivateProfileStringA("HopeGuard", "CameraRange", v, p);
+        WritePrivateProfileStringA("JstKO", "CameraRange", v, p);
     }
 
     // ---------------------------------------------------------------- options window (read only, any thread)

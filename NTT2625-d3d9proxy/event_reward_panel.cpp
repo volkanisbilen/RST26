@@ -85,10 +85,10 @@ static void LoadSkin()
     int ok = 0;
     for (const char* n : names)
     {
-        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\evreward_ui\\%s.pus", g_dir, n);
+        char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\evreward_ui\\%s.pus", g_dir, n);
         Sprite s; if (LoadPus(p, s)) { g_skin[n] = s; ok++; }
     }
-    char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\ev_ui\\items.txt", g_dir);
+    char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\ev_ui\\items.txt", g_dir);
     FILE* f = nullptr;
     if (fopen_s(&f, p, "r") == 0 && f)
     {
@@ -111,7 +111,7 @@ static Sprite* Icon(UINT32 item)
     UINT32 icon = it->second.first;
     auto ic = g_icons.find(icon);
     if (ic != g_icons.end()) return ic->second.dc ? &ic->second : nullptr;
-    char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\ev_ui\\icons\\%u.pus", g_dir, icon);
+    char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\ev_ui\\icons\\%u.pus", g_dir, icon);
     Sprite s; if (!LoadPus(p, s)) s = Sprite();
     g_icons[icon] = s;
     return s.dc ? &g_icons[icon] : nullptr;

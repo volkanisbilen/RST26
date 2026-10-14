@@ -1,6 +1,6 @@
 // Item icons straight from the client's UI\ui.src: itemicon_<A>_<BBBB>_<CC>_<D>.dxt for icon id ABBBBCCD.
-// Entries may be HopeGuard-encrypted (uif_crypt.py cipher) and the NTF texture itself is RC4-scrambled (ver 7),
-// exactly as build_cr_assets.py reads it. Result: 45x45 premultiplied BGRA, the same as a HopeGuard\pus_ui\icons\<id>.pus.
+// Entries may be JstKO-encrypted (uif_crypt.py cipher) and the NTF texture itself is RC4-scrambled (ver 7),
+// exactly as build_cr_assets.py reads it. Result: 45x45 premultiplied BGRA, the same as a JstKO\pus_ui\icons\<id>.pus.
 // Used by the Collection Race panel so reward icons need no pre-generated files.
 #include <windows.h>
 #include <stdio.h>
@@ -26,7 +26,7 @@ namespace
         x ^= x >> 16; x *= 0x7FEB352D; x ^= x >> 15; x *= 0x846CA68B; x ^= x >> 16; return x;
     }
 
-    // HopeGuard pack entry: [payload ^ keystream][u32 nonce][u32 tag]; plain entries pass through
+    // JstKO pack entry: [payload ^ keystream][u32 nonce][u32 tag]; plain entries pass through
     void HgDecrypt(std::vector<BYTE>& e)
     {
         size_t size = e.size();

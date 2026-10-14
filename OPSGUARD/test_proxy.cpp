@@ -1,4 +1,4 @@
-// Offline test stand-in for the d3d9 proxy: built as d3d9.dll, imports HopeGuard.dll like the patched
+// Offline test stand-in for the d3d9 proxy: built as d3d9.dll, imports JstKO.dll like the patched
 // proxy does, and reads files the same way the panels do (fopen/fread).
 #include <windows.h>
 #include <stdio.h>

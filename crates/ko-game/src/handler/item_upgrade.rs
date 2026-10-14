@@ -886,7 +886,7 @@ async fn item_upgrade(
     }
 
     if !settings_found || gen_rate == 0 {
-        send_upgrade_rate(session, 0, 0).await?; // HopeGuard anvil window: no recipe -> "-"
+        send_upgrade_rate(session, 0, 0).await?; // JstKO anvil window: no recipe -> "-"
         debug!(
             "[{}] ItemUpgrade fail: type={} reason=settings not found origin={} new_item={} scroll={} scroll_type={:?} item_type={} grade={} recipe_grade={} matched_req={}",
             session.addr(),
@@ -934,7 +934,7 @@ async fn item_upgrade(
     // C++ myrand(0, 10000) is inclusive [0, 10000] → use 10001 for exclusive upper
     let rand_val = rand_range(0, 10001);
     let effective_rate = if has_logos { 3300 } else { gen_rate };
-    // HopeGuard anvil window: show the success rate and the coins before / while upgrading
+    // JstKO anvil window: show the success rate and the coins before / while upgrading
     send_upgrade_rate(session, effective_rate, req_coins).await?;
 
     let mut result_items = items.clone();
@@ -2331,7 +2331,7 @@ enum BeefEffectType {
     White = 3,
 }
 
-/// Chaotic Generator window options (HopeGuard UI: count, Auto Bank, Sell if Not Unique).
+/// Chaotic Generator window options (JstKO UI: count, Auto Bank, Sell if Not Unique).
 #[derive(Clone, Copy)]
 struct ChaoticOpts {
     count: u8,

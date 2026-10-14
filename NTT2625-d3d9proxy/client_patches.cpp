@@ -334,13 +334,13 @@ namespace
     // than 48.0 to the CAMERA (0x9231C7: movss xmm0,[0x1043CB8]; comiss xmm0,dist). With the camera zoomed out
     // (Camera Range) even players next to us are further than that, so their names disappear. The instruction is
     // pointed at our own limit (the 48.0 constant itself is shared with other code and stays).
-    // Option.ini [HopeGuard] NameRange = 48 .. 300 (default 120).
+    // Option.ini [JstKO] NameRange = 48 .. 300 (default 120).
     float g_nameRange = 120.0f;
     void InstallNameRange()
     {
         char ini[MAX_PATH]; GetModuleFileNameA(nullptr, ini, MAX_PATH);
         if (char* s = strrchr(ini, '\\')) strcpy_s(s + 1, MAX_PATH - (s + 1 - ini), "Option.ini");
-        int v = (int)GetPrivateProfileIntA("HopeGuard", "NameRange", 120, ini);
+        int v = (int)GetPrivateProfileIntA("JstKO", "NameRange", 120, ini);
         g_nameRange = (float)(v < 48 ? 48 : v > 300 ? 300 : v);
 
         BYTE* at = (BYTE*)0x009231C7;

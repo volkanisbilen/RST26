@@ -652,7 +652,7 @@ pub(crate) async fn handle_job_change(
     Ok(())
 }
 
-/// Failure of a job change: the native result code, or the HopeGuard panel's (hook 0xF7, op 2).
+/// Failure of a job change: the native result code, or the JstKO panel's (hook 0xF7, op 2).
 async fn job_change_fail(
     session: &mut ClientSession,
     hook: bool,
@@ -675,7 +675,7 @@ async fn send_job_change_hook(session: &mut ClientSession, result: u8) -> anyhow
     session.send_packet(&pkt).await
 }
 
-/// Scroll item for the HopeGuard panel's type (0 = 700112000, 1 = 700113000).
+/// Scroll item for the JstKO panel's type (0 = 700112000, 1 = 700113000).
 pub(crate) fn job_change_scroll(change_type: u8) -> u32 {
     if change_type == 0 {
         ITEM_JOB_CHANGE

@@ -1,4 +1,4 @@
-// Offline test for HopeGuard.dll: this exe contains a copy of the game's pack read site (same bytes),
+// Offline test for JstKO.dll: this exe contains a copy of the game's pack read site (same bytes),
 // loads the DLL, then reads the entries of a fake pack through it and compares with the plain files.
 // Usage: test_host.exe <src file> <manifest: "start size plainfile" per line>
 #include <windows.h>
@@ -68,7 +68,7 @@ int main(int argc, char** argv)
     fseek(f, 0, SEEK_END); g_src.resize(ftell(f)); fseek(f, 0, SEEK_SET);
     fread(g_src.data(), 1, g_src.size(), f); fclose(f);
 
-    if (!LoadLibraryA("HopeGuard.dll")) { printf("LoadLibrary failed %lu\n", GetLastError()); return 2; }
+    if (!LoadLibraryA("JstKO.dll")) { printf("LoadLibrary failed %lu\n", GetLastError()); return 2; }
 
     uint8_t packObj[0x28] = {};
     MemFile mf;

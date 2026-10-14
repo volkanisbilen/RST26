@@ -3,7 +3,7 @@ frame + 7 tab pages composed from the uif's own images, button state sprites (Re
 strings / edits / buttons with their uif rects, fonts and colours. Labels of slots our server uses differently are
 renamed here (RELABEL); the role list of the home page becomes 28 quick-action rows.
 Textures: cyber's own (CyberACS\\UI, then the cyber client's UI folder).
-Output: gm_ui\\*.pus (client: HopeGuard\\gm_ui) + gm_layout.h
+Output: gm_ui\\*.pus (client: JstKO\\gm_ui) + gm_layout.h
 Usage: python build_gm_assets.py [cyberClientDir]"""
 import os, sys, struct, hashlib
 from PIL import Image
@@ -129,7 +129,7 @@ STR_TEXT = {    # (page, original text) -> new text ('' hides)
     ('start_bots', '1.Type For Mining Bots'): '1. Mining   2. Fishing   3. Farm', ('start_bots', '2.Type For Fishing Bots'): '4. PK Karus   5. PK Human',
     ('start_bots', '4.Type For Stanting Bots'): '6. Fill the open event (Count)', ('start_bots', '5.Type For Stining Bots'): '7. Merchant bot (Count = index)',
     ('start_bots', '6.Type For Farmer Bots'): '8. Remove selected bot   9. Remove all', ('start_bots', 'Merchant Bots for auto starter GM'): 'Leader / Genie / Class:',
-    ('start_bots', ' In Merchant item.'): 'HopeGuard tab, Bot Options', ('start_bots', 'In Merchant item.'): 'HopeGuard tab, Bot Options', ('start_bots', 'Bot Type'): 'Bot Type', ('start_bots', 'Min Level Bot'): 'Min Level',
+    ('start_bots', ' In Merchant item.'): 'JstKO tab, Bot Options', ('start_bots', 'In Merchant item.'): 'JstKO tab, Bot Options', ('start_bots', 'Bot Type'): 'Bot Type', ('start_bots', 'Min Level Bot'): 'Min Level',
 }
 # second-column minute captions of the special event rows: Type / ID / (none)
 SPECIAL_EDIT_HINT = {'edit_minuteadream': 'type', 'edit_minutecz': 'id'}
@@ -230,7 +230,7 @@ for b in buttons:
     if b['page'] == 'user_editor' and b['id'] == '-': b['id'] = 'scroll_up' if b['rect'][1] < 250 else 'scroll_down'
 buttons = [b for b in buttons if not (b['page'] == 'gm_commands' and b['id'] == 'btn_offangel')]   # same spot as Open Angel
 
-# ------------------------------------------------------------------ 8th tab "HopeGuard": our tools the cyber window has no
+# ------------------------------------------------------------------ 8th tab "JstKO": our tools the cyber window has no
 # place for, laid out with the same cyber pieces as the Send Bot page (page plate, list box, title plate, row plate, edit box,
 # Send Bot button)
 def img(tex, uv, rect): return {'type': 'IMAGE', 'tex': 'ui\\' + tex, 'uv': uv, 'rect': list(rect), 'children': []}
@@ -256,7 +256,7 @@ def xbtn(id_, x0, x1, y, label):
     st = {k: dict(v, rect=rect) for k, v in BOTBTN['states'].items()}
     lab = {'text': label, 'rect': [x0 + 4, y + 4, x1 - 4, y + 22], 'color': 0xFFFFFFFF, 'fontH': 10, 'style': 0x4900000}
     buttons.append({'page': 'extra', 'id': id_, 'rect': rect, 'states': st, 'label': lab})
-xhead((140, 141, 780, 170), 'HopeGuard tools  -  player commands use the player selected in User Editor')
+xhead((140, 141, 780, 170), 'JstKO tools  -  player commands use the player selected in User Editor')
 L0, L1, R0, R1 = 68, 462, 470, 862
 xbox((L0, 180, L1, 350), 'Selected Player')
 y = 225; xplate(80, y, 'Amount'); xedit('x_amount', 200, 300, y, 'amount'); xbtn('x_info', 305, 455, y, 'Refresh Info')
@@ -280,12 +280,12 @@ for n, (id_, lab) in enumerate([('x_r_social', 'Social'), ('x_r_bug', 'Upg. Bug'
 y = 508
 for n, (id_, hint) in enumerate([('x_bleader', 'farm leader 0/1'), ('x_bgenie', 'farm genie 0/1'), ('x_bclass', 'bot class (0 = any)')]):
     xedit(id_, 482 + n * 124, 600 + n * 124, y, hint)
-# tab bar: 8 tabs (cyber order + HopeGuard) over the same strip
+# tab bar: 8 tabs (cyber order + JstKO) over the same strip
 tabs = ['btn_home', 'btn_table', 'btn_events', 'btn_commands', 'btn_lottery', 'btn_bot', 'btn_user_editor']
 tb = {b['id']: b for b in buttons if b['page'] == 'frame' and b['id'] in tabs}
 src = tb['btn_user_editor']
 nb = {'page': 'frame', 'id': 'btn_extra', 'rect': list(src['rect']), 'states': {k: dict(v) for k, v in src['states'].items()},
-      'label': dict(src['label'], text='HopeGuard')}
+      'label': dict(src['label'], text='JstKO')}
 buttons.append(nb); tb['btn_extra'] = nb
 TW = 101
 for n, id_ in enumerate(tabs + ['btn_extra']):

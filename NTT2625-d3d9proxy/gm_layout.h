@@ -282,7 +282,7 @@ static const GmuBtn GMU_BTNS[] = {
     { 7, "x_r_clanp", 630, 472, 700, 500, { "b141", "b142", "b143", "b144" }, L"Clan Notice", 634, 477, 696, 495, 0xFFFFFFFF, 10, 0x04900000 },
     { 7, "x_r_item", 704, 472, 774, 500, { "b141", "b142", "b143", "b144" }, L"Reload Item", 708, 477, 770, 495, 0xFFFFFFFF, 10, 0x04900000 },
     { 7, "x_r_zoneon", 778, 472, 848, 500, { "b141", "b142", "b143", "b144" }, L"Zone On", 782, 477, 844, 495, 0xFFFFFFFF, 10, 0x04900000 },
-    { -1, "btn_extra", 769, 82, 870, 129, { "b000", "b001", "b002", "b003" }, L"HopeGuard", 775, 100, 864, 119, 0xFFFFFFFF, 10, 0x04900000 },
+    { -1, "btn_extra", 769, 82, 870, 129, { "b000", "b001", "b002", "b003" }, L"JstKO", 775, 100, 864, 119, 0xFFFFFFFF, 10, 0x04900000 },
 };
 struct GmuStr { int page; const char* id; int l, t, r, b; const wchar_t* text; unsigned color; int fontH; unsigned style; };
 static const GmuStr GMU_STRS[] = {
@@ -439,7 +439,7 @@ static const GmuStr GMU_STRS[] = {
     { 6, "", 526, 335, 678, 351, L"7. Merchant bot (Count = index)", 0xFFFFFFFF, 10, 0x14900000 },
     { 6, "", 526, 357, 678, 373, L"8. Remove selected bot   9. Remove all", 0xFFFFFFFF, 10, 0x14900000 },
     { 6, "", 496, 381, 720, 397, L"Leader / Genie / Class:", 0xFFFFFFFF, 10, 0x14900000 },
-    { 6, "", 498, 396, 722, 412, L"HopeGuard tab, Bot Options", 0xFFFFFFFF, 10, 0x14900000 },
+    { 6, "", 498, 396, 722, 412, L"JstKO tab, Bot Options", 0xFFFFFFFF, 10, 0x14900000 },
     { 5, "", 90, 203, 323, 218, L"Type 1 -> Notice (/notice)", 0xFFFFFFFF, 9, 0x00100000 },
     { 5, "", 356, 203, 562, 218, L"Type 2 -> PM to every player", 0xFFFFFFFF, 9, 0x00100000 },
     { 5, "", 589, 203, 846, 218, L"Type 3 -> Notice to all servers", 0xFFFFFFFF, 9, 0x00100000 },
@@ -449,7 +449,7 @@ static const GmuStr GMU_STRS[] = {
     { 5, "", 255, 148, 634, 163, L"Knight Game Master Specials Command Menu", 0xFFFFFFFF, 10, 0x14900000 },
     { 5, "", 355, 464, 542, 479, L"Teleports all players from,", 0xFFFFFFFF, 9, 0x14900000 },
     { 5, "", 355, 486, 542, 501, L"ZoneID 1 > to ZoneID 2", 0xFFFFFFFF, 9, 0x14900000 },
-    { 7, "", 148, 146, 772, 165, L"HopeGuard tools  -  player commands use the player selected in User Editor", 0xFFFFFFFF, 11, 0x04900000 },
+    { 7, "", 148, 146, 772, 165, L"JstKO tools  -  player commands use the player selected in User Editor", 0xFFFFFFFF, 11, 0x04900000 },
     { 7, "", 179, 192, 351, 209, L"Selected Player", 0xFFFFFFFF, 10, 0x04900000 },
     { 7, "", 82, 230, 194, 246, L"Amount", 0xFFFFFFFF, 10, 0x04900000 },
     { 7, "", 82, 306, 194, 322, L"Item ID", 0xFFFFFFFF, 10, 0x04900000 },

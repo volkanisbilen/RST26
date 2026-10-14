@@ -41,7 +41,7 @@ namespace
     int g_boxHover = 0, g_boxPressed = 0;              // 1 remove, 2 cancel
     std::deque<std::vector<BYTE>> g_sendQ;
 
-    bool LoadPus(const char* name, Sprite& s, const char* dir = "HopeGuard\\solocape_ui")
+    bool LoadPus(const char* name, Sprite& s, const char* dir = "JstKO\\solocape_ui")
     {
         char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH); sprintf_s(strrchr(p, '\\') + 1, 96, "%s\\%s.pus", dir, name);
         FILE* f = nullptr;
@@ -339,8 +339,8 @@ namespace
         BITMAPINFO tbi = {}; tbi.bmiHeader = { sizeof(BITMAPINFOHEADER), TIP_W, -TIP_MAXH, 1, 32, BI_RGB };
         g_tipDC = CreateCompatibleDC(nullptr); SelectObject(g_tipDC, CreateDIBSection(g_tipDC, &tbi, DIB_RGB_COLORS, &g_tipBits, nullptr, 0));
         LoadPus("icon_n", g_n); LoadPus("icon_o", g_o);
-        LoadPus("bg", g_boxBg, "HopeGuard\\reconnect_ui"); LoadPus("btn_n", g_btnN, "HopeGuard\\reconnect_ui");
-        LoadPus("btn_o", g_btnO, "HopeGuard\\reconnect_ui"); LoadPus("btn_d", g_btnD, "HopeGuard\\reconnect_ui");
+        LoadPus("bg", g_boxBg, "JstKO\\reconnect_ui"); LoadPus("btn_n", g_btnN, "JstKO\\reconnect_ui");
+        LoadPus("btn_o", g_btnO, "JstKO\\reconnect_ui"); LoadPus("btn_d", g_btnD, "JstKO\\reconnect_ui");
         g_hBox = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, bc.lpszClassName, L"Remove Solo Cape",
             WS_POPUP, 0, 0, RC_W, RC_H, nullptr, nullptr, hi, nullptr);
         BITMAPINFO bbi = {}; bbi.bmiHeader = { sizeof(BITMAPINFOHEADER), RC_W, -RC_H, 1, 32, BI_RGB };

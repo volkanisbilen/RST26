@@ -1,4 +1,4 @@
-//! HopeGuard Job Change panel (hook `WIZ_EXT_HOOK` 0xE9 / sub `JOBCHANGE` 0xF7).
+//! JstKO Job Change panel (hook `WIZ_EXT_HOOK` 0xE9 / sub `JOBCHANGE` 0xF7).
 //!
 //! - C2S `0 [u8 type]`: the player right-clicked a Job Change scroll (type 0 = 700112000, 1 = 700113000)
 //! - S2C `0 [u8 type][u8 job]`: open the panel; `job` = the player's class group

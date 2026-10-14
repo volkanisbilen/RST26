@@ -113,12 +113,12 @@ fn valid_options(data: &[u8]) -> bool {
     count <= 32 && data.len() == offset + 44 && data[offset..offset + 2] == [42, 0]
 }
 
-/// The HopeGuard client saves the game's own options padded to 180 bytes followed by its own 220 byte block
+/// The JstKO client saves the game's own options padded to 180 bytes followed by its own 220 byte block
 /// (genie leader / go range / party code / mob list): 400 bytes in total (`DLL genie_hg.cpp`).
 const HG_NATIVE_LEN: usize = 180;
 const HG_BLOCK_LEN: usize = 220;
 const HG_BLOB_LEN: usize = HG_NATIVE_LEN + HG_BLOCK_LEN;
-/// Hook sub-opcode of the genie channel (`E9 ED`), op 4 carries the HopeGuard block to the client.
+/// Hook sub-opcode of the genie channel (`E9 ED`), op 4 carries the JstKO block to the client.
 const EXT_SUB_HGGENIE: u8 = 0xED;
 
 /// Length of the game's own option structure at the start of `data` (None when it is not one).
@@ -131,7 +131,7 @@ fn native_len(data: &[u8]) -> Option<usize> {
     (count <= 32 && data.len() >= offset + 44 && data[offset..offset + 2] == [42, 0]).then_some(offset + 44)
 }
 
-/// A saved blob: the game's own options alone, or the 400 byte HopeGuard blob.
+/// A saved blob: the game's own options alone, or the 400 byte JstKO blob.
 fn valid_payload(data: &[u8]) -> bool {
     valid_options(data) || (data.len() == HG_BLOB_LEN && native_len(&data[..HG_NATIVE_LEN]).is_some())
 }

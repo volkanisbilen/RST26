@@ -173,7 +173,7 @@ static void LoadSkin()
     if (g_skinLoaded) return;
     g_skinLoaded = true;
     char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH);
-    strcpy_s(strrchr(dir, '\\') + 1, 48, "HopeGuard\\cr_ui");
+    strcpy_s(strrchr(dir, '\\') + 1, 48, "JstKO\\cr_ui");
     int ok = 0;
     for (const CrsSprite& s : CRS_SPRITES)
     {
@@ -593,7 +593,7 @@ static LRESULT CALLBACK WndProcC(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 static DWORD WINAPI WindowThreadC(LPVOID)
 {
     GetModuleFileNameA(nullptr, g_uiDirC, MAX_PATH);
-    strcpy_s(strrchr(g_uiDirC, '\\') + 1, 48, "HopeGuard\\pus_ui");   // reuse the PUS icon set
+    strcpy_s(strrchr(g_uiDirC, '\\') + 1, 48, "JstKO\\pus_ui");   // reuse the PUS icon set
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.lpfnWndProc = WndProcC;

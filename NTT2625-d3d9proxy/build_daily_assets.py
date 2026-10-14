@@ -1,5 +1,5 @@
 """Daily Quest panel skin (daily_panel.cpp). Procedural dark/bronze boxes only, so it needs no game atlas files.
-Output: daily_ui\\*.pus + daily_layout.h   (client folder: HopeGuard\\daily_ui)
+Output: daily_ui\\*.pus + daily_layout.h   (client folder: JstKO\\daily_ui)
 Usage: python build_daily_assets.py
 """
 import os

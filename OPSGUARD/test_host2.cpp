@@ -1,4 +1,4 @@
-// Offline test for the proxy asset hooks: loads <dll> (a d3d9.dll that imports HopeGuard.dll) and, when
+// Offline test for the proxy asset hooks: loads <dll> (a d3d9.dll that imports JstKO.dll) and, when
 // a list is given ("assetFile|plainFile" per line), reads each asset through it and compares.
 // Usage: test_host2.exe <full path to d3d9.dll> [list]
 #include <windows.h>
@@ -11,8 +11,8 @@ int main(int argc, char** argv)
     if (argc < 2) return 2;
     HMODULE m = LoadLibraryA(argv[1]);
     if (!m) { printf("LoadLibrary failed %lu\n", GetLastError()); return 2; }
-    printf("loaded %s, OPSGUARD %s\n", argv[1], GetModuleHandleA("HopeGuard.dll") ? "present" : "MISSING");
-    if (argc < 3) return GetModuleHandleA("HopeGuard.dll") ? 0 : 1;
+    printf("loaded %s, OPSGUARD %s\n", argv[1], GetModuleHandleA("JstKO.dll") ? "present" : "MISSING");
+    if (argc < 3) return GetModuleHandleA("JstKO.dll") ? 0 : 1;
 
     typedef int (*ReadFn)(const char*, unsigned char*, int);
     ReadFn rd = (ReadFn)GetProcAddress(m, "ReadLikePanel");

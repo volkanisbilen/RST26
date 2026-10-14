@@ -12,7 +12,7 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_TEX = r'D:\Jstko_client_editor_icin_gerekli_olan_dosyalar\ui\re_main_ui_02.dxt'
-CLIENT_UI = r'D:\ai\2625_Client\UI'
+CLIENT_UI = r'D:\ai\JstKO Client\UI'
 OUT_TEX = os.path.join(HERE, 'uif_ready', 're_tbar_ui_02.dxt')
 
 icon = Image.open(sys.argv[1]).convert('RGBA')

@@ -1,5 +1,5 @@
-"""HopeGuard ACS table hash of a client folder (same as launch_guard.cpp HashTables): FNV-1a over Data\*.tbl,
-sorted lower-case names + contents. Put the printed value into GameServer.ini [HOPEGUARD] TBL_HASH (comma separated)."""
+"""JstKO ACS table hash of a client folder (same as launch_guard.cpp HashTables): FNV-1a over Data\*.tbl,
+sorted lower-case names + contents. Put the printed value into GameServer.ini [JSTKO] TBL_HASH (comma separated)."""
 import os, sys
 def tbl_hash(game):
     d = os.path.join(game, 'Data'); h = 0x811C9DC5

@@ -175,7 +175,7 @@ pub(crate) fn daily_quest_tip_id(quest_id: i16) -> u16 {
 /// Mirror selected daily quests into the same in-memory quest map used by
 /// Patrick/Lua quests. Quest Tips is populated from this map; merely appending
 /// IDs to an outgoing packet is not sufficient for the v2615 client flow.
-/// Daily quests are shown by the HopeGuard panel and the on-screen kill counter only: they are NOT put
+/// Daily quests are shown by the JstKO panel and the on-screen kill counter only: they are NOT put
 /// into the game's right-side Quest Tips list or its four native slots.
 const DAILY_IN_NATIVE_TIPS: bool = false;
 

@@ -31,6 +31,6 @@ data = bytearray(bytes(data).replace(old, new_tex))
 os.makedirs(os.path.join(HERE, 'uif_ready'), exist_ok=True)
 out = os.path.join(HERE, 'uif_ready', 're_war_borderdefence_enter.uif')
 open(out, 'wb').write(bytes(data))
-r = subprocess.run([sys.executable, os.path.join(HERE, 'uif_crypt.py'), 'pack', r'D:\ai\2625_Client\UI', 're_war_borderdefence_enter.uif', out],
+r = subprocess.run([sys.executable, os.path.join(HERE, 'uif_crypt.py'), 'pack', r'D:\ai\JstKO Client\UI', 're_war_borderdefence_enter.uif', out],
                    capture_output=True, text=True)
 print(r.stdout.strip()[-160:], r.stderr.strip()[-160:])

@@ -1,5 +1,5 @@
 """Power Up Store skin from the supplied re_powerupstore.uif (uif_in\\).
-Output: pus_ui\\bg.pus + u_*.pus button sprites + pus_layout.h   (client folder: HopeGuard\\pus_ui)
+Output: pus_ui\\bg.pus + u_*.pus button sprites + pus_layout.h   (client folder: JstKO\\pus_ui)
 Usage: python build_pus_uif.py
 """
 import os

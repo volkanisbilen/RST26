@@ -129,7 +129,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     session.send_packet(&response).await?;
 
-    // HopeGuard client: the level of the target, drawn on its HP bar together with the HP numbers
+    // JstKO client: the level of the target, drawn on its HP bar together with the HP numbers
     let mut info = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
     info.write_u8(EXT_SUB_TARGET_LEVEL);
     info.write_u32(target_id);

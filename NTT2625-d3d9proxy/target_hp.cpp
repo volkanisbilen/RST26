@@ -1,7 +1,7 @@
 // Level and HP numbers on the target's HP bar. The HP comes from the game's own WIZ_TARGET_HP answers
 // (0x22: u32 id, u8 echo, u32 max, u32 current), the level from the server's hook packet
 // 0xE9 / 0xB6 (u32 id, u16 level). The text sits in a click-through layered window centred on the
-// target bar (top centre of the game window). Position tuning without a rebuild: HopeGuard\target_hp.ini
+// target bar (top centre of the game window). Position tuning without a rebuild: JstKO\target_hp.ini
 // ([text] x=, y=, w=, h=; x/y = offset of the text's centre from the window's top centre / top edge).
 #include <windows.h>
 #include <stdio.h>
@@ -24,7 +24,7 @@ namespace
     void LoadIni()
     {
         char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH); *(strrchr(p, '\\') + 1) = 0;
-        strcat_s(p, "HopeGuard\\target_hp.ini");
+        strcat_s(p, "JstKO\\target_hp.ini");
         g_x = GetPrivateProfileIntA("text", "x", g_x, p); g_y = GetPrivateProfileIntA("text", "y", g_y, p);
         g_w = GetPrivateProfileIntA("text", "w", g_w, p); g_h = GetPrivateProfileIntA("text", "h", g_h, p);
     }

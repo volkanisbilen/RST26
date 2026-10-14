@@ -1,7 +1,7 @@
 //! Akara's Slave Priest (hook `WIZ_EXT_HOOK` 0xE9 / sub `SLAVEPRIEST` 0xEC).
 //!
 //! The Slave Priest scroll (item 751740000, skill 495146) gives its owner a long buff
-//! ([`SP_BUFF_TYPE`]). While it runs, the HopeGuard mini window controls a "priest" that looks after
+//! ([`SP_BUFF_TYPE`]). While it runs, the JstKO mini window controls a "priest" that looks after
 //! the owner and the party members within 25 m:
 //! heal below a chosen HP percentage, Superioris / Undying HP buff, AC buff, cure, resurrect.
 //!

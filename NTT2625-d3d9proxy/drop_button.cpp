@@ -46,7 +46,7 @@ namespace
     std::string GameDir() { char p[MAX_PATH]; GetModuleFileNameA(nullptr, p, MAX_PATH); *(strrchr(p, '\\') + 1) = 0; return p; }
     bool LoadSkin(const char* name, Sprite& s)
     {
-        std::string p = GameDir() + "HopeGuard\\dropbtn_ui\\" + name + ".pus";
+        std::string p = GameDir() + "JstKO\\dropbtn_ui\\" + name + ".pus";
         if (LoadPusPath(p.c_str(), s)) return true;
         char b[MAX_PATH + 32]; sprintf_s(b, "DROPBTN: missing %s", p.c_str()); Log(b);
         return false;
@@ -88,7 +88,7 @@ namespace
         auto it = g_icons.find(icon);
         if (it != g_icons.end()) return it->second;
         Sprite s;
-        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\pus_ui\\icons\\%u.pus", GameDir().c_str(), icon);
+        char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\pus_ui\\icons\\%u.pus", GameDir().c_str(), icon);
         LoadPusPath(p, s);
         return g_icons[icon] = s;
     }
@@ -365,7 +365,7 @@ namespace
         g_listDC = CreateCompatibleDC(nullptr); SelectObject(g_listDC, CreateDIBSection(g_listDC, &lbi, DIB_RGB_COLORS, &g_listBits, nullptr, 0));
         LoadSkin("chest_n", g_chestN); LoadSkin("chest_o", g_chestO);
         LoadSkin("mini_bg", g_bg); LoadSkin("close_n", g_closeN); LoadSkin("close_o", g_closeO); LoadSkin("close_d", g_closeD);
-        LoadPusPath((GameDir() + "HopeGuard\\pus_ui\\noimage.pus").c_str(), g_noImage);
+        LoadPusPath((GameDir() + "JstKO\\pus_ui\\noimage.pus").c_str(), g_noImage);
         SetTimer(g_hBtn, 1, 150, nullptr);
         MSG m;
         while (GetMessageW(&m, nullptr, 0, 0)) { TranslateMessage(&m); DispatchMessageW(&m); }
