@@ -10,6 +10,8 @@
 #include <map>
 #include <deque>
 #include <algorithm>
+#include <ctime>
+#include <shellapi.h>
 
 void Log(const char* msg);
 void Proxy_RequestFlush();
@@ -115,24 +117,42 @@ struct Reader
     }
 };
 
-// --- Window: skinned from re_power_up_store.uif (sprites in <game>\pus_ui, layout in pus_layout.h) ---
+// --- Window: skinned from re_powerupstore.uif (sprites in <game>\HopeGuard\pus_ui, layout in pus_layout.h,
+//     both built by build_pus_uif.py) ---------------------------------------------------------------------
 #include "pus_layout.h"
 #pragma comment(lib, "msimg32.lib")
 
-static const int ITEMS_PER_PAGE = 12, TAB_COUNT = 6, MAX_QTY = 99;
+static const int PER_PAGE = 16, REFUND_PER_PAGE = 18, TAB_COUNT = 5, CART_MAX = 7, MAX_QTY = 99;
 static const UINT WM_PUS_REFRESH = WM_APP + 1;
 static const UINT WM_PUS_TOGGLE = WM_APP + 2;
 
+// one product card (shop item or refundable purchase)
+struct SCard
+{
+    UINT32 pusId = 0, itemId = 0, price = 0, qty = 1, icon = 0;
+    UINT64 serial = 0;          // refund entries
+    BYTE ptype = 0;             // 0 = KC, 1 = TL
+    std::string name;
+    UINT32 expiry = 0;
+};
+struct SRefund { UINT64 serial; UINT32 itemId, price, expiry; BYTE ptype; UINT16 count; };
+
 static CRITICAL_SECTION g_dataLock;
-static std::vector<SPusItem> g_items, g_filtered;
+static std::vector<SPusItem> g_items;
+static std::vector<SCard> g_cards;              // what the grid shows (filtered / refund list)
 static std::vector<SPusCategory> g_cats;
+static std::vector<SCard> g_cart;
+static std::vector<SRefund> g_refunds;
 static UINT32 g_kc = 0, g_tl = 0;
 void Pus_GetBalances(UINT32* kc, UINT32* tl) { *kc = g_kc; *tl = g_tl; }
-static int g_activeCat = 0, g_page = 0, g_selected = -1;
+static int g_activeCat = 0, g_page = 0;
+static bool g_refundView = false;
 static bool g_listRequested = false;
-static std::string g_status, g_search;
-static bool g_searchFocus = false;
-static int g_confirmIdx = -1, g_qty = 1;          // confirm dialog: index into g_filtered
+static std::string g_status, g_search, g_esn, g_gift;
+static bool g_basketConfirm = false;
+enum Focus { F_NONE, F_SEARCH, F_ESN, F_GIFT };
+static int g_focus = F_NONE;
+static int g_confirmIdx = -1, g_qty = 1;        // confirm dialog: index into g_cards
 
 static HWND g_hWnd = nullptr;
 static HDC g_memDC = nullptr;
@@ -201,6 +221,13 @@ static void Blit(Sprite* s, int x, int y, int w = -1, int h = -1)
     AlphaBlend(g_memDC, x, y, w < 0 ? s->w : w, h < 0 ? s->h : h, s->dc, 0, 0, s->w, s->h, bf);
 }
 
+// an item icon is square (45x45 art): fitted into the box of the UIF, centered
+static void BlitIcon(UINT32 id, PusRect r)
+{
+    int side = min(r.r - r.l, r.b - r.t);
+    Blit(Icon(id), r.l + (r.r - r.l - side) / 2, r.t + (r.b - r.t - side) / 2, side, side);
+}
+
 // GDI text ignores the alpha channel of a 32bpp DIB (it would punch holes in the
 // layered window), so text is rendered white-on-black into a scratch DIB and its
 // coverage is used as alpha when blending the colour into the frame buffer.
@@ -220,7 +247,7 @@ static void Text(const std::string& s, PusRect r, COLORREF color, int pt, UINT f
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(255, 255, 255));
     RECT rc = { 0, 0, w, h };
-    DrawTextA(dc, s.c_str(), (int)s.size(), &rc, fmt | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    DrawTextA(dc, s.c_str(), (int)s.size(), &rc, (fmt & DT_WORDBREAK) ? (fmt | DT_NOPREFIX) : (fmt | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS));
     GdiFlush();
     const BYTE cr = GetRValue(color), cg = GetGValue(color), cb = GetBValue(color);
     for (int y = 0; y < h; y++)
@@ -244,8 +271,11 @@ static void Text(const std::string& s, PusRect r, COLORREF color, int pt, UINT f
 }
 
 // ---------------------------------------------------------------- controls / hit testing
-enum Ctl { C_NONE, C_CLOSE, C_PREV, C_NEXT, C_SEARCH, C_TAB0, C_BUY0 = C_TAB0 + TAB_COUNT,
-           C_DLG_UP = C_BUY0 + ITEMS_PER_PAGE, C_DLG_DOWN, C_DLG_OK, C_DLG_CANCEL, C_DLG_BODY };
+enum Ctl { C_NONE, C_CLOSE, C_PREV, C_NEXT, C_SEARCHBTN, C_SEARCHEDIT, C_ESNEDIT, C_ESNBTN, C_REFUND, C_RESELLER,
+           C_CLEAR, C_BUYALL, C_TAB0, C_CART0 = C_TAB0 + TAB_COUNT, C_BUY0 = C_CART0 + CART_MAX,
+           C_BASK0 = C_BUY0 + PER_PAGE, C_RET0 = C_BASK0 + PER_PAGE,
+           C_DLG_UP = C_RET0 + REFUND_PER_PAGE, C_DLG_DOWN, C_DLG_OK, C_DLG_CANCEL, C_DLG_GIFT, C_DLG_BODY,
+           C_BD_OK, C_BD_CANCEL, C_BD_BODY };
 static int g_hover = C_NONE, g_pressed = C_NONE;
 static int g_tipSlot = -1;                       // product card under the mouse (item tooltip), -1 = none
 void ItemTip_Show(UINT32 item, RECT anchor);     // item_tooltip.cpp: the game's own inventory tooltip
@@ -256,6 +286,26 @@ static POINT g_dragFrom;
 
 static bool In(PusRect r, int x, int y) { return x >= r.l && x < r.r && y >= r.t && y < r.b; }
 
+static int PerPage() { return g_refundView ? REFUND_PER_PAGE : PER_PAGE; }
+static int PageCount() { return max(1, (int)((g_cards.size() + PerPage() - 1) / PerPage())); }
+static int TabCount()   // tab buttons that have a category behind them
+{
+    return min(TAB_COUNT, (int)g_cats.size() + (g_cats.size() < (size_t)TAB_COUNT ? 1 : 0));
+}
+// tab i -> category id (0 = all); with fewer than 5 categories the first tab is "All"
+static int TabCat(int i)
+{
+    bool all = g_cats.size() < (size_t)TAB_COUNT;
+    if (all) return i == 0 ? 0 : (i - 1 < (int)g_cats.size() ? (int)g_cats[i - 1].ID : -1);
+    return i < (int)g_cats.size() ? (int)g_cats[i].ID : -1;
+}
+static std::string TabName(int i)
+{
+    bool all = g_cats.size() < (size_t)TAB_COUNT;
+    if (all) return i == 0 ? "All" : (i - 1 < (int)g_cats.size() ? g_cats[i - 1].Name : "");
+    return i < (int)g_cats.size() ? g_cats[i].Name : "";
+}
+
 static int HitTest(int x, int y)
 {
     if (g_confirmIdx >= 0)
@@ -264,37 +314,49 @@ static int HitTest(int x, int y)
         if (In(PUS_DLG_DOWN, x, y)) return C_DLG_DOWN;
         if (In(PUS_DLG_OK, x, y)) return C_DLG_OK;
         if (In(PUS_DLG_CANCEL, x, y)) return C_DLG_CANCEL;
+        if (In(PUS_DLG_GIFT, x, y)) return C_DLG_GIFT;
         return In(PUS_DLG, x, y) ? C_DLG_BODY : C_NONE;
+    }
+    if (g_basketConfirm)
+    {
+        if (In(PUS_BDLG_OK, x, y)) return C_BD_OK;
+        if (In(PUS_BDLG_CANCEL, x, y)) return C_BD_CANCEL;
+        return In(PUS_DLG, x, y) ? C_BD_BODY : C_NONE;
     }
     if (In(PUS_CLOSE, x, y)) return C_CLOSE;
     if (In(PUS_PREV, x, y)) return C_PREV;
     if (In(PUS_NEXT, x, y)) return C_NEXT;
-    if (In(PUS_TXT_SEARCH, x, y)) return C_SEARCH;
+    if (In(PUS_BTN_SEARCH, x, y)) return C_SEARCHBTN;
+    if (In(PUS_BTN_ESN, x, y)) return C_ESNBTN;
+    if (In(PUS_EDIT_ESN, x, y)) return C_ESNEDIT;
+    if (In(PUS_EDIT_SEARCH, x, y)) return C_SEARCHEDIT;
+    if (In(PUS_REFUND, x, y)) return C_REFUND;
+    if (In(PUS_RESELLER, x, y)) return C_RESELLER;
+    if (In(PUS_CLEAR, x, y)) return C_CLEAR;
+    if (In(PUS_BUYALL, x, y)) return C_BUYALL;
     for (int i = 0; i < TAB_COUNT; i++)
-        if (In(PUS_TABS[i], x, y)) return C_TAB0 + i;
-    for (int i = 0; i < ITEMS_PER_PAGE; i++)
-        if (g_page * ITEMS_PER_PAGE + i < (int)g_filtered.size() && In(PUS_SLOTS[i].buy, x, y)) return C_BUY0 + i;
+        if (i < TabCount() && In(PUS_TABS[i], x, y)) return C_TAB0 + i;
+    for (int i = 0; i < (int)g_cart.size() && i < CART_MAX; i++)
+        if (In(PUS_CART[i].cancel, x, y)) return C_CART0 + i;
+    if (g_refundView)
+    {
+        for (int i = 0; i < REFUND_PER_PAGE; i++)
+        {
+            if (g_page * REFUND_PER_PAGE + i >= (int)g_cards.size()) break;
+            if (In(PUS_RROWS[i].ret, x, y)) return C_RET0 + i;
+        }
+        return C_NONE;
+    }
+    for (int i = 0; i < PER_PAGE; i++)
+    {
+        if (g_page * PER_PAGE + i >= (int)g_cards.size()) break;
+        if (In(PUS_SLOTS[i].buy, x, y)) return C_BUY0 + i;
+        if (In(PUS_SLOTS[i].bask, x, y)) return C_BASK0 + i;
+    }
     return C_NONE;
 }
 
-static int PageCount() { return max(1, (int)((g_filtered.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE)); }
-
 static std::string Lower(std::string s) { for (auto& c : s) c = (char)tolower((unsigned char)c); return s; }
-
-static void RebuildFiltered()
-{
-    g_filtered.clear();
-    std::string needle = Lower(g_search);
-    for (auto& it : g_items)
-    {
-        if (g_activeCat != 0 && (int)it.Cat != g_activeCat) continue;
-        if (!needle.empty() && Lower(it.Name).find(needle) == std::string::npos) continue;
-        g_filtered.push_back(it);
-    }
-    std::sort(g_filtered.begin(), g_filtered.end(), [](const SPusItem& a, const SPusItem& b) { return a.ID < b.ID; });
-    g_page = min(max(g_page, 0), PageCount() - 1);
-    g_selected = -1;
-}
 
 static std::string Money(UINT32 v)
 {
@@ -303,12 +365,67 @@ static std::string Money(UINT32 v)
     return s;
 }
 
-static int StateFor(int ctl) { return g_pressed == ctl && g_hover == ctl ? 1 : (g_hover == ctl ? 2 : 0); }
-
-static void DrawButton(const char* prefix, PusRect r, int ctl)
+static SCard CardOf(const SPusItem& it)
 {
-    char name[32]; sprintf_s(name, "%s_%d", prefix, StateFor(ctl));
+    SCard c;
+    c.pusId = it.ID; c.itemId = it.ItemID; c.price = it.Price; c.qty = max(1u, it.BuyCount);
+    c.icon = it.IconID; c.ptype = it.PriceType; c.name = it.Name;
+    return c;
+}
+
+// g_cards = what the grid shows: the refundable purchases, or the shop items of the tab / search
+static void RebuildCards()
+{
+    g_cards.clear();
+    if (g_refundView)
+    {
+        for (const SRefund& r : g_refunds)
+        {
+            SCard c;
+            c.serial = r.serial; c.itemId = r.itemId; c.price = r.price; c.ptype = r.ptype; c.expiry = r.expiry;
+            c.qty = r.count ? r.count : 1;
+            c.name = "Item " + std::to_string(r.itemId);
+            for (const SPusItem& it : g_items)
+                if (it.ItemID == r.itemId) { c.name = it.Name; c.icon = it.IconID; break; }
+            g_cards.push_back(c);
+        }
+    }
+    else
+    {
+        std::string needle = Lower(g_search);
+        std::vector<SPusItem> list;
+        for (const SPusItem& it : g_items)
+        {
+            if (needle.empty() ? (g_activeCat != 0 && (int)it.Cat != g_activeCat) : Lower(it.Name).find(needle) == std::string::npos)
+                continue;
+            list.push_back(it);
+        }
+        std::sort(list.begin(), list.end(), [](const SPusItem& a, const SPusItem& b) { return a.ID < b.ID; });
+        for (const SPusItem& it : list) g_cards.push_back(CardOf(it));
+    }
+    g_page = min(max(g_page, 0), PageCount() - 1);
+}
+
+static int StateFor(int ctl) { return g_pressed == ctl && g_hover == ctl ? 1 : (g_hover == ctl ? 2 : 0); }
+static const char kStateChar[4] = { 'n', 'd', 'o', 'x' };
+
+static void DrawButton(const char* prefix, PusRect r, int ctl, bool active = false)
+{
+    char name[40];
+    int st = active ? 1 : StateFor(ctl);
+    sprintf_s(name, "u_%s_%c", prefix, kStateChar[st]);
     Blit(Spr(name), r.l, r.t, r.r - r.l, r.b - r.t);
+}
+
+static const COLORREF WHITE = RGB(255, 255, 255), GOLD = RGB(255, 255, 0), SILVER = RGB(0xC0, 0xC0, 0xC0);
+
+static std::string PriceText(UINT32 price, BYTE ptype) { return Money(price) + (ptype ? " TL" : " KC"); }
+
+static std::string CartTotal()
+{
+    UINT32 kc = 0, tl = 0;
+    for (const SCard& c : g_cart) (c.ptype ? tl : kc) += c.price;
+    return (kc ? Money(kc) + " KC" : "") + (kc && tl ? " + " : "") + (tl ? Money(tl) + " TL" : "");
 }
 
 static void Paint()
@@ -318,69 +435,137 @@ static void Paint()
     Blit(Spr("bg"), 0, 0);
 
     EnterCriticalSection(&g_dataLock);
-    // tabs: 0 = all, 1..5 = server categories
-    for (int i = 0; i < TAB_COUNT; i++)
+    // left menu: category tabs, refund list, cash code
+    for (int i = 0; i < TabCount(); i++)
     {
-        bool active = i == 0 ? g_activeCat == 0 : (i - 1 < (int)g_cats.size() && (int)g_cats[i - 1].ID == g_activeCat);
-        PusRect r = PUS_TABS[i];
-        Blit(Spr(active || g_hover == C_TAB0 + i ? "tab_1" : "tab_0"), r.l, r.t, r.r - r.l, r.b - r.t);
-        std::string label = i == 0 ? "All" : (i - 1 < (int)g_cats.size() ? g_cats[i - 1].Name : "");
-        Text(label, r, RGB(255, 255, 255), 8, DT_CENTER | DT_VCENTER);
+        bool active = !g_refundView && g_search.empty() && TabCat(i) == g_activeCat;
+        DrawButton("tab", PUS_TABS[i], C_TAB0 + i, active);
+        Text(TabName(i), PUS_TABS[i], WHITE, 9, DT_CENTER | DT_VCENTER, true);
     }
+    DrawButton("tab", PUS_REFUND, C_REFUND, g_refundView);
+    Text("Refund Pus Items", PUS_REFUND, WHITE, 9, DT_CENTER | DT_VCENTER, true);
+    DrawButton("tab", PUS_RESELLER, C_RESELLER);
+    Text("Buy Cash Code", PUS_RESELLER, WHITE, 9, DT_CENTER | DT_VCENTER, true);
 
-    Text("KC: " + Money(g_kc), PUS_TXT_CASH, RGB(255, 255, 0), 9, DT_CENTER | DT_VCENTER);
-    Text("TL: " + Money(g_tl), PUS_TXT_TL, RGB(0xC0, 0xC0, 0xC0), 9, DT_CENTER | DT_VCENTER);
-    if (g_search.empty() && !g_searchFocus)
-        Text("Search for items...", PUS_TXT_SEARCH, RGB(0xF4, 0xDF, 0x8C), 9, DT_LEFT | DT_VCENTER);
+    // balances
+    Text(Money(g_kc), PUS_TXT_CASH, GOLD, 10, DT_CENTER | DT_VCENTER, true);
+    Text(Money(g_tl), PUS_TXT_TL, SILVER, 10, DT_CENTER | DT_VCENTER, true);
+
+    // search + ESN boxes
+    if (g_search.empty() && g_focus != F_SEARCH)
+        Text("Search for items...", { PUS_EDIT_SEARCH.l + 14, PUS_EDIT_SEARCH.t, PUS_EDIT_SEARCH.r - 30, PUS_EDIT_SEARCH.b }, RGB(0xF4, 0xDF, 0x8C), 9, DT_LEFT | DT_VCENTER);
     else
-        Text(g_search + (g_searchFocus ? "_" : ""), PUS_TXT_SEARCH, RGB(255, 255, 255), 9, DT_LEFT | DT_VCENTER);
+        Text(g_search + (g_focus == F_SEARCH ? "_" : ""), { PUS_EDIT_SEARCH.l + 14, PUS_EDIT_SEARCH.t, PUS_EDIT_SEARCH.r - 30, PUS_EDIT_SEARCH.b }, WHITE, 9, DT_LEFT | DT_VCENTER);
+    DrawButton("search", PUS_BTN_SEARCH, C_SEARCHBTN);
+    if (g_esn.empty() && g_focus != F_ESN)
+        Text("E-pin type here...", { PUS_EDIT_ESN.l + 4, PUS_EDIT_ESN.t, PUS_EDIT_ESN.r - 4, PUS_EDIT_ESN.b }, RGB(0xF4, 0xDF, 0x8C), 9, DT_LEFT | DT_VCENTER);
+    else
+        Text(g_esn + (g_focus == F_ESN ? "_" : ""), { PUS_EDIT_ESN.l + 4, PUS_EDIT_ESN.t, PUS_EDIT_ESN.r - 4, PUS_EDIT_ESN.b }, WHITE, 9, DT_LEFT | DT_VCENTER);
+    DrawButton("esn", PUS_BTN_ESN, C_ESNBTN);
+    Text("Use ESN", PUS_BTN_ESN, WHITE, 9, DT_CENTER | DT_VCENTER, true);
 
-    for (int i = 0; i < ITEMS_PER_PAGE; i++)
+    // product cards / refund list
+    time_t now = time(nullptr);
+    if (g_refundView)
     {
-        int idx = g_page * ITEMS_PER_PAGE + i;
-        if (idx >= (int)g_filtered.size()) break;
-        const SPusItem& it = g_filtered[idx];
+        Blit(Spr("u_rbg"), PUS_RBG.l, PUS_RBG.t);
+        for (int i = 0; i < REFUND_PER_PAGE; i++)
+        {
+            int idx = g_page * REFUND_PER_PAGE + i;
+            if (idx >= (int)g_cards.size()) break;
+            const SCard& c = g_cards[idx];
+            const PusRefundRow& r = PUS_RROWS[i];
+            Blit(Spr("u_rframe"), r.icon.l - 4, r.icon.t - 4);
+            BlitIcon(c.icon, r.icon);
+            Text(c.name, r.name, WHITE, 9, DT_LEFT | DT_VCENTER, true);
+            long left = (long)c.expiry - (long)now;
+            char t[64];
+            if (left > 0) sprintf_s(t, "Refund Price : %s %s  (%ld min)", Money(c.price).c_str(), c.ptype ? "TL" : "KC", left / 60 + 1);
+            else sprintf_s(t, "Refund Price : %s %s  (expired)", Money(c.price).c_str(), c.ptype ? "TL" : "KC");
+            Text(t, r.price, c.ptype ? SILVER : GOLD, 8, DT_LEFT | DT_VCENTER);
+            Blit(Spr("u_rbtnframe"), r.ret.l - 5, r.ret.t - 5);
+            DrawButton("ret", r.ret, C_RET0 + i);
+        }
+    }
+    else
+    for (int i = 0; i < PER_PAGE; i++)
+    {
+        int idx = g_page * PER_PAGE + i;
+        if (idx >= (int)g_cards.size()) break;
+        const SCard& c = g_cards[idx];
         const PusSlot& s = PUS_SLOTS[i];
-        Blit(Spr("card"), s.cardX, s.cardY);
-        PusRect ic = { s.cardX + PUS_CARD_ICON.l, s.cardY + PUS_CARD_ICON.t, s.cardX + PUS_CARD_ICON.r, s.cardY + PUS_CARD_ICON.b };
-        Blit(Icon(it.IconID), ic.l, ic.t, ic.r - ic.l, ic.b - ic.t);
-        PusRect nr = { s.cardX + PUS_CARD_NAME.l, s.cardY + PUS_CARD_NAME.t, s.cardX + PUS_CARD_NAME.r, s.cardY + PUS_CARD_NAME.b };
-        Text(it.Name, nr, RGB(255, 255, 255), 8, DT_CENTER | DT_VCENTER);
-        PusRect pr = { s.cardX + PUS_CARD_PRICE.l, s.cardY + PUS_CARD_PRICE.t, s.cardX + PUS_CARD_PRICE.r, s.cardY + PUS_CARD_PRICE.b };
-        Text(Money(it.Price) + (it.PriceType ? " TL" : ""), pr, it.PriceType ? RGB(0xC0, 0xC0, 0xC0) : RGB(255, 255, 0), 10, DT_CENTER | DT_VCENTER);
-        DrawButton("purchase", s.buy, C_BUY0 + i);
-        Text("Purchase", s.buy, RGB(255, 255, 255), 9, DT_CENTER | DT_VCENTER);
+        Blit(Spr("u_card"), s.card.l, s.card.t);
+        BlitIcon(c.icon, s.icon);
+        Text(c.name, s.name, WHITE, 8, DT_CENTER | DT_VCENTER);
+        Text("Price: " + PriceText(c.price, c.ptype), s.price, c.ptype ? SILVER : GOLD, 8, DT_LEFT | DT_VCENTER);
+        Text("Quantity: " + std::to_string(c.qty), s.qty, WHITE, 8, DT_LEFT | DT_VCENTER);
+        DrawButton("buy", s.buy, C_BUY0 + i);
+        Text("Buy", s.buy, WHITE, 9, DT_CENTER | DT_VCENTER, true);
+        DrawButton("bask", s.bask, C_BASK0 + i);
+        Text("Basket", s.bask, WHITE, 9, DT_CENTER | DT_VCENTER, true);
     }
-    if (g_filtered.empty())
+    if (g_cards.empty())
     {
-        const char* msg = !g_items.empty() ? "No items found." : (g_listRequested ? "Loading..." : "");
-        Text(msg, { 40, 300, 767, 330 }, RGB(200, 200, 200), 10, DT_CENTER | DT_VCENTER);
+        const char* msg = g_refundView ? "No purchase can be refunded." : (!g_items.empty() ? "No items found." : (g_listRequested ? "Loading..." : ""));
+        Text(msg, { 266, 300, 991, 330 }, RGB(200, 200, 200), 11, DT_CENTER | DT_VCENTER);
     }
 
+    // basket
+    for (int i = 0; i < (int)g_cart.size() && i < CART_MAX; i++)
+    {
+        const SCard& c = g_cart[i];
+        const PusCartRow& r = PUS_CART[i];
+        Blit(Spr("u_cartframe"), r.frame.l, r.frame.t);
+        BlitIcon(c.icon, r.icon);
+        Text(c.name, r.name, WHITE, 8, DT_LEFT | DT_VCENTER);
+        Text(PriceText(c.price, c.ptype), r.price, c.ptype ? SILVER : GOLD, 8, DT_LEFT | DT_VCENTER);
+        DrawButton("cancel", r.cancel, C_CART0 + i);
+    }
+    if (!g_cart.empty()) Text(CartTotal(), PUS_TXT_TOTAL, GOLD, 9, DT_CENTER | DT_VCENTER, true);
+    DrawButton("buyall", PUS_BUYALL, C_BUYALL);
+    Text("Buy All", PUS_BUYALL, WHITE, 9, DT_CENTER | DT_VCENTER, true);
+    DrawButton("clear", PUS_CLEAR, C_CLEAR);
+    Text("Clear List", PUS_CLEAR, WHITE, 8, DT_CENTER | DT_VCENTER);
+
+    // paging, close, status
     DrawButton("prev", PUS_PREV, C_PREV);
     DrawButton("next", PUS_NEXT, C_NEXT);
-    DrawButton("close", PUS_CLOSE, C_CLOSE);
     char page[32]; sprintf_s(page, "%d / %d", g_page + 1, PageCount());
-    Text(page, { PUS_TXT_PAGE.l - 10, PUS_TXT_PAGE.t, PUS_TXT_PAGE.r + 10, PUS_TXT_PAGE.b }, RGB(255, 255, 255), 10, DT_CENTER | DT_VCENTER);
+    Text(page, { PUS_TXT_PAGE.l - 10, PUS_TXT_PAGE.t, PUS_TXT_PAGE.r + 10, PUS_TXT_PAGE.b }, WHITE, 9, DT_CENTER | DT_VCENTER);
+    DrawButton("close", PUS_CLOSE, C_CLOSE);
     if (!g_status.empty())
-        Text(g_status, { 460, 572, 760, 598 }, RGB(230, 200, 120), 8, DT_RIGHT | DT_VCENTER);
+        Text(g_status, { 690, 586, 1000, 608 }, RGB(230, 200, 120), 9, DT_RIGHT | DT_VCENTER);
 
-    // confirm dialog on top
-    if (g_confirmIdx >= 0 && g_confirmIdx < (int)g_filtered.size())
+    // purchase dialog on top
+    if (g_confirmIdx >= 0 && g_confirmIdx < (int)g_cards.size())
     {
-        const SPusItem& it = g_filtered[g_confirmIdx];
-        Blit(Spr("confirm_bg"), PUS_DLG.l, PUS_DLG.t);
-        Blit(Icon(it.IconID), PUS_DLG_ICON.l, PUS_DLG_ICON.t, PUS_DLG_ICON.r - PUS_DLG_ICON.l, PUS_DLG_ICON.b - PUS_DLG_ICON.t);
-        Text(it.Name, PUS_DLG_NAME, RGB(255, 255, 255), 10, DT_CENTER | DT_VCENTER);
-        Text("Quantity: " + std::to_string(g_qty * max(1u, it.BuyCount)), PUS_DLG_QTY, RGB(255, 255, 255), 10, DT_CENTER | DT_VCENTER);
-        Text(Money(it.Price * g_qty) + (it.PriceType ? " TL Balance" : " Knight Cash"), PUS_DLG_PRICE, RGB(255, 0, 0), 10, DT_CENTER | DT_VCENTER);
-        Text(std::to_string(g_qty), PUS_DLG_COUNT, RGB(255, 255, 0x80), 10, DT_CENTER | DT_VCENTER);
-        DrawButton("up", PUS_DLG_UP, C_DLG_UP);
-        DrawButton("down", PUS_DLG_DOWN, C_DLG_DOWN);
-        DrawButton("okbtn", PUS_DLG_OK, C_DLG_OK);
-        Text("Confirm", PUS_DLG_OK, RGB(255, 255, 255), 10, DT_CENTER | DT_VCENTER);
-        DrawButton("okbtn", PUS_DLG_CANCEL, C_DLG_CANCEL);
-        Text("Cancel", PUS_DLG_CANCEL, RGB(255, 255, 255), 10, DT_CENTER | DT_VCENTER);
+        const SCard& c = g_cards[g_confirmIdx];
+        Blit(Spr("u_dlg"), PUS_DLG.l, PUS_DLG.t);
+        BlitIcon(c.icon, PUS_DLG_ICON);
+        Text(c.name, PUS_DLG_NAME, WHITE, 10, DT_LEFT | DT_VCENTER, true);
+        Text("Price: " + PriceText(c.price, c.ptype), PUS_DLG_PRICE, c.ptype ? SILVER : GOLD, 9, DT_LEFT | DT_VCENTER);
+        Text("Quantity: " + std::to_string(g_qty * c.qty), PUS_DLG_QTY, WHITE, 9, DT_LEFT | DT_VCENTER);
+        Text(std::to_string(g_qty), PUS_DLG_COUNT, RGB(255, 255, 0x80), 10, DT_CENTER | DT_VCENTER, true);
+        Text(PriceText(c.price * g_qty, c.ptype) + (c.ptype ? " TL Balance" : " Knight Cash"), PUS_DLG_AFTER, RGB(255, 80, 80), 10, DT_CENTER | DT_VCENTER, true);
+        DrawButton("dup", PUS_DLG_UP, C_DLG_UP);
+        DrawButton("ddown", PUS_DLG_DOWN, C_DLG_DOWN);
+        DrawButton("dok", PUS_DLG_OK, C_DLG_OK);
+        Text(g_gift.empty() ? "Confirm" : "Send Gift", PUS_DLG_OK, WHITE, 10, DT_CENTER | DT_VCENTER, true);
+        DrawButton("dno", PUS_DLG_CANCEL, C_DLG_CANCEL);
+        Text("Cancel", PUS_DLG_CANCEL, WHITE, 10, DT_CENTER | DT_VCENTER, true);
+        Text(g_gift + (g_focus == F_GIFT ? "_" : ""), { PUS_DLG_GIFT.l + 7, PUS_DLG_GIFT.t, PUS_DLG_GIFT.r - 4, PUS_DLG_GIFT.b }, WHITE, 9, DT_LEFT | DT_VCENTER);
+    }
+    // basket dialog
+    if (g_basketConfirm)
+    {
+        Blit(Spr("u_bdlg"), PUS_DLG.l, PUS_DLG.t);
+        Text("You cannot undo the purchase. The total amount will be deducted from your balance. Do you want to buy the products in your cart?",
+            PUS_BDLG_TEXT, WHITE, 10, DT_CENTER | DT_TOP | DT_WORDBREAK);
+        Text(CartTotal(), PUS_BDLG_TOTAL, RGB(255, 80, 80), 10, DT_CENTER | DT_VCENTER, true);
+        DrawButton("bok", PUS_BDLG_OK, C_BD_OK);
+        Text("Confirm", PUS_BDLG_OK, WHITE, 10, DT_CENTER | DT_VCENTER, true);
+        DrawButton("bno", PUS_BDLG_CANCEL, C_BD_CANCEL);
+        Text("Cancel", PUS_BDLG_CANCEL, WHITE, 10, DT_CENTER | DT_VCENTER, true);
     }
     LeaveCriticalSection(&g_dataLock);
 
@@ -405,6 +590,30 @@ static void RequestPurchase(UINT32 pusId, BYTE count)
     QueueSend(p);
 }
 
+static void RequestRefund(UINT64 serial)
+{
+    std::vector<BYTE> p = { WIZ_HSACS_HOOK, 0xD4, 0 };
+    p.insert(p.end(), (BYTE*)&serial, (BYTE*)&serial + 8);
+    p.push_back(0);
+    QueueSend(p);
+}
+
+static void RequestGift(BYTE ptype, UINT32 pusId, const std::string& name)
+{
+    std::vector<BYTE> p = { WIZ_HSACS_HOOK, PUS_SUBOP, 3, ptype };
+    p.insert(p.end(), (BYTE*)&pusId, (BYTE*)&pusId + 4);
+    p.push_back((BYTE)(name.size() & 0xFF)); p.push_back((BYTE)(name.size() >> 8));
+    p.insert(p.end(), name.begin(), name.end());
+    QueueSend(p);
+}
+
+static void RequestEsn(const std::string& code)
+{
+    std::vector<BYTE> p = { WIZ_HSACS_HOOK, PUS_SUBOP, 4, (BYTE)(code.size() & 0xFF), (BYTE)(code.size() >> 8) };
+    p.insert(p.end(), code.begin(), code.end());
+    QueueSend(p);
+}
+
 static HWND FindGameWindow()
 {
     struct Ctx { DWORD pid; HWND best; int area; } ctx = { GetCurrentProcessId(), nullptr, 0 };
@@ -420,20 +629,21 @@ static HWND FindGameWindow()
     return ctx.best;
 }
 
-static void SetSearchFocus(bool on)
+static void SetFocusBox(int f)
 {
-    if (g_searchFocus == on) return;
-    g_searchFocus = on;
-    if (on) SetForegroundWindow(g_hWnd);              // keyboard to us while typing
-    else if (HWND game = FindGameWindow()) SetForegroundWindow(game);
+    if (g_focus == f) return;
+    bool was = g_focus != F_NONE;
+    g_focus = f;
+    if (f != F_NONE) SetForegroundWindow(g_hWnd);     // keyboard to us while typing
+    else if (was) { if (HWND game = FindGameWindow()) SetForegroundWindow(game); }
 }
 
 static bool g_open = false;   // user intent; actual visibility also needs the game in front
 
 static void Hide()
 {
-    SetSearchFocus(false);
-    g_confirmIdx = -1;
+    SetFocusBox(F_NONE);
+    g_confirmIdx = -1; g_basketConfirm = false; g_gift.clear();
     g_open = false;
     g_tipSlot = -1; ItemTip_Hide();
     ShowWindow(g_hWnd, SW_HIDE);
@@ -484,36 +694,105 @@ static HCURSOR BuildFallbackCursor()
     return c ? c : LoadCursor(nullptr, IDC_ARROW);
 }
 
+// the "Buy Cash Code" page: HopeGuard\pus_buycode.txt (first line = URL) when present
+static void OpenBuyCode()
+{
+    char path[MAX_PATH];
+    sprintf_s(path, "%s\\..\\pus_buycode.txt", g_uiDir);
+    FILE* f = nullptr;
+    char url[512] = {};
+    if (fopen_s(&f, path, "r") == 0 && f)
+    {
+        if (fgets(url, sizeof(url), f))
+            for (char* p = url + strlen(url); p > url && (p[-1] == '\n' || p[-1] == '\r' || p[-1] == ' '); *--p = 0) {}
+        fclose(f);
+    }
+    if (!strncmp(url, "http", 4)) ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+    else g_status = "Ask the server staff for a cash code (E-pin).";
+}
+
+static void ApplyEsn()
+{
+    if (g_esn.size() < 8) { g_status = "Type your E-pin first."; return; }
+    RequestEsn(g_esn);
+    g_status = "Checking the E-pin...";
+}
+
 // action on mouse-up over the same control it went down on
 static void Activate(int ctl)
 {
     EnterCriticalSection(&g_dataLock);
     if (ctl == C_CLOSE) { LeaveCriticalSection(&g_dataLock); Hide(); return; }
+    int focus = F_NONE;
+    if (ctl == C_SEARCHEDIT) focus = F_SEARCH;
+    if (ctl == C_ESNEDIT) focus = F_ESN;
     if (ctl == C_PREV && g_page > 0) g_page--;
     if (ctl == C_NEXT && g_page + 1 < PageCount()) g_page++;
+    if (ctl == C_SEARCHBTN) { g_page = 0; g_refundView = false; RebuildCards(); }
+    if (ctl == C_ESNBTN) ApplyEsn();
     if (ctl >= C_TAB0 && ctl < C_TAB0 + TAB_COUNT)
     {
-        int i = ctl - C_TAB0;
-        int cat = (i > 0 && i - 1 < (int)g_cats.size()) ? (int)g_cats[i - 1].ID : 0;
-        if (i == 0 || i - 1 < (int)g_cats.size()) { g_activeCat = cat; g_page = 0; RebuildFiltered(); }
+        int cat = TabCat(ctl - C_TAB0);
+        if (cat >= 0) { g_activeCat = cat; g_page = 0; g_refundView = false; g_search.clear(); RebuildCards(); }
     }
-    if (ctl >= C_BUY0 && ctl < C_BUY0 + ITEMS_PER_PAGE)
+    if (ctl == C_REFUND)
     {
-        int idx = g_page * ITEMS_PER_PAGE + (ctl - C_BUY0);
-        if (idx < (int)g_filtered.size()) { g_confirmIdx = idx; g_qty = 1; }
+        g_refundView = !g_refundView; g_page = 0; RebuildCards();
+        if (g_refundView && g_refunds.empty()) g_status = "No purchase can be refunded.";
     }
+    if (ctl == C_RESELLER) OpenBuyCode();
+    if (ctl >= C_BUY0 && ctl < C_BUY0 + PER_PAGE)
+    {
+        int idx = g_page * PER_PAGE + (ctl - C_BUY0);
+        if (idx < (int)g_cards.size()) { g_confirmIdx = idx; g_qty = 1; g_gift.clear(); }
+    }
+    if (ctl >= C_RET0 && ctl < C_RET0 + REFUND_PER_PAGE)
+    {
+        int idx = g_page * REFUND_PER_PAGE + (ctl - C_RET0);
+        if (idx < (int)g_cards.size()) { RequestRefund(g_cards[idx].serial); g_status = "Refund requested: " + g_cards[idx].name; }
+    }
+    if (ctl >= C_BASK0 && ctl < C_BASK0 + PER_PAGE)
+    {
+        int idx = g_page * PER_PAGE + (ctl - C_BASK0);
+        if (idx < (int)g_cards.size())
+        {
+            if ((int)g_cart.size() < CART_MAX) g_cart.push_back(g_cards[idx]);
+            else g_status = "The basket is full.";
+        }
+    }
+    if (ctl >= C_CART0 && ctl < C_CART0 + CART_MAX && ctl - C_CART0 < (int)g_cart.size())
+        g_cart.erase(g_cart.begin() + (ctl - C_CART0));
+    if (ctl == C_CLEAR) g_cart.clear();
+    if (ctl == C_BUYALL) { if (!g_cart.empty()) g_basketConfirm = true; else g_status = "The basket is empty."; }
+    if (ctl == C_BD_CANCEL) g_basketConfirm = false;
+    if (ctl == C_BD_OK && g_basketConfirm)
+    {
+        for (const SCard& c : g_cart) RequestPurchase(c.pusId, 1);
+        g_status = "Basket purchase sent (" + std::to_string(g_cart.size()) + " items)";
+        g_cart.clear();
+        g_basketConfirm = false;
+    }
+    if (ctl == C_DLG_GIFT) focus = F_GIFT;
     if (ctl == C_DLG_UP && g_qty < MAX_QTY) g_qty++;
     if (ctl == C_DLG_DOWN && g_qty > 1) g_qty--;
-    if (ctl == C_DLG_CANCEL) g_confirmIdx = -1;
-    if (ctl == C_DLG_OK && g_confirmIdx >= 0 && g_confirmIdx < (int)g_filtered.size())
+    if (ctl == C_DLG_CANCEL) { g_confirmIdx = -1; g_gift.clear(); }
+    if (ctl == C_DLG_OK && g_confirmIdx >= 0 && g_confirmIdx < (int)g_cards.size())
     {
-        const SPusItem& it = g_filtered[g_confirmIdx];
-        RequestPurchase(it.ID, (BYTE)g_qty);
-        g_status = "Purchase sent: " + it.Name + (g_qty > 1 ? " x" + std::to_string(g_qty) : "");
-        g_confirmIdx = -1;
+        const SCard& c = g_cards[g_confirmIdx];
+        if (!g_gift.empty())
+        {
+            for (int k = 0; k < g_qty; k++) RequestGift(c.ptype, c.pusId, g_gift);
+            g_status = "Gift sent to " + g_gift + ": " + c.name + (g_qty > 1 ? " x" + std::to_string(g_qty) : "");
+        }
+        else
+        {
+            RequestPurchase(c.pusId, (BYTE)g_qty);
+            g_status = "Purchase sent: " + c.name + (g_qty > 1 ? " x" + std::to_string(g_qty) : "");
+        }
+        g_confirmIdx = -1; g_gift.clear();
     }
     LeaveCriticalSection(&g_dataLock);
-    SetSearchFocus(ctl == C_SEARCH);
+    SetFocusBox(focus);
     Paint();
 }
 
@@ -526,19 +805,50 @@ static void Toggle()
     int x = gr.left + max(0, (int)(gr.right - gr.left - PUS_W) / 2);
     int y = gr.top + max(0, (int)(gr.bottom - gr.top - PUS_H) / 2);
     SetWindowPos(g_hWnd, HWND_TOPMOST, x, y, PUS_W, PUS_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    if (!g_listRequested) RequestList();
+    RequestList();      // always fresh: prices, new items, the refund list
     Paint();
 }
 
 static void OnChar(WPARAM ch)
 {
-    if (!g_searchFocus) return;
-    if (ch == VK_RETURN || ch == VK_ESCAPE) { SetSearchFocus(false); Paint(); return; }
+    if (g_focus == F_NONE) return;
     EnterCriticalSection(&g_dataLock);
-    if (ch == VK_BACK) { if (!g_search.empty()) g_search.pop_back(); }
-    else if (ch >= 32 && ch < 256 && g_search.size() < 24) g_search += (char)ch;
-    g_page = 0;
-    RebuildFiltered();
+    if (ch == VK_ESCAPE) { LeaveCriticalSection(&g_dataLock); SetFocusBox(F_NONE); Paint(); return; }
+    if (g_focus == F_ESN)
+    {
+        if (ch == VK_RETURN) ApplyEsn();
+        else if (ch == VK_BACK) { if (!g_esn.empty()) g_esn.pop_back(); }
+        else if (isalnum((int)ch) && ch < 128 && g_esn.size() < 19) g_esn += (char)toupper((int)ch);
+        else if (ch == '-' && g_esn.size() < 19) g_esn += '-';
+        else if (ch == 22)   // Ctrl+V: paste the code
+        {
+            if (OpenClipboard(g_hWnd))
+            {
+                if (HANDLE h = GetClipboardData(CF_TEXT))
+                    if (const char* t = (const char*)GlobalLock(h))
+                    {
+                        for (; *t && g_esn.size() < 19; t++)
+                            if (isalnum((unsigned char)*t) || *t == '-') g_esn += (char)toupper((unsigned char)*t);
+                        GlobalUnlock(h);
+                    }
+                CloseClipboard();
+            }
+        }
+    }
+    else if (g_focus == F_GIFT)
+    {
+        if (ch == VK_RETURN) { LeaveCriticalSection(&g_dataLock); SetFocusBox(F_NONE); Paint(); return; }
+        if (ch == VK_BACK) { if (!g_gift.empty()) g_gift.pop_back(); }
+        else if (ch >= 32 && ch < 256 && g_gift.size() < 20) g_gift += (char)ch;
+    }
+    else
+    {
+        if (ch == VK_RETURN) { LeaveCriticalSection(&g_dataLock); SetFocusBox(F_NONE); Paint(); return; }
+        if (ch == VK_BACK) { if (!g_search.empty()) g_search.pop_back(); }
+        else if (ch >= 32 && ch < 256 && g_search.size() < 24) g_search += (char)ch;
+        g_page = 0; g_refundView = false;
+        RebuildCards();
+    }
     LeaveCriticalSection(&g_dataLock);
     Paint();
 }
@@ -549,7 +859,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg)
     {
     case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE; // keep keyboard focus in the game (search box activates explicitly)
+        return MA_NOACTIVATE; // keep keyboard focus in the game (edit boxes activate explicitly)
     case WM_MOUSEMOVE:
         if (g_dragging)
         {
@@ -567,30 +877,26 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (int hit = HitTest(x, y); hit != g_hover) { g_hover = hit; Paint(); }
         {
-            // item tooltip: the card above its Buy button. The game draws it in its own window, which this panel
+            // item tooltip: the card under the mouse. The game draws it in its own window, which this panel
             // covers, so it goes beside the panel (right side, or left when there is no room on the right).
             int tip = -1;
-            if (g_confirmIdx < 0)
-                for (int i = 0; i < ITEMS_PER_PAGE && tip < 0; i++)
-                {
-                    const PusSlot& s = PUS_SLOTS[i];
-                    PusRect card = { s.cardX, s.cardY, s.buy.r, s.buy.t };
-                    if (In(card, x, y)) tip = i;
-                }
+            if (g_confirmIdx < 0 && !g_basketConfirm && !g_refundView)
+                for (int i = 0; i < PER_PAGE && tip < 0; i++)
+                    if (In(PUS_SLOTS[i].card, x, y)) tip = i;
             if (tip != g_tipSlot)
             {
                 g_tipSlot = tip;
                 UINT32 item = 0;
                 EnterCriticalSection(&g_dataLock);
-                int idx = g_page * ITEMS_PER_PAGE + tip;
-                if (tip >= 0 && idx < (int)g_filtered.size()) item = g_filtered[idx].ItemID;
+                int idx = g_page * PER_PAGE + tip;
+                if (tip >= 0 && idx < (int)g_cards.size()) item = g_cards[idx].itemId;
                 LeaveCriticalSection(&g_dataLock);
                 if (item)
                 {
                     const int TIP_W = 302;   // item_tooltip.cpp window width + gap
                     RECT wr; GetWindowRect(h, &wr);
                     RECT gr = wr; if (HWND game = Proxy_GameWnd()) GetWindowRect(game, &gr);
-                    RECT a = { wr.left, wr.top + PUS_SLOTS[tip].cardY, wr.right, wr.top + PUS_SLOTS[tip].buy.t };
+                    RECT a = { wr.left, wr.top + PUS_SLOTS[tip].card.t, wr.right, wr.top + PUS_SLOTS[tip].card.b };
                     if (wr.right + TIP_W > gr.right && wr.left - TIP_W >= gr.left) a.right = wr.left - TIP_W - 4;
                     ItemTip_Show(item, a);
                 }
@@ -606,7 +912,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONDOWN:
     {
         int hit = HitTest(x, y);
-        if (hit == C_NONE && g_confirmIdx < 0 && y < 110)   // header area drags the window
+        if (hit == C_NONE && g_confirmIdx < 0 && !g_basketConfirm && y < 36)   // title bar drags the window
         {
             g_dragging = true;
             GetCursorPos(&g_dragFrom);
@@ -614,8 +920,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         g_pressed = hit;
-        if (hit != C_NONE && hit != C_DLG_BODY) { SetCapture(h); Paint(); }
-        else SetSearchFocus(false);
+        if (hit != C_NONE && hit != C_DLG_BODY && hit != C_BD_BODY) { SetCapture(h); Paint(); }
+        else SetFocusBox(F_NONE);
         return 0;
     }
     case WM_LBUTTONUP:
@@ -635,7 +941,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return TRUE;
     case WM_TIMER: SyncVisibility(); return 0;
     case WM_CHAR: OnChar(wp); return 0;
-    case WM_KILLFOCUS: if (g_searchFocus) { g_searchFocus = false; Paint(); } return 0;
+    case WM_KILLFOCUS: if (g_focus != F_NONE) { g_focus = F_NONE; Paint(); } return 0;
     case WM_PUS_REFRESH: if (IsWindowVisible(h)) Paint(); return 0;
     case WM_PUS_TOGGLE: Toggle(); return 0;
     case WM_CLOSE: Hide(); return 0;
@@ -920,7 +1226,7 @@ void Pus_OnRecv(const BYTE* buf, size_t len)
             if (r.ok) items.push_back(it);
         }
         EnterCriticalSection(&g_dataLock);
-        g_items = items; g_confirmIdx = -1; RebuildFiltered();
+        g_items = items; g_confirmIdx = -1; RebuildCards();
         LeaveCriticalSection(&g_dataLock);
         sprintf_s(msg, "PUS recv: item list %u (parsed %u, ok=%d)", n, (unsigned)items.size(), r.ok);
         Log(msg);
@@ -938,6 +1244,12 @@ void Pus_OnRecv(const BYTE* buf, size_t len)
         }
         EnterCriticalSection(&g_dataLock);
         g_cats = cats;
+        if (g_activeCat != 0)       // keep the open tab when it still exists
+        {
+            bool found = false;
+            for (auto& c : cats) found |= (int)c.ID == g_activeCat;
+            if (!found) g_activeCat = 0;
+        }
         LeaveCriticalSection(&g_dataLock);
         sprintf_s(msg, "PUS recv: categories %u", (unsigned)cats.size());
         Log(msg);
@@ -947,9 +1259,64 @@ void Pus_OnRecv(const BYTE* buf, size_t len)
         UINT32 kc = r.get<UINT32>(), tl = r.get<UINT32>();
         EnterCriticalSection(&g_dataLock);
         g_kc = kc; g_tl = tl;
-        if (!g_status.empty()) g_status = "Balance updated.";
         LeaveCriticalSection(&g_dataLock);
         sprintf_s(msg, "PUS recv: cash KC=%u TL=%u", kc, tl);
+        Log(msg);
+    }
+    else if (sub == 0xDC)       // ESN redeem answer: [result][u32 kc][u32 tl]
+    {
+        BYTE res = r.get<BYTE>();
+        UINT32 kc = r.get<UINT32>(), tl = r.get<UINT32>();
+        static const char* texts[] = { "E-pin accepted. Your balance was updated.", "This E-pin is not valid.",
+            "This E-pin was already used.", "This E-pin is disabled or expired.", "Too many wrong tries. Wait a few minutes.", "Try again in a moment." };
+        EnterCriticalSection(&g_dataLock);
+        if (r.ok) { g_kc = kc; g_tl = tl; }
+        g_status = texts[min((int)res, 5)];
+        if (res == 0) g_esn.clear();
+        LeaveCriticalSection(&g_dataLock);
+        sprintf_s(msg, "PUS recv: ESN result %u KC=%u TL=%u", (unsigned)res, kc, tl);
+        Log(msg);
+    }
+    else if (sub == 0xD4)       // refund: 1 list, 2..6 errors, 7 done, 8 add
+    {
+        BYTE op = r.get<BYTE>();
+        EnterCriticalSection(&g_dataLock);
+        if (op == 1)
+        {
+            UINT16 n = r.get<UINT16>();
+            std::vector<SRefund> list;
+            for (UINT16 i = 0; i < n && r.ok; i++)
+            {
+                SRefund e = {};
+                e.serial = r.get<UINT64>(); e.itemId = r.get<UINT32>(); e.price = r.get<UINT32>(); e.expiry = r.get<UINT32>();
+                e.count = 1;
+                if (r.ok) list.push_back(e);
+            }
+            g_refunds = list;
+        }
+        else if (op == 8)
+        {
+            SRefund e = {};
+            e.serial = r.get<UINT64>(); e.itemId = r.get<UINT32>(); e.count = r.get<UINT16>(); e.price = r.get<UINT32>();
+            r.get<UINT16>(); e.expiry = r.get<UINT32>(); e.ptype = r.get<BYTE>();
+            if (r.ok) g_refunds.push_back(e);
+        }
+        else if (op == 7)
+        {
+            UINT64 serial = r.get<UINT64>();
+            for (size_t i = 0; i < g_refunds.size(); i++)
+                if (g_refunds[i].serial == serial) { g_refunds.erase(g_refunds.begin() + i); break; }
+            g_status = "Item refunded.";
+        }
+        else if (op >= 2 && op <= 6)
+        {
+            static const char* texts[] = { "", "", "Refund: item not found.", "Refund: the time is over.", "Refund: wait a few seconds.",
+                "Refund: the item is not in your bag.", "Refund: the item was used." };
+            g_status = texts[op];
+        }
+        RebuildCards();
+        LeaveCriticalSection(&g_dataLock);
+        sprintf_s(msg, "PUS recv: refund op %u (list %u)", (unsigned)op, (unsigned)g_refunds.size());
         Log(msg);
     }
     else
