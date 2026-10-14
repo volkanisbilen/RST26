@@ -96,6 +96,7 @@ void DropBtn_Tick();
 void ClanKasa_Tick();
 void ChaoticOpts_Tick();
 void Taskbar_OnClick(int x, int y);
+void EventTitle_SetJuraid(bool on);
 void ChaoticOpts_OnClick(int x, int y);
 void TargetHp_Init();
 void TargetHp_OnRecv(const BYTE* pkt, int len);
@@ -315,6 +316,7 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
             const BYTE* pkt = (const BYTE*)data[2] + *offset;
             InterlockedIncrement(&g_opCount[pkt[0]]);
             NetTrace_Packet("recv", pkt, (int)(data[1] - *offset));
+            if (pkt[0] == 0x5F && data[1] - *offset >= 2 && pkt[1] == 7) EventTitle_SetJuraid(false);   // a new event window: Juraid names itself again with E9 FA
             if (pkt[0] == 0x3D) Rce_OnRecv(pkt, data[1] - *offset);
             if (pkt[0] == 0x22 || pkt[0] == 0xE9) TargetHp_OnRecv(pkt, (int)(data[1] - *offset));   // level + HP numbers on the target bar
             // 0x5B sub 4 (Chaotic Generator NPC) is left to the native client: it opens its own

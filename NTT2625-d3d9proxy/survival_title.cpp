@@ -54,6 +54,8 @@ namespace
     }
 }
 
+void EventTitle_SetJuraid(bool on);     // event_title.cpp: retitles the Border Defence join window
+
 void SurvivalTitle_OnRecv(const BYTE* p, size_t len)
 {
     if (len < 5 || p[0] != 0xE9 || p[1] != 0xFA) return;
@@ -62,6 +64,8 @@ void SurvivalTitle_OnRecv(const BYTE* p, size_t len)
     __try
     {
         bool ok = SetTitle((const char*)p + 4, n);
+        // Juraid signs up in the Border Defence window: the same packet names its title
+        EventTitle_SetJuraid(n >= 6 && _strnicmp((const char*)p + 4, "Juraid", 6) == 0);
         char msg[96];
         sprintf_s(msg, "SurvivalTitle: '%.*s' -> %s", (int)n, (const char*)p + 4, ok ? "set" : "window not ready");
         Log(msg);

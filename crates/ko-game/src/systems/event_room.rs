@@ -900,6 +900,16 @@ pub fn broadcast_juraid_window(world: &WorldState, remaining_secs: u16) {
     }
 }
 
+/// The registration was cancelled: let the open join windows run out (one second left) so they close by themselves.
+pub fn broadcast_juraid_window_close(world: &WorldState) {
+    let pkt = Arc::new(build_event_start_broadcast(JURAID_WINDOW_EVENT_ID, 1));
+    for sid in world.get_in_game_session_ids() {
+        if in_window_zone(world, sid) {
+            world.send_to_session_arc(sid, Arc::clone(&pkt));
+        }
+    }
+}
+
 /// Broadcast the event counter (sign-up counts) to all signed-up users.
 ///   - BDW: `TemplEventBDWSendJoinScreenUpdate()` — sends karus + elmo counts
 ///   - Chaos: `TemplEventChaosSendJoinScreenUpdate()` — sends total count only

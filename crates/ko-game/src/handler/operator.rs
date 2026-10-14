@@ -7118,6 +7118,9 @@ fn handle_temple_event_close<C: GmCtx>(
         // still signing up: cancel the registration
         erm.clear_signed_up_users();
         erm.reset_temple_event();
+        if matches!(kind, TempleEventKind::Juraid) {
+            crate::systems::event_room::broadcast_juraid_window_close(&world);
+        }
         world.broadcast_to_all(
             Arc::new(crate::systems::timed_notice::build_notice_packet(
                 8,

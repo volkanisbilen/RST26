@@ -32,7 +32,7 @@ namespace
             g_title = self;
             if (g_juraid)
             {
-                std::string j = "Juraid Event";
+                std::string j = "Juraid Mountain";
                 g_orig(self, &j);
                 return;
             }
@@ -54,7 +54,7 @@ void EventTitle_SetJuraid(bool on)
     g_juraid = on;
     void* t = g_title;
     if (!g_orig || !Alive(t)) return;
-    std::string s = on ? "Juraid Event" : "Border Defense War";
+    std::string s = on ? "Juraid Mountain" : "Border Defense War";
     g_orig(t, &s);
 }
 
