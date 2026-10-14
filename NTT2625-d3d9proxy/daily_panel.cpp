@@ -1,5 +1,5 @@
 ﻿// Daily Quest panel for the 2625 client (d3d9 proxy): GDI layered overlay window fed from the recv hook, same
-// technique as lottery_panel. Skin: build_daily_assets.py -> daily_ui\*.pus + daily_layout.h.
+// technique as lottery_panel. Skin: build_daily_uif.py (from uif_in\re_dailyquest.uif) -> daily_ui\*.pus + daily_layout.h.
 // Opened by the server (op 3) after it answers the taskbar event-menu trigger (genie_hg.cpp DailyQuest_Open: [0x9C 0x00]).
 //
 // WIZ_EXT_HOOK 0xE9, sub 0xD3, third byte = op; str = u16 len + CP1254 bytes; ints LE.
@@ -33,14 +33,15 @@ static Rc R4(const int a[4]) { return { a[0], a[1], a[2], a[3] }; }
 struct Quest { BYTE id = 0, timeType = 0, minLv = 0, maxLv = 0; UINT16 kill = 0, replay = 0; std::string name, desc, rewards; };
 struct Prog { BYTE status = 0; UINT16 kills = 0; UINT32 secs = 0; DWORD at = 0; };
 
-static const int ROW_H = 22, ROWS_VIS = 6;
+static const int ROWS_VIS = DQ_ROWS;   // quests per page
 
 static CRITICAL_SECTION g_lock, g_sendLock;
 static std::deque<std::vector<BYTE>> g_sendQ;
 static std::vector<Quest> g_quests;
 static std::map<BYTE, Prog> g_prog;
 static int  g_sel = -1;            // quest id
-static int  g_scroll = 0;          // first visible row
+static int  g_page = 0;            // visible page (15 quests each)
+static int  g_lastRow = -1; static DWORD g_lastClick = 0;   // double click detection
 static std::string g_msg; DWORD g_msgAt = 0; bool g_msgOk = false;
 static bool g_visible = false;
 static POINT g_panelPos = { -1, -1 };
@@ -109,23 +110,27 @@ static void LoadSkin()
     g_loaded = true;
     GetModuleFileNameA(nullptr, g_dir, MAX_PATH);
     *(strrchr(g_dir, '\\') + 1) = 0;
-    const char* names[] = { "bg", "btn_n", "btn_o", "btn_d", "btn_x", "close_n", "close_o", "close_d" };
+    const char* names[] = { "bg", "row_a", "row_b", "close_n", "close_o", "close_d", "cancel_n", "cancel_o", "cancel_d" };
     int ok = 0;
     for (const char* n : names)
     {
         char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\daily_ui\\%s.pus", g_dir, n);
         Sprite s; if (LoadPus(p, s)) { g_skin[n] = s; ok++; }
     }
-    char b[64]; sprintf_s(b, "DAILY: skin %d/8", ok); Log(b);
+    {
+        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\pus_ui\\noimage.pus", g_dir);
+        Sprite s; if (LoadPus(p, s)) { g_skin["noimage"] = s; ok++; }
+    }
+    char b[64]; sprintf_s(b, "DAILY: skin %d/10", ok); Log(b);
 }
 
-static void Blit(Sprite* s, int x, int y)
+static void Blit(Sprite* s, int x, int y, int w = -1, int h = -1)
 {
     if (!s || !s->dc) return;
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    AlphaBlend(g_memDC, x, y, s->w, s->h, s->dc, 0, 0, s->w, s->h, bf);
+    AlphaBlend(g_memDC, x, y, w < 0 ? s->w : w, h < 0 ? s->h : h, s->dc, 0, 0, s->w, s->h, bf);
 }
-static bool Skin(const char* n, int x, int y) { auto it = g_skin.find(n); if (it == g_skin.end()) return false; Blit(&it->second, x, y); return true; }
+static bool Skin(const char* n, int x, int y, int w = -1, int h = -1) { auto it = g_skin.find(n); if (it == g_skin.end()) return false; Blit(&it->second, x, y, w, h); return true; }
 
 static void Fill(Rc r, BYTE cr, BYTE cg, BYTE cb, BYTE a)
 {
@@ -218,28 +223,50 @@ static const char* ResultText(BYTE r, bool& ok)
     }
 }
 
-enum Ctl { C_NONE = -1, C_CLOSE = 1, C_ACCEPT, C_ABANDON, C_CLAIM, C_BCLOSE, C_UP, C_DOWN, C_TITLE, C_ROW0 };   // C_ROW0 + visible row
+enum Ctl { C_NONE = -1, C_CLOSE = 1, C_CANCEL, C_PREV, C_NEXT, C_TITLE, C_HUNT1, C_REW1, C_REW2, C_REW3, C_REW4, C_ROW0 = 20 };   // C_ROW0 + visible row
 static int  g_hover = C_NONE, g_pressed = C_NONE;
 static bool g_track = false, g_drag = false;
 static POINT g_dragFrom;
 static bool In(Rc r, int x, int y) { return x >= r.l && x < r.r && y >= r.t && y < r.b; }
+static const int DQ_TITLE_BAR[4] = { 216, 10, 516, 42 };
 
 static int HitTest(int x, int y)
 {
-    if (In(R4(DQ_CLOSE), x, y)) return C_CLOSE;
-    if (In(R4(DQ_BTN_ACCEPT), x, y)) return C_ACCEPT;
-    if (In(R4(DQ_BTN_ABANDON), x, y)) return C_ABANDON;
-    if (In(R4(DQ_BTN_CLAIM), x, y)) return C_CLAIM;
-    if (In(R4(DQ_BTN_CLOSE), x, y)) return C_BCLOSE;
-    if (In(R4(DQ_SCROLL_UP), x, y)) return C_UP;
-    if (In(R4(DQ_SCROLL_DN), x, y)) return C_DOWN;
-    if (In(R4(DQ_TITLE), x, y)) return C_TITLE;
-    if (x >= DQ_LIST[0] + 3 && x < DQ_SCROLL_UP[0] - 2 && y >= DQ_LIST[1] + 4)
-    {
-        int row = (y - DQ_LIST[1] - 4) / ROW_H;
-        if (row >= 0 && row < ROWS_VIS) return C_ROW0 + row;
-    }
+    if (In(R4(DQ_BTN_CLOSE), x, y)) return C_CLOSE;
+    if (In(R4(DQ_BTN_CANCEL), x, y)) return C_CANCEL;
+    if (In(R4(DQ_BTN_PREV), x, y)) return C_PREV;
+    if (In(R4(DQ_BTN_NEXT), x, y)) return C_NEXT;
+    if (In(R4(DQ_TITLE_BAR), x, y)) return C_TITLE;
+    if (In(R4(DQ_HUNT1_BOX), x, y)) return C_HUNT1;
+    const int* rew[4] = { DQ_REW1_BOX, DQ_REW2_BOX, DQ_REW3_BOX, DQ_REW4_BOX };
+    for (int i = 0; i < 4; i++) if (In(R4(rew[i]), x, y)) return C_REW1 + i;
+    if (x >= DQ_ROW_L && x < DQ_ROW_R)
+        for (int i = 0; i < DQ_ROWS; i++)
+            if (y >= DQ_ROW_Y[i] && y < DQ_ROW_Y[i] + DQ_ROW_H) return C_ROW0 + i;
     return C_NONE;
+}
+
+static int PageCount(size_t n) { return max(1, (int)((n + DQ_ROWS - 1) / DQ_ROWS)); }
+
+// "Experience 50, Blessed Upgrade Scroll x1, ..." -> up to 4 (name, count) pairs
+static std::vector<std::pair<std::string, std::string>> SplitRewards(const std::string& rw)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    size_t pos = 0;
+    while (pos < rw.size() && out.size() < 4)
+    {
+        size_t c = rw.find(',', pos);
+        std::string part = rw.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+        pos = c == std::string::npos ? rw.size() : c + 1;
+        while (!part.empty() && part.front() == ' ') part.erase(part.begin());
+        while (!part.empty() && part.back() == ' ') part.pop_back();
+        if (part.empty()) continue;
+        std::string cnt;
+        size_t x = part.rfind(" x");
+        if (x != std::string::npos && x + 2 < part.size()) { cnt = "x" + part.substr(x + 2); part = part.substr(0, x); }
+        out.push_back({ part, cnt });
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------- rendering
@@ -251,98 +278,91 @@ static void Paint()
     EnterCriticalSection(&g_lock);
     std::vector<Quest> quests = g_quests;
     std::map<BYTE, Prog> prog = g_prog;
-    int sel = g_sel, scroll = g_scroll;
+    int sel = g_sel, page = g_page;
     std::string msg = g_msg; DWORD msgAt = g_msgAt; bool msgOk = g_msgOk;
     LeaveCriticalSection(&g_lock);
     char b[160];
+    int pages = PageCount(quests.size());
+    if (page >= pages) page = pages - 1;
 
-    if (!Skin("bg", 0, 0)) Fill({ 0, 0, DQ_W, DQ_H }, 30, 26, 20, 240);
-    Text("Daily Quests", R4(DQ_TITLE), RGB(255, 255, 255), 9, DT_CENTER | DT_VCENTER, true);
-    Skin(g_hover == C_CLOSE ? (g_pressed == C_CLOSE ? "close_d" : "close_o") : "close_n", DQ_CLOSE[0], DQ_CLOSE[1]);
+    if (!Skin("bg", 0, 0)) Fill({ 0, 0, DQ_W, DQ_H }, 30, 36, 30, 245);
 
-    // list
-    int maxScroll = max(0, (int)quests.size() - ROWS_VIS);
-    if (scroll > maxScroll) scroll = maxScroll;
-    for (int i = 0; i < ROWS_VIS; i++)
+    // list rows
+    for (int i = 0; i < DQ_ROWS; i++)
     {
-        int qi = scroll + i;
+        int qi = page * DQ_ROWS + i;
         if (qi >= (int)quests.size()) break;
         const Quest& q = quests[qi];
-        Rc row = { DQ_LIST[0] + 4, DQ_LIST[1] + 4 + i * ROW_H, DQ_SCROLL_UP[0] - 3, DQ_LIST[1] + 4 + (i + 1) * ROW_H - 1 };
+        int ry = DQ_ROW_Y[i];
         auto pi = prog.find(q.id);
-        COLORREF col = RGB(230, 230, 230); std::string badge = "Available";
-        BYTE st = 255;
+        COLORREF col = RGB(160, 220, 255); std::string status = "Available", tm = "-";
         if (pi != prog.end())
         {
-            st = pi->second.status;
-            if (st == 0) { col = RGB(255, 220, 120); sprintf_s(b, "%u/%u", pi->second.kills, q.kill); badge = b; }
-            else if (st == 1) { col = RGB(150, 150, 150); badge = FmtTime(SecsLeft(pi->second)); }
-            else { col = RGB(140, 255, 140); badge = "Completed"; }
+            BYTE st = pi->second.status;
+            if (st == 0) { col = RGB(255, 220, 120); sprintf_s(b, "%u/%u", pi->second.kills, q.kill); status = b; }
+            else if (st == 1) { col = RGB(170, 170, 170); status = "Cooldown"; UINT32 sl = SecsLeft(pi->second); sprintf_s(b, "%02u:%02u:%02u", sl / 3600, (sl % 3600) / 60, sl % 60); tm = b; }
+            else { col = RGB(140, 255, 140); status = "Completed"; }
         }
-        else col = RGB(160, 220, 255);
-        if (q.id == sel) Fill(row, 120, 90, 40, 140);
-        else if (g_hover == C_ROW0 + i) Fill(row, 80, 70, 50, 100);
-        sprintf_s(b, "Lv%u-%u", q.minLv, q.maxLv);
-        Text(q.name, { row.l + 3, row.t, row.l + 118, row.b }, col, 8, DT_LEFT | DT_VCENTER, true);
-        Text(b, { row.l + 118, row.t, row.l + 168, row.b }, RGB(190, 180, 150), 7, DT_LEFT | DT_VCENTER);
-        Text(badge, { row.l + 168, row.t, row.r - 2, row.b }, col, 7, DT_RIGHT | DT_VCENTER, true);
+        if (q.id == sel) Skin("row_a", DQ_ROW_L, ry, DQ_ROW_R - DQ_ROW_L, DQ_ROW_H);
+        else if (g_hover == C_ROW0 + i) Skin("row_b", DQ_ROW_L, ry, DQ_ROW_R - DQ_ROW_L, DQ_ROW_H);
+        Text(q.name, { DQ_COL_NAME[0], ry, DQ_COL_NAME[1], ry + DQ_ROW_H }, col, 8, DT_LEFT | DT_VCENTER, true);
+        Text(status, { DQ_COL_STATUS[0], ry, DQ_COL_STATUS[1], ry + DQ_ROW_H }, col, 8, DT_CENTER | DT_VCENTER);
+        Text(tm, { DQ_COL_TIME[0], ry, DQ_COL_TIME[1], ry + DQ_ROW_H }, RGB(235, 235, 235), 8, DT_CENTER | DT_VCENTER);
+        sprintf_s(b, "Hunt  Lv%u-%u", q.minLv, q.maxLv);
+        Text(b, { DQ_COL_TYPE[0], ry, DQ_COL_TYPE[1], ry + DQ_ROW_H }, RGB(235, 235, 235), 8, DT_CENTER | DT_VCENTER);
+        Text("-", { DQ_COL_ZONE[0], ry, DQ_COL_ZONE[1], ry + DQ_ROW_H }, RGB(235, 235, 235), 8, DT_CENTER | DT_VCENTER);
     }
-    if (quests.empty()) Text("No quests received.", R4(DQ_LIST), RGB(170, 170, 170), 8, DT_CENTER | DT_VCENTER);
-    Fill({ DQ_SCROLL_UP[0], DQ_SCROLL_UP[1], DQ_SCROLL_UP[2], DQ_SCROLL_UP[3] }, 120, 96, 52, g_hover == C_UP ? 230 : 140);
-    Fill({ DQ_SCROLL_DN[0], DQ_SCROLL_DN[1], DQ_SCROLL_DN[2], DQ_SCROLL_DN[3] }, 120, 96, 52, g_hover == C_DOWN ? 230 : 140);
-    Text("^", R4(DQ_SCROLL_UP), RGB(255, 255, 255), 8, DT_CENTER | DT_VCENTER, true);
-    Text("v", R4(DQ_SCROLL_DN), RGB(255, 255, 255), 8, DT_CENTER | DT_VCENTER, true);
+    if (quests.empty()) Text("No quests received.", { DQ_ROW_L, DQ_ROW_Y[0], DQ_ROW_R, DQ_ROW_Y[5] }, RGB(170, 170, 170), 9, DT_CENTER | DT_VCENTER);
+    sprintf_s(b, "%d", page + 1);
+    Text(b, R4(DQ_PAGE), RGB(255, 210, 60), 9, DT_CENTER | DT_VCENTER, true);
 
-    // detail
+    // close buttons
+    Skin(g_hover == C_CLOSE ? (g_pressed == C_CLOSE ? "close_d" : "close_o") : "close_n", DQ_BTN_CLOSE[0], DQ_BTN_CLOSE[1]);
+    Skin(g_hover == C_CANCEL ? (g_pressed == C_CANCEL ? "cancel_d" : "cancel_o") : "cancel_n", DQ_BTN_CANCEL[0], DQ_BTN_CANCEL[1]);
+
+    // selected quest: name, level, the hunt box and the rewards
     const Quest* sq = nullptr;
     for (auto& q : quests) if (q.id == sel) sq = &q;
     const Prog* sp = nullptr;
     if (sq) { auto pi = prog.find(sq->id); if (pi != prog.end()) sp = &pi->second; }
+    struct Slot { const int* icon; const int* name; const int* count; };
+    const Slot hunt[4] = { { DQ_HUNT1_ICON, DQ_HUNT1_NAME, DQ_HUNT1_COUNT }, { DQ_HUNT2_ICON, DQ_HUNT2_NAME, DQ_HUNT2_COUNT },
+                           { DQ_HUNT3_ICON, DQ_HUNT3_NAME, DQ_HUNT3_COUNT }, { DQ_HUNT4_ICON, DQ_HUNT4_NAME, DQ_HUNT4_COUNT } };
+    const Slot rew[4] = { { DQ_REW1_ICON, DQ_REW1_NAME, DQ_REW1_COUNT }, { DQ_REW2_ICON, DQ_REW2_NAME, DQ_REW2_COUNT },
+                          { DQ_REW3_ICON, DQ_REW3_NAME, DQ_REW3_COUNT }, { DQ_REW4_ICON, DQ_REW4_NAME, DQ_REW4_COUNT } };
+    std::string hint;
     if (sq)
     {
-        const int dl = DQ_DETAIL[0] + 6, dr = DQ_DETAIL[2] - 6;
-        Text(sq->name, { dl, 196, dr, 212 }, RGB(255, 220, 120), 9, DT_LEFT | DT_VCENTER, true);
-        Text(sq->desc, { dl, 214, dr, 262 }, RGB(225, 225, 225), 8, DT_LEFT | DT_TOP, false, true);
-        Text("Rewards: " + sq->rewards, { dl, 264, dr, 296 }, RGB(160, 230, 160), 8, DT_LEFT | DT_TOP, false, true);
-        std::string stl = "Available"; COLORREF sc = RGB(160, 220, 255);
-        UINT16 kills = 0;
-        if (sp)
-        {
-            kills = sp->kills;
-            if (sp->status == 0) { stl = "Ongoing"; sc = RGB(255, 220, 120); }
-            else if (sp->status == 1) { stl = "Cooldown: " + FmtTime(SecsLeft(*sp)); sc = RGB(170, 170, 170); }
-            else { stl = "Completed - claim your reward"; sc = RGB(140, 255, 140); }
-        }
-        sprintf_s(b, "Lv %u-%u", sq->minLv, sq->maxLv);
-        Text(stl, { dl, 298, dl + 190, 314 }, sc, 8, DT_LEFT | DT_VCENTER, true);
-        Text(b, { dr - 70, 298, dr, 314 }, RGB(190, 180, 150), 8, DT_RIGHT | DT_VCENTER);
-        Rc bar = R4(DQ_BAR);
-        Fill(bar, 10, 10, 10, 255);
-        UINT32 kc = sq->kill ? sq->kill : 1;
+        Text(sq->name, R4(DQ_QNAME), RGB(255, 220, 120), 9, DT_CENTER | DT_VCENTER, true);
+        sprintf_s(b, "Level %u-%u", sq->minLv, sq->maxLv);
+        Text(b, R4(DQ_QZONE), RGB(255, 150, 30), 8, DT_CENTER | DT_VCENTER, true);
+
+        UINT16 kills = sp ? sp->kills : 0;
         if (sp && sp->status == 2) kills = sq->kill;
-        int fw = (int)((bar.r - bar.l - 2) * ((UINT32)kills < kc ? (UINT32)kills : kc) / kc);
-        if (fw > 0) Fill({ bar.l + 1, bar.t + 1, bar.l + 1 + fw, bar.b - 1 }, 90, 200, 90, 255);
+        Skin("noimage", hunt[0].icon[0], hunt[0].icon[1], hunt[0].icon[2] - hunt[0].icon[0], hunt[0].icon[3] - hunt[0].icon[1]);
+        Text("Hunt", R4(hunt[0].name), RGB(255, 255, 255), 8, DT_LEFT | DT_VCENTER, true);
         sprintf_s(b, "%u / %u", kills, (unsigned)sq->kill);
-        Text(b, bar, RGB(255, 255, 255), 7, DT_CENTER | DT_VCENTER, true);
-    }
-    else Text("Select a quest from the list.", R4(DQ_DETAIL), RGB(170, 170, 170), 8, DT_CENTER | DT_VCENTER);
+        Text(b, R4(hunt[0].count), RGB(255, 225, 120), 8, DT_LEFT | DT_VCENTER, true);
+        Text(sq->desc, { DQ_HUNT2_ICON[0] - 18, DQ_HUNT2_BOX[1] + 6, DQ_HUNT2_NAME[2] + 16, DQ_HUNT4_BOX[3] - 6 }, RGB(225, 225, 225), 7, DT_LEFT | DT_TOP, false, true);
 
-    // status line
+        auto rw = SplitRewards(sq->rewards);
+        for (size_t i = 0; i < rw.size(); i++)
+        {
+            Skin("noimage", rew[i].icon[0], rew[i].icon[1], rew[i].icon[2] - rew[i].icon[0], rew[i].icon[3] - rew[i].icon[1]);
+            Text(rw[i].first, R4(rew[i].name), RGB(160, 235, 160), 8, DT_LEFT | DT_VCENTER, true);
+            Text(rw[i].second, R4(rew[i].count), RGB(255, 225, 120), 8, DT_LEFT | DT_VCENTER, true);
+        }
+        if (!sp) hint = "Double-click the quest (or click the Hunt box) to accept it.";
+        else if (sp->status == 0) hint = "Ongoing - right-click the quest to abandon it.";
+        else if (sp->status == 2) hint = "Completed - click a reward (or double-click the quest) to claim.";
+        else { sprintf_s(b, "On cooldown: %s", FmtTime(SecsLeft(*sp)).c_str()); hint = b; }
+    }
+    else hint = "Select a quest from the list.";
+
     if (!msg.empty() && GetTickCount() - msgAt < 8000)
-        Text(msg, R4(DQ_MSG), msgOk ? RGB(140, 255, 140) : RGB(255, 140, 120), 8, DT_CENTER | DT_VCENTER);
-
-    // buttons
-    bool canAccept = sq && (!sp), canAbandon = sq && sp && sp->status == 0, canClaim = sq && sp && sp->status == 2;
-    struct B { int ctl; const int* rc; const char* label; bool en; } btns[] = {
-        { C_ACCEPT, DQ_BTN_ACCEPT, "Accept", canAccept }, { C_ABANDON, DQ_BTN_ABANDON, "Abandon", canAbandon },
-        { C_CLAIM, DQ_BTN_CLAIM, "Claim", canClaim }, { C_BCLOSE, DQ_BTN_CLOSE, "Close", true } };
-    for (auto& bt : btns)
-    {
-        Rc r = R4(bt.rc);
-        const char* sk = !bt.en ? "btn_x" : (g_hover == bt.ctl ? (g_pressed == bt.ctl ? "btn_d" : "btn_o") : "btn_n");
-        if (!Skin(sk, r.l, r.t)) Fill(r, 90, 60, 30, 255);
-        Text(bt.label, r, bt.en ? RGB(255, 235, 200) : RGB(120, 118, 112), 8, DT_CENTER | DT_VCENTER, true);
-    }
+        Text(msg, R4(DQ_MSG), msgOk ? RGB(140, 255, 140) : RGB(255, 140, 120), 9, DT_CENTER | DT_VCENTER, true);
+    else
+        Text(hint, R4(DQ_MSG), RGB(200, 200, 170), 8, DT_CENTER | DT_VCENTER);
 
     RECT wr; GetWindowRect(g_hWnd, &wr);
     POINT dst = { wr.left, wr.top }, src = { 0, 0 };
@@ -412,33 +432,51 @@ static void SyncVisibility()
     if (want && g_visible && GetTickCount() - lastSec >= 1000) { lastSec = GetTickCount(); Paint(); }
 }
 
+static void SendQuestOp(BYTE op, int sel) { QueueSend({ WIZ_EXT_HOOK, DQ_SUBOP, op, (BYTE)sel }); }
+
+// accept / claim the selected quest if its state allows it (same rules as the hints)
+static void AcceptOrClaim(bool accept, bool claim)
+{
+    EnterCriticalSection(&g_lock);
+    int sel = g_sel;
+    auto pi = g_prog.find((BYTE)sel);
+    bool none = pi == g_prog.end();
+    bool done = !none && pi->second.status == 2;
+    LeaveCriticalSection(&g_lock);
+    if (sel < 0) return;
+    if (accept && none) SendQuestOp(5, sel);
+    else if (claim && done) SendQuestOp(7, sel);
+}
+
+static void SelectRow(int row)
+{
+    EnterCriticalSection(&g_lock);
+    int qi = g_page * DQ_ROWS + row;
+    if (qi >= 0 && qi < (int)g_quests.size()) g_sel = g_quests[qi].id;
+    LeaveCriticalSection(&g_lock);
+}
+
 static void Activate(int ctl)
 {
-    int sel; EnterCriticalSection(&g_lock); sel = g_sel; LeaveCriticalSection(&g_lock);
-    if (ctl == C_CLOSE || ctl == C_BCLOSE) SetVisible(false);
+    if (ctl == C_CLOSE || ctl == C_CANCEL) SetVisible(false);
     else if (ctl == C_TITLE) QueueSend({ WIZ_EXT_HOOK, DQ_SUBOP, 3 });
-    else if (ctl == C_UP) { EnterCriticalSection(&g_lock); if (g_scroll > 0) g_scroll--; LeaveCriticalSection(&g_lock); }
-    else if (ctl == C_DOWN)
+    else if (ctl == C_PREV) { EnterCriticalSection(&g_lock); if (g_page > 0) g_page--; LeaveCriticalSection(&g_lock); }
+    else if (ctl == C_NEXT)
     {
         EnterCriticalSection(&g_lock);
-        if (g_scroll < (int)g_quests.size() - ROWS_VIS) g_scroll++;
+        if (g_page + 1 < PageCount(g_quests.size())) g_page++;
         LeaveCriticalSection(&g_lock);
     }
+    else if (ctl == C_HUNT1) AcceptOrClaim(true, false);
+    else if (ctl >= C_REW1 && ctl <= C_REW4) AcceptOrClaim(false, true);
     else if (ctl >= C_ROW0)
     {
-        EnterCriticalSection(&g_lock);
-        int qi = g_scroll + (ctl - C_ROW0);
-        if (qi >= 0 && qi < (int)g_quests.size()) g_sel = g_quests[qi].id;
-        LeaveCriticalSection(&g_lock);
-    }
-    else if (sel >= 0 && (ctl == C_ACCEPT || ctl == C_ABANDON || ctl == C_CLAIM))
-    {
-        // re-check the button state under the lock (same rules as the painted enabled state)
-        EnterCriticalSection(&g_lock);
-        auto pi = g_prog.find((BYTE)sel);
-        bool ok = ctl == C_ACCEPT ? pi == g_prog.end() : (pi != g_prog.end() && pi->second.status == (ctl == C_ABANDON ? 0 : 2));
-        LeaveCriticalSection(&g_lock);
-        if (ok) QueueSend({ WIZ_EXT_HOOK, DQ_SUBOP, (BYTE)(ctl == C_ACCEPT ? 5 : ctl == C_ABANDON ? 6 : 7), (BYTE)sel });
+        int row = ctl - C_ROW0;
+        DWORD now = GetTickCount();
+        bool dbl = g_lastRow == row && now - g_lastClick < 450;
+        g_lastRow = row; g_lastClick = now;
+        SelectRow(row);
+        if (dbl) { AcceptOrClaim(true, true); g_lastRow = -1; }
     }
 }
 
@@ -469,12 +507,27 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_MOUSEWHEEL:
         EnterCriticalSection(&g_lock);
-        g_scroll += GET_WHEEL_DELTA_WPARAM(wp) > 0 ? -1 : 1;
-        if (g_scroll > (int)g_quests.size() - ROWS_VIS) g_scroll = (int)g_quests.size() - ROWS_VIS;
-        if (g_scroll < 0) g_scroll = 0;
+        g_page += GET_WHEEL_DELTA_WPARAM(wp) > 0 ? -1 : 1;
+        if (g_page >= PageCount(g_quests.size())) g_page = PageCount(g_quests.size()) - 1;
+        if (g_page < 0) g_page = 0;
         LeaveCriticalSection(&g_lock);
         Paint();
         return 0;
+    case WM_RBUTTONUP:
+    {
+        int hit = HitTest(x, y);
+        if (hit >= C_ROW0)
+        {
+            SelectRow(hit - C_ROW0);
+            EnterCriticalSection(&g_lock);
+            int sel = g_sel; auto pi = g_prog.find((BYTE)sel);
+            bool ongoing = sel >= 0 && pi != g_prog.end() && pi->second.status == 0;
+            LeaveCriticalSection(&g_lock);
+            if (ongoing) SendQuestOp(6, sel);
+            Paint();
+        }
+        return 0;
+    }
     case WM_LBUTTONDOWN:
     {
         int hit = HitTest(x, y);
@@ -573,7 +626,7 @@ void Daily_OnRecv(const BYTE* buf, size_t len)
             bool found = false;
             for (auto& q : g_quests) if (q.id == g_sel) found = true;
             if (!found) g_sel = g_quests.empty() ? -1 : g_quests[0].id;
-            if (g_scroll > max(0, (int)g_quests.size() - ROWS_VIS)) g_scroll = 0;
+            if (g_page >= PageCount(g_quests.size())) g_page = 0;
         }
     }
     else if (op == 1)
