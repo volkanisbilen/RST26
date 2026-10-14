@@ -275,6 +275,7 @@ fn apply_buff_skill(world: &WorldState, owner: SessionId, target: SessionId, ski
         return;
     };
     let buff = crate::handler::magic_process::create_active_buff(skill_id, owner, &type4, true);
+    let duration = buff.duration_secs;
     world.apply_buff(target, buff);
     crate::handler::magic_process::apply_type4_stats(
         world,
@@ -285,6 +286,17 @@ fn apply_buff_skill(world: &WorldState, owner: SessionId, target: SessionId, ski
     );
     world.set_user_ability(target);
     world.send_item_move_refresh(target);
+
+    // the buff icon + timer in the client (same packet a successful cast / a login recast sends)
+    let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+    pkt.write_u8(3); // MAGIC_EFFECTING
+    pkt.write_u32(skill_id);
+    pkt.write_u32(owner as u32);
+    pkt.write_u32(target as u32);
+    for v in [0u32, 1, 0, duration, 0, type4.speed.unwrap_or(0) as u32, 0] {
+        pkt.write_u32(v);
+    }
+    world.send_to_session_owned(target, pkt);
 }
 
 fn resurrect(world: &WorldState, sid: SessionId) {

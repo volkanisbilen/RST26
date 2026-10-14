@@ -1155,7 +1155,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                     let buff_type = t4.buff_type.unwrap_or(0);
                     // C++ checks: !isDebuff() — debuffs have buff_type in debuff range
                     // isDebuff() = buff_type between 100-200 (debuff range)
-                    let is_debuff = (100..=200).contains(&buff_type);
+                    let is_debuff = (100..=200).contains(&buff_type) && buff_type != super::slave_priest::SP_BUFF_TYPE;
                     if buff_type > 0 && !is_debuff {
                         // of lockable scrolls while debuffed on same slot
                         if skill_id > 500000
