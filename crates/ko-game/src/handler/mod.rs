@@ -743,6 +743,10 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
         }
         solo_cape::EXT_SUB_SOLOCAPEICON => solo_cape::handle_icon(session, repack_ext_data(&pkt)).await,
         solo_cape::EXT_SUB_HGGENIE => solo_cape::handle_hggenie(session, repack_ext_data(&pkt)).await,
+        item_upgrade::EXT_SUB_CHAOTIC_OPTS => {
+            item_upgrade::handle_chaotic_opts(session, &pkt.data[1..]);
+            Ok(())
+        }
         slave_priest::EXT_SUB_SLAVEPRIEST => slave_priest::handle(session, repack_ext_data(&pkt)).await,
         manner_store::EXT_SUB_MANNER => manner_store::handle(session, repack_ext_data(&pkt)).await,
         ext_hook::EXT_SUB_RESETREBSTAT => ext_hook::handle_resetrebstat(session),

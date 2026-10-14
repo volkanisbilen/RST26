@@ -94,6 +94,8 @@ void PriceFix_OnRecv(const BYTE* p, size_t len);
 void ItemTip_FlushSendQueue();
 void DropBtn_Tick();
 void ClanKasa_Tick();
+void ChaoticOpts_Tick();
+void ChaoticOpts_OnClick(int x, int y);
 void TargetHp_Init();
 void TargetHp_OnRecv(const BYTE* pkt, int len);
 void ClanKasa_Init();
@@ -236,7 +238,7 @@ static const UINT WM_PROXY_FLUSH = WM_APP + 0x2F1;
 
 static LRESULT CALLBACK ProxyWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
-    if (GetCurrentThreadId() == g_gameTid) { Genie_Tick(h); Anvil_Tick(); Tag_Tick(); DropBtn_Tick(); ClanKasa_Tick(); ItemTip_Tick(); ResetBar_Tick(); NameFlag_Tick(); }
+    if (GetCurrentThreadId() == g_gameTid) { Genie_Tick(h); Anvil_Tick(); Tag_Tick(); DropBtn_Tick(); ClanKasa_Tick(); ChaoticOpts_Tick(); ItemTip_Tick(); ResetBar_Tick(); NameFlag_Tick(); }
     if ((m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN) && GetCurrentThreadId() == g_gameTid) Genie_OnMouseDown((short)LOWORD(l), (short)HIWORD(l));
     if (m == WM_LBUTTONDOWN && GetCurrentThreadId() == g_gameTid) HoldRepeat_OnMouseDown(h, (short)LOWORD(l), (short)HIWORD(l));   // stat / skill "+" hold to repeat
     if (m == WM_TIMER && GetCurrentThreadId() == g_gameTid && HoldRepeat_OnTimer(h, (UINT_PTR)w)) return 0;   // HopeGuard Genie field hint / settings push
@@ -246,6 +248,7 @@ static LRESULT CALLBACK ProxyWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     if (m == WM_KEYDOWN && !(l & 0x40000000) &&
         (w == VK_OEM_5 || (w == 'D' && (GetKeyState(VK_CONTROL) & 0x8000))))
         Drop_Toggle(true);
+    if (m == WM_LBUTTONUP && GetCurrentThreadId() == g_gameTid) ChaoticOpts_OnClick((short)LOWORD(l), (short)HIWORD(l));   // Chaotic Generator count / bank / sell
     if (m == WM_MOUSEWHEEL && Drop_ForwardWheel(w)) return 0;
     if (m == WM_MOUSEWHEEL && GmPanel_ForwardWheel(w, l)) return 0;   // GM panel user list
     if (m == WM_CHAR && GetCurrentThreadId() == g_gameTid && GmPanel_OnGameChar(w)) return 0;

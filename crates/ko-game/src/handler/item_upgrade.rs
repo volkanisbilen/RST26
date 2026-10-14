@@ -200,7 +200,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             item_upgrade(session, &mut reader, upgrade_type).await
         }
         ITEM_BIFROST_REQ => bifrost_piece_req(session).await,
-        ITEM_BIFROST_EXCHANGE => bifrost_piece_exchange(session, &mut reader).await,
+        ITEM_BIFROST_EXCHANGE => bifrost_piece_exchange_opts(session, &mut reader).await,
         PET_HATCHING => pet_hatching(session, &mut reader).await,
         ITEM_SEAL => item_seal_process(session, &mut reader).await,
         PET_IMAGE_TRANSFORM => pet_image_transform(session, &mut reader).await,
@@ -2331,6 +2331,93 @@ enum BeefEffectType {
     White = 3,
 }
 
+/// Chaotic Generator window options (HopeGuard UI: count, Auto Bank, Sell if Not Unique).
+#[derive(Clone, Copy)]
+struct ChaoticOpts {
+    count: u8,
+    bank: bool,
+    sell: bool,
+}
+
+static CHAOTIC_OPTS: std::sync::LazyLock<dashmap::DashMap<u16, ChaoticOpts>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+/// Reward of the exchange that just succeeded (set by `bifrost_piece_exchange`).
+static CHAOTIC_LAST_REWARD: std::sync::LazyLock<dashmap::DashMap<u16, u32>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+pub const EXT_SUB_CHAOTIC_OPTS: u8 = 0xE8;
+
+/// Hook `0xE8`: `[u8 count][u8 bank][u8 sell]` from the Chaotic Generator window.
+pub fn handle_chaotic_opts(session: &mut ClientSession, data: &[u8]) {
+    let mut r = PacketReader::new(data);
+    let count = r.read_u8().unwrap_or(1).clamp(1, 100);
+    let bank = r.read_u8().unwrap_or(0) != 0;
+    let sell = r.read_u8().unwrap_or(0) != 0;
+    CHAOTIC_OPTS.insert(session.session_id(), ChaoticOpts { count, bank, sell });
+}
+
+/// Forget the options of a leaving session.
+pub fn chaotic_opts_cleanup(sid: u16) {
+    CHAOTIC_OPTS.remove(&sid);
+    CHAOTIC_LAST_REWARD.remove(&sid);
+}
+
+/// ITEM_BIFROST_EXCHANGE with the window's options: repeat `count` times, then sell or bank
+/// the rewards (never uniques when selling).
+async fn bifrost_piece_exchange_opts(
+    session: &mut ClientSession,
+    reader: &mut PacketReader<'_>,
+) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let npc = reader.read_u32().unwrap_or(0);
+    let piece = reader.read_u32().unwrap_or(0);
+    let pos = reader.read_i8().unwrap_or(-1);
+    let opts = CHAOTIC_OPTS
+        .get(&sid)
+        .map(|o| *o)
+        .unwrap_or(ChaoticOpts { count: 1, bank: false, sell: false });
+    for i in 0..opts.count.max(1) {
+        CHAOTIC_LAST_REWARD.remove(&sid);
+        if i > 0 {
+            // the 1.5 s exchange cooldown applies to separate requests, not to one counted run
+            world.update_session(sid, |h| {
+                h.beef_exchange_time = std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(2))
+                    .unwrap_or_else(std::time::Instant::now);
+            });
+        }
+        let mut data = Vec::with_capacity(9);
+        data.extend_from_slice(&npc.to_le_bytes());
+        data.extend_from_slice(&piece.to_le_bytes());
+        data.push(pos as u8);
+        let mut r = PacketReader::new(&data);
+        bifrost_piece_exchange(session, &mut r).await?;
+        let Some((_, reward)) = CHAOTIC_LAST_REWARD.remove(&sid) else {
+            break; // failed (no pieces left, bag full ...): the run ends
+        };
+        let Some(item) = world.get_item(reward) else {
+            continue;
+        };
+        let is_unique = item.item_type.unwrap_or(0) == 4;
+        if opts.sell && !is_unique {
+            let price = if item.sell_npc_type.unwrap_or(0) == 1 {
+                item.sell_npc_price.unwrap_or(0).max(0) as u32
+            } else if item.sell_price.unwrap_or(0) == 1 {
+                item.buy_price.unwrap_or(0).max(0) as u32
+            } else {
+                item.buy_price.unwrap_or(0).max(0) as u32 / 6
+            };
+            if world.rob_item(sid, reward, 1) {
+                world.gold_gain(sid, price);
+            }
+        } else if opts.bank && super::warehouse::bank_item(session, reward, 1).await {
+            world.rob_item(sid, reward, 1);
+        }
+    }
+    Ok(())
+}
+
 /// Handle ITEM_BIFROST_REQ (sub=4) — simple NPC validation + success response.
 async fn bifrost_piece_req(session: &mut ClientSession) -> anyhow::Result<()> {
     let mut pkt = Packet::new(Opcode::WizItemUpgrade as u8);
@@ -2632,6 +2719,7 @@ async fn bifrost_piece_exchange(
     result.write_i8(src_pos);
     result.write_u8(effect_type as u8);
     session.send_packet(&result).await?;
+    CHAOTIC_LAST_REWARD.insert(sid, reward_item_id);
 
     // Send the exact remaining source count after the exchange response. This
     // is authoritative and corrects the client's local decrement/cache state.

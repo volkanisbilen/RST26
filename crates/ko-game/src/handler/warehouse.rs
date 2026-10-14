@@ -168,6 +168,56 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 }
 
+/// Put `count` of an item into the player's warehouse (Chaotic Generator "Auto Bank").
+/// Loads the warehouse from the DB when it was not opened yet and saves the touched slot.
+pub(crate) async fn bank_item(session: &mut ClientSession, item_id: u32, count: u16) -> bool {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    if !world.is_warehouse_loaded(sid) {
+        let Some(account_id) = session.account_id().map(|a| a.to_string()) else {
+            return false;
+        };
+        let repo = CharacterRepository::new(session.pool());
+        let (Ok(db_items), Ok(inn_coins)) = (
+            repo.load_warehouse_items(&account_id).await,
+            repo.load_warehouse_coins(&account_id).await,
+        ) else {
+            return false;
+        };
+        let mut warehouse = vec![UserItemSlot::default(); WAREHOUSE_MAX];
+        for row in &db_items {
+            let idx = row.slot_index as usize;
+            if idx < WAREHOUSE_MAX {
+                warehouse[idx] = UserItemSlot {
+                    item_id: row.item_id as u32,
+                    durability: row.durability,
+                    count: row.count as u16,
+                    flag: row.flag as u8,
+                    original_flag: row.original_flag as u8,
+                    serial_num: row.serial_num as u64,
+                    expire_time: row.expire_time as u32,
+                };
+            }
+        }
+        world.set_warehouse(sid, warehouse, inn_coins as u32);
+    }
+    let before = world.get_warehouse(sid);
+    if !world.give_warehouse_item(sid, item_id, count, 0) {
+        return false;
+    }
+    let after = world.get_warehouse(sid);
+    for (i, slot) in after.iter().enumerate() {
+        let changed = before
+            .get(i)
+            .map(|b| b.item_id != slot.item_id || b.count != slot.count)
+            .unwrap_or(true);
+        if changed {
+            save_warehouse_slot_async(session, i);
+        }
+    }
+    true
+}
+
 /// Handle WAREHOUSE_OPEN (sub-opcode 1).
 /// PK zone: costs 10,000 gold to open.
 /// Response: `[u8 WAREHOUSE_OPEN] [u8 1=success] [u32 inn_coins]`
