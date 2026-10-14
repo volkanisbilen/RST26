@@ -113,6 +113,29 @@ fn valid_options(data: &[u8]) -> bool {
     count <= 32 && data.len() == offset + 44 && data[offset..offset + 2] == [42, 0]
 }
 
+/// The HopeGuard client saves the game's own options padded to 180 bytes followed by its own 220 byte block
+/// (genie leader / go range / party code / mob list): 400 bytes in total (`DLL genie_hg.cpp`).
+const HG_NATIVE_LEN: usize = 180;
+const HG_BLOCK_LEN: usize = 220;
+const HG_BLOB_LEN: usize = HG_NATIVE_LEN + HG_BLOCK_LEN;
+/// Hook sub-opcode of the genie channel (`E9 ED`), op 4 carries the HopeGuard block to the client.
+const EXT_SUB_HGGENIE: u8 = 0xED;
+
+/// Length of the game's own option structure at the start of `data` (None when it is not one).
+fn native_len(data: &[u8]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    let count = u16::from_le_bytes([data[0], data[1]]) as usize;
+    let offset = 2 + count * 4;
+    (count <= 32 && data.len() >= offset + 44 && data[offset..offset + 2] == [42, 0]).then_some(offset + 44)
+}
+
+/// A saved blob: the game's own options alone, or the 400 byte HopeGuard blob.
+fn valid_payload(data: &[u8]) -> bool {
+    valid_options(data) || (data.len() == HG_BLOB_LEN && native_len(&data[..HG_NATIVE_LEN]).is_some())
+}
+
 fn default_options() -> Vec<u8> {
     let mut options = vec![0; GENIE_OPTIONS_DEFAULT_SIZE];
     options[2] = 42;
@@ -386,16 +409,30 @@ pub(crate) async fn handle_load_options(session: &mut ClientSession) -> anyhow::
     let world = session.world();
 
     // Get saved options from session data (or default zeros)
-    let options = world
+    let saved = world
         .with_session(sid, |h| h.genie_options.clone())
-        .filter(|saved| valid_options(saved))
-        .unwrap_or_else(default_options);
+        .filter(|saved| valid_payload(saved));
+    let (options, hg_block): (Vec<u8>, Option<Vec<u8>>) = match saved {
+        Some(blob) if blob.len() == HG_BLOB_LEN => {
+            let n = native_len(&blob[..HG_NATIVE_LEN]).unwrap_or(0);
+            (blob[..n].to_vec(), Some(blob[HG_NATIVE_LEN..].to_vec()))
+        }
+        Some(blob) => (blob, None),
+        None => (default_options(), None),
+    };
 
     let mut resp = Packet::new(Opcode::WizGenie as u8);
     resp.write_u8(GENIE_INFO_REQUEST);
     resp.write_u8(GENIE_LOAD_OPTIONS);
     resp.data.extend_from_slice(&options);
     session.send_packet(&resp).await?;
+    if let Some(block) = hg_block {
+        let mut hook = Packet::new(Opcode::EXT_HOOK_S2C);
+        hook.write_u8(EXT_SUB_HGGENIE);
+        hook.write_u8(4);
+        hook.data.extend_from_slice(&block);
+        session.send_packet(&hook).await?;
+    }
 
     tracing::info!(
         "[{}] WIZ_GENIE: LoadOptions sent ({} bytes)",
@@ -416,7 +453,7 @@ async fn handle_save_options(
 
     // Reject incomplete payloads without destroying the last complete settings.
     let payload = r.read_remaining();
-    if !valid_options(payload) {
+    if !valid_payload(payload) {
         warn!(
             "WIZ_GENIE: rejected malformed options: sid={}, bytes={}",
             sid,

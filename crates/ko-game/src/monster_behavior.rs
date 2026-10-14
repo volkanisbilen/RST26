@@ -1,7 +1,7 @@
 //! Server-wide monster behaviour rules on top of the NPC table:
-//! - monsters of level >= `aggro_level` attack players that pass by (the table marks almost every
-//!   monster as passive, act_type 1 = only fights back when hit),
-//! - a monster that is hit/engaged calls same-kind monsters within `assist_range` metres,
+//! - monsters fight only when they are attacked (the table's act_type 1); `+aggro level <n>` can make monsters
+//!   of level >= n attack passers-by again (0 = off, the default),
+//! - a monster that is hit/engaged calls the monsters (any kind) within `assist_range` metres,
 //! - GM characters are ignored by monsters unless `gm_aggro` is on (so GM test characters can walk),
 //! - a few template fixes (Juraid's Deva Bird has no search range, the Manes dragon HP).
 //!
@@ -19,7 +19,8 @@ pub const MANES_DRAGON_SID: u16 = 10733;
 /// The Manes dragon has this many times its table HP.
 pub const MANES_DRAGON_HP_FACTOR: u32 = 2;
 
-static AGGRO_MIN_LEVEL: AtomicU32 = AtomicU32::new(40);
+/// 0 = off: monsters only fight when they are attacked (the table's own aggressive monsters excepted).
+static AGGRO_MIN_LEVEL: AtomicU32 = AtomicU32::new(0);
 static ASSIST_RANGE_BITS: AtomicU32 = AtomicU32::new(0x40A0_0000); // 5.0
 static GM_AGGRO: AtomicBool = AtomicBool::new(false);
 
@@ -55,6 +56,8 @@ pub fn load() {
     let Ok(text) = std::fs::read_to_string(FILE) else {
         return;
     };
+    // files without "version=2" come from the first release (level 40 aggression): that part is not wanted any more
+    let current = text.lines().any(|l| l.trim() == "version=2");
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -62,6 +65,9 @@ pub fn load() {
         let value = value.trim();
         match key.trim() {
             "aggro_level" => {
+                if !current {
+                    continue;
+                }
                 if let Ok(v) = value.parse::<u32>() {
                     AGGRO_MIN_LEVEL.store(v, Ordering::Relaxed);
                 }
@@ -79,7 +85,7 @@ pub fn load() {
 
 fn save() {
     let text = format!(
-        "aggro_level={}\nassist_range={}\ngm_aggro={}\n",
+        "version=2\naggro_level={}\nassist_range={}\ngm_aggro={}\n",
         aggro_min_level(),
         assist_range(),
         u8::from(gm_aggro())
@@ -109,8 +115,8 @@ pub fn adjust_template(t: &mut NpcTemplate) {
 /// `(is_aggressive, attack_type, has_friends)` for a monster AI state.
 pub fn ai_flags(tmpl: &NpcTemplate, zone_id: u16) -> (bool, u8, bool) {
     let table_aggressive = !matches!(tmpl.act_type, 1..=4);
-    let aggressive =
-        table_aggressive || (tmpl.is_monster && tmpl.level as u32 >= aggro_min_level().max(1));
+    let min = aggro_min_level();
+    let aggressive = table_aggressive || (min > 0 && tmpl.is_monster && tmpl.level as u32 >= min);
     let pk_zone = matches!(
         zone_id,
         ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE

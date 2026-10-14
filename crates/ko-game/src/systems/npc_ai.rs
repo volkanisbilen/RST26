@@ -2627,14 +2627,8 @@ fn alert_pack(
             None => continue,
         };
 
-        // same family, or simply the same kind of monster
-        if !(pack_family_matches(
-            ai.family_type,
-            ally_ai.family_type,
-            is_boss,
-            ally_ai.has_friends,
-        ) || (!is_boss && ally_ai.has_friends && ally_inst.proto_id == caller_inst.proto_id))
-        {
+        // any monster within the assist range joins, whatever its kind (bosses never recruit)
+        if is_boss || !ally_ai.has_friends {
             continue;
         }
         let ally_tmpl = match world.get_npc_template(ally_inst.proto_id, ally_inst.is_monster) {

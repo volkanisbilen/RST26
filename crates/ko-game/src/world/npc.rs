@@ -376,16 +376,11 @@ impl WorldState {
             } else {
                 // MonSearchSameFamily: only same-family NPCs with has_friends
                 //   if (pNpc->m_bHasFriends && pNpc->m_proto->m_byFamilyType == m_proto->m_byFamilyType)
+                // any monster close to the hit one joins (the 5 m assist range), whatever its kind
                 if !friend_ai.has_friends {
                     continue;
                 }
-                let same_family = family_type != 0 && friend_ai.family_type == family_type;
-                let same_species = self
-                    .get_npc_instance(friend_nid)
-                    .is_some_and(|i| i.proto_id == caller_proto);
-                if !same_family && !same_species {
-                    continue;
-                }
+                let _ = (family_type, caller_proto);
             }
 
             // Check NPC is not dead (HP check)
