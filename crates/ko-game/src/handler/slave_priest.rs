@@ -235,7 +235,12 @@ pub fn tick(world: &WorldState) {
         let Some(mut st) = STATES.get(&owner).map(|s| *s) else {
             continue;
         };
-        if !st.active || st.last_act.elapsed().as_secs() < 2 {
+        if !st.active {
+            // stopped: the scroll's time stands still until the priest is started again
+            world.pause_buff_second(owner, SP_BUFF_TYPE);
+            continue;
+        }
+        if st.last_act.elapsed().as_secs() < 2 {
             continue;
         }
         st.last_act = Instant::now();

@@ -35,6 +35,7 @@ static void PatchComboWalkUp();
 static void PatchSkillPlacement();
 static void PatchSlotHitTest();
 static void PatchEventMenu();
+void MannerStore_Open();
 extern "C" volatile int g_hgEventEntry = -1;   // last event menu entry picked (sub_7D7A60), -1 = none
 
 namespace
@@ -494,9 +495,8 @@ namespace
             g_hgEventEntry = -1;
             if (entry == 4)
             {
-                BYTE open[3] = { 0xCC, 0x01, 0x02 };
-                Log("COIN: open request (CC 01 02)");
-                g_sendTramp(sock, open, 3);
+                Log("MANNER: event menu entry 4 -> Manner Store");
+                MannerStore_Open();                                // entry 4 is relabelled "Manner Store"
                 return;
             }
         }

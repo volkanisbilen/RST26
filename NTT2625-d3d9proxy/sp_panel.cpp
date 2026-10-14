@@ -49,7 +49,7 @@ static HCURSOR g_gameCursor = nullptr;
 static DWORD SecondsLeft()
 {
     DWORD left = g_secondsLeft;
-    if (left) { DWORD el = (GetTickCount() - g_secondsAt) / 1000; left = el < left ? left - el : 0; }
+    if (left && g_active) { DWORD el = (GetTickCount() - g_secondsAt) / 1000; left = el < left ? left - el : 0; }
     return left;
 }
 

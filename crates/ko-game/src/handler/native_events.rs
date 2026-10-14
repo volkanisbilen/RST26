@@ -29,6 +29,7 @@ const EVENT_HUB_ATTENDANCE_SELECT: u8 = 4;
 const EVENT_HUB_ROULETTE: u8 = 2;
 const EVENT_HUB_JIGSAW: u8 = 3;
 const EVENT_HUB_MARBLE: u8 = 5;
+const EVENT_HUB_MANNER: u8 = 4;
 // v2615's Moradon Akara instance uses proto 31774 with picture 30001. It
 // must remain a nation-3 NPC; nation/group 0 makes the client classify the
 // statue as an attack target and suppress WIZ_NPC_EVENT on right-click.
@@ -207,6 +208,9 @@ async fn native_event_hub_open(
             active.push((event_id, 1u8));
         }
     }
+
+    // client entry 4 (the old Coin Shop) is relabelled "Manner Store" and opened by the HopeGuard DLL
+    active.push((EVENT_HUB_MANNER, 1u8));
 
     let out = native_event_hub_packet(&active);
     session.send_packet(&out).await?;

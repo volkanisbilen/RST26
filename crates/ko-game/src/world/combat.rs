@@ -275,6 +275,16 @@ impl WorldState {
         }
         false
     }
+    /// Give one second back to a running buff (its timer stands still while paused).
+    pub fn pause_buff_second(&self, sid: SessionId, buff_type: i32) {
+        if let Some(mut handle) = self.sessions.get_mut(&sid) {
+            if let Some(buff) = handle.buffs.get_mut(&buff_type) {
+                if buff.duration_secs > 0 {
+                    buff.duration_secs = buff.duration_secs.saturating_add(1);
+                }
+            }
+        }
+    }
     /// Get all active buffs for a session (cloned).
     pub fn get_active_buffs(&self, sid: SessionId) -> Vec<ActiveBuff> {
         self.sessions
