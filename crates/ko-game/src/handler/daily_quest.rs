@@ -171,7 +171,14 @@ pub(crate) fn daily_quest_tip_id(quest_id: i16) -> u16 {
 /// Mirror selected daily quests into the same in-memory quest map used by
 /// Patrick/Lua quests. Quest Tips is populated from this map; merely appending
 /// IDs to an outgoing packet is not sufficient for the v2615 client flow.
+/// Daily quests are shown by the HopeGuard panel and the on-screen kill counter only: they are NOT put
+/// into the game's right-side Quest Tips list or its four native slots.
+const DAILY_IN_NATIVE_TIPS: bool = false;
+
 pub(crate) fn sync_daily_quests_into_normal_map(world: &WorldState, sid: SessionId) {
+    if !DAILY_IN_NATIVE_TIPS {
+        return;
+    }
     let selected = world
         .with_session(sid, |handle| handle.daily_quests.clone())
         .unwrap_or_default();
@@ -209,6 +216,9 @@ pub(crate) fn sync_daily_quests_into_normal_map(world: &WorldState, sid: Session
 /// The daily quest UI is separate from the right-side Quest Tips UI. Mirror
 /// a selected daily into the latter with its client-only Quest_Guide ID.
 fn send_daily_quest_tip(world: &WorldState, sid: SessionId, quest_id: i16, kills: i32) {
+    if !DAILY_IN_NATIVE_TIPS {
+        return;
+    }
     let tip_id = daily_quest_tip_id(quest_id);
     let mut state_pkt = Packet::new(Opcode::WizQuest as u8);
     state_pkt.write_u8(2);
@@ -817,6 +827,9 @@ pub fn daily_quest_send_list(world: &WorldState, sid: SessionId) {
 
 /// Native 0xC7 slot init (max 4 slots) plus chat fallback.
 fn send_native_slots(world: &WorldState, sid: SessionId) {
+    if !DAILY_IN_NATIVE_TIPS {
+        return;
+    }
     let all_defs = world.get_all_daily_quests();
     let user_quests = match world.with_session(sid, |h| h.daily_quests.clone()) {
         Some(q) => q,
