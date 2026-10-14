@@ -8,7 +8,7 @@
 //! GM: `+golemopen`, `+golemend`, `+golemauto on|off` (14:00 and 22:00 server time).
 //! Client identities: mob_us.tbl 9929 "Flame Golem" / 9930 "Ice Golem".
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -37,10 +37,15 @@ const CLIENT_BATTLE_SECS: u64 = 1800;
 const KARUS_FIRST: bool = true;
 const AUTO_HOURS: [u32; 2] = [14, 22];
 
+#[allow(dead_code)]
 const ITEM_DUAL_POTION: u32 = 811_182_000;
+#[allow(dead_code)]
 const ITEM_HEROS_VOW: u32 = 811_065_000;
+#[allow(dead_code)]
 const ITEM_EVENT_EMBLEM: u32 = 1_900_004_000;
+#[allow(dead_code)]
 const ITEM_EMBLEM_VOUCHER_30D: u32 = 931_734_000;
+#[allow(dead_code)]
 const ITEM_LUNAR_WAR_BELT: u32 = 340_710_000;
 
 static AUTO: AtomicBool = AtomicBool::new(false);
@@ -332,8 +337,6 @@ fn finish(world: &WorldState, st: &mut State) {
     let notify = |sid: SessionId, msg: &str| {
         world.send_to_session_owned(sid, build_notice_packet(8, msg));
     };
-    let give = |sid: SessionId, item: u32, count: u16| -> bool { world.give_item(sid, item, count) };
-
     let pick = |list: &[SessionId], n: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<SessionId> {
         let mut v = list.to_vec();
         v.shuffle(rng);
@@ -341,57 +344,44 @@ fn finish(world: &WorldState, st: &mut State) {
         v
     };
 
+    // rewards from the web panel (event_reward_rule, event "golem"): cond win / lose / draw / belt, pick = how many
+    // random players of the group get the row (0 = all of them), chance = percent
+    let rules = world.reward_rules_for("golem");
+    let grant = |group: &[SessionId], cond: &str, rng: &mut rand::rngs::ThreadRng| {
+        for r in rules.iter().filter(|r| r.cond == cond) {
+            let chosen = if r.pick > 0 { pick(group, r.pick as usize, rng) } else { group.to_vec() };
+            for sid in chosen {
+                if r.chance < 100 && rng.gen_range(0..100) >= r.chance {
+                    continue;
+                }
+                if world.give_rule_item(sid, r) && cond == "belt" {
+                    notify(sid, "[Fire & Ice] You found a special reward!");
+                }
+            }
+        }
+    };
+
     let all: Vec<SessionId> = killers.iter().map(|(s, _)| *s).collect();
     match winner {
         Some(w) => {
             let winners: Vec<SessionId> = killers.iter().filter(|(_, n)| *n == w).map(|(s, _)| *s).collect();
             let losers: Vec<SessionId> = killers.iter().filter(|(_, n)| *n != w).map(|(s, _)| *s).collect();
-            let vow_winners: HashSet<SessionId> = pick(&winners, 2, &mut rng).into_iter().collect();
-            let voucher: HashSet<SessionId> = pick(&winners, 1, &mut rng).into_iter().collect();
+            grant(&winners, "win", &mut rng);
             for &sid in &winners {
-                give(sid, ITEM_DUAL_POTION, 3);
-                world.give_item_with_expiry(sid, ITEM_EVENT_EMBLEM, 1, 1);
-                if vow_winners.contains(&sid) {
-                    give(sid, ITEM_HEROS_VOW, 22);
-                }
-                if voucher.contains(&sid) {
-                    world.give_item_with_expiry(sid, ITEM_EMBLEM_VOUCHER_30D, 1, 30);
-                }
-                notify(sid, "[Fire & Ice] Victory! 3 Dual Potion and a 24 hour Event Emblem were added to your bag.");
+                notify(sid, "[Fire & Ice] Victory! Your rewards were added to your bag.");
             }
-            let vow_losers: HashSet<SessionId> = pick(&losers, 1, &mut rng).into_iter().collect();
+            grant(&losers, "lose", &mut rng);
             for &sid in &losers {
-                give(sid, ITEM_DUAL_POTION, 1);
-                world.give_item_with_expiry(sid, ITEM_EVENT_EMBLEM, 1, 1);
-                if vow_losers.contains(&sid) {
-                    give(sid, ITEM_HEROS_VOW, 22);
-                }
-                notify(sid, "[Fire & Ice] Your nation lost. 1 Dual Potion and an Event Emblem were added to your bag.");
+                notify(sid, "[Fire & Ice] Your nation lost. Participation rewards were added to your bag.");
             }
         }
         None => {
-            let vow: HashSet<SessionId> = pick(&all, 3, &mut rng).into_iter().collect();
-            let voucher: HashSet<SessionId> = pick(&all, 1, &mut rng).into_iter().collect();
+            grant(&all, "draw", &mut rng);
             for &sid in &all {
-                give(sid, ITEM_DUAL_POTION, 3);
-                world.give_item_with_expiry(sid, ITEM_EVENT_EMBLEM, 1, 1);
-                if vow.contains(&sid) {
-                    give(sid, ITEM_HEROS_VOW, 22);
-                }
-                if voucher.contains(&sid) {
-                    world.give_item_with_expiry(sid, ITEM_EMBLEM_VOUCHER_30D, 1, 30);
-                }
                 notify(sid, "[Fire & Ice] Draw. Participation rewards were added to your bag.");
             }
         }
     }
-
-    // one run: a small chance that one participant finds a Lunar War Belt
-    if !all.is_empty() && rng.gen_range(0..100) < 5 {
-        let lucky = all[rng.gen_range(0..all.len())];
-        if give(lucky, ITEM_LUNAR_WAR_BELT, 1) {
-            notify(lucky, "[Fire & Ice] You found a Lunar War Belt!");
-        }
-    }
+    grant(&all, "belt", &mut rng);
     info!(karus, elmo, participants = all.len(), "Fire & Ice golem war finished");
 }

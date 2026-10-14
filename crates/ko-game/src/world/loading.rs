@@ -203,6 +203,7 @@ impl WorldState {
         self.load_dungeon_tables(pool).await;
 
         self.load_collection_race(pool).await;
+        let _ = self.reload_reward_rules(pool).await; // table made by the web panel, may not exist yet
 
         // ─── Under The Castle / Daily Quest Loading ─────────────────────────────
         self.load_misc_event_tables(pool).await;
@@ -2198,6 +2199,24 @@ impl WorldState {
             "collection_race" => {
                 self.load_collection_race(pool).await;
                 Ok("collection race reloaded".into())
+            }
+            "reward_rules" => self.reload_reward_rules(pool).await.map(|n| format!("{n} reward rules")).map_err(|e| e.to_string()),
+            "pus" => {
+                let cash_shop_repo = CashShopRepository::new(pool);
+                let cats = cash_shop_repo.load_all_categories().await.map_err(|e| e.to_string())?;
+                let items = cash_shop_repo.load_all_items().await.map_err(|e| e.to_string())?;
+                self.pus_categories.clear();
+                self.pus_items_by_id.clear();
+                self.pus_items_by_category.clear();
+                for r in &cats {
+                    self.pus_categories.insert(r.category_id, r.clone());
+                }
+                let n = items.len();
+                for r in items {
+                    self.pus_items_by_id.insert(r.id, r.clone());
+                    self.pus_items_by_category.entry(r.category).or_default().push(r);
+                }
+                Ok(format!("{n} Power Up Store items"))
             }
             other => Err(format!("unknown reward table {other}")),
         }

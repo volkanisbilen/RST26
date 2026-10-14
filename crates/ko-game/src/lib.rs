@@ -9,6 +9,7 @@
 //! - Shared packet I/O (framing, encryption)
 
 pub mod admin_queue;
+pub mod reward_rules;
 pub mod admin_web;
 pub mod attack_constants;
 pub mod buff_constants;

@@ -109,3 +109,55 @@ CREATE TABLE IF NOT EXISTS kc_ledger (
 )
 -- ;;
 CREATE INDEX IF NOT EXISTS idx_kc_ledger_acc ON kc_ledger (account, at DESC)
+-- ;;
+CREATE TABLE IF NOT EXISTS event_reward_rule (
+    id         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    event_key  VARCHAR(20) NOT NULL,
+    cond       VARCHAR(24) NOT NULL,
+    rank_from  INTEGER NOT NULL DEFAULT 0,
+    rank_to    INTEGER NOT NULL DEFAULT 0,
+    pick       INTEGER NOT NULL DEFAULT 0,
+    chance     INTEGER NOT NULL DEFAULT 100,
+    item_id    INTEGER NOT NULL DEFAULT 0,
+    item_count INTEGER NOT NULL DEFAULT 1,
+    days       INTEGER NOT NULL DEFAULT 0,
+    enabled    BOOLEAN NOT NULL DEFAULT TRUE,
+    note       VARCHAR(80) NOT NULL DEFAULT ''
+)
+-- ;;
+INSERT INTO event_reward_rule(event_key,cond,pick,chance,item_id,item_count,days,note)
+SELECT * FROM (VALUES
+ ('ultima','survive',0,100,389161000,1,0,'Fragment of Gluttony'),
+ ('ultima','survive',0,100,389160000,1,0,'Fragment of Arrogance'),
+ ('ultima','stage1',0,100,800051000,1,0,'1. safhada elenen: Ascent Scroll'),
+ ('ultima','stage2',0,100,389160000,1,0,'2. safhada elenen: Fragment of Arrogance'),
+ ('ultima','stage3',0,100,389161000,1,0,'3. ve sonraki safha: Fragment of Gluttony'),
+ ('ultima','box',0,60,810432000,1,30,'Boss kutusu: Lunar Tattoo (sans = hasar payi x3, en çok bu yüzde)')
+) AS v(event_key,cond,pick,chance,item_id,item_count,days,note)
+WHERE NOT EXISTS (SELECT 1 FROM event_reward_rule WHERE event_key='ultima')
+-- ;;
+INSERT INTO event_reward_rule(event_key,cond,pick,chance,item_id,item_count,days,note)
+SELECT * FROM (VALUES
+ ('golem','win',0,100,811182000,3,0,'Kazananlar: Dual Potion'),
+ ('golem','win',0,100,1900004000,1,1,'Kazananlar: Event Emblem 1 gün'),
+ ('golem','win',2,100,811065000,22,0,'Kazananlardan 2 kişi: Hero''s Vow'),
+ ('golem','win',1,100,931734000,1,30,'Kazananlardan 1 kişi: Emblem Voucher 30 gün'),
+ ('golem','lose',0,100,811182000,1,0,'Kaybedenler: Dual Potion'),
+ ('golem','lose',0,100,1900004000,1,1,'Kaybedenler: Event Emblem 1 gün'),
+ ('golem','lose',1,100,811065000,22,0,'Kaybedenlerden 1 kişi: Hero''s Vow'),
+ ('golem','draw',0,100,811182000,3,0,'Beraberlik: Dual Potion'),
+ ('golem','draw',0,100,1900004000,1,1,'Beraberlik: Event Emblem 1 gün'),
+ ('golem','draw',3,100,811065000,22,0,'Beraberlikte 3 kişi: Hero''s Vow'),
+ ('golem','draw',1,100,931734000,1,30,'Beraberlikte 1 kişi: Emblem Voucher 30 gün'),
+ ('golem','belt',1,5,340710000,1,0,'Katılanlardan 1 kişi, %5: Lunar War Belt')
+) AS v(event_key,cond,pick,chance,item_id,item_count,days,note)
+WHERE NOT EXISTS (SELECT 1 FROM event_reward_rule WHERE event_key='golem')
+-- ;;
+INSERT INTO event_reward_rule(event_key,cond,rank_from,rank_to,item_id,item_count,note)
+SELECT * FROM (VALUES
+ ('manes','rank',1,1,978026000,150,'1. sıra: Manes Orb'),
+ ('manes','rank',2,2,978026000,100,'2. sıra: Manes Orb'),
+ ('manes','rank',3,3,978026000,50,'3. sıra: Manes Orb'),
+ ('manes','rank',4,0,978026000,20,'4. ve sonrası: Manes Orb')
+) AS v(event_key,cond,rank_from,rank_to,item_id,item_count,note)
+WHERE NOT EXISTS (SELECT 1 FROM event_reward_rule WHERE event_key='manes')

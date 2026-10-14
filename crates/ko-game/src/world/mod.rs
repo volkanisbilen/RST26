@@ -891,6 +891,8 @@ pub struct WorldState {
     /// Collection Race event definition table (loaded from DB at startup).
     ///
     pub(crate) collection_race_settings: DashMap<i16, crate::handler::collection_race::CrEventDef>,
+    /// Rewards of the events edited in the web panel (event_reward_rule), see `reward_rules`.
+    pub(crate) reward_rules: parking_lot::RwLock<Vec<crate::reward_rules::RewardRule>>,
 
     // ── Wheel of Fun ─────────────────────────────────────────────────────────
     /// Wheel of Fun settings loaded from DB at startup.
@@ -1162,6 +1164,7 @@ impl WorldState {
             lottery_process: crate::handler::lottery::new_lottery_process(),
             collection_race_event: crate::handler::collection_race::new_collection_race_event(),
             collection_race_settings: DashMap::new(),
+            reward_rules: parking_lot::RwLock::new(Vec::new()),
             wheel_of_fun_settings: parking_lot::RwLock::new(Vec::new()),
             anti_afk_npc_ids: parking_lot::RwLock::new(Vec::new()),
             santa_or_angel: std::sync::atomic::AtomicU8::new(0),
@@ -1406,6 +1409,7 @@ impl WorldState {
             lottery_process: crate::handler::lottery::new_lottery_process(),
             collection_race_event: crate::handler::collection_race::new_collection_race_event(),
             collection_race_settings: DashMap::new(),
+            reward_rules: parking_lot::RwLock::new(Vec::new()),
             wheel_of_fun_settings: parking_lot::RwLock::new(Vec::new()),
             anti_afk_npc_ids: parking_lot::RwLock::new(Vec::new()),
             santa_or_angel: std::sync::atomic::AtomicU8::new(0),

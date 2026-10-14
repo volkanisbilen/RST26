@@ -67,9 +67,13 @@ const SEAL_HIT: i32 = 500;
 const ROOM_BASE: u16 = 200;
 const THRESHOLDS: [i64; 3] = [70, 40, 10];
 
+#[allow(dead_code)]
 const ITEM_ASCENT_SCROLL: u32 = 800_051_000;
+#[allow(dead_code)]
 const ITEM_ARROGANCE: u32 = 389_160_000;
+#[allow(dead_code)]
 const ITEM_GLUTTONY: u32 = 389_161_000;
+#[allow(dead_code)]
 const ITEM_LUNAR_TATTOO: u32 = 810_432_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -761,35 +765,40 @@ fn finish_room(world: &WorldState, room: &mut Room, victory: bool, now: u64) {
     let total: i64 = damage.values().map(|&d| d as i64).sum::<i64>().max(1);
     let done = room.attacks_done;
 
+    // the rewards come from the web panel (event_reward_rule, event "ultima"); old built-in ones when none
+    let rules = world.reward_rules_for("ultima");
     for p in &room.players {
         let survivor = victory && p.out_stage.is_none();
         let stage = p.out_stage.unwrap_or(done);
-        let mut rewards: Vec<(u32, &str)> = Vec::new();
-        if survivor {
-            rewards.push((ITEM_GLUTTONY, "Fragment of Gluttony"));
-            rewards.push((ITEM_ARROGANCE, "Fragment of Arrogance"));
+        let cond = if survivor {
+            "survive"
         } else {
             match stage {
-                0 => {}
-                1 => rewards.push((ITEM_ASCENT_SCROLL, "Ascent Scroll")),
-                2 => rewards.push((ITEM_ARROGANCE, "Fragment of Arrogance")),
-                _ => rewards.push((ITEM_GLUTTONY, "Fragment of Gluttony")),
+                0 => "",
+                1 => "stage1",
+                2 => "stage2",
+                _ => "stage3",
             }
-        }
-        for (item, name) in rewards {
-            if world.give_item(p.sid, item, 1) {
+        };
+        for r in rules.iter().filter(|r| !cond.is_empty() && r.cond == cond) {
+            if r.chance < 100 && rand::thread_rng().gen_range(0..100) >= r.chance {
+                continue;
+            }
+            let name = world.get_item(r.item_id).and_then(|i| i.str_name.clone()).unwrap_or_else(|| format!("#{}", r.item_id));
+            if world.give_rule_item(p.sid, r) {
                 notice(world, p.sid, &format!("Ultima's Dungeon reward: {name}."));
             } else {
                 notice(world, p.sid, &format!("Your bag is full: {name} could not be given."));
             }
         }
         if survivor {
-            // boss box: the more damage, the better the chance of a 30 day Lunar Tattoo
+            // boss box: the more damage, the better the chance (damage share x 3 %, at most the rule's chance)
             let share = damage.get(&p.sid).copied().unwrap_or(0) as i64 * 100 / total;
-            let chance = (share * 3).clamp(1, 60);
-            if rand::thread_rng().gen_range(0..100) < chance {
-                if world.give_item_with_expiry(p.sid, ITEM_LUNAR_TATTOO, 1, 30) {
-                    notice(world, p.sid, "The boss box held a Lunar Tattoo (30 days)!");
+            for r in rules.iter().filter(|r| r.cond == "box") {
+                let chance = (share * 3).clamp(1, r.chance.clamp(1, 100) as i64);
+                if rand::thread_rng().gen_range(0..100) < chance && world.give_rule_item(p.sid, r) {
+                    let name = world.get_item(r.item_id).and_then(|i| i.str_name.clone()).unwrap_or_else(|| format!("#{}", r.item_id));
+                    notice(world, p.sid, &format!("The boss box held {name}!"));
                 }
             }
         }

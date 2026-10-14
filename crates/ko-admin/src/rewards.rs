@@ -50,6 +50,27 @@ struct Sys {
 
 const SYSTEMS: &[Sys] = &[
     Sys {
+        key: "event_rules", title: "Ultima / Fire & Ice (Golem) / Manes Survival ödülleri", group: "Savaş & Etkinlik",
+        note: "event_key: ultima | golem | manes.  cond — ultima: survive (boss'u yenip hayatta kalan), stage1 / stage2 / stage3 (o safhada elenen), box (boss kutusu; şans % = en yüksek yüzde, gerçek şans hasar payı x3).  golem: win / lose / draw (kazanan / kaybeden / beraberlik grubu), belt (katılanlar arasında şans); pick = grup içinden rastgele kaç kişi alsın (0 = hepsi); şans %.  manes: rank (rank_from..rank_to arası sıra, rank_to 0 = sonuna kadar). days > 0 ise eşya o kadar gün sonra biter. Kapalı (Aktif işareti kalkık) satırlar verilmez. Bir etkinliğin tüm satırları silinirse sunucudaki eski varsayılan ödüller kullanılır.",
+        table: "event_reward_rule", pk: &["id"], serial: true, next_pk: false, group_col: "event_key", reload: "reward_rules", order: "event_key, cond, id",
+        cols: &[Col("id", "No", "int"), Col("event_key", "Etkinlik", "text"), Col("cond", "Durum", "text"), Col("rank_from", "Sıra (başlangıç)", "int"), Col("rank_to", "Sıra (son)", "int"),
+            Col("pick", "Rastgele kişi", "int"), Col("chance", "Şans %", "int"), Col("item_id", "Eşya", "item"), Col("item_count", "Adet", "int"), Col("days", "Süre (gün)", "int"),
+            Col("enabled", "Aktif", "bool"), Col("note", "Not", "text")],
+    },
+    Sys {
+        key: "pus_items", title: "Power Up Store ürünleri", group: "Mağaza & Çarklar",
+        note: "Mağazadaki ürünler. category = kategori numarası (aşağıdaki kategori tablosundan), price_type 0 = KC, 1 = TL, buy_count = bir alımda verilen adet. Kaydedince mağaza hemen güncellenir (oyuncular mağazayı yeniden açınca yeni listeyi görür).",
+        table: "pus_items", pk: &["id"], serial: false, next_pk: true, group_col: "category", reload: "pus", order: "category, id",
+        cols: &[Col("id", "No", "int"), Col("item_id", "Eşya", "item"), Col("item_name", "Ad", "text"), Col("price", "Fiyat", "int"), Col("price_type", "Fiyat tipi (0 KC / 1 TL)", "int"),
+            Col("buy_count", "Alım adedi", "int"), Col("category", "Kategori", "int"), Col("send_type", "Gönderim tipi", "int")],
+    },
+    Sys {
+        key: "pus_category", title: "Power Up Store kategorileri", group: "Mağaza & Çarklar",
+        note: "Mağazadaki sekmeler (en çok 5 tanesi sol menüde görünür). category_id ürünlerdeki category ile aynı olmalı; status 1 = açık.",
+        table: "pus_category", pk: &["id"], serial: false, next_pk: true, group_col: "", reload: "pus", order: "id",
+        cols: &[Col("id", "No", "int"), Col("category_name", "Ad", "text"), Col("description", "Açıklama", "text"), Col("category_id", "Kategori no", "int"), Col("status", "Durum", "int")],
+    },
+    Sys {
         key: "event_rewards", title: "Etkinlik ödülleri (BDW / Chaos / Juraid / Forgotten Temple …)", group: "Savaş & Etkinlik",
         note: "local_id: 9 = Border Defence War, 10 = Chaos, 11 = Juraid Mountain, 13 = Forgotten Temple, 14 = Beef. Kazanan (is_winner) ve kaybeden için ayrı satır yazılır; her satır 3 eşya + exp / NP / KC / coin verir.",
         table: "event_rewards", pk: &["s_index"], serial: true, next_pk: false, group_col: "local_id", reload: "event_rewards", order: "local_id, is_winner DESC, s_index",

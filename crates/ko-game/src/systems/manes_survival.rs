@@ -1104,9 +1104,25 @@ impl ManesSurvivalManager {
         let mut failed = 0usize;
         for (index, (sid, level, score, name)) in ranking.into_iter().enumerate() {
             let rank = index + 1;
-            let count = orb_reward_for_rank(rank);
+            // rewards of the rank come from the web panel (event_reward_rule, event "manes"); old built-in ones when none
+            let rules = world.reward_rules_for("manes");
+            let matched: Vec<_> = rules
+                .iter()
+                .filter(|r| r.cond == "rank" && rank as i32 >= r.rank_from && (r.rank_to <= 0 || rank as i32 <= r.rank_to))
+                .collect();
+            let count: u16 = matched.iter().filter(|r| r.item_id == MANES_ORB_ITEM_ID).map(|r| r.item_count).sum();
             // The event potions may fill the bag; they are worthless after the event.
             self.cleanup_temporary_items_for_session(world, sid);
+            // every other reward of the rank is given at once (the orb below keeps its retry on exit)
+            for r in matched.iter().filter(|r| r.item_id != MANES_ORB_ITEM_ID) {
+                if !world.give_rule_item(sid, r) {
+                    tracing::error!(sid, rank, item_id = r.item_id, "Manes Survival ranking reward could not be granted");
+                }
+            }
+            if count == 0 {
+                rewarded += 1;
+                continue;
+            }
             if world.give_item(sid, MANES_ORB_ITEM_ID, count) {
                 rewarded += 1;
                 tracing::info!(
