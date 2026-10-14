@@ -750,7 +750,7 @@ void Daily_OnRecv(const BYTE* buf, size_t len)
     const BYTE op = buf[2];
     bool open = false;
     EnterCriticalSection(&g_lock);
-    if (op == 0)
+    if (op == 0 || op == 5)
     {
         UINT16 n = 0; std::vector<Quest> v; bool ok = Get(buf, len, pos, n);
         for (UINT16 i = 0; ok && i < n && i < 255; i++)
@@ -769,7 +769,8 @@ void Daily_OnRecv(const BYTE* buf, size_t len)
             }
             if (ok) v.push_back(q);
         }
-        if (ok)
+        if (ok && op == 5) g_quests.insert(g_quests.end(), v.begin(), v.end());
+        else if (ok)
         {
             g_quests.swap(v);
             bool found = false;

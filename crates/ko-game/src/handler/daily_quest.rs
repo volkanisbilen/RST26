@@ -69,6 +69,10 @@ const DAILY_QUEST_TIP_ID_BASE: u16 = 3_600;
 pub(crate) const EXT_SUB_DAILY_QUEST: u8 = 0xD3;
 /// DailyQuestOp::sendlist = 0, userinfo = 1, killupdate = 2.
 const DQ_OP_SENDLIST: u8 = 0;
+/// Further chunks of the list (same layout as op 0, appended by the client).
+const DQ_OP_LISTMORE: u8 = 5;
+/// Quests per list packet: all ~200 in one packet are too large for a hook packet.
+const DQ_LIST_CHUNK: usize = 40;
 const DQ_OP_USERINFO: u8 = 1;
 const DQ_OP_KILLUPDATE: u8 = 2;
 const DQ_OP_OPEN: u8 = 3;
@@ -574,8 +578,12 @@ pub struct DqListEntry {
 
 /// op 0: `[0][u16 n]{u8 id,u8 timeType,u8 minLv,u8 maxLv,u16 kills,u16 replayH,str,str,str,u8 n,n x {u32 icon,str name,str count}}`
 pub fn build_list_packet(entries: &[DqListEntry]) -> Packet {
+    build_list_chunk(entries, DQ_OP_SENDLIST)
+}
+
+fn build_list_chunk(entries: &[DqListEntry], op: u8) -> Packet {
     let mut pkt = build_dq_base();
-    pkt.write_u8(DQ_OP_SENDLIST);
+    pkt.write_u8(op);
     pkt.write_u16(entries.len() as u16);
     for e in entries {
         pkt.write_u8(e.id);
@@ -797,7 +805,13 @@ pub fn send_list(world: &WorldState, sid: SessionId) {
             reward_items: reward_items(world, d),
         })
         .collect();
-    world.send_to_session_owned(sid, build_list_packet(&entries));
+    if entries.is_empty() {
+        world.send_to_session_owned(sid, build_list_packet(&entries));
+    }
+    for (i, chunk) in entries.chunks(DQ_LIST_CHUNK).enumerate() {
+        let op = if i == 0 { DQ_OP_SENDLIST } else { DQ_OP_LISTMORE };
+        world.send_to_session_owned(sid, build_list_chunk(chunk, op));
+    }
 }
 
 /// Send op 1 (progress).
