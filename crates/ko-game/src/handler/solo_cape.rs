@@ -184,7 +184,22 @@ fn refresh_appearance(world: &WorldState, sid: SessionId) {
 /// Hook 0xED (HopeGuard genie channel): op 3 = open the cape shop from the Solo Cape Scroll.
 pub async fn handle_hggenie(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     let mut r = PacketReader::new(&pkt.data);
-    if r.read_u8().unwrap_or(0) != 3 {
+    let op = r.read_u8().unwrap_or(0);
+    if op == 5 {
+        // genie window feedback: the buttons of the HopeGuard genie answer with a chat line
+        use super::operator::GmCtx;
+        let text = match r.read_u8().unwrap_or(0) {
+            1 => "[Genie] Ayarlar kaydedildi.",
+            2 => "[Genie] Yaratik listeye eklendi.",
+            3 => "[Genie] Yaratik listeden silindi.",
+            4 => "[Genie] Once bir yaratik hedefle (Z / tikla), sonra + tusuna bas.",
+            5 => "[Genie] Silinecek yaratik yok.",
+            _ => return Ok(()),
+        };
+        session.say(text);
+        return Ok(());
+    }
+    if op != 3 {
         return Ok(());
     }
     let world = session.world().clone();

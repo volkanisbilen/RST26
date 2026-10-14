@@ -36,6 +36,7 @@ static void PatchSkillPlacement();
 static void PatchSlotHitTest();
 static void PatchEventMenu();
 void MannerStore_Open();
+void Drop_SendRaw(const std::vector<BYTE>& p);
 extern "C" volatile int g_hgEventEntry = -1;   // last event menu entry picked (sub_7D7A60), -1 = none
 
 namespace
@@ -335,6 +336,7 @@ namespace
     // kind [ch+0xB8C] (the value FindTarget compares), name std::string at [ch+0x6A4].
     // Already listed -> selected; else first free slot; else the selected row is replaced. Slot is switched on.
     typedef BYTE* (__thiscall* FnCharById)(void*, int, int);
+    void Say(BYTE id) { Drop_SendRaw({ 0xE9, 0xED, 5, id }); }     // server answers with a chat line
     void AddSelectedMonster()
     {
         BYTE* sub = (BYTE*)GenieSub();
@@ -343,7 +345,7 @@ namespace
         if (!sub || !me || !mgr) return;
         int tid = *(int*)(me + 0x660);
         BYTE* ch = tid >= 0 ? ((FnCharById)0x0050DEB0)(mgr, tid, 0) : nullptr;
-        if (!ch || *(ch + 0xB9C) != 1) { Log("GENIE: + without a selected monster"); return; }
+        if (!ch || *(ch + 0xB9C) != 1) { Log("GENIE: + without a selected monster"); Say(4); return; }
         DWORD kind = *(DWORD*)(ch + 0xB8C);
         std::string name = MsvcStr(ch + 0x6A4);
         int slot = -1;
@@ -358,6 +360,7 @@ namespace
         char id[32]; sprintf_s(id, "str_Name%s", kSlotName[slot]);
         SetText(FindDeep(sub, id), name);
         g_mobSel = slot;
+        Say(2);
         char b[128]; sprintf_s(b, "GENIE: slot %d = %s (kind %lu, id %d)", slot + 1, name.c_str(), kind, tid); Log(b);
     }
 
@@ -386,7 +389,7 @@ namespace
         }
         else if (!strcmp(id, "hg_goto_range"))   { g_set.goRange = !g_set.goRange; MarkDirty(); }
         else if (!strcmp(id, "hg_auto_party"))   { g_set.autoParty = !g_set.autoParty; MarkDirty(); }
-        else if (!strcmp(id, "hg_save"))         { g_dirty = false; GenieSaveOptions(self); Log("GENIE: settings saved"); }
+        else if (!strcmp(id, "hg_save"))         { g_dirty = false; GenieSaveOptions(self); Log("GENIE: settings saved"); Say(1); }
         else if (!strcmp(id, "hg_mob_add"))
             AddSelectedMonster();
         else if (!strcmp(id, "hg_mob_del"))
@@ -401,7 +404,9 @@ namespace
                 char nid[32]; sprintf_s(nid, "str_Name%s", kSlotName[i]);
                 SetText(FindDeep(sub, nid), std::string());
                 g_slotName[i].clear();
+                Say(3);
             }
+            else Say(5);
         }
         else if (!strcmp(id, "hg_mob_1") || !strcmp(id, "hg_mob_2") || !strcmp(id, "hg_mob_3"))
             g_mobSel = id[7] - '1';
