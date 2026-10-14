@@ -483,6 +483,9 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         .event_room_manager
         .read_temple_event(|s| (s.active_event, s.allow_join, s.is_active));
 
+    // the client's join window is the Border Defence one (event id 4) when Juraid signs up
+    let client_event: i16 = if active_event == 100 { event_room::JURAID_WINDOW_EVENT_ID } else { active_event };
+
     // Check: player already signed up or in prison
     let player_zone = world.get_position(sid).map(|p| p.zone_id).unwrap_or(0);
 
@@ -490,7 +493,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -503,7 +506,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -513,7 +516,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -523,7 +526,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -534,7 +537,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
             let mut resp = Packet::new(Opcode::WizEvent as u8);
             resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
             resp.write_u8(4);
-            resp.write_i16(active_event);
+            resp.write_i16(client_event);
             session.send_packet(&resp).await?;
             return Ok(());
         }
@@ -552,7 +555,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
             let mut resp = Packet::new(Opcode::WizEvent as u8);
             resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
             resp.write_u8(4);
-            resp.write_i16(active_event);
+            resp.write_i16(client_event);
             session.send_packet(&resp).await?;
             return Ok(());
         }
@@ -580,7 +583,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -599,7 +602,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
     let mut resp = Packet::new(Opcode::WizEvent as u8);
     resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
     resp.write_u8(1); // success
-    resp.write_i16(active_event);
+    resp.write_i16(client_event);
     session.send_packet(&resp).await?;
 
     tracing::info!(
@@ -640,7 +643,7 @@ async fn handle_temple_disband(session: &mut ClientSession) -> anyhow::Result<()
         .event_room_manager
         .read_temple_event(|s| (s.active_event, s.is_active));
 
-    let active_event_u16 = active_event as u16;
+    let active_event_u16 = (if active_event == 100 { event_room::JURAID_WINDOW_EVENT_ID } else { active_event }) as u16;
 
     // Check: player in prison
     let player_zone = world.get_position(sid).map(|p| p.zone_id).unwrap_or(0);

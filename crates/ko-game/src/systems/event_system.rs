@@ -180,14 +180,16 @@ pub fn start_event_system_task(
                 if let Some((event_type, sign_secs)) = try_schedule_trigger(erm, now) {
                     // Broadcast sign-up announcement to all online players.
                     // C++ skips: isInTempleEventZone(), isInMonsterStoneZone(), ZONE_PRISON
-                    let start_pkt = event_room::build_event_start_broadcast(
-                        event_type as i16,
-                        sign_secs as u16,
-                    );
-                    const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
-                    world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
                     if event_type == TempleEventType::JuraidMountain {
+                        event_room::broadcast_juraid_window(&world, sign_secs as u16);
                         broadcast_juraid_registration_notice(&world, sign_secs as u16);
+                    } else {
+                        let start_pkt = event_room::build_event_start_broadcast(
+                            event_type as i16,
+                            sign_secs as u16,
+                        );
+                        const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
+                        world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
                     }
                 }
             }

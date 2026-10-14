@@ -2187,12 +2187,16 @@ fn handle_war_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result
     if opened {
         // Send the event sign-up UI broadcast to all eligible players.
         let sign_secs = (params.vroom_opts.sign as u64) * 60;
-        let start_pkt = crate::systems::event_room::build_event_start_broadcast(
-            event_type as i16,
-            sign_secs as u16,
-        );
-        const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
-        world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
+        if event_type == crate::systems::event_room::TempleEventType::JuraidMountain {
+            crate::systems::event_room::broadcast_juraid_window(&world, sign_secs as u16);
+        } else {
+            let start_pkt = crate::systems::event_room::build_event_start_broadcast(
+                event_type as i16,
+                sign_secs as u16,
+            );
+            const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
+            world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
+        }
 
         if event_type == crate::systems::event_room::TempleEventType::JuraidMountain {
             crate::systems::event_system::broadcast_juraid_registration_notice(
@@ -6935,13 +6939,15 @@ fn handle_temple_event_open<C: GmCtx>(
 
     // Broadcast sign-up packet
     let remaining_secs = (opts.sign as u16) * 60;
-    let pkt = crate::systems::event_room::build_event_start_broadcast(
-        kind.active_event_id(),
-        remaining_secs,
-    );
-    world.broadcast_to_all(Arc::new(pkt), None);
     if matches!(kind, TempleEventKind::Juraid) {
+        crate::systems::event_room::broadcast_juraid_window(&world, remaining_secs);
         crate::systems::event_system::broadcast_juraid_registration_notice(&world, remaining_secs);
+    } else {
+        let pkt = crate::systems::event_room::build_event_start_broadcast(
+            kind.active_event_id(),
+            remaining_secs,
+        );
+        world.broadcast_to_all(Arc::new(pkt), None);
     }
 
     send_help(session, &format!("{} event started.", kind.name()));
@@ -7109,7 +7115,17 @@ fn handle_temple_event_close<C: GmCtx>(
     }
 
     if !is_active {
-        send_help(session, "Event is still in sign-up phase, not active yet.");
+        // still signing up: cancel the registration
+        erm.clear_signed_up_users();
+        erm.reset_temple_event();
+        world.broadcast_to_all(
+            Arc::new(crate::systems::timed_notice::build_notice_packet(
+                8,
+                &format!("{} registration was cancelled.", kind.name()),
+            )),
+            None,
+        );
+        send_help(session, &format!("{} registration cancelled.", kind.name()));
         return Ok(());
     }
 
@@ -7118,18 +7134,11 @@ fn handle_temple_event_close<C: GmCtx>(
         return Ok(());
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // C++ sets manual_close + timer_finish_control, which triggers
-    // the normal event finish flow on next tick.
-    erm.update_temple_event(|s| {
-        s.manual_close = true;
-        s.timer_finish_control = true;
-        s.manual_closed_time = now;
-    });
+    // the event tick finishes the event (winners, rewards, kick) after the configured finish delay
+    if !crate::systems::event_system::manual_close(erm) {
+        send_help(session, "The event cannot be closed right now.");
+        return Ok(());
+    }
 
     send_help(session, &format!("{} manual close submitted.", kind.name()));
     info!(

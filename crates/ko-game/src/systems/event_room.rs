@@ -867,6 +867,39 @@ pub struct SpawnEventNpcParams {
     pub direction: i16,
 }
 
+/// Event id of the Border Defence join window the client opens for Juraid (the client has no Juraid window).
+pub const JURAID_WINDOW_EVENT_ID: i16 = 4;
+
+/// Zones whose players do not get event windows (event zones, Monster Stone, prison).
+const NO_WINDOW_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
+
+fn in_window_zone(world: &WorldState, sid: SessionId) -> bool {
+    world
+        .get_position(sid)
+        .map(|p| !NO_WINDOW_ZONES.contains(&p.zone_id))
+        .unwrap_or(false)
+}
+
+/// Open the Juraid join window for everybody online (like Ultima / Rift / Manes): the start broadcast of
+/// the Border Defence window, the current counter and the title. The server keeps the event as Juraid.
+pub fn broadcast_juraid_window(world: &WorldState, remaining_secs: u16) {
+    let (karus, elmo) = world
+        .event_room_manager
+        .read_temple_event(|te| (te.karus_user_count, te.elmorad_user_count));
+    let open = Arc::new(build_event_start_broadcast(JURAID_WINDOW_EVENT_ID, remaining_secs));
+    let count = Arc::new(build_bdw_counter_packet(karus, elmo));
+    let title = Arc::new(crate::handler::survival::build_window_title("Juraid Mountain"));
+    for sid in world.get_in_game_session_ids() {
+        if !in_window_zone(world, sid) {
+            continue;
+        }
+        world.send_to_session_arc(sid, Arc::clone(&open));
+        world.send_to_session_arc(sid, Arc::clone(&count));
+        // the title goes last: the window object only exists once the open packet has been handled
+        world.send_to_session_arc(sid, Arc::clone(&title));
+    }
+}
+
 /// Broadcast the event counter (sign-up counts) to all signed-up users.
 ///   - BDW: `TemplEventBDWSendJoinScreenUpdate()` — sends karus + elmo counts
 ///   - Chaos: `TemplEventChaosSendJoinScreenUpdate()` — sends total count only
@@ -911,6 +944,17 @@ pub fn broadcast_event_counter(world: &WorldState) -> Option<Packet> {
         100 => build_juraid_event_counter_packet(karus_count, elmo_count, sign_remain),
         _ => return None,
     };
+
+    // Juraid: the open window belongs to everybody, so everybody gets the Border Defence style counter
+    if active_event == 100 {
+        let arc = Arc::new(build_bdw_counter_packet(karus_count, elmo_count));
+        for sid in world.get_in_game_session_ids() {
+            if in_window_zone(world, sid) {
+                world.send_to_session_arc(sid, Arc::clone(&arc));
+            }
+        }
+        return Some(build_bdw_counter_packet(karus_count, elmo_count));
+    }
 
     // Send to all signed-up users (clone once, Arc share in loop)
     let users = erm.signed_up_users.read();
