@@ -1284,6 +1284,9 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
     // Loads CashPoint and BonusCashPoint from TB_USER for this account.
     crate::handler::knight_cash::load_kc_balances(session).await;
 
+    // 3d-pts. Missing stat / skill points for the level are given back before MyInfo is built
+    super::level::audit_points(&world, session.session_id());
+
     // 3d. Load flash time state from DB and restore bonuses
     {
         let sid = session.session_id();
@@ -1708,6 +1711,12 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
 
     // 16c. Solo Cape top-bar icon
     super::solo_cape::send_icon(&world, sid);
+
+    // 16d. KC / TL balances to the client (the character window shows them; the PUS panel used to be the only sender)
+    {
+        let (kc, tl) = (world.get_knight_cash(sid), world.get_tl_balance(sid));
+        world.send_to_session_owned(sid, super::knight_cash::build_cashchange_packet(kc, tl));
+    }
 
     // 17. ChangeFame — promote commander back to chief if still clan leader
     // if (GetFame() == COMMAND_CAPTAIN && isClanLeader()) ChangeFame(CHIEF);
