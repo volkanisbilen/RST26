@@ -743,6 +743,9 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
         }
         solo_cape::EXT_SUB_SOLOCAPEICON => solo_cape::handle_icon(session, repack_ext_data(&pkt)).await,
         solo_cape::EXT_SUB_HGGENIE => solo_cape::handle_hggenie(session, repack_ext_data(&pkt)).await,
+        native_events::EXT_SUB_EVENT_DIRECT => {
+            native_events::direct_select(session, pkt.data.get(1).copied().unwrap_or(0)).await
+        }
         item_upgrade::EXT_SUB_CHAOTIC_OPTS => {
             item_upgrade::handle_chaotic_opts(session, &pkt.data[1..]);
             Ok(())

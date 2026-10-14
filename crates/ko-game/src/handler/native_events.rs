@@ -21,6 +21,8 @@ const ROULETTE_KC_TYPE: i32 = 2;
 const ROULETTE_KC_COST: u32 = 350;
 
 const EVENT_HUB_SUB: u8 = 0xF0;
+/// Hook sub-opcode: open a hub event directly (taskbar buttons).
+pub const EXT_SUB_EVENT_DIRECT: u8 = 0xE7;
 const EVENT_HUB_COIN: u8 = 0;
 const EVENT_HUB_ATTENDANCE: u8 = 1;
 // The hub advertises Attendance as list id 1, but the v2615 client sends
@@ -188,6 +190,17 @@ pub async fn handle_roulette(session: &mut ClientSession, pkt: Packet) -> anyhow
 /// after the subcommand is `i16 count`, followed by `u8 event_id, u8 enabled`
 /// pairs. Disabled entries must be omitted: the client only adds pairs whose
 /// enabled byte is non-zero to its selection list.
+/// Taskbar buttons of the HopeGuard taskbar (hook `0xE7`: `[u8 event id]`): open that event directly,
+/// as if it had been picked in the star menu.
+pub async fn direct_select(session: &mut ClientSession, event_id: u8) -> anyhow::Result<()> {
+    session.world().update_session(session.session_id(), |h| {
+        h.native_event_hub_armed = true;
+    });
+    let pool = session.pool().clone();
+    let repo = NativeEventsRepository::new(&pool);
+    native_event_hub_select(session, &repo, event_id).await
+}
+
 async fn native_event_hub_open(
     session: &mut ClientSession,
     repo: &NativeEventsRepository<'_>,

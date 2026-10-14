@@ -95,6 +95,7 @@ void ItemTip_FlushSendQueue();
 void DropBtn_Tick();
 void ClanKasa_Tick();
 void ChaoticOpts_Tick();
+void Taskbar_OnClick(int x, int y);
 void ChaoticOpts_OnClick(int x, int y);
 void TargetHp_Init();
 void TargetHp_OnRecv(const BYTE* pkt, int len);
@@ -248,7 +249,7 @@ static LRESULT CALLBACK ProxyWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     if (m == WM_KEYDOWN && !(l & 0x40000000) &&
         (w == VK_OEM_5 || (w == 'D' && (GetKeyState(VK_CONTROL) & 0x8000))))
         Drop_Toggle(true);
-    if (m == WM_LBUTTONUP && GetCurrentThreadId() == g_gameTid) ChaoticOpts_OnClick((short)LOWORD(l), (short)HIWORD(l));   // Chaotic Generator count / bank / sell
+    if (m == WM_LBUTTONUP && GetCurrentThreadId() == g_gameTid) { ChaoticOpts_OnClick((short)LOWORD(l), (short)HIWORD(l)); Taskbar_OnClick((short)LOWORD(l), (short)HIWORD(l)); }   // Chaotic Generator count / bank / sell
     if (m == WM_MOUSEWHEEL && Drop_ForwardWheel(w)) return 0;
     if (m == WM_MOUSEWHEEL && GmPanel_ForwardWheel(w, l)) return 0;   // GM panel user list
     if (m == WM_CHAR && GetCurrentThreadId() == g_gameTid && GmPanel_OnGameChar(w)) return 0;
