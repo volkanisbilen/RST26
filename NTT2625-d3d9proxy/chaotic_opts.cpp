@@ -30,6 +30,18 @@ namespace
     const char* IdOf(void* o) { return MsvcStr((const BYTE*)o + 0x58); }
     bool Visible(void* o) { return o && *((BYTE*)o + 0xea) != 0; }
 
+    void* ReadPtr(DWORD a)
+    {
+        __try { return (void*)*(DWORD*)a; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    }
+    bool LooksLikeWindowRaw(void* o);
+    bool LooksLikeWindow(void* o)
+    {
+        __try { return LooksLikeWindowRaw(o); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
     void* FindDeep(void* parent, const char* id, int depth = 0)
     {
         if (!parent || depth > 4) return nullptr;
@@ -83,7 +95,7 @@ namespace
         return rc->right > rc->left && rc->bottom > rc->top;
     }
 
-    bool LooksLikeWindow(void* o)
+    bool LooksLikeWindowRaw(void* o)
     {
         DWORD p = (DWORD)o;
         if (p < 0x10000 || p > 0x7FFF0000 || (p & 3)) return false;
@@ -96,12 +108,19 @@ namespace
     {
         if (g_win && LooksLikeWindow(g_win)) return g_win;
         g_win = nullptr;
-        DWORD gm = *(DWORD*)KO_PTR_GAMEMAIN;
-        if (!gm) return nullptr;
-        for (DWORD off = 4; off < 0x1000; off += 4)
+        static DWORD lastScan = 0;
+        if (GetTickCount() - lastScan < 1500) return nullptr;      // scanning is not free: at most every 1.5 s
+        lastScan = GetTickCount();
+        static const DWORD bases[2] = { KO_PTR_GAMEMAIN, 0x01115910 };
+        for (DWORD bp : bases)
         {
-            void* o = (void*)*(DWORD*)(gm + off);
+        DWORD gm = *(DWORD*)bp;
+        if (!gm) continue;
+        for (DWORD off = 4; off < 0x2000; off += 4)
+        {
+            void* o = ReadPtr(gm + off);
             if (LooksLikeWindow(o)) { g_win = o; char b[64]; sprintf_s(b, "CHAOTIC: window found at GameMain+0x%X", off); Log(b); return o; }
+        }
         }
         return nullptr;
     }
