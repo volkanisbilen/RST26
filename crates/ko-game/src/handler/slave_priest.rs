@@ -271,6 +271,7 @@ fn apply_buff_skill(world: &WorldState, owner: SessionId, target: SessionId, ski
         world.get_magic(skill_id as i32),
         world.get_magic_type4(skill_id as i32),
     ) else {
+        tracing::warn!("slave priest: magic rows of skill {skill_id} missing (magic / magic_type4)");
         return;
     };
     let buff = crate::handler::magic_process::create_active_buff(skill_id, owner, &type4, true);
@@ -437,8 +438,16 @@ fn act(world: &WorldState, owner: SessionId, st: &mut SpState) {
             };
             apply_buff_skill(world, owner, t, skill);
         }
-        if st.ac != 0 && !world.has_buff(t, BUFF_TYPE_AC) {
-            apply_buff_skill(world, owner, t, SKILL_AC);
+        if st.ac != 0 {
+            // another, weaker AC buff does not block the priest's (+400)
+            let blocked = world
+                .get_active_buffs(t)
+                .iter()
+                .any(|b| b.buff_type == BUFF_TYPE_AC && (b.skill_id == SKILL_AC || b.ac >= 400));
+            if !blocked {
+                apply_buff_skill(world, owner, t, SKILL_AC);
+                tracing::warn!("slave priest: AC buff {SKILL_AC} on sid {t}");
+            }
         }
         if st.cure != 0 {
             crate::handler::magic_process::cure_player(world, t);

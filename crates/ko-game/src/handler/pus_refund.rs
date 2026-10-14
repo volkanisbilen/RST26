@@ -318,7 +318,7 @@ async fn handle_item_return(
     let count_matches = world
         .with_session(sid, |h| {
             if let Some(slot) = h.inventory.get(slot_idx) {
-                slot.count == entry.item_count
+                slot.count >= entry.item_count
             } else {
                 false
             }
@@ -331,12 +331,19 @@ async fn handle_item_return(
         return Ok(());
     }
 
-    // Clear item from inventory and send stack change to sync client UI
+    // take the bought amount out of the stack (the same item bought twice shares a stack)
+    let left = world
+        .with_session(sid, |h| {
+            h.inventory.get(slot_idx).map(|s| s.count.saturating_sub(entry.item_count)).unwrap_or(0)
+        })
+        .unwrap_or(0);
     world.update_session(sid, |h| {
         if let Some(slot) = h.inventory.get_mut(slot_idx) {
-            slot.item_id = 0;
-            slot.count = 0;
-            slot.durability = 0;
+            slot.count = left;
+            if left == 0 {
+                slot.item_id = 0;
+                slot.durability = 0;
+            }
         }
     });
 
@@ -346,8 +353,8 @@ async fn handle_item_return(
         sc_pkt.write_u16(1); // count_type
         sc_pkt.write_u8(1); // slot_section = 1 (inventory)
         sc_pkt.write_u8(slot_idx as u8); // pos relative to SLOT_MAX
-        sc_pkt.write_u32(0); // item_id = 0 (cleared)
-        sc_pkt.write_u32(0); // count = 0
+        sc_pkt.write_u32(if left == 0 { 0 } else { item_id }); // item_id (0 = cleared)
+        sc_pkt.write_u32(left as u32); // count left
         sc_pkt.write_u8(0); // bNewItem = false
         sc_pkt.write_u16(0); // durability = 0
         sc_pkt.write_u32(0); // reserved
@@ -397,6 +404,58 @@ async fn handle_item_return(
         tl_amount
     );
     Ok(())
+}
+
+/// A purchase from the Power Up Store: remember it for the one hour refund window (memory, DB, client list).
+pub fn record_purchase(
+    world: &crate::world::WorldState,
+    pool: &ko_db::DbPool,
+    sid: SessionId,
+    account_id: &str,
+    item_id: u32,
+    count: u16,
+    price: u32,
+    buy_type: u8,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    if account_id.is_empty() {
+        return;
+    }
+    let now = unix_now();
+    // unique: milliseconds of the purchase + a running counter
+    let serial = (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64)
+        << 10
+        | (SEQ.fetch_add(1, Ordering::Relaxed) & 0x3FF);
+    let entry = PusRefundEntry {
+        item_id,
+        item_price: price,
+        item_count: count,
+        item_duration: 0,
+        expired_time: now + REFUND_WINDOW_SECS,
+        buy_type,
+    };
+    register_purchase(world, sid, serial, entry);
+    let row = ko_db::models::cash_shop::PusRefundRow {
+        mserial: serial as i64,
+        account_id: account_id.to_string(),
+        item_id: item_id as i32,
+        item_count: count as i16,
+        item_price: price as i32,
+        buying_time: now as i32,
+        item_duration: 0,
+        buy_type: buy_type as i16,
+    };
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        let repo = ko_db::repositories::cash_shop::CashShopRepository::new(&pool);
+        if let Err(e) = repo.insert_purchase(&row).await {
+            warn!("Failed to store PUS refund record: {}", e);
+        }
+    });
 }
 
 /// Register a new refundable purchase (called after a successful shop purchase).

@@ -1106,6 +1106,7 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
                 continue;
             }
             crate::handler::knight_cash::cash_lose(&world, session.pool(), sid, price);
+            record_pus_purchase(session, &world, sid, game_item_id, pus_item.buy_count as u16, price, 0);
             // Send CASHCHANGE update
             send_cash_change(session).await?;
         }
@@ -1139,6 +1140,7 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
             world.update_session(sid, |h| {
                 h.tl_balance = h.tl_balance.saturating_sub(price);
             });
+            record_pus_purchase(session, &world, sid, game_item_id, pus_item.buy_count as u16, price, 1);
             send_cash_change(session).await?;
         }
     }
@@ -1151,6 +1153,24 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
         }
     }
     Ok(())
+}
+
+/// Refund record + KC/TL ledger row of one shop purchase.
+fn record_pus_purchase(
+    session: &ClientSession,
+    world: &std::sync::Arc<crate::world::WorldState>,
+    sid: crate::zone::SessionId,
+    item_id: u32,
+    count: u16,
+    price: u32,
+    buy_type: u8,
+) {
+    let account = session.account_id().unwrap_or("").to_string();
+    crate::handler::pus_refund::record_purchase(world, session.pool(), sid, &account, item_id, count, price, buy_type);
+    let (kc, tl) = world.with_session(sid, |h| (h.knight_cash, h.tl_balance)).unwrap_or((0, 0));
+    let name = world.get_session_name(sid).unwrap_or_default();
+    let (dk, dt) = if buy_type == 0 { (-(price as i64), 0) } else { (0, -(price as i64)) };
+    crate::handler::pus_codes::ledger(session.pool(), &account, &name, dk, dt, kc, tl, if buy_type == 0 { "buy_kc" } else { "buy_tl" }, &item_id.to_string());
 }
 
 /// PUS sub 3: Gift purchase — buy item for another player.
