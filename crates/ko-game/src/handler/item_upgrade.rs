@@ -2408,11 +2408,16 @@ async fn bifrost_piece_exchange_opts(
             } else {
                 item.buy_price.unwrap_or(0).max(0) as u32 / 6
             };
-            if world.rob_item(sid, reward, 1) {
+            let taken = world.take_one_item(sid, reward);
+            if taken {
                 world.gold_gain(sid, price);
             }
+            warn!("[{}] chaotic sell: item {reward} price {price} taken={taken}", session.addr());
         } else if opts.bank && super::warehouse::bank_item(session, reward, 1).await {
-            world.rob_item(sid, reward, 1);
+            let taken = world.take_one_item(sid, reward);
+            warn!("[{}] chaotic bank: item {reward} taken={taken}", session.addr());
+        } else if opts.sell || opts.bank {
+            warn!("[{}] chaotic: item {reward} kept (unique={is_unique} sell={} bank={})", session.addr(), opts.sell, opts.bank);
         }
     }
     Ok(())

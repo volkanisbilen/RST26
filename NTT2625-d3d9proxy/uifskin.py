@@ -97,17 +97,13 @@ def draw_string(canvas, e, off):
     dr.text((x + off[0], y + off[1]), txt, font=f, fill=col)
 
 
-def _lum(e):
-    try:
-        part = _crop(e).convert('L')
-        px = list(part.getdata())
-        return sum(px) / max(1, len(px))
-    except Exception:  # noqa
-        return 255
-
-
-def _idle(imgs):
-    return min(imgs, key=_lum)
+def pick_state(btn, tag):
+    """the image child that belongs to a button state (0 normal, 1 down, 2 on / hover, 3 disabled)"""
+    imgs = [c for c in btn.children if c.type == 'IMAGE']
+    for c in imgs:
+        if c.state == tag:
+            return c
+    return imgs[min(tag, len(imgs) - 1)] if imgs else None
 
 
 def compose(nodes, size, off, skip=lambda e: False, button_state=0):
@@ -122,11 +118,10 @@ def compose(nodes, size, off, skip=lambda e: False, button_state=0):
         elif e.type == 'STRING':
             draw_string(canvas, e, off)
         elif e.type == 'BUTTON':
-            imgs = [c for c in e.children if c.type == 'IMAGE']
             strs = [c for c in e.children if c.type == 'STRING']
-            if imgs:
-                # the designer's state order differs between buttons: draw the darkest picture as the idle one
-                draw_image(canvas, _idle(imgs) if button_state == 0 else imgs[min(button_state, len(imgs) - 1)], off)
+            img = pick_state(e, button_state)
+            if img is not None:
+                draw_image(canvas, img, off)
             for s in strs:
                 if not skip(s):
                     draw_string(canvas, s, off)
@@ -141,10 +136,9 @@ def compose(nodes, size, off, skip=lambda e: False, button_state=0):
 
 def state_image(btn, state):
     """The picture of one button state (0 normal, 1 down, 2 hover, 3 disabled), cut to the button rect."""
-    imgs = [c for c in btn.children if c.type == 'IMAGE']
-    if not imgs:
+    e = pick_state(btn, state)
+    if e is None:
         return None
-    e = imgs[min(state, len(imgs) - 1)]
     l, t, r, b = e.rect
     out = Image.new('RGBA', (max(1, r - l), max(1, b - t)), (0, 0, 0, 0))
     draw_image(out, e, (-l, -t))

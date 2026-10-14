@@ -1599,6 +1599,44 @@ impl WorldState {
 
         ok
     }
+    /// Take exactly one piece of an item out of the bag, whatever its kind (unlike `rob_item`, a
+    /// consumable scroll loses its stack count, not a usage counter). Used when a reward is sold or banked.
+    pub fn take_one_item(&self, sid: SessionId, item_id: u32) -> bool {
+        let mut info: Option<(u8, u32, u16)> = None;
+        let ok = self.update_inventory(sid, |inv| {
+            for i in Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX) {
+                if let Some(slot) = inv.get_mut(i) {
+                    if slot.item_id != item_id || slot.count == 0 {
+                        continue;
+                    }
+                    slot.count -= 1;
+                    let (count, durability) = (slot.count, slot.durability);
+                    if slot.count == 0 {
+                        *slot = UserItemSlot::default();
+                    }
+                    info = Some(((i - Self::SLOT_MAX) as u8, count as u32, durability.max(0) as u16));
+                    return true;
+                }
+            }
+            false
+        });
+        if let (true, Some((pos, count, durability))) = (ok, info) {
+            let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+            pkt.write_u16(1);
+            pkt.write_u8(1);
+            pkt.write_u8(pos);
+            pkt.write_u32(item_id);
+            pkt.write_u32(count);
+            pkt.write_u8(0);
+            pkt.write_u16(durability);
+            pkt.write_u32(0);
+            pkt.write_u32(0);
+            pkt.write_u16(0);
+            self.send_to_session_owned(sid, pkt);
+            self.set_user_ability(sid);
+        }
+        ok
+    }
     /// Remove ALL copies of an item from a player's bag slots.
     ///
     /// Unlike `rob_item()` which targets a single slot, this clears every slot

@@ -20,8 +20,8 @@ cells = []
 for start in (0, 48, 96, 144):
     cells.append(icon.crop((0, start, 39, start + 46)).crop((2, 6, 36, 40)))      # 34x34 inner picture
 normal, hover, down, disabled = cells
-# btn_question image order in the UIF: state 0 (y315), 1 (y245), 2 (y280), 3 (y210)
-targets = [(106, 315, normal), (106, 245, down), (106, 280, hover), (106, 210, disabled)]
+# btn_question cells (the game's order of this UIF: image 0 = disabled (y315), 1 = hover (y245), 2 = down (y280), 3 = normal (y210))
+targets = [(106, 315, disabled), (106, 245, hover), (106, 280, down), (106, 210, normal)]
 
 data = bytearray(open(SRC_TEX, 'rb').read())
 nl = struct.unpack_from('<i', data, 0)[0]

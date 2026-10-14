@@ -8,6 +8,7 @@
 // typing a name + Enter searches monsters by name; click a result to see its drops.
 #include <windows.h>
 #include "drop_shared.h"
+#include "drop_layout.h"
 #include <windowsx.h>
 #include <stdio.h>
 #include <string>
@@ -25,25 +26,13 @@ static const DWORD KO_SND_FNC = 0x00704070;   // thiscall(CAPISocket*, BYTE* buf
 static const DWORD KO_PTR_PKT = 0x01115914;   // CAPISocket* (game socket)
 static const BYTE  WIZ_HSACS_HOOK = 0xE9, DROP_SUBOP = 0xAE;
 
-// ---------------------------------------------------------------- layout
-static const int W = 560, H = 486;
+// ---------------------------------------------------------------- layout (drop_layout.h, from re_search_monster_drop.uif)
+static const int W = DP_W, H = DP_H;
 struct DR { int l, t, r, b; };
-static const DR R_TITLE   = { 16, 8, 400, 32 };
-static const DR R_CLOSE   = { W - 36, 8, W - 12, 32 };
-static const DR R_BLOCKED = { W - 160, 8, W - 44, 32 };
-static const DR R_EDIT    = { 16, 44, 324, 72 };
-static const DR R_SEARCH  = { 332, 44, 424, 72 };
-static const DR R_TARGET  = { 432, 44, 544, 72 };
-static const DR R_LIST    = { 16, 84, 216, 432 };
-static const DR R_LUP     = { 16, 434, 114, 452 };
-static const DR R_LDOWN   = { 118, 434, 216, 452 };
-static const DR R_GRIDHDR = { 228, 84, 544, 106 };
-static const DR R_GRID    = { 228, 110, 544, 432 };
-static const DR R_GUP     = { 228, 434, 384, 452 };
-static const DR R_GDOWN   = { 388, 434, 544, 452 };
-static const DR R_STATUS  = { 16, 458, 544, 480 };
-static const int ROW_H = 22, LIST_ROWS = (432 - 84) / ROW_H;          // 15
-static const int CELL_W = 52, CELL_H = 64, GRID_COLS = 6, GRID_ROWS = (432 - 110) / CELL_H;   // 6 x 5
+static DR D4(const int a[4]) { return { a[0], a[1], a[2], a[3] }; }
+static const int ROW_H = 22;
+static const int LIST_ROWS = (DP_LIST[3] - DP_LIST[1]) / ROW_H;     // monster rows
+static const int GRID_N = 25;                                       // drops per page (5 x 5)
 
 // ---------------------------------------------------------------- data
 struct Mob  { UINT16 proto; std::string name; UINT16 level; BYTE hasDrops; };
@@ -53,7 +42,9 @@ static std::vector<Mob>  g_mobs;
 static std::vector<Drop> g_drops;
 static std::string g_dropTitle, g_status = "Type a monster name and press Enter, or press Target.";
 static std::string g_query;
-static int g_selMob = -1, g_listTop = 0, g_gridTop = 0, g_hoverDrop = -1;
+static int g_selMob = -1, g_listTop = 0, g_gridPage = 0, g_hoverDrop = -1;
+static DWORD g_statusAt = 0;
+static void SetStatus(const std::string& s);
 
 // ---------------------------------------------------------------- send queue (flushed on the game thread)
 static CRITICAL_SECTION g_sendLock;
@@ -282,128 +273,150 @@ static void Blit(Sprite* s, int x, int y, int w, int h)
     AlphaBlend(g_memDC, x, y, w, h, s->dc, 0, 0, s->w, s->h, bf);
 }
 
+// ---------------------------------------------------------------- skin
+static std::map<std::string, Sprite> g_skin;
+static bool g_skinLoaded = false;
+static void LoadSkin()
+{
+    if (g_skinLoaded) return;
+    g_skinLoaded = true;
+    char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH); *(strrchr(dir, '\\') + 1) = 0;
+    const char* base[] = { "next", "prev", "left", "right", "close", "search", "save", "reset" };
+    int ok = 0;
+    std::vector<std::string> names = { "bg" };
+    for (const char* b : base) for (const char* k : { "n", "d", "o", "x" }) names.push_back(std::string(b) + "_" + k);
+    for (auto& n : names)
+    {
+        char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\drop_ui\\%s.pus", dir, n.c_str());
+        Sprite s; if (LoadPus(p, s)) { g_skin[n] = s; ok++; }
+    }
+    char b[64]; sprintf_s(b, "DROP: skin %d/%d", ok, (int)names.size()); Log(b);
+}
+static bool SkinBlit(const std::string& n, int x, int y, int w = -1, int h = -1)
+{
+    auto it = g_skin.find(n);
+    if (it == g_skin.end()) return false;
+    Blit(&it->second, x, y, w < 0 ? it->second.w : w, h < 0 ? it->second.h : h);
+    return true;
+}
+
 // ---------------------------------------------------------------- controls
-enum { C_NONE, C_CLOSE, C_BLOCKED, C_EDIT, C_SEARCH, C_TARGET, C_LUP, C_LDOWN, C_GUP, C_GDOWN, C_ROW0 = 100, C_CELL0 = 300 };
+enum { C_NONE, C_CLOSE, C_EDIT, C_SEARCH, C_PREV, C_NEXT, C_SAVE, C_RESET, C_ROW0 = 100, C_CELL0 = 300, C_BSLOT0 = 500 };
 static int g_hover = C_NONE, g_pressed = C_NONE;
 static bool g_dragging = false, g_tracking = false, g_searchFocus = false, g_open = false, g_placed = false;
 static POINT g_dragFrom;
 static HCURSOR g_gameCursor = nullptr;
 
 static bool In(DR r, int x, int y) { return x >= r.l && x < r.r && y >= r.t && y < r.b; }
-static DR CellRect(int vis) { int c = vis % GRID_COLS, r = vis / GRID_COLS; int x = R_GRID.l + 4 + c * CELL_W, y = R_GRID.t + 2 + r * CELL_H; return { x, y, x + 45, y + 45 }; }
+static int GridPages() { return max(1, ((int)g_drops.size() + GRID_N - 1) / GRID_N); }
 
 static int HitTest(int x, int y)
 {
-    if (In(R_CLOSE, x, y)) return C_CLOSE;
-    if (In(R_BLOCKED, x, y)) return C_BLOCKED;
-    if (In(R_EDIT, x, y)) return C_EDIT;
-    if (In(R_SEARCH, x, y)) return C_SEARCH;
-    if (In(R_TARGET, x, y)) return C_TARGET;
-    if (In(R_LUP, x, y)) return C_LUP;
-    if (In(R_LDOWN, x, y)) return C_LDOWN;
-    if (In(R_GUP, x, y)) return C_GUP;
-    if (In(R_GDOWN, x, y)) return C_GDOWN;
-    if (In(R_LIST, x, y))
+    if (In(D4(DP_CLOSE), x, y)) return C_CLOSE;
+    if (In(D4(DP_EDIT), x, y)) return C_EDIT;
+    if (In(D4(DP_SEARCH), x, y)) return C_SEARCH;
+    if (In(D4(DP_PREV), x, y)) return C_PREV;
+    if (In(D4(DP_NEXT), x, y)) return C_NEXT;
+    if (In(D4(DP_SAVE), x, y)) return C_SAVE;
+    if (In(D4(DP_RESET), x, y)) return C_RESET;
+    if (In(D4(DP_LIST), x, y))
     {
-        int i = g_listTop + (y - R_LIST.t) / ROW_H;
+        int i = g_listTop + (y - DP_LIST[1]) / ROW_H;
         if (i < (int)g_mobs.size()) return C_ROW0 + i;
     }
-    for (int v = 0; v < GRID_COLS * GRID_ROWS; v++)
+    for (int v = 0; v < GRID_N; v++)
     {
-        int i = g_gridTop * GRID_COLS + v;
+        int i = g_gridPage * GRID_N + v;
         if (i >= (int)g_drops.size()) break;
-        if (In(CellRect(v), x, y)) return C_CELL0 + i;
+        if (In(D4(DP_CELL[v]), x, y)) return C_CELL0 + i;
     }
+    for (int k = 0; k < 10; k++) if (In(D4(DP_BSLOT[k]), x, y)) return C_BSLOT0 + k;
     return C_NONE;
 }
 
+// "%100" / "%2.5": the design prints the percent sign in front
 static std::string PctText(UINT16 pct)
 {
     char b[24];
-    if (pct >= 10000) return "100%";
-    if (pct % 100 == 0) sprintf_s(b, "%u%%", pct / 100); else sprintf_s(b, "%.2f%%", pct / 100.0);
+    if (pct >= 10000) return "%100";
+    if (pct % 100 == 0) sprintf_s(b, "%%%u", pct / 100); else sprintf_s(b, "%%%.2f", pct / 100.0);
     return b;
 }
 
-static void Button(DR r, int ctl, const char* label)
+static void DrawButton(const char* base, const int rc[4], int ctl, const char* label = nullptr)
 {
-    bool hov = g_hover == ctl, down = hov && g_pressed == ctl;
-    Fill(r, down ? 120 : hov ? 96 : 70, down ? 34 : 28, down ? 34 : 30, 255);
-    Border(r, 200, 160, 90);
-    Text(label, r, RGB(255, 255, 255), 9, DT_CENTER | DT_VCENTER, true);
+    std::string st = g_hover == ctl ? (g_pressed == ctl ? "d" : "o") : "n";
+    if (!SkinBlit(std::string(base) + "_" + st, rc[0], rc[1], rc[2] - rc[0], rc[3] - rc[1]))
+        Fill(D4(rc), 70, 40, 30, 255);
+    if (label) Text(label, D4(rc), RGB(255, 255, 255), 9, DT_CENTER | DT_VCENTER, true);
 }
 
 static void Paint()
 {
     if (!g_hWnd || !g_memDC) return;
+    LoadSkin();
     memset(g_bits, 0, (size_t)W * H * 4);
-    Fill({ 0, 0, W, H }, 16, 17, 24, 240);
-    Border({ 0, 0, W, H }, 150, 118, 50, 2);
-    Border({ 3, 3, W - 3, H - 3 }, 60, 46, 22);
-    Fill({ 4, 4, W - 4, 38 }, 40, 30, 14, 255);
+    if (!SkinBlit("bg", 0, 0)) Fill({ 0, 0, W, H }, 16, 24, 22, 240);
 
     EnterCriticalSection(&g_lock);
-    Text("Drop Search", R_TITLE, RGB(255, 210, 90), 12, DT_LEFT | DT_VCENTER, true);
-    Button(R_CLOSE, C_CLOSE, "X");
-    { char b[32]; sprintf_s(b, "Blocked %d/%d", DropBlock_Count(), (int)BLOCK_MAX); Button(R_BLOCKED, C_BLOCKED, b); }
-
     // search box
-    Fill(R_EDIT, 6, 6, 10, 255);
-    Border(R_EDIT, g_searchFocus ? 255 : 120, g_searchFocus ? 210 : 100, g_searchFocus ? 90 : 60);
-    std::string shown = g_query.empty() && !g_searchFocus ? "monster name..." : g_query + (g_searchFocus && (GetTickCount() / 500) % 2 ? "|" : "");
-    Text(shown, { R_EDIT.l + 6, R_EDIT.t, R_EDIT.r - 4, R_EDIT.b }, g_query.empty() && !g_searchFocus ? RGB(130, 130, 130) : RGB(255, 255, 255), 10, DT_LEFT | DT_VCENTER);
-    Button(R_SEARCH, C_SEARCH, "Search");
-    Button(R_TARGET, C_TARGET, "Target");
+    DR edit = D4(DP_EDIT);
+    std::string shown = g_query.empty() && !g_searchFocus ? "type here..." : g_query + (g_searchFocus && (GetTickCount() / 500) % 2 ? "|" : "");
+    Text(shown, { edit.l + 8, edit.t, edit.r - 4, edit.b }, g_query.empty() && !g_searchFocus ? RGB(120, 190, 190) : RGB(180, 255, 255), 9, DT_LEFT | DT_VCENTER);
+    DrawButton("search", DP_SEARCH, C_SEARCH, "Search");
+    DrawButton("close", DP_CLOSE, C_CLOSE);
 
     // monster list
-    Fill(R_LIST, 8, 8, 12, 255);
-    Border(R_LIST, 90, 72, 36);
     for (int r = 0; r < LIST_ROWS; r++)
     {
         int i = g_listTop + r;
         if (i >= (int)g_mobs.size()) break;
         const Mob& m = g_mobs[i];
-        DR row = { R_LIST.l + 2, R_LIST.t + 2 + r * ROW_H, R_LIST.r - 2, R_LIST.t + 2 + r * ROW_H + ROW_H - 2 };
-        if (i == g_selMob) Fill(row, 120, 90, 30, 200);
-        else if (g_hover == C_ROW0 + i) Fill(row, 60, 50, 30, 200);
+        DR row = { DP_LIST[0] + 2, DP_LIST[1] + r * ROW_H, DP_LIST[2] - 14, DP_LIST[1] + r * ROW_H + ROW_H - 1 };
+        if (i == g_selMob) Fill(row, 20, 120, 120, 160);
+        else if (g_hover == C_ROW0 + i) Fill(row, 20, 80, 80, 140);
         char lv[16]; sprintf_s(lv, "Lv%u", m.level);
-        Text(m.name, { row.l + 4, row.t, row.r - 40, row.b }, m.hasDrops ? RGB(235, 235, 235) : RGB(140, 140, 140), 9, DT_LEFT | DT_VCENTER);
-        Text(lv, { row.r - 40, row.t, row.r - 2, row.b }, RGB(255, 210, 90), 8, DT_RIGHT | DT_VCENTER);
+        Text(m.name, { row.l + 4, row.t, row.r - 36, row.b }, m.hasDrops ? RGB(235, 235, 235) : RGB(130, 130, 130), 8, DT_LEFT | DT_VCENTER);
+        Text(lv, { row.r - 36, row.t, row.r - 2, row.b }, RGB(255, 210, 90), 8, DT_RIGHT | DT_VCENTER);
     }
-    Button(R_LUP, C_LUP, "Up");
-    Button(R_LDOWN, C_LDOWN, "Down");
 
-    // drop grid
-    Fill(R_GRIDHDR, 40, 30, 14, 255);
-    Text(g_dropTitle.empty() ? "Drops" : g_dropTitle, { R_GRIDHDR.l + 6, R_GRIDHDR.t, R_GRIDHDR.r - 6, R_GRIDHDR.b }, RGB(255, 255, 160), 10, DT_LEFT | DT_VCENTER, true);
-    Fill(R_GRID, 8, 8, 12, 255);
-    Border(R_GRID, 90, 72, 36);
-    for (int v = 0; v < GRID_COLS * GRID_ROWS; v++)
+    // title of the shown monster (or the last message)
+    std::string head = (GetTickCount() - g_statusAt < 4000 && !g_status.empty()) ? g_status : g_dropTitle;
+    Text(head, D4(DP_MONNAME), RGB(255, 225, 120), 8, DT_LEFT | DT_VCENTER, true);
+
+    // drop grid (page of 25)
+    int pages = GridPages();
+    if (g_gridPage >= pages) g_gridPage = pages - 1;
+    for (int v = 0; v < GRID_N; v++)
     {
-        int i = g_gridTop * GRID_COLS + v;
+        int i = g_gridPage * GRID_N + v;
         if (i >= (int)g_drops.size()) break;
         const Drop& d = g_drops[i];
-        DR c = CellRect(v);
-        Fill({ c.l - 1, c.t - 1, c.r + 1, c.b + 1 }, 30, 26, 18, 255);
-        Blit(Icon(d.icon), c.l, c.t, 45, 45);
+        DR c = D4(DP_CELL[v]);
+        Blit(Icon(d.icon), c.l, c.t, c.r - c.l, c.b - c.t);
         bool blocked = DropBlock_Has(d.item);
-        if (blocked) { Fill(c, 150, 0, 0, 150); Border(c, 255, 60, 60, 2); }
-        if (g_hover == C_CELL0 + i) Border({ c.l - 2, c.t - 2, c.r + 2, c.b + 2 }, 255, 210, 80, 2);
-        if (blocked) Text("BLOCK", { c.l - 3, c.b + 1, c.l + 49, c.b + 15 }, RGB(255, 90, 90), 8, DT_CENTER | DT_VCENTER, true);
-        else if (!g_showBlocked) Text(PctText(d.pct), { c.l - 3, c.b + 1, c.l + 49, c.b + 15 }, d.pct >= 1000 ? RGB(140, 230, 140) : d.pct >= 100 ? RGB(255, 230, 120) : RGB(255, 140, 120), 8, DT_CENTER | DT_VCENTER, true);
+        if (blocked) Fill(c, 150, 0, 0, 150);
+        if (g_hover == C_CELL0 + i) Border({ c.l - 1, c.t - 1, c.r + 1, c.b + 1 }, 255, 235, 120, 2);
+        Text(blocked ? "BLOCK" : PctText(d.pct), D4(DP_PCT[v]), blocked ? RGB(255, 110, 110) : RGB(255, 255, 255), 8, DT_CENTER | DT_VCENTER, true);
     }
-    Button(R_GUP, C_GUP, "Up");
-    Button(R_GDOWN, C_GDOWN, "Down");
+    DrawButton("prev", DP_PREV, C_PREV);
+    DrawButton("next", DP_NEXT, C_NEXT);
+    { char b[32]; sprintf_s(b, "%d / %d", g_gridPage + 1, pages); Text(b, D4(DP_PAGE), RGB(255, 235, 150), 8, DT_CENTER | DT_VCENTER, true); }
 
-    // status / hovered item
-    std::string st = g_status;
-    if (g_hover >= C_CELL0 && g_hover - C_CELL0 < (int)g_drops.size())
+    // block list (slots, page text, reset, save)
+    EnterCriticalSection(&g_blockLock);
+    for (int k = 0; k < 10 && k < (int)g_blocked.size(); k++)
     {
-        const Drop& d = g_drops[g_hover - C_CELL0];
-        st = g_showBlocked ? d.name : d.name + "   -   drop chance " + PctText(d.pct);
-        st += DropBlock_Has(d.item) ? "   [BLOCKED - right click to allow]" : "   [right click to block]";
+        DR c = D4(DP_BSLOT[k]);
+        Blit(Icon(g_blocked[k].icon), c.l, c.t, c.r - c.l, c.b - c.t);
+        if (g_hover == C_BSLOT0 + k) Border({ c.l - 1, c.t - 1, c.r + 1, c.b + 1 }, 255, 235, 120, 2);
     }
-    Text(st, R_STATUS, RGB(230, 220, 190), 9, DT_LEFT | DT_VCENTER);
+    LeaveCriticalSection(&g_blockLock);
+    DrawButton("left", DP_BLEFT, C_NONE);
+    DrawButton("right", DP_BRIGHT, C_NONE);
+    Text("1 / 1", D4(DP_BPAGE), RGB(255, 235, 150), 8, DT_CENTER | DT_VCENTER, true);
+    DrawButton("reset", DP_RESET, C_RESET);
+    DrawButton("save", DP_SAVE, C_SAVE, "Save");
     LeaveCriticalSection(&g_lock);
 
     RECT wr; GetWindowRect(g_hWnd, &wr);
@@ -451,7 +464,7 @@ static void Show(bool loadTarget)
         SetWindowPos(g_hWnd, HWND_TOPMOST, x, y, W, H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
     else SetWindowPos(g_hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    if (loadTarget) { RequestTarget(); g_status = "Loading the drops of your target..."; }
+    if (loadTarget) { RequestTarget(); SetStatus("Loading the drops of your target..."); }
     Paint();
 }
 static void SyncVisibility()
@@ -478,39 +491,20 @@ static void Scroll(bool list, int delta)
         int maxTop = max(0, (int)g_mobs.size() - LIST_ROWS);
         g_listTop = min(maxTop, max(0, g_listTop + delta));
     }
-    else
-    {
-        int rows = ((int)g_drops.size() + GRID_COLS - 1) / GRID_COLS;
-        int maxTop = max(0, rows - GRID_ROWS);
-        g_gridTop = min(maxTop, max(0, g_gridTop + delta));
-    }
+    else g_gridPage = min(GridPages() - 1, max(0, g_gridPage + delta));
     LeaveCriticalSection(&g_lock);
     Paint();
 }
 
-// the grid shows the block list (right click a cell to allow the item again)
-static void ShowBlockedList()
-{
-    EnterCriticalSection(&g_blockLock);
-    std::vector<DropMiniEntry> b = g_blocked;
-    LeaveCriticalSection(&g_blockLock);
-    EnterCriticalSection(&g_lock);
-    g_drops.clear();
-    for (auto& e : b) g_drops.push_back({ e.item, 0, e.icon, e.name });
-    g_gridTop = 0; g_selMob = -1; g_showBlocked = true;
-    char t[64]; sprintf_s(t, "Blocked drops  (%u/%u)", (unsigned)b.size(), (unsigned)BLOCK_MAX);
-    g_dropTitle = t;
-    g_status = b.empty() ? "Nothing is blocked. Right click a drop to block it." : "These items do not drop for you. Right click one to allow it again.";
-    LeaveCriticalSection(&g_lock);
-}
+static void SetStatus(const std::string& s) { g_status = s; g_statusAt = GetTickCount(); }
 
 static void DoSearch()
 {
     std::string q = g_query;
     while (!q.empty() && q.back() == ' ') q.pop_back();
-    if (q.size() < 2) { g_status = "Type at least 2 letters."; Paint(); return; }
+    if (q.size() < 2) { SetStatus("Type at least 2 letters."); Paint(); return; }
     RequestSearch(q);
-    g_status = "Searching \"" + q + "\"...";
+    SetStatus("Searching...");
     SetSearchFocus(false);
     Paint();
 }
@@ -521,17 +515,23 @@ static void Activate(int ctl)
     if (ctl == C_EDIT) { SetSearchFocus(true); Paint(); return; }
     SetSearchFocus(false);
     if (ctl == C_SEARCH) { DoSearch(); return; }
-    if (ctl == C_BLOCKED) { ShowBlockedList(); Paint(); return; }
-    if (ctl == C_TARGET) { RequestTarget(); g_status = "Loading the drops of your target..."; Paint(); return; }
-    if (ctl == C_LUP) { Scroll(true, -LIST_ROWS); return; }
-    if (ctl == C_LDOWN) { Scroll(true, LIST_ROWS); return; }
-    if (ctl == C_GUP) { Scroll(false, -GRID_ROWS); return; }
-    if (ctl == C_GDOWN) { Scroll(false, GRID_ROWS); return; }
+    if (ctl == C_PREV) { Scroll(false, -1); return; }
+    if (ctl == C_NEXT) { Scroll(false, 1); return; }
+    if (ctl == C_SAVE)
+    {
+        EnterCriticalSection(&g_blockLock); BlockSave(); BlockSend(); LeaveCriticalSection(&g_blockLock);
+        SetStatus("Block list saved."); Paint(); return;
+    }
+    if (ctl == C_RESET)
+    {
+        EnterCriticalSection(&g_blockLock); g_blocked.clear(); BlockSave(); BlockSend(); LeaveCriticalSection(&g_blockLock);
+        SetStatus("Block list cleared."); Paint(); return;
+    }
     if (ctl >= C_ROW0 && ctl < C_CELL0)
     {
         EnterCriticalSection(&g_lock);
         int i = ctl - C_ROW0;
-        if (i < (int)g_mobs.size()) { g_selMob = i; RequestProto(g_mobs[i].proto); g_status = "Loading " + g_mobs[i].name + "..."; }
+        if (i < (int)g_mobs.size()) { g_selMob = i; RequestProto(g_mobs[i].proto); SetStatus("Loading " + g_mobs[i].name + "..."); }
         LeaveCriticalSection(&g_lock);
     }
     Paint();
@@ -561,8 +561,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             if (hit >= C_CELL0 && hit - C_CELL0 < (int)g_drops.size())
             {
                 item = g_drops[hit - C_CELL0].item;
-                int vis = hit - C_CELL0 - g_gridTop * GRID_COLS;
-                DR c = CellRect(vis); RECT wr; GetWindowRect(h, &wr);
+                int vis = hit - C_CELL0 - g_gridPage * GRID_N;
+                DR c = D4(DP_CELL[vis]); RECT wr; GetWindowRect(h, &wr);
                 a = { wr.left, wr.top + c.t, wr.right, wr.top + c.b };   // the game draws it beside the panel
             }
             LeaveCriticalSection(&g_lock);
@@ -586,18 +586,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_RBUTTONUP:
     {
-        // on a drop: block / allow it; anywhere else: close the panel
+        // on a drop: block / allow it; on a block slot: allow it again; anywhere else: close the panel
         int hit = HitTest(x, y);
         DropMiniEntry e = {};
         EnterCriticalSection(&g_lock);
-        if (hit >= C_CELL0 && hit - C_CELL0 < (int)g_drops.size()) { const Drop& d = g_drops[hit - C_CELL0]; e = { d.item, d.pct, d.icon, d.name }; }
+        if (hit >= C_CELL0 && hit < C_BSLOT0 && hit - C_CELL0 < (int)g_drops.size()) { const Drop& d = g_drops[hit - C_CELL0]; e = { d.item, d.pct, d.icon, d.name }; }
         LeaveCriticalSection(&g_lock);
+        if (hit >= C_BSLOT0)
+        {
+            EnterCriticalSection(&g_blockLock);
+            if (hit - C_BSLOT0 < (int)g_blocked.size()) e = g_blocked[hit - C_BSLOT0];
+            LeaveCriticalSection(&g_blockLock);
+        }
         if (!e.item) { Hide(); return 0; }
         int res = DropBlock_Toggle(e);
-        if (g_showBlocked) ShowBlockedList();
         EnterCriticalSection(&g_lock);
-        g_status = res == 1 ? e.name + " is blocked: it will not drop for you." : res == 0 ? e.name + " is allowed again."
-            : "The block list is full (10 items). Open \"Blocked\" and allow one first.";
+        SetStatus(res == 1 ? e.name + " is blocked." : res == 0 ? e.name + " is allowed again." : "Block list is full (10).");
         LeaveCriticalSection(&g_lock);
         ItemTip_Hide(); g_hover = C_NONE;
         Paint();
@@ -608,7 +612,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     {
         POINT p; GetCursorPos(&p); ScreenToClient(h, &p);
         int d = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? -1 : 1;
-        if (In(R_LIST, p.x, p.y)) Scroll(true, d * 3); else if (In(R_GRID, p.x, p.y)) Scroll(false, d);
+        if (In(D4(DP_LIST), p.x, p.y)) Scroll(true, d * 3); else Scroll(false, d);
         return 0;
     }
     case WM_CHAR:
@@ -678,7 +682,7 @@ void Drop_OnRecv(const BYTE* buf, size_t len)
             return;
         }
         EnterCriticalSection(&g_lock);
-        g_drops = v; g_gridTop = 0; g_showBlocked = false;
+        g_drops = v; g_gridPage = 0; g_showBlocked = false;
         char t[160]; sprintf_s(t, "%s  (Lv%u)  -  %u drop%s", name.c_str(), level, (unsigned)v.size(), v.size() == 1 ? "" : "s");
         g_dropTitle = t;
         g_status = v.empty() ? (isMon ? "This monster drops nothing." : "This NPC drops nothing.") : "Hover an item to see its name and drop chance.";

@@ -43,6 +43,7 @@ class E:
     fontH = 12
     fstyle = 0
     style = 0
+    state = 0
     font = ''
 
     def __init__(s):
@@ -74,7 +75,7 @@ def elem(r, typ):
     n = r.h(); e.ver = r.h()
     e.children = [elem(r, r.i()) for _ in range(n)]
     e.id = r.s(); e.rect = tuple(r.i() for _ in range(4)); [r.i() for _ in range(4)]
-    e.style = r.u(); r.u(); r.s(); r.s(); r.s()
+    e.style = r.u(); e.state = r.u(); r.s(); r.s(); r.s()   # state: the button state of an image child (0 normal, 1 down, 2 on, 3 disabled)
     t = e.type
     if t == 'IMAGE':
         e.tex = r.s(); e.uv = tuple(r.f() for _ in range(4)); r.f()
