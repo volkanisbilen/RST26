@@ -282,6 +282,12 @@ impl WorldState {
                 if buff.duration_secs > 0 {
                     buff.duration_secs = buff.duration_secs.saturating_add(1);
                 }
+                // the copy that is saved at logout runs on its own absolute clock: hold it back too,
+                // else the remaining time shrinks on every relog
+                let skill = buff.skill_id;
+                if let Some(expiry) = handle.saved_magic_map.get_mut(&skill) {
+                    *expiry = expiry.saturating_add(1000);
+                }
             }
         }
     }

@@ -824,41 +824,49 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
     let new_x = old_x + dir_x * 2.0;
     let new_z = old_z + dir_z * 2.0;
 
-    // Update pet NPC position
-    world.move_runtime_npc(pet_nid as u32, new_x, new_z);
+    let event_room = world.get_event_room(sid);
+    move_follower_npc(world, pet_nid as u32, new_x, new_z, distance, event_room);
+}
+
+/// Move a runtime follower NPC (familiar, slave priest) to a new place and tell the players around it,
+/// including the NPC_OUT / NPC_IN pair when it crosses a region border.
+pub fn move_follower_npc(world: &WorldState, nid: u32, new_x: f32, new_z: f32, speed: f32, event_room: u16) {
+    let Some(npc_before) = world.get_npc_instance(nid) else {
+        return;
+    };
+    world.move_runtime_npc(nid, new_x, new_z);
 
     // Broadcast pet move: WIZ_NPC_MOVE
     let mut move_pkt = Packet::new(Opcode::WizNpcMove as u8);
     move_pkt.write_u8(1); // move type
-    move_pkt.write_u32(pet_nid as u32);
+    move_pkt.write_u32(nid);
     move_pkt.write_u16((new_x * 10.0) as u16);
     move_pkt.write_u16((new_z * 10.0) as u16);
-    move_pkt.write_u16((pet_npc.y.max(0.0) * 10.0) as u16);
-    move_pkt.write_u16((distance * 10.0) as u16); // speed
+    move_pkt.write_u16((npc_before.y.max(0.0) * 10.0) as u16);
+    move_pkt.write_u16((speed * 10.0) as u16);
 
-    let event_room = world.get_event_room(sid);
     world.broadcast_to_3x3(
-        pet_npc.zone_id,
-        pet_npc.region_x,
-        pet_npc.region_z,
+        npc_before.zone_id,
+        npc_before.region_x,
+        npc_before.region_z,
         Arc::new(move_pkt.clone()),
         None,
         event_room,
     );
-    if let Some(updated) = world.get_npc_instance(pet_nid as u32) {
-        if updated.region_x != pet_npc.region_x || updated.region_z != pet_npc.region_z {
+    if let Some(updated) = world.get_npc_instance(nid) {
+        if updated.region_x != npc_before.region_x || updated.region_z != npc_before.region_z {
             // The pet crossed a region border: players who only see the new region have never
             // received it, and players who lost sight of it still hold the old NPC. Send NPC_OUT
             // to the old 3x3 and NPC_IN (with the pet's own model) to the new 3x3.
             if let Some(template) = world.get_npc_template(updated.proto_id, updated.is_monster) {
                 let visual = world.npc_visual_template(&updated, &template);
                 world.broadcast_to_3x3(
-                    pet_npc.zone_id,
-                    pet_npc.region_x,
-                    pet_npc.region_z,
+                    npc_before.zone_id,
+                    npc_before.region_x,
+                    npc_before.region_z,
                     Arc::new(crate::npc::build_npc_inout(
                         crate::npc::NPC_OUT,
-                        &pet_npc,
+                        &npc_before,
                         &template,
                     )),
                     None,

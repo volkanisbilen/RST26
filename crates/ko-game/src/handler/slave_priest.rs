@@ -70,6 +70,100 @@ impl Default for SpState {
 
 static STATES: LazyLock<DashMap<SessionId, SpState>> = LazyLock::new(DashMap::new);
 
+/// The visible priest (runtime NPC) of each owner.
+static PRIESTS: LazyLock<DashMap<SessionId, u32>> = LazyLock::new(DashMap::new);
+
+/// NPC template used as the priest's body ("Priest of Akara").
+const PRIEST_TEMPLATE_SID: u16 = 30002;
+/// The priest walks to its owner when it is farther away than this (metres).
+const FOLLOW_DIST: f32 = 4.0;
+
+fn remove_priest(world: &WorldState, owner: SessionId) {
+    if let Some((_, nid)) = PRIESTS.remove(&owner) {
+        world.kill_npc(nid);
+    }
+}
+
+/// Keep the priest NPC beside its owner: spawn it, bring it along, rebuild it after a zone change.
+fn follow_owner(world: &WorldState, owner: SessionId) {
+    let Some(pos) = world.get_position(owner) else {
+        return;
+    };
+    let existing = PRIESTS.get(&owner).map(|e| *e);
+    if let Some(nid) = existing {
+        match world.get_npc_instance(nid) {
+            Some(npc) if npc.zone_id == pos.zone_id => {
+                let (dx, dz) = (npc.x - pos.x, npc.z - pos.z);
+                let dist = (dx * dx + dz * dz).sqrt();
+                if dist > 40.0 {
+                    remove_priest(world, owner); // lost behind (teleport): build it again below
+                } else {
+                    if dist >= FOLLOW_DIST {
+                        let k = 2.0 / dist;
+                        let event_room = world.get_event_room(owner);
+                        crate::handler::move_handler::move_follower_npc(
+                            world,
+                            nid,
+                            pos.x + dx * k,
+                            pos.z + dz * k,
+                            dist,
+                            event_room,
+                        );
+                    }
+                    return;
+                }
+            }
+            _ => remove_priest(world, owner),
+        }
+    }
+    let Some(ch) = world.get_character_info(owner) else {
+        return;
+    };
+    let Some(template) = world.get_npc_template(PRIEST_TEMPLATE_SID, false) else {
+        tracing::warn!("slave priest: NPC template {PRIEST_TEMPLATE_SID} missing");
+        return;
+    };
+    let nid = world.allocate_npc_id();
+    let (x, z) = (pos.x + 1.5, pos.z + 1.5);
+    let event_room = world.get_event_room(owner);
+    let instance = crate::npc::NpcInstance {
+        nid,
+        proto_id: PRIEST_TEMPLATE_SID,
+        is_monster: false,
+        zone_id: pos.zone_id,
+        x,
+        y: pos.y,
+        z,
+        direction: 0,
+        region_x: crate::zone::calc_region(x),
+        region_z: crate::zone::calc_region(z),
+        gate_open: 0,
+        object_type: 0,
+        nation: ch.nation,
+        special_type: 0,
+        trap_number: 0,
+        event_room,
+        is_event_npc: false,
+        summon_type: 0,
+        user_name: String::new(),
+        pet_name: String::new(),
+        clan_name: String::new(),
+        clan_id: 0,
+        clan_mark_version: 0,
+    };
+    world.insert_npc_instance(instance.clone());
+    world.init_npc_hp(nid, template.max_hp.max(1) as i32);
+    world.broadcast_to_3x3(
+        instance.zone_id,
+        instance.region_x,
+        instance.region_z,
+        std::sync::Arc::new(crate::npc::build_npc_inout(crate::npc::NPC_IN, &instance, &template)),
+        None,
+        event_room,
+    );
+    PRIESTS.insert(owner, nid);
+}
+
 fn seconds_left(world: &WorldState, sid: SessionId) -> u32 {
     world
         .get_active_buffs(sid)
@@ -110,6 +204,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let sid = session.session_id();
     if !world.has_buff(sid, SP_BUFF_TYPE) {
         STATES.remove(&sid);
+        remove_priest(&world, sid);
         return session.send_packet(&hide_packet()).await;
     }
     let mut st = STATES.get(&sid).map(|s| *s).unwrap_or_default();
@@ -125,7 +220,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             st.active = true;
             st.last_act = Instant::now() - std::time::Duration::from_secs(10);
         }
-        2 => st.active = false,
+        2 => {
+            st.active = false;
+            remove_priest(&world, sid);
+        }
         _ => {}
     }
     STATES.insert(sid, st);
@@ -229,6 +327,7 @@ pub fn tick(world: &WorldState) {
         let alive_scroll = world.has_buff(owner, SP_BUFF_TYPE);
         if !alive_scroll {
             STATES.remove(&owner);
+            remove_priest(world, owner);
             world.send_to_session_owned(owner, hide_packet());
             continue;
         }
@@ -238,8 +337,10 @@ pub fn tick(world: &WorldState) {
         if !st.active {
             // stopped: the scroll's time stands still until the priest is started again
             world.pause_buff_second(owner, SP_BUFF_TYPE);
+            remove_priest(world, owner);
             continue;
         }
+        follow_owner(world, owner);
         if st.last_act.elapsed().as_secs() < 2 {
             continue;
         }
