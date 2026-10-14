@@ -1,0 +1,770 @@
+IMAGE  [261, 29, 1000, 123] ui\pus_of.dxt uv=[0.03, 0.02, 0.752, 0.082]
+IMAGE  [45, 33, 258, 583] ui\certified_2020.dxt uv=[0.174, 0.363, 0.271, 0.49]
+IMAGE  [261, 124, 998, 584] ui\pus_of.dxt uv=[0.03, 0.082, 0.751, 0.532]
+IMAGE  [261, 121, 997, 126] ui\re_power_up.dxt uv=[0.096, 0.043, 0.725, 0.053]
+IMAGE  [62, 509, 230, 540] ui\re_seal_01.dxt uv=[0.488, 0.656, 0.803, 0.705]
+IMAGE  [257, 32, 262, 582] ui\pus.dxt uv=[0.025, 0.042, 0.03, 0.133]
+IMAGE  [47, 176, 258, 202] ui\re_akara_01.dxt uv=[0.042, 0.757, 0.859, 0.808]
+IMAGE  [0, 3, 75, 156] ui\re_akara_01.dxt uv=[0.717, 0.835, 0.79, 0.984]
+IMAGE  [75, 7, 968, 34] ui\re_akara_01.dxt uv=[0.794, 0.839, 0.799, 0.865]
+IMAGE  [0, 461, 75, 621] ui\re_akara_01.dxt uv=[0.527, 0.841, 0.601, 0.997]
+IMAGE  [14, 156, 46, 461] ui\re_akara_01.dxt uv=[0.541, 0.832, 0.572, 0.844]
+IMAGE  [996, 158, 1028, 465] ui\re_akara_01.dxt uv=[0.857, 0.992, 0.889, 0.997]
+IMAGE  [75, 582, 966, 619] ui\re_akara_01.dxt uv=[0.598, 0.959, 0.604, 0.995]
+IMAGE  [968, 3, 1042, 158] ui\re_akara_01.dxt uv=[0.83, 0.835, 0.902, 0.986]
+IMAGE  [966, 465, 1042, 621] ui\re_akara_01.dxt uv=[0.639, 0.845, 0.713, 0.997]
+IMAGE  [306, 97, 400, 122] ui\re_seal_01.dxt uv=[0.488, 0.656, 0.803, 0.705]
+IMAGE  [435, 96, 534, 121] ui\re_seal_01.dxt uv=[0.488, 0.656, 0.803, 0.705]
+IMAGE  [273, 94, 300, 121] ui\re_achieve_07.dxt uv=[0.326, 0.725, 0.383, 0.771]
+IMAGE  [408, 95, 432, 119] ui\re_akara_01.dxt uv=[0.064, 0.899, 0.111, 0.952]
+IMAGE  [512, 43, 744, 92] ui\pustext.dxt uv=[0.068, 0.404, 0.872, 0.536]
+EDIT edit_search [561, 89, 971, 120] 
+  IMAGE  [561, 91, 956, 120] ui\pus_of.dxt uv=[0.794, 0.077, 0.982, 0.104]
+  STRING txt_search [574, 93, 717, 117]  "Search for items..."
+BASE items1 [260, 126, 995, 234] 
+  IMAGE item1 [266, 132, 433, 228] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    IMAGE item_icon [285, 159, 326, 194] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    BUTTON btn_add_basket [356, 199, 426, 222] 
+      STRING  [356, 199, 426, 222]  "Sepet"
+      IMAGE  [356, 199, 426, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [356, 199, 426, 222] ui\common_button_0.dxt uv=[0.012, 0.081, 0.152, 0.137]
+      IMAGE  [356, 199, 426, 222] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.205]
+      IMAGE  [356, 199, 426, 222] ui\common_button_0.dxt uv=[0.013, 0.013, 0.152, 0.067]
+    STRING item_name [268, 133, 431, 150]  "Disc Premium"
+    STRING item_price [339, 160, 430, 174]  "Price: 2.800"
+    STRING item_quantitiy [339, 178, 427, 193]  "Quantitiy: 1"
+    BUTTON btn_purchase [274, 199, 345, 222] 
+      IMAGE  [274, 199, 345, 222] ui\common_button_0.dxt uv=[0.013, 0.012, 0.152, 0.067]
+      IMAGE  [274, 199, 345, 222] ui\common_button_0.dxt uv=[0.013, 0.151, 0.152, 0.205]
+      IMAGE  [274, 199, 345, 222] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.135]
+      IMAGE  [274, 199, 345, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [274, 199, 345, 222]  "Buy"
+  IMAGE item2 [450, 132, 617, 228] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_add_basket [539, 199, 609, 222] 
+      IMAGE  [539, 199, 609, 222] ui\common_button_0.dxt uv=[0.012, 0.012, 0.152, 0.065]
+      IMAGE  [539, 199, 609, 222] ui\common_button_0.dxt uv=[0.012, 0.15, 0.152, 0.206]
+      IMAGE  [539, 199, 609, 222] ui\re_seed_02.dxt uv=[0.012, 0.668, 0.221, 0.725]
+      IMAGE  [539, 199, 609, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [539, 199, 609, 222]  "Sepet"
+    STRING item_name [452, 133, 615, 150]  "Disc Premium"
+    STRING item_price [523, 160, 614, 174]  "Price: 2.800"
+    STRING item_quantitiy [523, 178, 611, 193]  "Quantitiy: 1"
+    IMAGE item_icon [469, 159, 510, 194] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    BUTTON btn_purchase [459, 199, 529, 222] 
+      STRING  [459, 199, 529, 222]  "Buy"
+      IMAGE  [459, 199, 529, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [459, 199, 529, 222] ui\common_button_0.dxt uv=[0.013, 0.082, 0.152, 0.137]
+      IMAGE  [459, 199, 529, 222] ui\common_button_0.dxt uv=[0.012, 0.151, 0.151, 0.205]
+      IMAGE  [459, 199, 529, 222] ui\common_button_0.dxt uv=[0.012, 0.013, 0.151, 0.066]
+  IMAGE item3 [636, 132, 803, 228] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    STRING item_name [638, 133, 801, 150]  "Disc Premium"
+    BUTTON btn_add_basket [725, 199, 796, 222] 
+      IMAGE  [725, 199, 796, 222] ui\common_button_0.dxt uv=[0.012, 0.012, 0.152, 0.065]
+      IMAGE  [725, 199, 796, 222] ui\common_button_0.dxt uv=[0.012, 0.151, 0.152, 0.205]
+      IMAGE  [725, 199, 796, 222] ui\common_button_0.dxt uv=[0.013, 0.082, 0.152, 0.136]
+      IMAGE  [725, 199, 796, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [725, 199, 796, 222]  "Sepet"
+    BUTTON btn_purchase [645, 199, 716, 222] 
+      IMAGE  [645, 199, 716, 222] ui\common_button_0.dxt uv=[0.013, 0.012, 0.152, 0.066]
+      IMAGE  [645, 199, 716, 222] ui\common_button_0.dxt uv=[0.013, 0.15, 0.152, 0.205]
+      IMAGE  [645, 199, 716, 222] ui\common_button_0.dxt uv=[0.013, 0.082, 0.152, 0.135]
+      IMAGE  [645, 199, 716, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [645, 199, 716, 222]  "Buy"
+    STRING item_price [709, 160, 800, 174]  "Price: 2.800"
+    STRING item_quantitiy [709, 178, 797, 193]  "Quantitiy: 1"
+    IMAGE item_icon [655, 159, 696, 194] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  IMAGE item4 [822, 132, 989, 228] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [831, 199, 903, 222] 
+      STRING  [831, 199, 903, 222]  "Buy"
+      IMAGE  [831, 199, 903, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [831, 199, 903, 222] ui\common_button_0.dxt uv=[0.012, 0.082, 0.151, 0.136]
+      IMAGE  [831, 199, 903, 222] ui\common_button_0.dxt uv=[0.013, 0.15, 0.152, 0.206]
+      IMAGE  [831, 199, 903, 222] ui\common_button_0.dxt uv=[0.012, 0.013, 0.151, 0.065]
+    BUTTON btn_add_basket [916, 198, 982, 222] 
+      IMAGE  [916, 198, 982, 222] ui\common_button_0.dxt uv=[0.012, 0.012, 0.151, 0.065]
+      IMAGE  [916, 198, 982, 222] ui\common_button_0.dxt uv=[0.012, 0.151, 0.151, 0.204]
+      IMAGE  [916, 198, 982, 222] ui\common_button_0.dxt uv=[0.012, 0.082, 0.152, 0.136]
+      IMAGE  [916, 198, 982, 222] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [916, 198, 982, 222]  "Sepet"
+    STRING item_quantitiy [895, 178, 983, 193]  "Quantitiy: 1"
+    STRING item_price [895, 160, 986, 174]  "Price: 2.800"
+    STRING item_name [824, 133, 987, 151]  "Disc Premium"
+    IMAGE item_icon [841, 159, 882, 194] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+STRING txt_page [606, 558, 654, 578]  "99"
+STRING txt_cash [304, 98, 403, 119] 
+BASE items2 [261, 234, 996, 342] 
+  IMAGE item3 [637, 240, 804, 336] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [643, 307, 713, 330] 
+      STRING  [643, 307, 713, 330]  "Buy"
+      IMAGE  [643, 307, 713, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [643, 307, 713, 330] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [643, 307, 713, 330] ui\common_button_0.dxt uv=[0.012, 0.151, 0.151, 0.204]
+      IMAGE  [643, 307, 713, 330] ui\common_button_0.dxt uv=[0.012, 0.013, 0.152, 0.065]
+    BUTTON btn_add_basket [728, 307, 798, 330] 
+      IMAGE  [728, 307, 798, 330] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.065]
+      IMAGE  [728, 307, 798, 330] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.205]
+      IMAGE  [728, 307, 798, 330] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [728, 307, 798, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [728, 307, 798, 330]  "Sepet"
+    IMAGE item_icon [656, 267, 697, 302] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_quantitiy [710, 286, 798, 301]  "Quantitiy: 1"
+    STRING item_price [710, 268, 801, 282]  "Price: 2.800"
+    STRING item_name [639, 241, 802, 258]  "Disc Premium"
+  IMAGE item2 [451, 240, 618, 336] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [457, 307, 524, 330] 
+      STRING  [457, 307, 524, 330]  "Buy"
+      IMAGE  [457, 307, 524, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [457, 307, 524, 330] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [457, 307, 524, 330] ui\common_button_0.dxt uv=[0.012, 0.15, 0.152, 0.206]
+      IMAGE  [457, 307, 524, 330] ui\common_button_0.dxt uv=[0.013, 0.012, 0.151, 0.065]
+    BUTTON btn_add_basket [540, 307, 611, 330] 
+      IMAGE  [541, 307, 611, 330] ui\common_button_0.dxt uv=[0.012, 0.012, 0.152, 0.066]
+      IMAGE  [541, 307, 611, 330] ui\common_button_0.dxt uv=[0.012, 0.15, 0.152, 0.205]
+      IMAGE  [540, 307, 610, 330] ui\common_button_0.dxt uv=[0.012, 0.081, 0.151, 0.136]
+      IMAGE  [541, 307, 611, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [541, 307, 611, 330]  "Sepet"
+    STRING item_price [524, 268, 615, 282]  "Price: 2.800"
+    STRING item_quantitiy [524, 286, 612, 301]  "Quantitiy: 1"
+    IMAGE item_icon [470, 267, 511, 302] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_name [453, 241, 616, 258]  "Disc Premium"
+  IMAGE item1 [267, 240, 434, 336] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [273, 307, 343, 330] 
+      STRING  [273, 307, 343, 330]  "Buy"
+      IMAGE  [273, 307, 343, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [273, 307, 343, 330] ui\common_button_0.dxt uv=[0.013, 0.082, 0.152, 0.135]
+      IMAGE  [273, 307, 343, 330] ui\common_button_0.dxt uv=[0.012, 0.152, 0.151, 0.204]
+      IMAGE  [273, 307, 343, 330] ui\common_button_0.dxt uv=[0.012, 0.013, 0.152, 0.066]
+    BUTTON btn_add_basket [357, 307, 427, 330] 
+      IMAGE  [357, 307, 427, 330] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.065]
+      IMAGE  [357, 307, 427, 330] ui\common_button_0.dxt uv=[0.013, 0.152, 0.151, 0.206]
+      IMAGE  [357, 307, 427, 330] ui\common_button_0.dxt uv=[0.012, 0.082, 0.152, 0.135]
+      IMAGE  [357, 307, 427, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [357, 307, 427, 330]  "Sepet"
+    STRING item_quantitiy [340, 286, 428, 301]  "Quantitiy: 1"
+    STRING item_price [340, 268, 431, 282]  "Price: 2.800"
+    STRING item_name [269, 241, 432, 258]  "Disc Premium"
+    IMAGE item_icon [286, 267, 327, 302] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  IMAGE item4 [823, 241, 990, 337] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [829, 307, 899, 330] 
+      STRING  [829, 307, 899, 330]  "Buy"
+      IMAGE  [829, 307, 899, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [829, 307, 899, 330] ui\common_button_0.dxt uv=[0.012, 0.082, 0.152, 0.136]
+      IMAGE  [829, 307, 899, 330] ui\common_button_0.dxt uv=[0.013, 0.151, 0.152, 0.204]
+      IMAGE  [829, 307, 899, 330] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+    BUTTON btn_add_basket [913, 307, 983, 330] 
+      IMAGE  [913, 307, 983, 330] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+      IMAGE  [913, 307, 983, 330] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.205]
+      IMAGE  [913, 307, 983, 330] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [913, 307, 983, 330] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [913, 307, 983, 330]  "Sepet"
+    IMAGE item_icon [842, 268, 883, 303] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_name [825, 242, 988, 259]  "Disc Premium"
+    STRING item_price [896, 269, 987, 283]  "Price: 2.800"
+    STRING item_quantitiy [896, 287, 984, 302]  "Quantitiy: 1"
+BASE items3 [262, 342, 997, 450] 
+  IMAGE item1 [268, 348, 435, 444] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [274, 416, 343, 439] 
+      IMAGE  [274, 416, 343, 439] ui\common_button_0.dxt uv=[0.013, 0.013, 0.152, 0.065]
+      IMAGE  [274, 416, 343, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.204]
+      IMAGE  [274, 416, 343, 439] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.135]
+      IMAGE  [274, 416, 343, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [274, 416, 343, 439]  "Buy"
+    BUTTON btn_add_basket [359, 416, 429, 439] 
+      STRING  [359, 416, 429, 439]  "Sepet"
+      IMAGE  [359, 416, 429, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [359, 416, 429, 439] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [359, 416, 429, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.204]
+      IMAGE  [359, 416, 429, 439] ui\common_button_0.dxt uv=[0.012, 0.013, 0.152, 0.066]
+    IMAGE item_icon [287, 375, 328, 410] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_name [270, 349, 433, 366]  "Disc Premium"
+    STRING item_price [341, 376, 432, 390]  "Price: 2.800"
+    STRING item_quantitiy [341, 394, 429, 409]  "Quantitiy: 1"
+  IMAGE item2 [452, 348, 619, 444] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [458, 416, 525, 439] 
+      STRING  [458, 416, 525, 439]  "Buy"
+      IMAGE  [458, 416, 525, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [458, 416, 525, 439] ui\common_button_0.dxt uv=[0.012, 0.082, 0.151, 0.136]
+      IMAGE  [458, 416, 525, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.204]
+      IMAGE  [458, 416, 525, 439] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+    BUTTON btn_add_basket [543, 416, 613, 439] 
+      IMAGE  [543, 416, 613, 439] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+      IMAGE  [543, 416, 613, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.204]
+      IMAGE  [543, 416, 613, 439] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [543, 416, 613, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [543, 416, 613, 439]  "Sepet"
+    IMAGE item_icon [471, 375, 512, 410] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_quantitiy [525, 394, 613, 409]  "Quantitiy: 1"
+    STRING item_price [525, 376, 616, 390]  "Price: 2.800"
+    STRING item_name [454, 349, 617, 366]  "Disc Premium"
+  IMAGE item3 [638, 348, 805, 444] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [644, 416, 713, 439] 
+      STRING  [644, 416, 713, 439]  "Buy"
+      IMAGE  [644, 416, 713, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [644, 416, 713, 439] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.135]
+      IMAGE  [644, 416, 713, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.205]
+      IMAGE  [644, 416, 713, 439] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.065]
+    BUTTON btn_add_basket [729, 416, 799, 439] 
+      IMAGE  [729, 416, 799, 439] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+      IMAGE  [729, 416, 799, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.152, 0.205]
+      IMAGE  [729, 416, 799, 439] ui\common_button_0.dxt uv=[0.013, 0.081, 0.151, 0.135]
+      IMAGE  [729, 416, 799, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [729, 416, 799, 439]  "Basket"
+    STRING item_price [711, 376, 802, 390]  "Price: 2.800"
+    STRING item_quantitiy [711, 394, 799, 409]  "Quantitiy: 1"
+    IMAGE item_icon [657, 375, 698, 410] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_name [640, 349, 803, 366]  "Disc Premium"
+  IMAGE item4 [824, 348, 991, 444] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [830, 416, 899, 439] 
+      STRING  [830, 416, 899, 439]  "Buy"
+      IMAGE  [830, 416, 899, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [830, 416, 899, 439] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [830, 416, 899, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.205]
+      IMAGE  [830, 416, 899, 439] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+    BUTTON btn_add_basket [915, 416, 985, 439] 
+      IMAGE  [915, 416, 985, 439] ui\common_button_0.dxt uv=[0.012, 0.012, 0.151, 0.065]
+      IMAGE  [915, 416, 985, 439] ui\common_button_0.dxt uv=[0.013, 0.151, 0.152, 0.205]
+      IMAGE  [915, 416, 985, 439] ui\common_button_0.dxt uv=[0.012, 0.082, 0.15, 0.135]
+      IMAGE  [915, 416, 985, 439] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [915, 416, 985, 439]  "Sepet"
+    STRING item_price [897, 376, 988, 390]  "Price: 2.800"
+    STRING item_name [826, 349, 989, 367]  "Disc Premium"
+    IMAGE item_icon [843, 375, 884, 410] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_quantitiy [897, 394, 985, 409]  "Quantitiy: 1"
+BASE items4 [262, 450, 997, 558] 
+  IMAGE item4 [824, 456, 991, 552] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    STRING item_quantitiy [897, 502, 985, 517]  "Quantitiy: 1"
+    BUTTON btn_purchase [830, 524, 899, 547] 
+      STRING  [830, 524, 899, 547]  "Buy"
+      IMAGE  [830, 524, 899, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [830, 524, 899, 547] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.136]
+      IMAGE  [830, 524, 899, 547] ui\common_button_0.dxt uv=[0.013, 0.151, 0.152, 0.204]
+      IMAGE  [830, 524, 899, 547] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.065]
+    BUTTON btn_add_basket [915, 524, 985, 547] 
+      STRING  [915, 524, 985, 547]  "Sepet"
+      IMAGE  [915, 524, 985, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [915, 524, 985, 547] ui\common_button_0.dxt uv=[0.013, 0.081, 0.151, 0.135]
+      IMAGE  [915, 524, 985, 547] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.204]
+      IMAGE  [915, 524, 985, 547] ui\common_button_0.dxt uv=[0.013, 0.012, 0.152, 0.065]
+    IMAGE item_icon [843, 483, 884, 518] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_name [826, 457, 989, 475]  "Disc Premium"
+    STRING item_price [897, 484, 988, 498]  "Price: 2.800"
+  IMAGE item3 [638, 456, 805, 552] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    STRING item_name [640, 457, 803, 474]  "Disc Premium"
+    BUTTON btn_purchase [644, 524, 713, 547] 
+      STRING  [644, 524, 713, 547]  "Buy"
+      IMAGE  [644, 524, 713, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [644, 524, 713, 547] ui\common_button_0.dxt uv=[0.013, 0.082, 0.152, 0.136]
+      IMAGE  [644, 524, 713, 547] ui\common_button_0.dxt uv=[0.013, 0.151, 0.152, 0.205]
+      IMAGE  [644, 524, 713, 547] ui\common_button_0.dxt uv=[0.012, 0.013, 0.151, 0.065]
+    BUTTON btn_add_basket [729, 524, 799, 547] 
+      IMAGE  [729, 524, 799, 547] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+      IMAGE  [729, 524, 799, 547] ui\common_button_0.dxt uv=[0.012, 0.151, 0.151, 0.204]
+      IMAGE  [729, 524, 799, 547] ui\common_button_0.dxt uv=[0.012, 0.082, 0.151, 0.136]
+      IMAGE  [729, 524, 799, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [729, 524, 799, 547]  "Sepet"
+    IMAGE item_icon [657, 483, 698, 518] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING item_quantitiy [711, 502, 799, 517]  "Quantitiy: 1"
+    STRING item_price [711, 484, 802, 498]  "Price: 2.800"
+  IMAGE item2 [452, 456, 619, 552] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [459, 524, 526, 547] 
+      STRING  [459, 524, 526, 547]  "Buy"
+      IMAGE  [459, 524, 526, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [459, 524, 526, 547] ui\common_button_0.dxt uv=[0.012, 0.082, 0.152, 0.136]
+      IMAGE  [459, 524, 526, 547] ui\common_button_0.dxt uv=[0.012, 0.151, 0.151, 0.204]
+      IMAGE  [459, 524, 526, 547] ui\common_button_0.dxt uv=[0.012, 0.013, 0.152, 0.065]
+    BUTTON btn_add_basket [543, 524, 613, 547] 
+      IMAGE  [543, 524, 613, 547] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.066]
+      IMAGE  [543, 524, 613, 547] ui\common_button_0.dxt uv=[0.012, 0.151, 0.15, 0.204]
+      IMAGE  [543, 524, 613, 547] ui\common_button_0.dxt uv=[0.015, 0.081, 0.153, 0.135]
+      IMAGE  [543, 524, 613, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [543, 524, 613, 547]  "Basket"
+    STRING item_name [454, 457, 617, 474]  "Disc Premium"
+    STRING item_price [525, 484, 616, 498]  "Price: 2.800"
+    STRING item_quantitiy [525, 502, 613, 517]  "Quantitiy: 1"
+    IMAGE item_icon [471, 483, 512, 518] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  IMAGE item1 [268, 456, 435, 552] ui\pus.dxt uv=[0.013, 0.662, 0.188, 0.781]
+    BUTTON btn_purchase [276, 524, 345, 547] 
+      STRING  [276, 524, 345, 547]  "Buy"
+      IMAGE  [276, 524, 345, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      IMAGE  [276, 524, 345, 547] ui\common_button_0.dxt uv=[0.013, 0.081, 0.151, 0.136]
+      IMAGE  [276, 524, 345, 547] ui\common_button_0.dxt uv=[0.013, 0.15, 0.151, 0.205]
+      IMAGE  [276, 524, 345, 547] ui\common_button_0.dxt uv=[0.013, 0.013, 0.152, 0.066]
+    BUTTON btn_add_basket [359, 524, 429, 547] 
+      IMAGE  [359, 524, 429, 547] ui\common_button_0.dxt uv=[0.013, 0.013, 0.152, 0.066]
+      IMAGE  [359, 524, 429, 547] ui\common_button_0.dxt uv=[0.013, 0.151, 0.152, 0.204]
+      IMAGE  [359, 524, 429, 547] ui\common_button_0.dxt uv=[0.013, 0.081, 0.152, 0.135]
+      IMAGE  [359, 524, 429, 547] ui\re_seed_02.dxt uv=[0.01, 0.609, 0.223, 0.664]
+      STRING  [359, 524, 429, 547]  "Sepet"
+    STRING item_quantitiy [341, 502, 429, 517]  "Quantitiy: 1"
+    STRING item_price [341, 484, 432, 498]  "Price: 2.800"
+    STRING item_name [270, 457, 433, 474]  "Disc Premium"
+    IMAGE item_icon [287, 483, 328, 518] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+STRING text_basket_total_price [64, 511, 230, 537] 
+BUTTON btn_clearall [103, 567, 190, 583] 
+  IMAGE  [103, 567, 190, 583] ui\re_alfa_buttons.dxt uv=[0.844, 0.82, 0.975, 0.855]
+    STRING  [103, 567, 190, 583]  "Clear List"
+  IMAGE  [103, 567, 190, 583] ui\re_alfa_buttons.dxt uv=[0.844, 0.855, 0.975, 0.891]
+    STRING  [103, 567, 190, 583]  "Clear List"
+  IMAGE  [103, 567, 190, 583] ui\re_alfa_buttons.dxt uv=[0.844, 0.891, 0.975, 0.926]
+    STRING  [103, 567, 190, 583]  "Clear List"
+  IMAGE  [103, 567, 190, 583] ui\re_alfa_buttons.dxt uv=[0.844, 0.926, 0.975, 0.961]
+BUTTON btn_tab1 [49, 34, 261, 54] 
+  IMAGE  [49, 34, 261, 54] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  IMAGE  [49, 34, 261, 54] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 34, 261, 54] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+  IMAGE  [49, 34, 261, 54] ui\re_chatroom.dxt uv=[0.363, 0.102, 0.434, 0.131]
+  STRING txt [49, 34, 261, 54]  "Menu"
+BUTTON btn_tab2 [49, 55, 261, 74] 
+  IMAGE  [49, 55, 261, 74] ui\re_chatroom.dxt uv=[0.363, 0.102, 0.434, 0.131]
+  IMAGE  [49, 55, 261, 74] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+  IMAGE  [49, 55, 261, 74] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 55, 261, 74] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  STRING txt [49, 55, 261, 74]  "Menu"
+BUTTON btn_tab3 [49, 74, 261, 93] 
+  IMAGE  [49, 74, 261, 93] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  IMAGE  [49, 74, 261, 93] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 74, 261, 93] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 74, 261, 93] ui\re_chatroom.dxt uv=[0.363, 0.102, 0.434, 0.131]
+  STRING txt [49, 74, 261, 93]  "Menu"
+BUTTON btn_tab4 [49, 94, 261, 113] 
+  IMAGE  [49, 94, 261, 113] ui\re_chatroom.dxt uv=[0.363, 0.102, 0.434, 0.131]
+  IMAGE  [49, 94, 261, 113] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 94, 261, 113] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 94, 261, 113] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  STRING txt [49, 94, 261, 113]  "Menu"
+BUTTON btn_tab5 [49, 114, 261, 133] 
+  IMAGE  [49, 114, 261, 133] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  IMAGE  [49, 114, 261, 133] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 114, 261, 133] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+  IMAGE  [49, 114, 261, 133] ui\re_chatroom.dxt uv=[0.363, 0.102, 0.434, 0.131]
+  STRING txt [49, 114, 261, 133]  "Menu"
+BUTTON btn_reseller [49, 154, 261, 173] 
+  IMAGE  [49, 154, 261, 173] ui\re_chatroom.dxt uv=[0.363, 0.102, 0.434, 0.131]
+  IMAGE  [49, 154, 261, 173] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+  IMAGE  [49, 154, 261, 173] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 154, 261, 173] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  STRING  [49, 154, 261, 173]  "Buy Cash Code"
+BASE purchase_list1 [47, 206, 257, 246] 
+  BUTTON btn_cancel [229, 217, 248, 236] 
+    IMAGE  [229, 217, 248, 236] ui\re_page_state.dxt uv=[0.729, 0.791, 0.795, 0.855]
+    IMAGE  [229, 217, 248, 236] ui\re_page_state.dxt uv=[0.592, 0.791, 0.658, 0.855]
+    IMAGE  [229, 217, 248, 236] ui\re_page_state.dxt uv=[0.66, 0.791, 0.727, 0.855]
+    IMAGE  [229, 217, 248, 236] ui\re_page_state.dxt uv=[0.523, 0.791, 0.59, 0.855]
+  STRING shopping_price [90, 227, 226, 241]  "9.999"
+  STRING shopping_name [90, 211, 226, 226]  "Disc Premium"
+  IMAGE  [50, 206, 90, 246] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+  IMAGE item_icon [54, 210, 86, 242] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+BASE purchase_list2 [47, 246, 257, 286] 
+  BUTTON btn_cancel [229, 257, 248, 276] 
+    IMAGE  [229, 257, 248, 276] ui\re_page_state.dxt uv=[0.729, 0.791, 0.795, 0.855]
+    IMAGE  [229, 257, 248, 276] ui\re_page_state.dxt uv=[0.592, 0.791, 0.658, 0.855]
+    IMAGE  [229, 257, 248, 276] ui\re_page_state.dxt uv=[0.66, 0.791, 0.727, 0.855]
+    IMAGE  [229, 257, 248, 276] ui\re_page_state.dxt uv=[0.523, 0.791, 0.59, 0.855]
+  STRING shopping_name [90, 252, 226, 267]  "Disc Premium"
+  STRING shopping_price [90, 268, 226, 282]  "9.999"
+  IMAGE  [50, 246, 90, 286] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+  IMAGE item_icon [54, 250, 86, 282] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+BASE purchase_list3 [47, 287, 257, 327] 
+  BUTTON btn_cancel [229, 299, 248, 318] 
+    IMAGE  [229, 299, 248, 318] ui\re_page_state.dxt uv=[0.729, 0.791, 0.795, 0.855]
+    IMAGE  [229, 299, 248, 318] ui\re_page_state.dxt uv=[0.592, 0.791, 0.658, 0.855]
+    IMAGE  [229, 299, 248, 318] ui\re_page_state.dxt uv=[0.66, 0.791, 0.727, 0.855]
+    IMAGE  [229, 299, 248, 318] ui\re_page_state.dxt uv=[0.523, 0.791, 0.59, 0.855]
+  STRING shopping_name [90, 292, 226, 307]  "Disc Premium"
+  STRING shopping_price [90, 308, 226, 322]  "9.999"
+  IMAGE  [50, 287, 90, 327] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+  IMAGE item_icon [54, 291, 86, 323] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+BASE purchase_list4 [47, 327, 257, 367] 
+  BUTTON btn_cancel [229, 338, 248, 357] 
+    IMAGE  [229, 338, 248, 357] ui\re_page_state.dxt uv=[0.729, 0.791, 0.795, 0.855]
+    IMAGE  [229, 338, 248, 357] ui\re_page_state.dxt uv=[0.592, 0.791, 0.658, 0.855]
+    IMAGE  [229, 338, 248, 357] ui\re_page_state.dxt uv=[0.66, 0.791, 0.727, 0.855]
+    IMAGE  [229, 338, 248, 357] ui\re_page_state.dxt uv=[0.523, 0.791, 0.59, 0.855]
+  STRING shopping_name [90, 333, 226, 348]  "Disc Premium"
+  STRING shopping_price [90, 349, 226, 363]  "9.999"
+  IMAGE  [50, 327, 90, 367] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+  IMAGE item_icon [54, 331, 86, 363] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+BASE purchase_list5 [47, 367, 257, 407] 
+  BUTTON btn_cancel [229, 378, 248, 397] 
+    IMAGE  [229, 378, 248, 397] ui\re_page_state.dxt uv=[0.729, 0.791, 0.795, 0.855]
+    IMAGE  [229, 378, 248, 397] ui\re_page_state.dxt uv=[0.592, 0.791, 0.658, 0.855]
+    IMAGE  [229, 378, 248, 397] ui\re_page_state.dxt uv=[0.66, 0.791, 0.727, 0.855]
+    IMAGE  [229, 378, 248, 397] ui\re_page_state.dxt uv=[0.523, 0.791, 0.59, 0.855]
+  STRING shopping_price [90, 388, 226, 402]  "9.999"
+  STRING shopping_name [90, 372, 226, 387]  "Disc Premium"
+  IMAGE  [50, 367, 90, 407] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+  IMAGE item_icon [54, 371, 86, 403] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+BASE purchase_list6 [47, 407, 257, 447] 
+  BUTTON btn_cancel [229, 420, 248, 439] 
+    IMAGE  [229, 420, 248, 439] ui\re_page_state.dxt uv=[0.729, 0.791, 0.795, 0.855]
+    IMAGE  [229, 420, 248, 439] ui\re_page_state.dxt uv=[0.592, 0.791, 0.658, 0.855]
+    IMAGE  [229, 420, 248, 439] ui\re_page_state.dxt uv=[0.66, 0.791, 0.727, 0.855]
+    IMAGE  [229, 420, 248, 439] ui\re_page_state.dxt uv=[0.523, 0.791, 0.59, 0.855]
+  STRING shopping_name [90, 413, 226, 428]  "Disc Premium"
+  STRING shopping_price [90, 429, 226, 443]  "9.999"
+  IMAGE  [50, 407, 90, 447] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+  IMAGE item_icon [54, 411, 86, 443] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+BASE purchase_list7 [47, 448, 257, 488] 
+  BUTTON btn_cancel [229, 458, 248, 477] 
+    IMAGE  [229, 458, 248, 477] ui\re_page_state.dxt uv=[0.523, 0.791, 0.59, 0.855]
+    IMAGE  [229, 458, 248, 477] ui\re_page_state.dxt uv=[0.66, 0.791, 0.727, 0.855]
+    IMAGE  [229, 458, 248, 477] ui\re_page_state.dxt uv=[0.592, 0.791, 0.658, 0.855]
+    IMAGE  [229, 458, 248, 477] ui\re_page_state.dxt uv=[0.729, 0.791, 0.795, 0.855]
+  STRING shopping_name [90, 454, 226, 469]  "Disc Premium"
+  STRING shopping_price [90, 470, 226, 484]  "9.999"
+  IMAGE  [50, 448, 90, 488] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+  IMAGE item_icon [54, 452, 86, 484] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+BUTTON btn_refund [49, 134, 261, 153] 
+  STRING  [49, 134, 261, 153]  "Refund Pus Items"
+  IMAGE  [49, 134, 261, 153] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  IMAGE  [49, 134, 261, 153] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+  IMAGE  [49, 134, 261, 153] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+  IMAGE  [49, 134, 261, 153] ui\re_chatroom.dxt uv=[0.363, 0.102, 0.434, 0.131]
+EDIT esncode [735, 40, 904, 67] 
+  IMAGE  [735, 40, 901, 67] ui\pus_of.dxt uv=[0.795, 0.078, 0.982, 0.102]
+  STRING esncode [738, 40, 904, 67]  "E-pin type here..."
+STRING txt_tl_balance [433, 97, 534, 119] 
+BUTTON btn_search [965, 95, 985, 113] 
+  IMAGE  [965, 95, 985, 113] ui\pus_of.dxt uv=[0.892, 0.189, 0.907, 0.205]
+  IMAGE  [965, 95, 985, 113] ui\pus_of.dxt uv=[0.907, 0.189, 0.923, 0.205]
+  IMAGE  [965, 95, 985, 113] ui\pus_of.dxt uv=[0.923, 0.189, 0.938, 0.205]
+  IMAGE  [965, 95, 985, 113] ui\pus_of.dxt uv=[0.892, 0.189, 0.907, 0.205]
+BUTTON btn_next [652, 555, 678, 581] 
+  IMAGE  [652, 555, 678, 581] ui\pus_of.dxt uv=[0.873, 0.002, 0.898, 0.027]
+  IMAGE  [652, 555, 678, 581] ui\pus_of.dxt uv=[0.899, 0.002, 0.925, 0.027]
+  IMAGE  [652, 555, 678, 581] ui\pus_of.dxt uv=[0.926, 0.002, 0.951, 0.027]
+  IMAGE  [652, 555, 678, 581] ui\pus_of.dxt uv=[0.873, 0.002, 0.898, 0.027]
+BUTTON btn_previous [581, 555, 607, 581] 
+  IMAGE  [581, 555, 607, 581] ui\pus_of.dxt uv=[0.873, 0.028, 0.898, 0.054]
+  IMAGE  [581, 555, 607, 581] ui\pus_of.dxt uv=[0.899, 0.028, 0.925, 0.054]
+  IMAGE  [581, 555, 607, 581] ui\pus_of.dxt uv=[0.926, 0.028, 0.951, 0.054]
+  IMAGE  [581, 555, 607, 581] ui\pus_of.dxt uv=[0.873, 0.028, 0.898, 0.054]
+BUTTON btn_useesn [907, 40, 978, 65] 
+  IMAGE  [907, 40, 978, 65] ui\common_button_0.dxt uv=[0.013, 0.013, 0.151, 0.065]
+  IMAGE  [907, 40, 978, 65] ui\common_button_0.dxt uv=[0.013, 0.151, 0.151, 0.204]
+  IMAGE  [907, 40, 978, 65] ui\common_button_0.dxt uv=[0.013, 0.082, 0.151, 0.135]
+  IMAGE  [907, 40, 978, 65] ui\pus_of.dxt uv=[0.797, 0.359, 0.865, 0.384]
+  STRING  [907, 40, 978, 65]  "Use ESN"
+BUTTON btn_buyall [59, 541, 234, 566] 
+  STRING  [59, 541, 234, 566]  "Buy All"
+  IMAGE  [59, 541, 234, 566] ui\pus_of.dxt uv=[0.797, 0.359, 0.865, 0.384]
+  IMAGE  [59, 541, 234, 566] ui\common_button_0.dxt uv=[0.163, 0.101, 0.469, 0.139]
+  IMAGE  [59, 541, 234, 566] ui\common_button_0.dxt uv=[0.163, 0.008, 0.468, 0.046]
+  IMAGE  [59, 541, 234, 566] ui\common_button_0.dxt uv=[0.163, 0.054, 0.47, 0.093]
+BUTTON btn_close [983, 20, 1009, 46] 
+  IMAGE  [983, 20, 1009, 46] ui\pus_of.dxt uv=[0.794, 0.002, 0.819, 0.027]
+  IMAGE  [983, 20, 1009, 46] ui\pus_of.dxt uv=[0.82, 0.002, 0.846, 0.027]
+  IMAGE  [983, 20, 1009, 46] ui\pus_of.dxt uv=[0.847, 0.002, 0.872, 0.027]
+  IMAGE  [983, 20, 1009, 46] ui\pus_of.dxt uv=[0.794, 0.002, 0.819, 0.027]
+BASE shopping_confirm [449, 179, 779, 465] 
+  IMAGE  [455, 197, 773, 457] ui\certified_2020.dxt uv=[0.262, 0.85, 0.984, 0.926]
+  IMAGE  [479, 190, 749, 210] ui\re_akara_01.dxt uv=[0.027, 0.826, 0.035, 0.846]
+  IMAGE  [473, 179, 757, 238] ui\re_skill04.dxt uv=[0.48, 0.67, 0.833, 0.755]
+  BUTTON btn_cancel [614, 410, 759, 444] 
+    STRING  [614, 410, 759, 444]  "Cancel"
+    IMAGE  [614, 410, 759, 444] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+    IMAGE  [614, 410, 759, 444] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+    IMAGE  [614, 410, 759, 444] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+    IMAGE  [614, 410, 759, 444] ui\re_skill04.dxt uv=[0.49, 0.496, 0.649, 0.529]
+  BUTTON btn_confirm [469, 410, 614, 444] 
+    STRING  [469, 410, 614, 444]  "Confirm"
+    IMAGE  [469, 410, 614, 444] ui\re_skill04.dxt uv=[0.49, 0.496, 0.649, 0.529]
+    IMAGE  [469, 410, 614, 444] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+    IMAGE  [469, 410, 614, 444] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+    IMAGE  [469, 410, 614, 444] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+  IMAGE  [750, 435, 779, 465] ui\re_akara_01.dxt uv=[0.045, 0.865, 0.073, 0.895]
+  IMAGE  [759, 219, 778, 435] ui\re_akara_01.dxt uv=[0.054, 0.853, 0.072, 0.856]
+  IMAGE  [479, 446, 750, 465] ui\re_akara_01.dxt uv=[0.027, 0.876, 0.035, 0.895]
+  IMAGE  [449, 221, 481, 435] ui\re_akara_01.dxt uv=[0.005, 0.853, 0.036, 0.856]
+  IMAGE  [749, 190, 779, 220] ui\re_akara_01.dxt uv=[0.044, 0.826, 0.073, 0.855]
+  IMAGE  [449, 435, 479, 465] ui\re_akara_01.dxt uv=[0.005, 0.865, 0.034, 0.895]
+  IMAGE  [449, 190, 479, 221] ui\re_akara_01.dxt uv=[0.005, 0.826, 0.034, 0.856]
+  STRING shopping_after [472, 348, 759, 363]  "2000 Knight Cash"
+  STRING  [494, 197, 738, 221]  "Confirm Shopping"
+  IMAGE  [475, 254, 528, 307] ui\re_akara_01.dxt uv=[0.871, 0.769, 0.923, 0.82]
+  STRING  [472, 305, 759, 321]  "Buying Count"
+  STRING shopping_quantity [529, 289, 755, 305]  "Quantity: 1"
+  STRING shopping_name [529, 273, 755, 289]  "Price: 2.800"
+  IMAGE shopping_icon [482, 261, 521, 300] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  STRING shopping_price [529, 257, 755, 273]  "Disc Premium"
+  STRING str_count [594, 326, 637, 342]  "1"
+  BUTTON btn_up [636, 322, 659, 346] 
+    IMAGE  [636, 322, 659, 346] ui\re_main_ui_01.dxt uv=[0.711, 0.189, 0.746, 0.227]
+    IMAGE  [636, 322, 659, 346] ui\re_main_ui_01.dxt uv=[0.637, 0.189, 0.672, 0.227]
+    IMAGE  [636, 322, 659, 346] ui\re_main_ui_01.dxt uv=[0.674, 0.189, 0.709, 0.227]
+    IMAGE  [636, 322, 659, 346] ui\re_main_ui_01.dxt uv=[0.6, 0.189, 0.635, 0.227]
+  BUTTON btn_down [572, 322, 595, 346] 
+    IMAGE  [572, 322, 595, 346] ui\re_main_ui_01.dxt uv=[0.562, 0.189, 0.598, 0.227]
+    IMAGE  [572, 322, 595, 346] ui\re_main_ui_01.dxt uv=[0.488, 0.189, 0.523, 0.227]
+    IMAGE  [572, 322, 595, 346] ui\re_main_ui_01.dxt uv=[0.525, 0.189, 0.561, 0.227]
+    IMAGE  [572, 322, 595, 346] ui\re_main_ui_01.dxt uv=[0.451, 0.189, 0.486, 0.227]
+  EDIT txt_gift_name [505, 385, 721, 410] 
+    IMAGE  [505, 385, 721, 410] ui\pus_of.dxt uv=[0.795, 0.078, 0.982, 0.102]
+    STRING  [512, 385, 721, 410] 
+  STRING  [471, 370, 758, 386]  "Please enter your friend's character id."
+BASE Basket_confirm [449, 179, 779, 465] 
+  IMAGE  [455, 197, 773, 457] ui\certified_2020.dxt uv=[0.262, 0.85, 0.984, 0.926]
+  STRING text_basket_total_price [471, 367, 759, 383]  "2000 Knight Cash"
+  STRING  [500, 265, 733, 337]  "You cannot undo the purchase.       The total amount will be deducted   from your balance. Do you want to buy the products in your cart?"
+  IMAGE  [449, 190, 479, 221] ui\re_akara_01.dxt uv=[0.005, 0.826, 0.034, 0.856]
+  IMAGE  [449, 435, 479, 465] ui\re_akara_01.dxt uv=[0.005, 0.865, 0.034, 0.895]
+  IMAGE  [749, 190, 779, 220] ui\re_akara_01.dxt uv=[0.044, 0.826, 0.073, 0.855]
+  IMAGE  [449, 221, 481, 435] ui\re_akara_01.dxt uv=[0.005, 0.853, 0.036, 0.856]
+  IMAGE  [479, 190, 749, 210] ui\re_akara_01.dxt uv=[0.027, 0.826, 0.035, 0.846]
+  IMAGE  [479, 446, 750, 465] ui\re_akara_01.dxt uv=[0.027, 0.876, 0.035, 0.895]
+  IMAGE  [759, 219, 778, 435] ui\re_akara_01.dxt uv=[0.054, 0.853, 0.072, 0.856]
+  IMAGE  [750, 435, 779, 465] ui\re_akara_01.dxt uv=[0.045, 0.865, 0.073, 0.895]
+  BUTTON btn_all_confirm [469, 410, 612, 444] 
+    IMAGE  [469, 410, 612, 444] ui\common_button_0.dxt uv=[0.16, 0.326, 0.299, 0.359]
+    IMAGE  [469, 410, 612, 444] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+    IMAGE  [469, 410, 612, 444] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+    IMAGE  [469, 410, 612, 444] ui\re_skill04.dxt uv=[0.49, 0.496, 0.649, 0.529]
+    STRING  [469, 410, 612, 444]  "Confirm"
+  BUTTON btn_cancel [614, 410, 759, 444] 
+    IMAGE  [614, 410, 759, 444] ui\re_skill04.dxt uv=[0.49, 0.496, 0.649, 0.529]
+    IMAGE  [614, 410, 759, 444] ui\common_button_0.dxt uv=[0.16, 0.36, 0.299, 0.394]
+    IMAGE  [614, 410, 759, 444] ui\common_button_0.dxt uv=[0.16, 0.395, 0.299, 0.428]
+    IMAGE  [614, 410, 759, 444] ui\common_button_0.dxt uv=[0.16, 0.326, 0.3, 0.359]
+    STRING  [614, 410, 759, 444]  "Cancel"
+  IMAGE  [473, 179, 757, 238] ui\re_skill04.dxt uv=[0.48, 0.67, 0.833, 0.755]
+  STRING  [493, 197, 737, 221]  "Basket Shopping Confirm"
+  STRING  [471, 347, 759, 363]  "Total Price : "
+BASE base_refund [262, 122, 1034, 587] 
+  IMAGE  [267, 129, 633, 581] ui\tournament_chaos_2021_a01.dxt uv=[0.498, 0.265, 0.998, 0.765]
+  IMAGE  [641, 129, 1002, 581] ui\tournament_chaos_2021_a01.dxt uv=[0.498, 0.265, 0.998, 0.765]
+  IMAGE  [675, 126, 965, 166] ui\tournament_chaos_2021_a01.dxt uv=[0.13, 0.024, 0.136, 0.063]
+  IMAGE  [636, 545, 675, 585] ui\tournament_chaos_2021_a01.dxt uv=[0.098, 0.065, 0.136, 0.104]
+  IMAGE  [965, 126, 1004, 166] ui\tournament_chaos_2021_a01.dxt uv=[0.139, 0.024, 0.177, 0.063]
+  IMAGE  [636, 126, 675, 166] ui\tournament_chaos_2021_a01.dxt uv=[0.098, 0.024, 0.136, 0.063]
+  IMAGE  [675, 545, 965, 585] ui\tournament_chaos_2021_a01.dxt uv=[0.13, 0.065, 0.136, 0.104]
+  IMAGE  [965, 545, 1004, 585] ui\tournament_chaos_2021_a01.dxt uv=[0.139, 0.065, 0.177, 0.104]
+  IMAGE  [636, 166, 675, 547] ui\tournament_chaos_2021_a01.dxt uv=[0.098, 0.059, 0.136, 0.063]
+  IMAGE  [965, 166, 1004, 547] ui\tournament_chaos_2021_a01.dxt uv=[0.139, 0.06, 0.177, 0.064]
+  IMAGE  [641, 180, 999, 182] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [641, 230, 998, 232] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [641, 279, 998, 281] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [641, 377, 999, 379] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [642, 426, 998, 428] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [641, 327, 998, 329] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [642, 478, 998, 480] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [642, 529, 998, 531] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [301, 126, 597, 166] ui\tournament_chaos_2021_a01.dxt uv=[0.13, 0.024, 0.136, 0.063]
+  IMAGE  [262, 545, 301, 585] ui\tournament_chaos_2021_a01.dxt uv=[0.098, 0.065, 0.136, 0.104]
+  IMAGE  [597, 126, 636, 166] ui\tournament_chaos_2021_a01.dxt uv=[0.139, 0.024, 0.177, 0.063]
+  IMAGE  [262, 126, 301, 166] ui\tournament_chaos_2021_a01.dxt uv=[0.098, 0.024, 0.136, 0.063]
+  IMAGE  [301, 545, 597, 585] ui\tournament_chaos_2021_a01.dxt uv=[0.13, 0.065, 0.136, 0.104]
+  IMAGE  [597, 545, 636, 585] ui\tournament_chaos_2021_a01.dxt uv=[0.139, 0.065, 0.177, 0.104]
+  IMAGE  [262, 166, 301, 547] ui\tournament_chaos_2021_a01.dxt uv=[0.098, 0.059, 0.136, 0.063]
+  IMAGE  [597, 166, 636, 547] ui\tournament_chaos_2021_a01.dxt uv=[0.139, 0.06, 0.177, 0.064]
+  IMAGE  [267, 179, 630, 181] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [267, 229, 630, 231] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [267, 279, 630, 281] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [267, 377, 630, 379] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [267, 327, 630, 329] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [267, 426, 630, 428] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [267, 478, 630, 480] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  IMAGE  [267, 529, 630, 531] ui\tournament_chaos_2021_a01.dxt uv=[0.107, 0.027, 0.136, 0.03]
+  BASE refund_items_17 [646, 532, 999, 580] 
+    IMAGE  [646, 536, 686, 576] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [650, 540, 682, 572] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item17 [691, 539, 947, 557]  "Disc Premium"
+    STRING refund_price17 [691, 557, 947, 574]  "Refund Price : 10.000"
+    IMAGE  [965, 540, 998, 573] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [970, 545, 993, 568] 
+      IMAGE  [970, 545, 993, 568] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [970, 545, 993, 568] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 545, 993, 568] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 545, 993, 568] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_16 [646, 480, 998, 528] 
+    IMAGE  [646, 484, 686, 524] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [970, 491, 993, 514] 
+      IMAGE  [970, 491, 993, 514] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [970, 491, 993, 514] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 491, 993, 514] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 491, 993, 514] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [965, 486, 998, 519] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price16 [691, 505, 945, 522]  "Refund Price : 10.000"
+    STRING refund_item16 [691, 487, 946, 505]  "Disc Premium"
+    IMAGE item_icon [650, 488, 682, 520] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_15 [646, 428, 998, 476] 
+    IMAGE  [646, 432, 686, 472] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [650, 436, 682, 468] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item15 [691, 435, 945, 453]  "Disc Premium"
+    STRING refund_price15 [691, 453, 947, 470]  "Refund Price : 10.000"
+    IMAGE  [965, 434, 998, 467] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [970, 439, 993, 462] 
+      IMAGE  [970, 439, 993, 462] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [970, 439, 993, 462] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 439, 993, 462] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 439, 993, 462] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_14 [646, 378, 998, 426] 
+    IMAGE  [646, 382, 686, 422] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [970, 389, 993, 412] 
+      IMAGE  [970, 389, 993, 412] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [970, 389, 993, 412] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 389, 993, 412] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 389, 993, 412] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [965, 384, 998, 417] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price14 [691, 403, 946, 420]  "Refund Price : 10.000"
+    STRING refund_item14 [691, 385, 946, 403]  "Disc Premium"
+    IMAGE item_icon [650, 386, 682, 418] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_13 [646, 328, 998, 376] 
+    IMAGE  [646, 332, 686, 372] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [650, 336, 682, 368] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item13 [691, 335, 946, 353]  "Disc Premium"
+    STRING refund_price13 [691, 353, 946, 370]  "Refund Price : 10.000"
+    IMAGE  [965, 334, 998, 367] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [970, 339, 993, 362] 
+      IMAGE  [970, 339, 993, 362] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [970, 339, 993, 362] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 339, 993, 362] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 339, 993, 362] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_12 [646, 280, 998, 328] 
+    IMAGE  [646, 284, 686, 324] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [970, 291, 993, 314] 
+      IMAGE  [970, 291, 993, 314] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [970, 291, 993, 314] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 291, 993, 314] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 291, 993, 314] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [965, 286, 998, 319] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price12 [691, 305, 946, 322]  "Refund Price : 10.000"
+    STRING refund_item12 [691, 287, 946, 305]  "Disc Premium"
+    IMAGE item_icon [650, 288, 682, 320] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_11 [646, 231, 998, 279] 
+    IMAGE  [646, 235, 686, 275] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [650, 239, 682, 271] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item11 [691, 238, 947, 256]  "Disc Premium"
+    STRING refund_price11 [691, 256, 945, 273]  "Refund Price : 10.000"
+    IMAGE  [965, 237, 998, 270] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [970, 242, 993, 265] 
+      IMAGE  [970, 242, 993, 265] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [970, 242, 993, 265] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 242, 993, 265] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 242, 993, 265] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_10 [646, 182, 998, 230] 
+    IMAGE  [646, 186, 686, 226] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [970, 193, 993, 216] 
+      IMAGE  [970, 193, 993, 216] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [970, 193, 993, 216] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 193, 993, 216] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 193, 993, 216] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [965, 188, 998, 221] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price10 [691, 207, 947, 224]  "Refund Price : 10.000"
+    STRING refund_item10 [691, 189, 947, 207]  "Disc Premium"
+    IMAGE item_icon [650, 190, 682, 222] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_9 [646, 132, 998, 180] 
+    IMAGE  [646, 136, 686, 176] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [650, 140, 682, 172] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item9 [691, 139, 948, 157]  "Disc Premium"
+    STRING refund_price9 [691, 157, 946, 174]  "Refund Price : 10.000"
+    IMAGE  [965, 138, 998, 171] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [970, 143, 993, 166] 
+      IMAGE  [970, 143, 993, 166] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [970, 143, 993, 166] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [970, 143, 993, 166] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [970, 143, 993, 166] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_8 [268, 531, 628, 579] 
+    IMAGE  [271, 535, 311, 575] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [600, 544, 623, 567] 
+      IMAGE  [600, 544, 623, 567] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [600, 544, 623, 567] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 544, 623, 567] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 544, 623, 567] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [595, 539, 628, 572] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price8 [316, 556, 572, 573]  "Refund Price : 10.000"
+    STRING refund_item8 [316, 538, 572, 556]  "Disc Premium"
+    IMAGE item_icon [275, 539, 307, 571] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_7 [268, 479, 628, 527] 
+    IMAGE  [271, 483, 311, 523] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [275, 487, 307, 519] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item7 [316, 486, 571, 504]  "Disc Premium"
+    STRING refund_price7 [316, 504, 570, 521]  "Refund Price : 10.000"
+    IMAGE  [595, 487, 628, 520] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [600, 492, 623, 515] 
+      IMAGE  [600, 492, 623, 515] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [600, 492, 623, 515] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 492, 623, 515] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 492, 623, 515] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_6 [268, 427, 628, 475] 
+    IMAGE  [271, 431, 311, 471] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [600, 440, 623, 463] 
+      IMAGE  [600, 440, 623, 463] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [600, 440, 623, 463] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 440, 623, 463] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 440, 623, 463] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [595, 435, 628, 468] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price6 [316, 452, 572, 469]  "Refund Price : 10.000"
+    STRING refund_item6 [316, 434, 570, 452]  "Disc Premium"
+    IMAGE item_icon [275, 435, 307, 467] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_5 [268, 377, 628, 425] 
+    IMAGE  [271, 381, 311, 421] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [275, 385, 307, 417] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item5 [316, 384, 571, 402]  "Disc Premium"
+    STRING refund_price5 [316, 402, 571, 419]  "Refund Price : 10.000"
+    IMAGE  [595, 385, 628, 418] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [600, 390, 623, 413] 
+      IMAGE  [600, 390, 623, 413] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [600, 390, 623, 413] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 390, 623, 413] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 390, 623, 413] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_4 [268, 327, 628, 375] 
+    IMAGE  [271, 331, 311, 371] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [600, 340, 623, 363] 
+      IMAGE  [600, 340, 623, 363] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [600, 340, 623, 363] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 340, 623, 363] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 340, 623, 363] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [595, 335, 628, 368] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price4 [316, 352, 571, 369]  "Refund Price : 10.000"
+    STRING refund_item4 [316, 334, 571, 352]  "Disc Premium"
+    IMAGE item_icon [275, 335, 307, 367] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_3 [268, 279, 628, 327] 
+    IMAGE  [271, 283, 311, 323] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [275, 287, 307, 319] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item3 [316, 286, 571, 304]  "Disc Premium"
+    STRING refund_price3 [316, 304, 571, 321]  "Refund Price : 10.000"
+    IMAGE  [595, 287, 628, 320] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [600, 292, 623, 315] 
+      IMAGE  [600, 292, 623, 315] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [600, 292, 623, 315] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 292, 623, 315] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 292, 623, 315] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_2 [268, 230, 628, 278] 
+    IMAGE  [271, 234, 311, 274] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    BUTTON btn_ireturn [600, 243, 623, 266] 
+      IMAGE  [600, 243, 623, 266] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [600, 243, 623, 266] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 243, 623, 266] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 243, 623, 266] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [595, 238, 628, 271] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price2 [316, 255, 570, 272]  "Refund Price : 10.000"
+    STRING refund_item2 [316, 237, 572, 255]  "Disc Premium"
+    IMAGE item_icon [275, 238, 307, 270] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE refund_items_1 [268, 181, 628, 229] 
+    IMAGE  [271, 185, 311, 225] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [275, 189, 307, 221] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING refund_item1 [316, 188, 572, 206]  "Disc Premium"
+    STRING refund_price1 [316, 206, 572, 223]  "Refund Price : 10.000"
+    IMAGE  [595, 189, 628, 222] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    BUTTON btn_ireturn [600, 194, 623, 217] 
+      IMAGE  [600, 194, 623, 217] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+      IMAGE  [600, 194, 623, 217] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 194, 623, 217] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 194, 623, 217] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+  BASE refund_items_0 [268, 131, 628, 179] 
+    BUTTON btn_ireturn [600, 144, 623, 167] 
+      IMAGE  [600, 144, 623, 167] ui\re_akara_01.dxt uv=[0.258, 0.834, 0.276, 0.853]
+      IMAGE  [600, 144, 623, 167] ui\re_akara_01.dxt uv=[0.258, 0.946, 0.276, 0.965]
+      IMAGE  [600, 144, 623, 167] ui\re_akara_01.dxt uv=[0.258, 0.871, 0.276, 0.89]
+      IMAGE  [600, 144, 623, 167] ui\re_akara_01.dxt uv=[0.259, 0.909, 0.277, 0.928]
+    IMAGE  [595, 139, 628, 172] ui\re_skill04.dxt uv=[0.942, 0.257, 0.994, 0.309]
+    STRING refund_price0 [316, 156, 571, 173]  "Refund Price : 10.000"
+    STRING refund_item0 [316, 138, 573, 156]  "Disc Premium"
+    IMAGE  [271, 135, 311, 175] ui\re_ringupgrade.dxt uv=[0.182, 0.225, 0.289, 0.332]
+    IMAGE item_icon [275, 139, 307, 171] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BUTTON btn_close [1002, 125, 1034, 157] 
+    IMAGE  [1002, 125, 1034, 157] ui\re_skill04.dxt uv=[0.957, 0.091, 0.988, 0.122]
+    IMAGE  [1002, 125, 1034, 157] ui\re_skill04.dxt uv=[0.957, 0.051, 0.988, 0.082]
+    IMAGE  [1002, 125, 1034, 157] ui\re_skill04.dxt uv=[0.957, 0.132, 0.988, 0.163]
+    IMAGE  [1002, 125, 1034, 157] ui\re_skill04.dxt uv=[0.957, 0.012, 0.988, 0.043]
+render failed btn_clearall 're_alfa_buttons.dxt'
