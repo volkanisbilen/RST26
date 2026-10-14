@@ -143,10 +143,9 @@ namespace
             if (*(DWORD*)c == VT_STRING)
             {
                 const char* text = MsvcStr((const BYTE*)c + 0x11c);
-                if (!_stricmp(text, "Board") || !_stricmp(text, "Event Board") || !_stricmp(text, "Manner Store"))
+                // the event menu texts come from Texts_us.tbl now (33252 "Daily Quest", 33256 "Manner Store")
+                if (!_stricmp(text, "Board") || !_stricmp(text, "Event Board"))
                     SetText(c, "Daily Quest");
-                else if (!_stricmp(text, "Coin") || !_stricmp(text, "Coin "))   // client entry 4 (old Coin Shop)
-                    SetText(c, "Manner Store");
             }
             RenameDailyEntry(c, depth + 1);
         }
