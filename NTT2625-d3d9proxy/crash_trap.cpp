@@ -406,22 +406,42 @@ namespace
 
     // ---- hang watchdog: the game thread calls HangWatch_Beat() with every window message; when it stays silent the
     //      watchdog samples that thread's stack into crash_trap.log (a freeze leaves no crash, so this is the only trace)
-    volatile DWORD g_beat = 0, g_beatTid = 0;
+    // The game window is probed with a WM_NULL: a window whose thread does not answer for 3 s is frozen. This works from
+    // the first second (log-in, character select), no packet or beat from the game thread is needed.
+    HWND FindOwnWindow()
+    {
+        struct Ctx { DWORD pid; HWND best; int area; } ctx = { GetCurrentProcessId(), nullptr, 0 };
+        EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+            Ctx* c = (Ctx*)lp;
+            DWORD pid; GetWindowThreadProcessId(h, &pid);
+            if (pid != c->pid || !IsWindowVisible(h) || (GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_LAYERED)) return TRUE;
+            RECT r; GetWindowRect(h, &r);
+            int a = (r.right - r.left) * (r.bottom - r.top);
+            if (a > c->area) { c->area = a; c->best = h; }
+            return TRUE;
+        }, (LPARAM)&ctx);
+        return ctx.best;
+    }
 
     DWORD WINAPI HangWatchdog(LPVOID)
     {
-        DWORD lastReported = 0, reports = 0;
+        DWORD silentSince = 0, reports = 0;
+        Sleep(15000);   // the exe unpacks and loads first
         for (;;)
         {
             Sleep(1000);
-            DWORD beat = g_beat, tid = g_beatTid;
-            if (!beat || !tid) continue;
-            DWORD silent = GetTickCount() - beat;
-            if (silent < 7000) { reports = 0; continue; }
+            HWND w = FindOwnWindow();
+            if (!w) { silentSince = 0; reports = 0; continue; }
+            DWORD_PTR res = 0;
+            if (SendMessageTimeoutW(w, WM_NULL, 0, 0, SMTO_BLOCK, 2500, &res)) { silentSince = 0; reports = 0; continue; }
+            DWORD now = GetTickCount();
+            if (!silentSince) silentSince = now - 2500;
+            DWORD silent = now - silentSince;
             // 7 s, 15 s, then every 30 s
             DWORD need = reports == 0 ? 7000 : reports == 1 ? 15000 : 15000 + (reports - 1) * 30000;
             if (silent < need) continue;
             reports++;
+            DWORD tid = GetWindowThreadProcessId(w, nullptr);
             HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
             if (!th) continue;
             CONTEXT ctx = {};
@@ -437,7 +457,7 @@ namespace
                     if (FILE* f = OpenLog("crash_trap.log"))
                     {
                         Stamp(f);
-                        fprintf(f, "HANG: game thread %lu silent for %lu ms (sample %lu)  EIP=%08lX ESP=%08lX EBP=%08lX EAX=%08lX ECX=%08lX\n", tid, silent, reports, ctx.Eip, ctx.Esp, ctx.Ebp, ctx.Eax, ctx.Ecx);
+                        fprintf(f, "HANG: window thread %lu does not answer for %lu ms (sample %lu)  EIP=%08lX ESP=%08lX EBP=%08lX EAX=%08lX ECX=%08lX\n", tid, silent, reports, ctx.Eip, ctx.Esp, ctx.Ebp, ctx.Eax, ctx.Ecx);
                         WriteFrames(f, frames, n);
                         fclose(f);
                     }
@@ -446,7 +466,6 @@ namespace
                 ResumeThread(th);
             }
             CloseHandle(th);
-            (void)lastReported;
         }
     }
 
@@ -494,8 +513,4 @@ void CrashTrap_Init()
 }
 
 // the game thread calls this with every window message (d3d9proxy.cpp ProxyWndProc)
-void HangWatch_Beat()
-{
-    g_beatTid = GetCurrentThreadId();
-    g_beat = GetTickCount() | 1;
-}
+void HangWatch_Beat() {}   // kept for the old call in ProxyWndProc; the watchdog probes the window itself now
