@@ -9,6 +9,7 @@
 #include <dbghelp.h>
 #include <stdio.h>
 #include <share.h>
+#include <tlhelp32.h>
 
 void Log(const char* msg);
 
@@ -442,31 +443,74 @@ namespace
             if (silent < need) continue;
             reports++;
             DWORD tid = GetWindowThreadProcessId(w, nullptr);
-            HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
-            if (!th) continue;
-            CONTEXT ctx = {};
-            ctx.ContextFlags = CONTEXT_FULL;
-            DWORD frames[48]; int n = 0;
-            if (SuspendThread(th) != (DWORD)-1)
+            // 1) freeze each thread only long enough to copy its context (no allocation, no locks while it is stopped)
+            struct TInfo { DWORD tid; CONTEXT ctx; bool ok; };
+            static TInfo infos[64];
+            int cnt = 0;
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if (snap != INVALID_HANDLE_VALUE)
             {
-                if (GetThreadContext(th, &ctx))
+                THREADENTRY32 te = {}; te.dwSize = sizeof(te);
+                for (BOOL ok = Thread32First(snap, &te); ok && cnt < 64; ok = Thread32Next(snap, &te))
                 {
-                    EnterCriticalSection(&g_cs);
-                    InitDbgHelp();
-                    n = WalkContext(&ctx, frames, 48, th);
-                    if (FILE* f = OpenLog("crash_trap.log"))
+                    if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId()) continue;
+                    if (te.th32ThreadID != tid && reports > 1) continue;      // later samples: only the frozen thread
+                    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+                    if (!th) continue;
+                    TInfo& ti = infos[cnt];
+                    ti.tid = te.th32ThreadID; ti.ok = false;
+                    memset(&ti.ctx, 0, sizeof(ti.ctx));
+                    ti.ctx.ContextFlags = CONTEXT_FULL;
+                    if (SuspendThread(th) != (DWORD)-1)
                     {
-                        Stamp(f);
-                        fprintf(f, "HANG: window thread %lu does not answer for %lu ms (sample %lu)  EIP=%08lX ESP=%08lX EBP=%08lX EAX=%08lX ECX=%08lX\n", tid, silent, reports, ctx.Eip, ctx.Esp, ctx.Ebp, ctx.Eax, ctx.Ecx);
-                        WriteFrames(f, frames, n);
-                        fclose(f);
+                        ti.ok = GetThreadContext(th, &ti.ctx) != FALSE;
+                        ResumeThread(th);
                     }
-                    LeaveCriticalSection(&g_cs);
+                    CloseHandle(th);
+                    cnt++;
                 }
-                ResumeThread(th);
+                CloseHandle(snap);
             }
-            CloseHandle(th);
+            // 2) walk and write them (the frozen thread is blocked, its stack does not change)
+            EnterCriticalSection(&g_cs);
+            InitDbgHelp();
+            for (int i = 0; i < cnt; i++)
+            {
+                if (!infos[i].ok) continue;
+                HANDLE th = OpenThread(THREAD_QUERY_INFORMATION | THREAD_GET_CONTEXT, FALSE, infos[i].tid);
+                DWORD frames[48];
+                int n = WalkContext(&infos[i].ctx, frames, 48, th ? th : GetCurrentThread());
+                if (FILE* f = OpenLog("crash_trap.log"))
+                {
+                    Stamp(f);
+                    const CONTEXT& c = infos[i].ctx;
+                    if (infos[i].tid == tid)
+                        fprintf(f, "HANG: window thread %lu does not answer for %lu ms (sample %lu)  EIP=%08lX ESP=%08lX EBP=%08lX EAX=%08lX ECX=%08lX\n", tid, silent, reports, c.Eip, c.Esp, c.Ebp, c.Eax, c.Ecx);
+                    else
+                        fprintf(f, "  other thread %lu  EIP=%08lX ESP=%08lX\n", infos[i].tid, c.Eip, c.Esp);
+                    WriteFrames(f, frames, n);
+                    if (infos[i].tid == tid && reports == 1)
+                    {
+                        // code bytes before the first return addresses (offline disassembly) and the top of the stack
+                        for (int k = 1; k < n && k < 6; k++)
+                        {
+                            fprintf(f, "    code before #%02d [%08lX]:", k, frames[k]);
+                            __try { for (int j = -48; j < 6; j++) fprintf(f, " %02X", *(const BYTE*)(frames[k] + j)); }
+                            __except (EXCEPTION_EXECUTE_HANDLER) {}
+                            fprintf(f, "\n");
+                        }
+                        fprintf(f, "    stack:");
+                        __try { for (int j = 0; j < 24; j++) fprintf(f, " %08lX", ((const DWORD*)c.Esp)[j]); }
+                        __except (EXCEPTION_EXECUTE_HANDLER) {}
+                        fprintf(f, "\n");
+                    }
+                    fclose(f);
+                }
+                if (th) CloseHandle(th);
+            }
+            LeaveCriticalSection(&g_cs);
         }
+        return 0;
     }
 
     // Armed only after the exe has unpacked itself: the packer raises exceptions on purpose while
