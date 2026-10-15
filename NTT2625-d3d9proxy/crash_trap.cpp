@@ -111,7 +111,7 @@ namespace
     }
 
     // Walks the stack of an exception context (works where there is no frame pointer, too).
-    int WalkContext(const CONTEXT* ctx, DWORD* frames, int max)
+    int WalkContext(const CONTEXT* ctx, DWORD* frames, int max, HANDLE hThread = nullptr)
     {
         int n = 0;
         if (pStackWalk64 && pFuncTableAccess && pGetModuleBase)
@@ -121,7 +121,7 @@ namespace
             sf.AddrPC.Offset = c.Eip;    sf.AddrPC.Mode = AddrModeFlat;
             sf.AddrFrame.Offset = c.Ebp; sf.AddrFrame.Mode = AddrModeFlat;
             sf.AddrStack.Offset = c.Esp; sf.AddrStack.Mode = AddrModeFlat;
-            while (n < max && pStackWalk64(IMAGE_FILE_MACHINE_I386, GetCurrentProcess(), GetCurrentThread(), &sf, &c,
+            while (n < max && pStackWalk64(IMAGE_FILE_MACHINE_I386, GetCurrentProcess(), hThread ? hThread : GetCurrentThread(), &sf, &c,
                                            nullptr, pFuncTableAccess, pGetModuleBase, nullptr))
             {
                 if (!sf.AddrPC.Offset) break;
@@ -404,6 +404,52 @@ namespace
         return EXCEPTION_EXECUTE_HANDLER;
     }
 
+    // ---- hang watchdog: the game thread calls HangWatch_Beat() with every window message; when it stays silent the
+    //      watchdog samples that thread's stack into crash_trap.log (a freeze leaves no crash, so this is the only trace)
+    volatile DWORD g_beat = 0, g_beatTid = 0;
+
+    DWORD WINAPI HangWatchdog(LPVOID)
+    {
+        DWORD lastReported = 0, reports = 0;
+        for (;;)
+        {
+            Sleep(1000);
+            DWORD beat = g_beat, tid = g_beatTid;
+            if (!beat || !tid) continue;
+            DWORD silent = GetTickCount() - beat;
+            if (silent < 7000) { reports = 0; continue; }
+            // 7 s, 15 s, then every 30 s
+            DWORD need = reports == 0 ? 7000 : reports == 1 ? 15000 : 15000 + (reports - 1) * 30000;
+            if (silent < need) continue;
+            reports++;
+            HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+            if (!th) continue;
+            CONTEXT ctx = {};
+            ctx.ContextFlags = CONTEXT_FULL;
+            DWORD frames[48]; int n = 0;
+            if (SuspendThread(th) != (DWORD)-1)
+            {
+                if (GetThreadContext(th, &ctx))
+                {
+                    EnterCriticalSection(&g_cs);
+                    InitDbgHelp();
+                    n = WalkContext(&ctx, frames, 48, th);
+                    if (FILE* f = OpenLog("crash_trap.log"))
+                    {
+                        Stamp(f);
+                        fprintf(f, "HANG: game thread %lu silent for %lu ms (sample %lu)  EIP=%08lX ESP=%08lX EBP=%08lX EAX=%08lX ECX=%08lX\n", tid, silent, reports, ctx.Eip, ctx.Esp, ctx.Ebp, ctx.Eax, ctx.Ecx);
+                        WriteFrames(f, frames, n);
+                        fclose(f);
+                    }
+                    LeaveCriticalSection(&g_cs);
+                }
+                ResumeThread(th);
+            }
+            CloseHandle(th);
+            (void)lastReported;
+        }
+    }
+
     // Armed only after the exe has unpacked itself: the packer raises exceptions on purpose while
     // unpacking. The game then sets its own unhandled filter; keep ours on top.
     DWORD WINAPI KeepFilter(LPVOID)
@@ -439,9 +485,17 @@ void CrashTrap_Init()
     oMessageBoxA = (tMessageBoxA)HookExport("MessageBoxA", hkMessageBoxA);
     oMessageBoxW = (tMessageBoxW)HookExport("MessageBoxW", hkMessageBoxW);
     CloseHandle(CreateThread(nullptr, 0, KeepFilter, nullptr, 0, nullptr));
+    CloseHandle(CreateThread(nullptr, 0, HangWatchdog, nullptr, 0, nullptr));
 
     char b[128];
     sprintf_s(b, "CRASHTRAP: installed (MessageBoxA=%s MessageBoxW=%s) -> crash_trap.log",
               oMessageBoxA ? "ok" : "NO", oMessageBoxW ? "ok" : "NO");
     Log(b);
+}
+
+// the game thread calls this with every window message (d3d9proxy.cpp ProxyWndProc)
+void HangWatch_Beat()
+{
+    g_beatTid = GetCurrentThreadId();
+    g_beat = GetTickCount() | 1;
 }
