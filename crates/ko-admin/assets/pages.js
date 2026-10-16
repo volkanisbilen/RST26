@@ -381,9 +381,13 @@ PAGE.letters=async function(main){
 /* system */
 PAGE.system=async function(main){
   const users=await api('/admin-users').catch(()=>[]);
+  const opts=await api('/game-options').catch(()=>null);
   const msg=h('input',{placeholder:'Duyuru metni (en fazla 200 karakter)',style:'flex:1;min-width:220px'}),nu=h('input',{placeholder:'Kullanıcı adı'}),np=h('input',{type:'password',placeholder:'Parola (en az 12 karakter)'});
   const rl=(l,w)=>h('button',{class:'btn',onclick:async()=>{try{await api('/commands',{body:{command:'reload',args:{what:w}}});toast(l+' için komut sıraya alındı','ok')}catch(_){}}},l);
   main.append(head('Sistem & Yöneticiler','Çalışan sunucuya komut gönder, panel yöneticilerini yönet'),h('div',{class:'grid g2'},
+    opts?h('div',{class:'card'},h('h3',{},'Oyun seçenekleri'),
+      h('label',{class:'row',style:'gap:8px;cursor:pointer'},h('input',{type:'checkbox',checked:opts.auto_register,onchange:async e=>{try{await api('/game-options',{body:{auto_register:e.target.checked}});toast(e.target.checked?'Oyun içi otomatik kayıt açık':'Oyun içi otomatik kayıt kapalı — kayıt sadece web panelden olur','ok')}catch(_){e.target.checked=!e.target.checked}}}),'Oyun içinden otomatik kayıt (giriş ekranında yeni ID/parola yazınca hesap açılsın)'),
+      h('div',{class:'hint',style:'margin-top:8px'},'Kapatınca giriş ekranında tanımsız bir hesapla girilen ID/parola reddedilir; kayıt sadece web panelden yapılabilir. Anında etkili, sunucu yeniden başlatmaya gerek yok.')):null,
     h('div',{class:'card'},h('h3',{},'Çalışan sunucuya komut'),h('div',{class:'row'},rl('Hepsini yeniden yükle','all'),rl('Drop tabloları','monster_drop_tables'),rl('Item grupları','make_item_groups'),rl('Quest tabloları','quest_tables'),rl('Etkinlik takvimi','event_schedule')),
       h('div',{class:'row',style:'margin-top:14px'},msg,h('button',{class:'btn primary',onclick:async()=>{if(!msg.value.trim())return;try{await api('/commands',{body:{command:'announce',args:{message:msg.value.trim()}}});toast('Duyuru sıraya alındı','ok');msg.value=''}catch(_){}}},'Duyur'))),
     h('div',{class:'card'},h('h3',{},'Panel yöneticileri'),h('table',{},h('tbody',{},users.map(u=>h('tr',{},h('td',{},h('b',{},u.username)),h('td',{class:'xs muted'},when(u.created_at)),h('td',{},h('button',{class:'btn sm danger',onclick:async()=>{if(!await confirmBox('Yönetici sil',u.username+' silinecek.','Sil',true))return;try{await api('/admin-users/'+encodeURIComponent(u.username),{method:'DELETE'});toast('Silindi','ok');route()}catch(_){}}},ico('trash'))))))),

@@ -28,6 +28,7 @@ pub fn routes() -> Router<App> {
         .route("/jstkoadminpanel/api/accounts/{id}/ban", post(ban))
         .route("/jstkoadminpanel/api/accounts/{id}/authority", post(set_authority))
         .route("/jstkoadminpanel/api/accounts/{id}/activate", post(activate))
+        .route("/jstkoadminpanel/api/game-options", get(game_options).post(set_game_options))
         .route("/jstkoadminpanel/api/clear-online/{name}", post(clear_online))
         .route("/jstkoadminpanel/api/item-search", get(item_search))
         .route("/jstkoadminpanel/api/item/{id}", get(item_detail))
@@ -355,6 +356,43 @@ async fn activate(
     audit(&mut tx, &s.actor, "account.activate", &account, json!({}), peer.ip()).await?;
     tx.commit().await.map_err(internal("commit"))?;
     Ok(Json(json!({"ok":true})))
+}
+
+async fn game_options(headers: HeaderMap, State(app): State<App>) -> R {
+    auth(&headers, false)?;
+    let v: Value = sqlx::query_scalar(
+        "SELECT to_jsonb(t) FROM (SELECT maintenance_mode, char_select_login, open_otp, auto_register, \
+         free_limit, total_user_limit, server_ip FROM game_options WHERE id=1) t",
+    )
+    .fetch_one(&app.pool)
+    .await
+    .map_err(internal("game_options"))?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+struct GameOptionsIn {
+    /// Whether the game client's own "type a new ID/password at the login screen" flow creates
+    /// an account on the spot. Turn off to force registration through the web panel only.
+    auto_register: bool,
+}
+
+async fn set_game_options(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Json(p): Json<GameOptionsIn>,
+) -> R {
+    let (_, s) = auth(&headers, true)?;
+    let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
+    sqlx::query("UPDATE game_options SET auto_register=$1 WHERE id=1")
+        .bind(p.auto_register)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal("game_options write"))?;
+    audit(&mut tx, &s.actor, "game_options.set", "auto_register", json!({"auto_register": p.auto_register}), peer.ip()).await?;
+    tx.commit().await.map_err(internal("commit"))?;
+    Ok(Json(json!({"ok":true,"auto_register":p.auto_register})))
 }
 
 /// A character that is shown online although the game server is down keeps its rows locked.
