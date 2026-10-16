@@ -18,6 +18,7 @@ static const DWORD LT_MAX_AGE = 90;                 // seconds between xldr and 
 // FNV-1a 64 of every Launcher.exe we accept (python: see launch_guard notes); add a line when the launcher changes
 static const unsigned long long LT_LAUNCHER_HASHES[] = {
     0x18b625d68751a673ull,   // USKO Launcher2_USA, 5 322 384 bytes (2026-08-14)
+    0xab2f50bf33753af4ull,   // JstKO Launcher (NTT2625-d3d9proxy/Launcher), 12 291 072 bytes (2026-10-16)
 };
 
 #pragma pack(push, 1)

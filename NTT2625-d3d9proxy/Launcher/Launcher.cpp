@@ -827,8 +827,8 @@ LRESULT CALLBACK WndProc222(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
             YOUR_UNIQUE_ID,						//Unique ID of your control, declare your own.
             0,									//xPosition
             0,									//yPosition
-            700,								//width 
-            400								    //height
+            800,								//width  (loading.gif's own resolution -- the
+            396								    //height  window below must match, or it clips)
         );
     }
     break;
@@ -879,7 +879,9 @@ int thyke_Test::SetupBanner()
         return 1;
     }
 
-    HWND hwnd = CreateWindow(szWindowClass, szTitle, WS_POPUP/*WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME*/, 0, 0, 448, 219, NULL, NULL, wcex.hInstance, NULL);
+    // Must match loading.gif's own 800x396 resolution (see WM_CREATE below) -- a smaller window
+    // clips the child STATIC control instead of shrinking what's drawn in it.
+    HWND hwnd = CreateWindow(szWindowClass, szTitle, WS_POPUP/*WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME*/, 0, 0, 800, 396, NULL, NULL, wcex.hInstance, NULL);
     hLoadHwnd = hwnd;
 
     if (!hwnd) {
@@ -896,7 +898,7 @@ int thyke_Test::SetupBanner()
     GetWindowRect(hwnd, &rc);
     int xPos = (GetSystemMetrics(SM_CXSCREEN) - rc.right) / 2;
     int yPos = (GetSystemMetrics(SM_CYSCREEN) - rc.bottom) / 2;
-    SetWindowPos(hwnd, HWND_TOP, xPos, yPos, 448, 219, SWP_NOZORDER);
+    SetWindowPos(hwnd, HWND_TOP, xPos, yPos, 800, 396, SWP_NOZORDER);
 
     //SetWindowPos(FindWindow(Nil, PCHAR(program1)), HWND_TOP, 0, 0, Screen.Width, Screen.Height, SWP_SHOWWINDOW)
 
