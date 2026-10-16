@@ -116,6 +116,7 @@ exit /b 0</Command>
     <ClCompile Include="module_guard.cpp" />
     <ClCompile Include="client_integrity.cpp" />
     <ClCompile Include="manifest_check.cpp" />
+    <ClCompile Include="log_crypt.cpp" />
     <ClCompile Include="solocape_icon.cpp" />
     <ClCompile Include="drop_button.cpp" />
     <ClCompile Include="clan_kasa.cpp" />

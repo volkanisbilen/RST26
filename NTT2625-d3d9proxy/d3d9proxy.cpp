@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <share.h>
+#include <string>
 
 static HMODULE g_real = nullptr;
 static FARPROC g_fn[6] = {};
@@ -132,6 +133,10 @@ bool GmPanel_ForwardWheel(WPARAM w, LPARAM l);
 void Tag_Tick();
 bool Tag_OnTimer(UINT_PTR id);
 
+std::string LogObfuscate(const char* text, size_t len);   // log_crypt.cpp
+
+// d3d9proxy.log is obfuscated (log_crypt.cpp, decrypt with log_decrypt.py) so a player who opens
+// it doesn't get a plain-text trace of hook addresses, item/account names and internal state.
 void Log(const char* msg)
 {
     char path[MAX_PATH];
@@ -143,7 +148,10 @@ void Log(const char* msg)
     if (f)
     {
         SYSTEMTIME t; GetLocalTime(&t);
-        fprintf(f, "[%02d:%02d:%02d] pid=%lu %s\n", t.wHour, t.wMinute, t.wSecond, GetCurrentProcessId(), msg);
+        char line[2048];
+        int n = sprintf_s(line, "[%02d:%02d:%02d] pid=%lu %s", t.wHour, t.wMinute, t.wSecond, GetCurrentProcessId(), msg);
+        std::string enc = LogObfuscate(line, n > 0 ? (size_t)n : strlen(line));
+        fprintf(f, "%s\n", enc.c_str());
         fclose(f);
     }
 }
