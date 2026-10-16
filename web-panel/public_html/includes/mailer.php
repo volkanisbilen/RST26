@@ -111,9 +111,13 @@ function jstko_send_mail(string $toEmail, string $toName, string $subject, strin
     }
 
     $encodeHeader = fn(string $s) => '=?UTF-8?B?' . base64_encode($s) . '?=';
-    $boundaryEscaped = str_replace(["\r", "\n", '.'], '', $htmlBody);
-    // Escape leading dots per RFC 5321 (a line of just "." ends DATA).
-    $body = preg_replace('/^\./m', '..', $boundaryEscaped);
+    // SMTP DATA requires CRLF line endings; normalize whatever the caller used first.
+    $body = str_replace(["\r\n", "\r", "\n"], "\n", $htmlBody);
+    $body = str_replace("\n", "\r\n", $body);
+    // Escape leading dots per RFC 5321 (a line of just "." ends DATA) -- NOT every dot in the
+    // body, which previously stripped every "." from the whole message (e.g. activate.php ->
+    // activatephp in the activation link).
+    $body = preg_replace('/^\./m', '..', $body);
 
     $headers = [
         'From: ' . $encodeHeader($fromName) . ' <' . $fromEmail . '>',
