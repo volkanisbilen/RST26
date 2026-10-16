@@ -12,7 +12,6 @@ static const char* g_names[6] = {
     "D3DPERF_EndEvent", "D3DPERF_SetMarker", "D3DPERF_GetStatus"
 };
 
-void MultiClient_Init();
 void Pus_Init();
 void Pus_OnRecv(const BYTE* buf, size_t len);
 void Pus_FlushSendQueue();
@@ -497,7 +496,6 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
     if (reason == DLL_PROCESS_ATTACH && IsGameHost())
     {
         Log("d3d9 proxy attached");
-        MultiClient_Init();   // must run before the game's own single-instance mutex check (WinMain's first line)
         // JstKO.dll (was OPSGUARD.dll) first and at once: it redirects this DLL's file imports, so the encrypted JstKO\ skins read
         // plain by the time the panels load them (loaded from a thread it came after the first skin loads).
         if (GetFileAttributesA("JstKO.dll") != INVALID_FILE_ATTRIBUTES ||
