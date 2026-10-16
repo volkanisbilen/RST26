@@ -19,8 +19,8 @@
 // already taken, behave exactly like the unmodified client: report ERROR_ALREADY_EXISTS so it
 // exits the same way it always did for a genuine second instance.
 //
-// MaxClients is read from JstKO\multiclient.ini ([Settings] MaxClients=3, default 3) so it can be
-// retuned without a rebuild.
+// MaxClients is a compile-time constant on purpose (no extra .ini file in the client folder) --
+// change the number below and rebuild if it ever needs to be different.
 #include <windows.h>
 #include <stdio.h>
 
@@ -28,28 +28,19 @@ void Log(const char* msg);
 
 namespace
 {
+    const int kMaxClients = 3;
+
     typedef HANDLE(WINAPI* FnCreateMutexA)(LPSECURITY_ATTRIBUTES, BOOL, LPCSTR);
     FnCreateMutexA g_orig = nullptr;
-    int g_maxClients = 3;
 
     const char* const kGameMutexName = "Knight OnLine Client";
-
-    int LoadMaxClients()
-    {
-        char p[MAX_PATH];
-        GetModuleFileNameA(nullptr, p, MAX_PATH);
-        char* s = strrchr(p, '\\');
-        if (s) strcpy_s(s + 1, MAX_PATH - (s + 1 - p), "JstKO\\multiclient.ini");
-        int n = GetPrivateProfileIntA("Settings", "MaxClients", 3, p);
-        return n < 1 ? 1 : (n > 20 ? 20 : n);
-    }
 
     HANDLE WINAPI HkCreateMutexA(LPSECURITY_ATTRIBUTES attrs, BOOL initialOwner, LPCSTR name)
     {
         if (!name || strcmp(name, kGameMutexName) != 0)
             return g_orig(attrs, initialOwner, name);
 
-        for (int i = 1; i <= g_maxClients; i++)
+        for (int i = 1; i <= kMaxClients; i++)
         {
             char slot[64];
             sprintf_s(slot, "JstKO_MultiClient_Slot_%d", i);
@@ -57,14 +48,14 @@ namespace
             if (h && GetLastError() != ERROR_ALREADY_EXISTS)
             {
                 char b[96];
-                sprintf_s(b, "MULTICLIENT: slot %d/%d claimed", i, g_maxClients);
+                sprintf_s(b, "MULTICLIENT: slot %d/%d claimed", i, kMaxClients);
                 Log(b);
                 return h;   // kept open for this process's whole lifetime on purpose
             }
             if (h) CloseHandle(h);
         }
         char b[96];
-        sprintf_s(b, "MULTICLIENT: all %d slot(s) taken, refusing like the client normally would", g_maxClients);
+        sprintf_s(b, "MULTICLIENT: all %d slot(s) taken, refusing like the client normally would", kMaxClients);
         Log(b);
         SetLastError(ERROR_ALREADY_EXISTS);
         return nullptr;
@@ -93,9 +84,8 @@ namespace
 
 void MultiClient_Init()
 {
-    g_maxClients = LoadMaxClients();
     g_orig = (FnCreateMutexA)HookHot("CreateMutexA", (void*)HkCreateMutexA);
     char b[96];
-    sprintf_s(b, "MULTICLIENT: max %d, hook %s", g_maxClients, g_orig ? "on" : "FAILED");
+    sprintf_s(b, "MULTICLIENT: max %d, hook %s", kMaxClients, g_orig ? "on" : "FAILED");
     Log(b);
 }
