@@ -61,10 +61,14 @@ fn resolve_drop_item(
     rng: &mut impl Rng,
 ) -> u32 {
     if code >= 100_000_000 {
-        code as u32
-    } else if code < 100 {
-        super::item_production::item_production(world, code, level, nation)
-    } else if let Some(group) = world.get_make_item_group(code) {
+        return code as u32;
+    }
+    // MAKE_ITEM_GROUP group_num can legitimately be any admin-assigned value,
+    // including < 100 (the imported original data has groups at 3, 5, 7, 8, 31,
+    // among others). Try the explicit group table first so an admin-defined
+    // group is never shadowed by the item_production() grade-code fallback,
+    // which only ever matches codes 1..=9 anyway.
+    if let Some(group) = world.get_make_item_group(code) {
         // MAKE_ITEM_GROUP is imported from a fixed-width table; unused
         // columns are retained as zeroes. Never include those placeholders in
         // the random selection or a valid group drop can resolve to no item.
@@ -73,14 +77,16 @@ fn resolve_drop_item(
             .into_iter()
             .filter(|item_id| *item_id > 0)
             .collect();
-        if items.is_empty() {
+        return if items.is_empty() {
             0
         } else {
             items[rng.gen_range(0..items.len())] as u32
-        }
-    } else {
-        0
+        };
     }
+    if code < 100 {
+        return super::item_production::item_production(world, code, level, nation);
+    }
+    0
 }
 
 /// Arrow stack count for arrow drops.

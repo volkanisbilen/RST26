@@ -95,15 +95,9 @@ require __DIR__ . '/partials/header.php';
           <input class="input" type="email" name="email" required maxlength="50" value="<?= jstko_e($old['email'] ?? '') ?>">
         </div>
 
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1.5">8 HANELİ İTEM KİLİT ŞİFRESİ</label>
-            <input class="input" type="password" name="seal_password" required pattern="\d{8}" maxlength="8" inputmode="numeric">
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1.5">6 HANELİ OTP ŞİFRESİ</label>
-            <input class="input" type="password" name="otp_password" required pattern="\d{6}" maxlength="6" inputmode="numeric">
-          </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1.5">8 HANELİ İTEM KİLİT ŞİFRESİ</label>
+          <input class="input" type="password" name="seal_password" required pattern="\d{8}" maxlength="8" inputmode="numeric">
         </div>
 
         <div>

@@ -2,7 +2,7 @@
 /* ───────── drop studio + group manager (drag & drop) ───────── */
 const DROPSTATE={open:[],last:500};
 const pctText=p=>'%'+(Number(p)/100).toFixed(2);
-const isGroupId=id=>id>=100&&id<=99999999;
+const isGroupId=(id,s)=>s?!!s.is_group:id>=100&&id<=99999999;
 function toastAction(msg,label,fn){
   const t=h('div',{class:'toast ok row',style:'gap:12px'},h('span',{},msg),h('button',{class:'btn sm',onclick:()=>{t.remove();fn()}},label));
   $('#toasts').append(t);setTimeout(()=>t.remove(),9000);
@@ -48,7 +48,7 @@ PAGE.drops=async function(main,[sidArg]){
     if(!ms.length)mlist.append(h('div',{class:'empty'},'Canavar yok'));
   }
   function slotCell(m,s){
-    const full=s.item_id>0,grp=full&&isGroupId(s.item_id);
+    const full=s.item_id>0,grp=full&&isGroupId(s.item_id,s);
     const cell=h('div',{class:'ds-slot'+(full?' full':''),draggable:full?'true':null,dataset:{sid:m.sid,slot:s.slot}},
       h('span',{class:'n'},s.slot),
       grp?h('div',{class:'slot full'},ico('layers')):full?itemSlot({id:s.item_id,icon:s.icon},{drag:false}):h('div',{class:'slot'},h('span',{class:'num'},'+')),
@@ -59,7 +59,7 @@ PAGE.drops=async function(main,[sidArg]){
     cell.addEventListener('drop',async e=>{
       e.preventDefault();e.stopPropagation();cell.classList.remove('over');const p=parse(e);if(!p)return;
       if(p.pick){const pc=p.pick.group?100:DROPSTATE.last;
-        return mutate(m,mm=>{mm.slots[s.slot-1]={slot:s.slot,item_id:p.pick.id,percent:pc,name:p.pick.name,icon:p.pick.icon}},'Slot '+s.slot+' güncellendi');}
+        return mutate(m,mm=>{mm.slots[s.slot-1]={slot:s.slot,item_id:p.pick.id,percent:pc,name:p.pick.name,icon:p.pick.icon,is_group:!!p.pick.group}},'Slot '+s.slot+' güncellendi');}
       if(p.dslot){
         const src=findMon(p.dslot.sid);if(!src||(src.sid===m.sid&&p.dslot.slot===s.slot))return;
         const a={...src.slots[p.dslot.slot-1]},b={...m.slots[s.slot-1]};
@@ -69,7 +69,7 @@ PAGE.drops=async function(main,[sidArg]){
         if(!copy)await mutate(src,ss=>{ss.slots[p.dslot.slot-1]={slot:p.dslot.slot,item_id:0,percent:0,name:'',icon:0}},'Kaynak boşaltıldı');
       }
     });
-    cell.addEventListener('click',()=>{selected={sid:m.sid,slot:s.slot};slotDialog(m,s)});
+    cell.addEventListener('click',()=>{selected={sid:m.sid,slot:s.slot};if(grp)groupSlotDialog(m,s);else slotDialog(m,s)});
     return cell;
   }
   function slotDialog(m,s){
@@ -90,6 +90,22 @@ PAGE.drops=async function(main,[sidArg]){
         const it=Number(id.value),p=Number(pc.value);DROPSTATE.last=p||DROPSTATE.last;
         let info=it?await getItem(it):null;
         await mutate(m,mm=>{mm.slots[s.slot-1]={slot:s.slot,item_id:it,percent:it?p:0,name:info?info.str_name:'',icon:info?info.item_icon_id1:0}},'Slot '+s.slot+' kaydedildi');close();return true}}],'xl');
+  }
+  function groupSlotDialog(m,s){
+    const pc=h('input',{type:'number',value:s.percent,min:'0',max:'10000',step:'10'});
+    const range_=h('input',{type:'range',min:'0',max:'10000',step:'10',value:s.percent,style:'width:100%'});
+    const lab=h('span',{class:'chip blue'},pctText(s.percent));
+    const sync=(v)=>{pc.value=v;range_.value=v;lab.textContent=pctText(v)};
+    pc.addEventListener('input',()=>sync(pc.value));range_.addEventListener('input',()=>sync(range_.value));
+    const presets=[10,100,500,1000,2500,5000,10000].map(v=>h('button',{class:'btn sm',onclick:()=>sync(v)},pctText(v)));
+    const close=modal(m.name+' · slot '+s.slot+' · Grup '+s.item_id,h('div',{class:'col'},
+      h('p',{class:'muted sm'},'Bu slot bir item grubuna (Grup '+s.item_id+') işaret ediyor. Grubun içeriğini düzenlemek için Grup Yöneticisi\'ni aç.'),
+      h('button',{class:'btn primary',onclick:()=>{close();location.hash='#/groups/'+s.item_id}},ico('layers'),'Grubu Düzenle'),
+      h('div',{class:'form'},field('Oran (ham 0–10000)',pc)),
+      h('div',{class:'row'},range_,lab),h('div',{class:'row'},presets)),[
+      {label:'İptal',cls:'ghost'},{label:'Boşalt',cls:'danger',fn:()=>mutate(m,mm=>{mm.slots[s.slot-1]={slot:s.slot,item_id:0,percent:0,name:'',icon:0,is_group:false}},'Slot boşaltıldı')},
+      {label:'Kaydet',cls:'primary',fn:async()=>{const p=Number(pc.value);DROPSTATE.last=p||DROPSTATE.last;
+        await mutate(m,mm=>{mm.slots[s.slot-1]={...mm.slots[s.slot-1],percent:p}},'Slot '+s.slot+' kaydedildi')}}],'lg');
   }
   function card(m){
     const hdr=h('header',{draggable:'true',title:'Tüm tabloyu başka bir kartın üstüne sürükleyerek kopyala'},

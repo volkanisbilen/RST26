@@ -464,7 +464,7 @@ async fn drop_replace(
         .ok_or(ApiError::NotFound)?;
     for (id, _) in p.slots.iter().filter(|(i, _)| *i > 0) {
         let ok: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM item WHERE num=$1) OR ($1 BETWEEN 100 AND 99999999 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))",
+            "SELECT EXISTS(SELECT 1 FROM item WHERE num=$1) OR ($1 > 0 AND $1 < 100000000 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))",
         )
         .bind(*id)
         .fetch_one(&app.pool)

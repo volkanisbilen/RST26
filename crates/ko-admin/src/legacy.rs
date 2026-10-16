@@ -1501,7 +1501,7 @@ async fn set_inventory(
     } else {
         sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(SELECT 1 FROM item WHERE num=$1) OR
-               ($1 BETWEEN 100 AND 99999999 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))"#,
+               ($1 > 0 AND $1 < 100000000 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))"#,
         )
         .bind(p.item_id)
         .fetch_one(&mut *tx)
@@ -1746,7 +1746,7 @@ async fn drop_tables(
 ) -> Result<Json<Value>, ApiError> {
     auth(&headers, false)?;
     let term = q.q.unwrap_or_default();
-    let rows=sqlx::query("WITH selected AS (SELECT n.s_sid,n.str_name,n.s_item,m.* FROM npc_template n LEFT JOIN monster_item m ON m.s_index=n.s_item WHERE n.is_monster=true AND ($1='' OR n.str_name ILIKE $2 OR CAST(n.s_sid AS TEXT)=$1) ORDER BY n.str_name LIMIT $3) SELECT s.s_sid,s.str_name,s.s_item,d.slot,d.item_id,d.percent,COALESCE(i.str_name,'') item_name,COALESCE(i.item_icon_id1,0)::int icon FROM selected s CROSS JOIN LATERAL (VALUES (1,s.item01,s.percent01),(2,s.item02,s.percent02),(3,s.item03,s.percent03),(4,s.item04,s.percent04),(5,s.item05,s.percent05),(6,s.item06,s.percent06),(7,s.item07,s.percent07),(8,s.item08,s.percent08),(9,s.item09,s.percent09),(10,s.item10,s.percent10),(11,s.item11,s.percent11),(12,s.item12,s.percent12)) AS d(slot,item_id,percent) LEFT JOIN item i ON i.num=d.item_id ORDER BY s.str_name,d.slot").bind(&term).bind(format!("%{term}%")).bind(q.limit.unwrap_or(100).clamp(1,100)).fetch_all(&app.pool).await.map_err(|_|ApiError::Internal)?;
+    let rows=sqlx::query("WITH selected AS (SELECT n.s_sid,n.str_name,n.s_item,m.* FROM npc_template n LEFT JOIN monster_item m ON m.s_index=n.s_item WHERE n.is_monster=true AND ($1='' OR n.str_name ILIKE $2 OR CAST(n.s_sid AS TEXT)=$1) ORDER BY n.str_name LIMIT $3) SELECT s.s_sid,s.str_name,s.s_item,d.slot,d.item_id,d.percent,COALESCE(i.str_name,'') item_name,COALESCE(i.item_icon_id1,0)::int icon,(g.group_num IS NOT NULL) is_group FROM selected s CROSS JOIN LATERAL (VALUES (1,s.item01,s.percent01),(2,s.item02,s.percent02),(3,s.item03,s.percent03),(4,s.item04,s.percent04),(5,s.item05,s.percent05),(6,s.item06,s.percent06),(7,s.item07,s.percent07),(8,s.item08,s.percent08),(9,s.item09,s.percent09),(10,s.item10,s.percent10),(11,s.item11,s.percent11),(12,s.item12,s.percent12)) AS d(slot,item_id,percent) LEFT JOIN item i ON i.num=d.item_id LEFT JOIN make_item_group g ON g.group_num=d.item_id ORDER BY s.str_name,d.slot").bind(&term).bind(format!("%{term}%")).bind(q.limit.unwrap_or(100).clamp(1,100)).fetch_all(&app.pool).await.map_err(|_|ApiError::Internal)?;
     let mut monsters: Vec<Value> = Vec::new();
     for r in rows {
         let sid = r.try_get::<i16, _>("s_sid").unwrap_or(0);
@@ -1757,7 +1757,7 @@ async fn drop_tables(
             monsters.len() - 1
         };
         if let Some(slots) = monsters[index]["slots"].as_array_mut() {
-            slots.push(json!({"slot":r.try_get::<i32,_>("slot").unwrap_or(0),"item_id":r.try_get::<Option<i32>,_>("item_id").ok().flatten().unwrap_or(0),"percent":r.try_get::<Option<i16>,_>("percent").ok().flatten().unwrap_or(0),"name":r.try_get::<String,_>("item_name").unwrap_or_default(),"icon":r.try_get::<i32,_>("icon").unwrap_or(0)}));
+            slots.push(json!({"slot":r.try_get::<i32,_>("slot").unwrap_or(0),"item_id":r.try_get::<Option<i32>,_>("item_id").ok().flatten().unwrap_or(0),"percent":r.try_get::<Option<i16>,_>("percent").ok().flatten().unwrap_or(0),"name":r.try_get::<String,_>("item_name").unwrap_or_default(),"icon":r.try_get::<i32,_>("icon").unwrap_or(0),"is_group":r.try_get::<bool,_>("is_group").unwrap_or(false)}));
         }
     }
     Ok(Json(Value::Array(monsters)))
@@ -1794,7 +1794,7 @@ async fn edit_drop(
     let valid_drop_code = p.item_id == 0
         || sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(SELECT 1 FROM item WHERE num=$1) OR
-               ($1 BETWEEN 100 AND 99999999 AND EXISTS(
+               ($1 > 0 AND $1 < 100000000 AND EXISTS(
                    SELECT 1 FROM make_item_group WHERE group_num=$1
                ))"#,
         )

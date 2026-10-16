@@ -1,13 +1,18 @@
-// "Remember Me" tick for the login screen (CUILoginIntro, vtable 0x102F7B8; UI el/ka_login_intro_us.uif).
-// The native login box (Group_LogIn: Edit_ID, Edit_PW, btn_ok ...) has no such option, so:
+// "Remember Me" for the login screen (CUILoginIntro, vtable 0x102F7B8; UI re_login_intro.uif).
+// The login box (Group_Login: Edit_ID, Edit_PW, btn_ok, btn_remember ...) has its own native checkbox
+// (btn_remember) -- we don't draw our own, we just drive and read that widget:
 //   vtable[35] +0x8C Tick (0xBD1D40)            -> game thread, every frame: fills the saved ID / password into
-//                                                 the edits right after the box shows up, reports where the box is
+//                                                 the edits right after the box shows up; on first sight of a box,
+//                                                 sets btn_remember's checked state from the saved LoginRemember.dat
 //   vtable[33] +0x84 ReceiveMessage (0xBD2C70)  -> btn_ok click (msg 1, sender this+0x120) or Enter in an edit
-//                                                 (msg 0x1000): saves ID / password when the tick is on
-// The tick itself is a small GDI layered window (same technique as cind_panel.cpp) under btn_homepage.
+//                                                 (msg 0x1000): saves ID / password when btn_remember is checked;
+//                                                 btn_remember click (sender = that widget): re-reads its checked
+//                                                 state after the engine's own click handling runs and persists it
 // CUILoginIntro: Edit_ID +0x118, Edit_PW +0x11C, btn_ok +0x120. CN3UIEdit vtable +0xD0 GetString (password edits
 // return the real text), +0xD4 SetString (masks password edits itself); SetFocus 0x6E0690 (thiscall), focused edit
-// [0x111523C]. CN3UI: visible byte +0xEA, rect floats +0xC8 (window coordinates), id +0x58, children +0xB0.
+// [0x111523C]. CN3UI: visible byte +0xEA, rect floats +0xC8 (window coordinates), id +0x58, children +0xB0,
+// state int +0xBC (SetState vtable slot 0x5C; checkbox buttons use 2 = unchecked, 3 = checked, same convention
+// as the other option checkboxes in this client -- see genie_hg.cpp's SetCheck).
 // Stored in LoginRemember.dat next to the exe; the password is encrypted with DPAPI (current Windows user).
 #include <windows.h>
 #include <windowsx.h>
@@ -38,11 +43,11 @@ namespace
     const DWORD KO_EDIT_SETFOCUS = 0x006E0690;
     const DWORD MSG_BUTTON_CLICK = 1, MSG_EDIT_RETURN = 0x1000;
     const DWORD FILL_WINDOW_MS = 3000;          // edits are (re)filled while empty this long after the box shows
-    const int   TICK_W = 150, TICK_H = 20;
 
     typedef void(__thiscall* FnTick)(void*);
     typedef bool(__thiscall* FnRM)(void*, void*, DWORD);
     typedef void(__thiscall* FnSetFocus)(void*);
+    typedef void(__thiscall* FnSetState)(void*, int);
     FnTick g_origTick = nullptr;
     FnRM   g_origRM = nullptr;
 
@@ -159,11 +164,19 @@ namespace
         ((void(__thiscall*)(void*, const std::string*))vt[0xD4 / 4])(edit, &s);
     }
 
-    // ---------------------------------------------------------------- shared with the tick window
-    volatile LONG g_anchorX = 0, g_anchorY = 0;     // window coordinates (top left of the tick)
-    volatile DWORD g_lastSeen = 0;                  // GetTickCount of the last frame the box was visible
-    HWND g_hWnd = nullptr;
-    const UINT WM_RM_REFRESH = WM_APP + 41;
+    const int UI_STATE_UNCHECKED = 2, UI_STATE_CHECKED = 3;
+
+    // btn_remember's own checked state is the single source of truth for "remember me"; we only
+    // push into it once (to restore a previous session) and read it back after clicks.
+    void SetChecked(void* widget, bool on)
+    {
+        if (!widget) return;
+        int want = on ? UI_STATE_CHECKED : UI_STATE_UNCHECKED;
+        if (*(int*)((BYTE*)widget + OFF_UI_STATE) == want) return;
+        void** vt = *(void***)widget;
+        ((FnSetState)vt[0x5C / 4])(widget, want);
+    }
+    bool IsChecked(void* widget) { return widget && *(int*)((BYTE*)widget + OFF_UI_STATE) == UI_STATE_CHECKED; }
 
     // ---------------------------------------------------------------- game thread
     void* g_filledFor = nullptr;
@@ -216,17 +229,13 @@ namespace
         }
 
         DWORD now = GetTickCount();
-        if (!g_wasVisible || g_filledFor != self) { g_wasVisible = true; g_filledFor = self; g_shownAt = now; }
-
-        // where the tick goes: under btn_homepage, inside the box
-        void* hp = Find(group, "btn_homepage");
-        const float* r = RectOf(hp ? hp : pwE);
-        const float* gr = RectOf(group);
-        int x = (int)r[0], y = (int)r[3] + 8;
-        if (!hp || y + TICK_H > (int)gr[3]) { x = (int)gr[0] + 16; y = (int)gr[3] + 4; }
-        InterlockedExchange(&g_anchorX, x);
-        InterlockedExchange(&g_anchorY, y);
-        g_lastSeen = now;
+        if (!g_wasVisible || g_filledFor != self)
+        {
+            g_wasVisible = true; g_filledFor = self; g_shownAt = now;
+            // box just (re)appeared: reflect the saved setting onto the native checkbox
+            EnterCriticalSection(&g_lock); bool on = g_enabled; LeaveCriticalSection(&g_lock);
+            SetChecked(Find(group, "btn_remember"), on);
+        }
 
         // Re-Connect: the previous process saved its login -> fill it in and press OK once
         static bool s_reconnectChecked = false;
@@ -298,189 +307,35 @@ namespace
         return sender && sender == Find(Find(self, "Group_LogIn"), "btn_homepage");
     }
 
+    void* RememberWidget(void* self) { return Find(Find(self, "Group_LogIn"), "btn_remember"); }
+
+    // btn_remember just handled its own click (checked/unchecked itself) -- persist whichever
+    // state it landed on; turning it off forgets the saved ID / password right away.
+    void SyncRememberFromWidget(void* self)
+    {
+        void* rem = RememberWidget(self);
+        bool on = IsChecked(rem);
+        EnterCriticalSection(&g_lock);
+        g_enabled = on;
+        if (!on) { if (!g_pw.empty()) SecureZeroMemory(&g_pw[0], g_pw.size()); g_id.clear(); g_pw.clear(); }
+        LeaveCriticalSection(&g_lock);
+        SaveSettings();
+        Log(on ? "LOGIN: Remember Me on" : "LOGIN: Remember Me off (saved login removed)");
+    }
+
     bool __fastcall HkRM(void* self, void*, void* sender, DWORD msg)
     {
         __try { CaptureLogin(self, sender, msg); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
-        bool homepage = false;
+        bool homepage = false, remember = false;
         __try { homepage = msg == MSG_BUTTON_CLICK && IsHomepage(self, sender); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
+        __try { remember = msg == MSG_BUTTON_CLICK && sender && sender == RememberWidget(self); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
         if (homepage) { Register_Open(); return true; }   // the Homepage button is "Kayit Ol" now (register_panel.cpp)
-        return g_origRM(self, sender, msg);
-    }
-
-    // ---------------------------------------------------------------- tick window
-    HDC   g_memDC = nullptr;
-    DWORD* g_bits = nullptr;
-    bool  g_hover = false, g_track = false;
-
-    // draws with GDI (white on black) into a scratch mask, then blends one color through it (premultiplied)
-    template <class F> void Blend(COLORREF col, BYTE alpha, int dx, int dy, F draw)
-    {
-        static HDC mdc = nullptr; static DWORD* mbits = nullptr;
-        if (!mdc)
-        {
-            mdc = CreateCompatibleDC(nullptr);
-            BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), TICK_W, -TICK_H, 1, 32, BI_RGB };
-            SelectObject(mdc, CreateDIBSection(mdc, &bmi, DIB_RGB_COLORS, (void**)&mbits, nullptr, 0));
-        }
-        memset(mbits, 0, TICK_W * TICK_H * 4);
-        draw(mdc);
-        const int R = GetRValue(col), G = GetGValue(col), B = GetBValue(col);
-        for (int y = 0; y < TICK_H; y++)
-            for (int x = 0; x < TICK_W; x++)
-            {
-                int sx = x - dx, sy = y - dy;
-                if (sx < 0 || sy < 0 || sx >= TICK_W || sy >= TICK_H) continue;
-                DWORD m = mbits[sy * TICK_W + sx];
-                int a = max(max((int)(m & 0xFF), (int)((m >> 8) & 0xFF)), (int)((m >> 16) & 0xFF)) * alpha / 255;
-                if (!a) continue;
-                DWORD& d = g_bits[y * TICK_W + x];
-                int da = d >> 24, db = d & 0xFF, dg = (d >> 8) & 0xFF, dr = (d >> 16) & 0xFF;
-                int ia = 255 - a;
-                d = ((a + da * ia / 255) << 24) | ((R * a / 255 + dr * ia / 255) << 16) |
-                    ((G * a / 255 + dg * ia / 255) << 8) | (B * a / 255 + db * ia / 255);
-            }
-    }
-
-    void Paint()
-    {
-        if (!g_hWnd || !g_bits) return;
-        EnterCriticalSection(&g_lock);
-        bool on = g_enabled;
-        LeaveCriticalSection(&g_lock);
-
-        for (int i = 0; i < TICK_W * TICK_H; i++) g_bits[i] = 0x01000000;   // alpha 1: whole area stays clickable
-        static HFONT font = CreateFontW(-12, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Tahoma");
-        const int bx = 1, by = 3, bs = 14;
-        auto box = [&](HDC dc) { RECT rc = { bx, by, bx + bs, by + bs }; FillRect(dc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH)); };
-        auto frame = [&](HDC dc) { RECT rc = { bx, by, bx + bs, by + bs }; FrameRect(dc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH)); };
-        auto text = [&](HDC dc) {
-            SelectObject(dc, font); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
-            RECT rc = { bx + bs + 6, 0, TICK_W, TICK_H };
-            DrawTextW(dc, L"Remember Me", -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        };
-        auto check = [&](HDC dc) {
-            HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-            HGDIOBJ old = SelectObject(dc, pen);
-            POINT p[3] = { { bx + 3, by + 7 }, { bx + 6, by + 10 }, { bx + 11, by + 3 } };
-            Polyline(dc, p, 3);
-            SelectObject(dc, old); DeleteObject(pen);
-        };
-
-        Blend(RGB(10, 8, 6), 190, 0, 0, box);                                        // box background
-        Blend(g_hover ? RGB(255, 222, 150) : RGB(196, 160, 96), 255, 0, 0, frame);  // gold frame
-        if (on) Blend(RGB(255, 214, 120), 255, 0, 0, check);
-        Blend(RGB(0, 0, 0), 220, 1, 1, text);                                         // shadow
-        Blend(g_hover ? RGB(255, 236, 190) : RGB(254, 245, 209), 255, 0, 0, text);    // label (login text colour)
-
-        RECT wr; GetWindowRect(g_hWnd, &wr);
-        POINT dst = { wr.left, wr.top }, src = { 0, 0 };
-        SIZE sz = { TICK_W, TICK_H };
-        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-        UpdateLayeredWindow(g_hWnd, nullptr, &dst, &sz, g_memDC, &src, 0, &bf, ULW_ALPHA);
-    }
-
-    HWND FindGameWindow()
-    {
-        struct Ctx { DWORD pid; HWND best; int area; } ctx = { GetCurrentProcessId(), nullptr, 0 };
-        EnumWindows([](HWND h, LPARAM lp) -> BOOL {
-            Ctx* c = (Ctx*)lp;
-            DWORD pid; GetWindowThreadProcessId(h, &pid);
-            if (pid != c->pid || !IsWindowVisible(h) || h == g_hWnd) return TRUE;
-            RECT r; GetWindowRect(h, &r);
-            int a = (r.right - r.left) * (r.bottom - r.top);
-            if (a > c->area) { c->area = a; c->best = h; }
-            return TRUE;
-        }, (LPARAM)&ctx);
-        return ctx.best;
-    }
-
-    void Sync()
-    {
-        HWND game = FindGameWindow();
-        DWORD pid = 0;
-        GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-        bool want = game && !IsIconic(game) && pid == GetCurrentProcessId() && GetTickCount() - g_lastSeen < 400;
-        if (!want)
-        {
-            if (IsWindowVisible(g_hWnd)) ShowWindow(g_hWnd, SW_HIDE);
-            return;
-        }
-        POINT p = { g_anchorX, g_anchorY };
-        ClientToScreen(game, &p);
-        RECT wr; GetWindowRect(g_hWnd, &wr);
-        bool moved = wr.left != p.x || wr.top != p.y;
-        if (moved || !IsWindowVisible(g_hWnd))
-        {
-            SetWindowPos(g_hWnd, HWND_TOPMOST, p.x, p.y, TICK_W, TICK_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            Paint();
-        }
-    }
-
-    void Toggle()
-    {
-        EnterCriticalSection(&g_lock);
-        g_enabled = !g_enabled;
-        if (!g_enabled) { if (!g_pw.empty()) SecureZeroMemory(&g_pw[0], g_pw.size()); g_id.clear(); g_pw.clear(); }
-        bool on = g_enabled;
-        LeaveCriticalSection(&g_lock);
-        SaveSettings();       // off = forget the saved ID / password right away
-        Log(on ? "LOGIN: Remember Me on" : "LOGIN: Remember Me off (saved login removed)");
-        Paint();
-    }
-
-    LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
-    {
-        switch (msg)
-        {
-        case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
-        case WM_MOUSEMOVE:
-            if (!g_track) { TRACKMOUSEEVENT t = { sizeof(t), TME_LEAVE, h, 0 }; g_track = TrackMouseEvent(&t) != FALSE; }
-            if (!g_hover) { g_hover = true; Paint(); }
-            return 0;
-        case WM_MOUSELEAVE:
-            g_track = false;
-            if (g_hover) { g_hover = false; Paint(); }
-            return 0;
-        case WM_LBUTTONDOWN: SetCapture(h); return 0;
-        case WM_LBUTTONUP:
-        {
-            ReleaseCapture();
-            POINT p = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
-            if (p.x >= 0 && p.y >= 0 && p.x < TICK_W && p.y < TICK_H) Toggle();
-            return 0;
-        }
-        case WM_SETCURSOR:
-            while (ShowCursor(TRUE) < 0) {}
-            SetCursor(LoadCursor(nullptr, IDC_ARROW));
-            return TRUE;
-        case WM_TIMER: Sync(); return 0;
-        case WM_RM_REFRESH: Paint(); return 0;
-        case WM_CLOSE: return 0;
-        }
-        return DefWindowProcW(h, msg, wp, lp);
-    }
-
-    DWORD WINAPI WindowThread(LPVOID)
-    {
-        WNDCLASSEXW wc = { sizeof(wc) };
-        wc.lpfnWndProc = WndProc;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.lpszClassName = L"NTT_LoginRemember";
-        RegisterClassExW(&wc);
-        g_hWnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            wc.lpszClassName, L"Remember Me", WS_POPUP, 0, 0, TICK_W, TICK_H, nullptr, nullptr, wc.hInstance, nullptr);
-        if (!g_hWnd) { Log("LOGIN: tick window creation failed"); return 0; }
-        g_memDC = CreateCompatibleDC(nullptr);
-        BITMAPINFO bmi = {};
-        bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), TICK_W, -TICK_H, 1, 32, BI_RGB };
-        SelectObject(g_memDC, CreateDIBSection(g_memDC, &bmi, DIB_RGB_COLORS, (void**)&g_bits, nullptr, 0));
-        SetTimer(g_hWnd, 1, 100, nullptr);
-        MSG m;
-        while (GetMessageW(&m, nullptr, 0, 0)) { TranslateMessage(&m); DispatchMessageW(&m); }
-        return 0;
+        bool ret = g_origRM(self, sender, msg);   // let the engine flip the checkbox's own visual state first
+        if (remember) { __try { SyncRememberFromWidget(self); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
+        return ret;
     }
 
     // ---------------------------------------------------------------- install
@@ -503,8 +358,6 @@ namespace
         bool t = PatchSlot(SLOT_TICK, ORIG_TICK, (void*)HkTick, (void**)&g_origTick);
         bool r = PatchSlot(SLOT_RM, ORIG_RM, (void*)HkRM, (void**)&g_origRM);
         char b[96]; sprintf_s(b, "LOGIN: Remember Me hooks tick=%d rm=%d (saved=%d)", t, r, g_enabled ? 1 : 0); Log(b);
-        if (!t || !r) return 0;
-        WindowThread(nullptr);
         return 0;
     }
 }

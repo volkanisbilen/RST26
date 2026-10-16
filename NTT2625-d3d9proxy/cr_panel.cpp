@@ -80,6 +80,7 @@ static CRITICAL_SECTION g_lockC;
 static CrState g_st;
 static int     g_mode = M_HIDDEN;
 static POINT   g_panelPos = { -1, -1 };                   // remembered screen position of the full panel
+static POINT   g_tabPos = { -1, -1 };                     // remembered screen position of the collapsed "CR" tab
 
 static HWND  g_hWndC = nullptr;
 static HDC   g_memDCC = nullptr;
@@ -469,7 +470,8 @@ static void PlaceC()
     if (game) GetClientRect(game, &gr), MapWindowPoints(game, nullptr, (POINT*)&gr, 2);
     if (g_mode == M_TAB)
     {
-        SetWindowPos(g_hWndC, HWND_TOPMOST, gr.right - CR_TAB - 12, gr.top + 190, CR_TAB, CR_TAB, SWP_NOACTIVATE);
+        if (g_tabPos.x < 0) { g_tabPos.x = gr.right - CR_TAB - 12; g_tabPos.y = gr.top + 190; }
+        SetWindowPos(g_hWndC, HWND_TOPMOST, g_tabPos.x, g_tabPos.y, CR_TAB, CR_TAB, SWP_NOACTIVATE);
         return;
     }
     if (g_panelPos.x < 0)
@@ -530,10 +532,13 @@ static LRESULT CALLBACK WndProcC(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (g_dragC)
         {
             POINT p; GetCursorPos(&p);
-            if (p.x != g_dragFromC.x || p.y != g_dragFromC.y)
+            int dx = p.x - g_dragFromC.x, dy = p.y - g_dragFromC.y;
+            // a few pixels of slack so a plain click on the tab doesn't register as a drag
+            if (!g_dragMoved && g_mode == M_TAB && abs(dx) <= 3 && abs(dy) <= 3) return 0;
+            if (dx || dy)
             {
                 RECT wr; GetWindowRect(h, &wr);
-                SetWindowPos(h, nullptr, wr.left + p.x - g_dragFromC.x, wr.top + p.y - g_dragFromC.y, 0, 0,
+                SetWindowPos(h, nullptr, wr.left + dx, wr.top + dy, 0, 0,
                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                 g_dragFromC = p; g_dragMoved = true;
             }
@@ -549,9 +554,11 @@ static LRESULT CALLBACK WndProcC(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONDOWN:
     {
         int hit = HitTestC(x, y);
-        if (hit == C_NONE && y < 48 && g_mode != M_TAB)     // header drags the panel
+        if ((hit == C_NONE && y < 48 && g_mode != M_TAB) || g_mode == M_TAB)   // header, or the tab itself, drags the window
         {
-            g_dragC = true; g_dragMoved = false; GetCursorPos(&g_dragFromC); SetCapture(h); return 0;
+            g_dragC = true; g_dragMoved = false; GetCursorPos(&g_dragFromC); SetCapture(h);
+            g_pressedC = hit;
+            return 0;
         }
         g_pressedC = hit;
         if (hit != C_NONE) { SetCapture(h); PaintC(); }
@@ -563,8 +570,14 @@ static LRESULT CALLBACK WndProcC(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (g_dragC)
         {
             g_dragC = false;
-            RECT wr; GetWindowRect(h, &wr);
-            g_panelPos.x = wr.left; g_panelPos.y = wr.top;
+            int pressed = g_pressedC; g_pressedC = C_NONE;
+            if (g_dragMoved)
+            {
+                RECT wr; GetWindowRect(h, &wr);
+                if (g_mode == M_TAB) { g_tabPos.x = wr.left; g_tabPos.y = wr.top; }
+                else { g_panelPos.x = wr.left; g_panelPos.y = wr.top; }
+            }
+            else if (pressed != C_NONE && pressed == HitTestC(x, y)) ActivateC(pressed);   // plain click: open the panel
             return 0;
         }
         int hit = HitTestC(x, y), pressed = g_pressedC;

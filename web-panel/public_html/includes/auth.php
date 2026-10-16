@@ -113,7 +113,6 @@ function jstko_register(array $f): array
     $securityQuestion = (string)($f['security_question'] ?? '');
     $securityAnswer = trim((string)($f['security_answer'] ?? ''));
     $sealPassword = (string)($f['seal_password'] ?? '');
-    $otpPassword = (string)($f['otp_password'] ?? '');
     $phone = preg_replace('/\D/', '', (string)($f['phone'] ?? ''));
 
     if (!jstko_valid_account_id($accountId)) {
@@ -130,9 +129,6 @@ function jstko_register(array $f): array
     }
     if (!preg_match('/^\d{8}$/', $sealPassword)) {
         return ['ok' => false, 'error' => 'İtem kilit şifresi 8 haneli rakam olmalı.'];
-    }
-    if (!preg_match('/^\d{6}$/', $otpPassword)) {
-        return ['ok' => false, 'error' => 'OTP şifresi 6 haneli rakam olmalı.'];
     }
     if ($phone !== '' && strlen($phone) > 10) {
         return ['ok' => false, 'error' => 'Telefon numarası geçersiz.'];
@@ -153,15 +149,14 @@ function jstko_register(array $f): array
     $pdo->beginTransaction();
     try {
         $stmt = $pdo->prepare(
-            'INSERT INTO tb_user (str_account_id, str_passwd, str_seal_passwd, otp_password, email,
+            'INSERT INTO tb_user (str_account_id, str_passwd, str_seal_passwd, email,
                 security_question, security_answer, user_phone_number, str_authority, account_check, str_client_ip)
-             VALUES (:id, :pw, :seal, :otp, :email, :sq, :sa, :phone, 1, 0, :ip)'
+             VALUES (:id, :pw, :seal, :email, :sq, :sa, :phone, 1, 0, :ip)'
         );
         $stmt->execute([
             'id' => $accountId,
             'pw' => jstko_ko_password_encode($password),
             'seal' => $sealPassword,
-            'otp' => $otpPassword,
             'email' => $email,
             'sq' => $securityQuestion,
             'sa' => $securityAnswer,

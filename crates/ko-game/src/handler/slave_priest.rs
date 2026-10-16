@@ -19,8 +19,22 @@ use dashmap::DashMap;
 use ko_protocol::{Opcode, Packet, PacketReader};
 
 use crate::session::ClientSession;
-use crate::world::{WorldState, USER_DEAD};
+use crate::world::{
+    WorldState, USER_DEAD, ZONE_ARDREAM, ZONE_BATTLE, ZONE_BATTLE6, ZONE_KROWAZ_DOMINION,
+    ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+};
 use crate::zone::SessionId;
+
+/// Ronark Land, Ardream, the clan-war battle zones and Krowaz Dominion: the priest
+/// does not follow its owner into PK/siege/event zones (same set as
+/// [`crate::systems::loyalty::is_pk_zone`]).
+fn is_disallowed_zone(zone_id: u16) -> bool {
+    zone_id == ZONE_RONARK_LAND
+        || zone_id == ZONE_ARDREAM
+        || zone_id == ZONE_RONARK_LAND_BASE
+        || zone_id == ZONE_KROWAZ_DOMINION
+        || (ZONE_BATTLE..=ZONE_BATTLE6).contains(&zone_id)
+}
 
 pub const EXT_SUB_SLAVEPRIEST: u8 = 0xEC;
 /// Buff type of the scroll's skill 495146 (see migration 20261014000002).
@@ -350,6 +364,13 @@ pub fn tick(world: &WorldState) {
         if !st.active {
             // stopped: the scroll's time stands still until the priest is started again
             world.pause_buff_second(owner, SP_BUFF_TYPE);
+            remove_priest(world, owner);
+            continue;
+        }
+        let zone_id = world.get_position(owner).map(|p| p.zone_id).unwrap_or(0);
+        if is_disallowed_zone(zone_id) {
+            // Ronarkland and other PK/event zones: the priest stands down but the
+            // scroll keeps ticking, same as outside its owner's follow range.
             remove_priest(world, owner);
             continue;
         }
