@@ -413,6 +413,7 @@ pub async fn process_chat_command(
             send_help(session, &msg);
         }
         "killnear" => handle_kill_near(session, &args).await?,
+        "ekle" => handle_add_spawn(session, &args).await?,
         "aggro" => handle_aggro(session, &args),
         "ultimaid" => {
             match args.first().and_then(|a| a.parse::<i16>().ok()) {
@@ -10044,6 +10045,76 @@ async fn handle_kill_near(session: &mut ClientSession, args: &[&str]) -> anyhow:
     Ok(())
 }
 
+
+/// +ekle <npc/canavar SID> [adet=1] - spawns `adet` of that NPC/monster at the GM's own current
+/// position right now (no restart needed to see them), and writes one npc_spawn row (num_npc=
+/// adet) so the same spot keeps respawning them after a server restart too -- same table and
+/// shape as the map editor's own "add spawn" (crates/ko-admin/src/world.rs::spawn_create).
+async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let Some(npc_id) = args.first().and_then(|a| a.parse::<u16>().ok()) else {
+        send_help(session, "Kullanım: +ekle <npc/canavar SID> [adet=1]");
+        return Ok(());
+    };
+    let count = args
+        .get(1)
+        .and_then(|a| a.parse::<u16>().ok())
+        .unwrap_or(1)
+        .clamp(1, 50);
+    let Some(pos) = world.get_position(sid) else {
+        return Ok(());
+    };
+    let is_monster = if world.get_npc_template(npc_id, true).is_some() {
+        true
+    } else if world.get_npc_template(npc_id, false).is_some() {
+        false
+    } else {
+        send_help(session, &format!("#{npc_id} bulunamadı (ne canavar ne NPC tablosunda)."));
+        return Ok(());
+    };
+
+    let pool = session.pool().clone();
+    let spawn_id: Option<i32> = sqlx::query_scalar(
+        "INSERT INTO npc_spawn(zone_id,npc_id,is_monster,act_type,left_x,top_z,num_npc,spawn_range,regen_time,direction) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+    )
+    .bind(pos.zone_id as i16)
+    .bind(npc_id as i16)
+    .bind(is_monster)
+    .bind(if is_monster { 1i16 } else { 0i16 })
+    .bind(pos.x as i32)
+    .bind(pos.z as i32)
+    .bind(count as i16)
+    .bind(5i16)
+    .bind(30i16)
+    .bind(0i32)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    let spawned = world.spawn_event_npc(npc_id, is_monster, pos.zone_id, pos.x, pos.z, count);
+    let name = world
+        .get_npc_template(npc_id, is_monster)
+        .map(|t| t.name.clone())
+        .unwrap_or_default();
+
+    send_help(
+        session,
+        &match spawn_id {
+            Some(id) => format!(
+                "{count}x {name} (#{npc_id}) eklendi, {} tanesi hemen göründü. Spawn kaydı #{id} (veritabanına yazıldı, kalıcı -- sunucu yeniden başlasa da kalır).",
+                spawned.len()
+            ),
+            None => format!(
+                "{count}x {name} (#{npc_id}) şimdilik göründü ({} tanesi), ama veritabanına yazılamadı -- sunucu yeniden başlarsa kaybolur.",
+                spawned.len()
+            ),
+        },
+    );
+    Ok(())
+}
 
 /// +eventbotfill <count> - GM panel "Bot Type 6 (event)". Does the sensible thing for the event the
 /// GM is in: Ultima rooms get fighting bots, an open Ultima registration gets bot registrants, any
