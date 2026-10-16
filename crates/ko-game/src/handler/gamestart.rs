@@ -1718,6 +1718,9 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
         world.send_to_session_owned(sid, super::knight_cash::build_cashchange_packet(kc, tl));
     }
 
+    // 16e. money a slave merchant earned while the owner was away
+    super::slave_merchant::pay_pending(session).await;
+
     // 17. ChangeFame — promote commander back to chief if still clan leader
     // if (GetFame() == COMMAND_CAPTAIN && isClanLeader()) ChangeFame(CHIEF);
     // After a war ends, commanders should revert to CHIEF if they're the clan leader.

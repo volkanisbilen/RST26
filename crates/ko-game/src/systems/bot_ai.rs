@@ -3747,7 +3747,7 @@ fn parse_bot_equipment(str_item: Option<&[u8]>) -> [(u32, i16, u8); 17] {
 /// The packet format is byte-identical to `CUser::GetUserInfo()` — the client
 /// treats bots and players the same for INOUT rendering.
 /// `inout_type`: 1 = INOUT_IN, 3 = INOUT_RESPAWN
-fn build_bot_inout_packet(bot: &BotInstance, world: &WorldState, inout_type: u8) -> Packet {
+pub(crate) fn build_bot_inout_packet(bot: &BotInstance, world: &WorldState, inout_type: u8) -> Packet {
     let mut pkt = Packet::new(Opcode::WizUserInout as u8);
     pkt.write_u8(inout_type);
     pkt.write_u8(0); // reserved
@@ -4603,7 +4603,7 @@ pub fn despawn_bots_in_zone(world: &WorldState, zone_id: u16) -> usize {
     let bot_ids: Vec<BotId> = world
         .bots
         .iter()
-        .filter(|e| e.value().zone_id == zone_id)
+        .filter(|e| e.value().zone_id == zone_id && !crate::handler::slave_merchant::is_slave(*e.key()))
         .map(|e| *e.key())
         .collect();
 
@@ -4652,7 +4652,7 @@ fn is_gm_pk_bot(bot: &BotInstance, zone_id: u16) -> bool {
 /// Despawn all bots server-wide and return the count removed.
 /// `UserInOut(INOUT_OUT)` + `RemoveMapBotList()` for each.
 pub fn despawn_all_bots(world: &WorldState) -> usize {
-    let bot_ids: Vec<BotId> = world.bots.iter().map(|e| *e.key()).collect();
+    let bot_ids: Vec<BotId> = world.bots.iter().map(|e| *e.key()).filter(|id| !crate::handler::slave_merchant::is_slave(*id)).collect();
     let count = bot_ids.len();
     for id in bot_ids {
         despawn_bot(world, id);
@@ -4661,7 +4661,7 @@ pub fn despawn_all_bots(world: &WorldState) -> usize {
 }
 
 /// Broadcast a packet to all sessions in the surrounding 3x3 regions of a bot.
-fn broadcast_to_bot_region(world: &WorldState, zone_id: u16, rx: u16, rz: u16, pkt: &Packet) {
+pub(crate) fn broadcast_to_bot_region(world: &WorldState, zone_id: u16, rx: u16, rz: u16, pkt: &Packet) {
     world.broadcast_to_region_sync(zone_id, rx, rz, Arc::new(pkt.clone()), None, 0);
 }
 

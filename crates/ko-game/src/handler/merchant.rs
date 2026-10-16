@@ -644,6 +644,11 @@ fn merchant_insert(
         return Ok(());
     }
 
+    // a player who carries the Slave Scroll does not stand at the stall: a slave takes it over
+    if super::slave_merchant::try_convert(session, &advert_msg) {
+        return Ok(());
+    }
+
     // Activate merchant state
     world.activate_selling_merchant(sid);
 
@@ -925,6 +930,11 @@ async fn merchant_item_buy(
         } else {
             world.gold_gain(merchant_sid, req_price);
         }
+    }
+
+    // a slave's stall pays its owner
+    if merchant_is_bot {
+        super::slave_merchant::on_sale(&world, session.pool(), merchant_sid as u32, req_price, is_kc);
     }
 
     // Daily rank stat: GMTotalSold += req_price (merchant seller earns gold)

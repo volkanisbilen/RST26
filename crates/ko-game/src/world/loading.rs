@@ -204,6 +204,7 @@ impl WorldState {
 
         self.load_collection_race(pool).await;
         let _ = self.reload_reward_rules(pool).await; // table made by the web panel, may not exist yet
+        crate::handler::slave_merchant::init(self, pool).await;
 
         // ─── Under The Castle / Daily Quest Loading ─────────────────────────────
         self.load_misc_event_tables(pool).await;

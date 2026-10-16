@@ -93,6 +93,7 @@ pub mod king;
 pub mod kiss;
 pub mod knight_cash;
 pub mod pus_codes;
+pub mod slave_merchant;
 pub mod knights;
 pub mod letter;
 pub mod level;
