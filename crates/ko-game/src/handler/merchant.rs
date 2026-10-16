@@ -2317,6 +2317,7 @@ mod tests {
                 original_slot: SLOT_MAX as u8,
                 sold_out: false,
                 is_kc: false,
+                is_tl: false,
             },
         );
 
@@ -2370,6 +2371,7 @@ mod tests {
                 original_slot: SLOT_MAX as u8,
                 sold_out: false,
                 is_kc: false,
+                is_tl: false,
             },
         );
 
@@ -2416,6 +2418,7 @@ mod tests {
                 original_slot: SLOT_MAX as u8,
                 sold_out: false,
                 is_kc: false,
+                is_tl: false,
             },
         );
 
@@ -2469,6 +2472,7 @@ mod tests {
                 original_slot: SLOT_MAX as u8,
                 sold_out: false,
                 is_kc: false,
+                is_tl: false,
             },
         );
 
@@ -2556,6 +2560,7 @@ mod tests {
                 original_slot: SLOT_MAX as u8,
                 sold_out: false,
                 is_kc: false,
+                is_tl: false,
             },
         );
         world.activate_selling_merchant(1);
