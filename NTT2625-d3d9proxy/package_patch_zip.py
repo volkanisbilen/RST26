@@ -45,6 +45,14 @@ def collect():
     if os.path.isfile(dll):
         entries.append(('d3d9.dll', dll))
 
+    # Launch guard (launch_ticket.h): its whitelisted Launcher.exe hashes live in the same
+    # header d3d9.dll is built from, so whenever that header changes xldr must be rebuilt and
+    # redistributed in lockstep -- otherwise the ticket it writes never validates and every
+    # client refuses to start ("no ticket").
+    xldr = os.path.join(CLIENT_DIR, 'XIGNCODE', 'xldr_KnightOnline_NA_loader_win32.exe')
+    if os.path.isfile(xldr):
+        entries.append(('XIGNCODE/xldr_KnightOnline_NA_loader_win32.exe', xldr))
+
     data_dir = os.path.join(CLIENT_DIR, 'Data')
     for name in sorted(os.listdir(data_dir)):
         if name.lower().endswith('.tbl'):
