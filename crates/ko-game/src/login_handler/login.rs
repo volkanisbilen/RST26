@@ -108,6 +108,15 @@ pub async fn handle(session: &mut LoginSession, pkt: Packet) -> anyhow::Result<(
                 return Ok(());
             }
 
+            // account_check = 0: registered through the web panel, email not verified yet.
+            // Accounts the game client auto-registers always get account_check = 1 (see
+            // create_auto_registered), so this never blocks the old walk-up-and-type-a-new-ID flow.
+            if user.account_check == 0 {
+                tracing::info!("[{}] Account not activated (email): {}", session.addr(), account_id);
+                send_result(session, AUTH_NOT_FOUND, None).await?;
+                return Ok(());
+            }
+
             // Success — compute premium hours dynamically from account_premium table.
             //   calls ACCOUNT_PREMIUM_V2 stored procedure which computes
             //   `(expiry_time - NOW) / 3600` and returns -1 if no premium.

@@ -58,6 +58,12 @@ NTT2625-d3d9proxy/client_patch_release/
 
 # Config with secrets (template is committed, actual is not)
 config/server.local.toml
+web-panel/config.php
+
+# Uploaded images (content/news) -- live on the hosting, not in git
+web-panel/public_html/uploads/*
+!web-panel/public_html/uploads/.gitkeep
+!web-panel/public_html/uploads/.htaccess
 
 # Decompilation output
 docs/decompiled/
