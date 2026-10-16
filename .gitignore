@@ -53,6 +53,9 @@ Binary/
 *.exe
 *.dll
 
+# Packaged launcher patch set (built locally by package_patch.py, uploaded straight to the VPS)
+NTT2625-d3d9proxy/client_patch_release/
+
 # Config with secrets (template is committed, actual is not)
 config/server.local.toml
 

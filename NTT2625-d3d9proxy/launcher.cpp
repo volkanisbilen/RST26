@@ -1,24 +1,29 @@
 // =============================================================================
-// NTT private-server Launcher (splash + light cheat-process scan + start game)
+// JstKO Launcher (splash + patch pull + light cheat-process scan + start game)
 //
 //  - Shows a splash image (splash.gif animated / splash.png / splash.jpg) from
 //    the launcher's own folder, centered, borderless.
+//  - Pulls any changed Data\*.tbl / JstKO\**\*.pus / d3d9.dll / Chr\*.n3chr from the VPS
+//    (launcher_patch.cpp) before starting the game, status shown at the bottom of the splash.
+//    Best-effort: a down patch server never blocks play, it just skips the update this run.
 //  - Scans running processes for well-known cheat/debug tools; if one is found,
 //    warns and refuses to start (deterrent only -- real anti-cheat is server-side).
 //  - Starts KnightOnLine.exe in the launcher's folder (no args, no injection:
 //    XIGNCODE is already disabled in the exe and d3d9.dll auto-loads).
 //
-// Build (x86 Native Tools):
-//   cl /nologo /std:c++17 /O2 /MT /EHsc launcher.cpp /Fe:Launcher.exe ^
-//      /link /SUBSYSTEM:WINDOWS gdiplus.lib user32.lib gdi32.lib shell32.lib psapi.lib
-// Put Launcher.exe + splash.gif (or .png/.jpg) next to KnightOnLine.exe.
+// Build (x86 Native Tools) -- see build_launcher.bat:
+//   cl /nologo /std:c++17 /O2 /MT /EHsc launcher.cpp launcher_patch.cpp /Fe:Launcher.exe ^
+//      /link /SUBSYSTEM:WINDOWS gdiplus.lib user32.lib gdi32.lib shell32.lib psapi.lib winhttp.lib bcrypt.lib
+// Put Launcher.exe + splash.gif (or .png/.jpg) + JstKO\patch_server.ini next to KnightOnLine.exe.
 // =============================================================================
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <objidl.h>   // IStream -- WIN32_LEAN_AND_MEAN drops it from windows.h, but gdiplus.h needs it
 #include <gdiplus.h>
 #include <psapi.h>
 #include <string>
 #include <vector>
+#include <mutex>
 #pragma comment(lib, "gdiplus.lib")
 
 using namespace Gdiplus;
@@ -34,12 +39,22 @@ static const wchar_t* kBlacklist[] = {
     L"reclass", L"speeder", L"speedhack", L"cheatngine",
 };
 
+void LauncherPatch_Apply(void (*onStatus)(const wchar_t* text));
+
 static Image*  g_img = nullptr;
 static UINT    g_frameCount = 1, g_frame = 0;
 static std::vector<UINT> g_frameDelayMs;   // per-frame delay for GIFs
 static int     g_w = 480, g_h = 260;
 static HWND    g_hwnd = nullptr;
 static volatile bool g_launching = false;
+static std::mutex g_statusMx;
+static std::wstring g_status;
+
+static void SetStatus(const wchar_t* text)
+{
+    { std::lock_guard<std::mutex> lk(g_statusMx); g_status = text; }
+    if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
+}
 
 static std::wstring ExeDir()
 {
@@ -130,6 +145,8 @@ static void StartGame()
 static DWORD WINAPI WorkThread(LPVOID)
 {
     DWORD t0 = GetTickCount();
+    LauncherPatch_Apply(SetStatus);
+    SetStatus(L"");
     std::wstring tool;
     if (CheatToolRunning(tool))
     {
@@ -155,6 +172,20 @@ static void Paint(HWND h)
     Graphics g(mem);
     g.Clear(Color(255, 0, 0, 0));
     if (g_img) g.DrawImage(g_img, 0, 0, g_w, g_h);
+    std::wstring status;
+    { std::lock_guard<std::mutex> lk(g_statusMx); status = g_status; }
+    if (!status.empty())
+    {
+        int barH = 22;
+        SolidBrush bg(Color(190, 0, 0, 0));
+        g.FillRectangle(&bg, 0, g_h - barH, g_w, barH);
+        Gdiplus::Font font(L"Segoe UI", 9);
+        SolidBrush fg(Color(255, 255, 255, 255));
+        RectF rc(4.0f, (float)(g_h - barH), (float)(g_w - 8), (float)barH);
+        StringFormat fmt;
+        fmt.SetTrimming(StringTrimmingEllipsisCharacter);
+        g.DrawString(status.c_str(), -1, &font, rc, &fmt, &fg);
+    }
     BitBlt(dc, 0, 0, g_w, g_h, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
     EndPaint(h, &ps);

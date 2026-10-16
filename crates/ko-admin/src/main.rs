@@ -7,6 +7,7 @@
 mod extra;
 mod beginner;
 mod events;
+mod patch;
 mod pus;
 mod rewards;
 mod legacy;
@@ -23,6 +24,8 @@ use tracing::{info, warn};
 pub struct App {
     pub pool: DbPool,
     pub icon_dir: PathBuf,
+    /// Where the launcher patch set (manifest.json + files/) is packaged (see `patch.rs`).
+    pub patch_dir: PathBuf,
 }
 
 const SCHEMA: &str = include_str!("../schema.sql");
@@ -68,9 +71,16 @@ async fn main() -> anyhow::Result<()> {
         warn!(dir = %icon_dir.display(), "ITEM_ICON_DIR not found: item icons fall back to a placeholder");
     }
 
+    let patch_dir = std::env::var("JSTKO_PATCH_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/opt/ko26xx-build-2625/client_patch_release"));
+    if !patch_dir.is_dir() {
+        warn!(dir = %patch_dir.display(), "JSTKO_PATCH_DIR not found: the launcher patch endpoints serve nothing until package_patch.py is run");
+    }
+
     let bind = std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
-    let app = App { pool, icon_dir };
-    let router: Router = legacy::routes().merge(extra::routes()).merge(world::routes()).merge(beginner::routes()).merge(sheet::routes()).merge(events::routes()).merge(pus::routes()).merge(rewards::routes()).with_state(app);
+    let app = App { pool, icon_dir, patch_dir };
+    let router: Router = legacy::routes().merge(extra::routes()).merge(world::routes()).merge(beginner::routes()).merge(sheet::routes()).merge(events::routes()).merge(pus::routes()).merge(rewards::routes()).merge(patch::routes()).with_state(app);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     info!(address = %bind, "ko-admin listening");
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await?;
