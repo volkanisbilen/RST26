@@ -297,12 +297,16 @@ async fn spawns(headers: HeaderMap, State(app): State<App>, Query(q): Query<Zone
     auth(&headers, false)?;
     let zone = q.zone.ok_or(ApiError::BadRequest)?;
     let v: Value = sqlx::query_scalar(
-        r#"SELECT COALESCE(jsonb_agg(x ORDER BY id),'[]'::jsonb) FROM (
+        // The derived table's own alias must not collide with any of its column aliases
+        // (it was "x" while also projecting "s.left_x x" -- Postgres resolves a bare "x" to
+        // the column, not the whole row, so jsonb_agg(x) silently aggregated only left_x
+        // instead of full spawn objects; renamed the outer alias to row_data to fix it).
+        r#"SELECT COALESCE(jsonb_agg(row_data ORDER BY id),'[]'::jsonb) FROM (
             SELECT s.id, s.npc_id npc, s.is_monster monster, COALESCE(n.str_name,'?') name, COALESCE(n.s_level,0) level,
                    s.left_x x, s.top_z z, s.num_npc num, s.spawn_range range, s.regen_time regen, s.direction dir,
                    s.act_type act, s.regen_type regen_type, s.room
             FROM npc_spawn s LEFT JOIN npc_template n ON n.s_sid=s.npc_id AND n.is_monster=s.is_monster
-            WHERE s.zone_id=$1 ORDER BY s.id LIMIT 8000) x"#,
+            WHERE s.zone_id=$1 ORDER BY s.id LIMIT 8000) row_data"#,
     )
     .bind(zone)
     .fetch_one(&app.pool)
