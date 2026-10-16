@@ -66,6 +66,13 @@ TRUNCATE TABLE
     knights, currentuser, userdata, account_char, tb_user
     RESTART IDENTITY CASCADE;
 
+-- knights id_num=0 is not a real clan, it's the "no clan" placeholder every character's
+-- userdata.knights FK (fk_userdata_knights) defaults to and requires to exist -- without it,
+-- creating any new character fails ("violates foreign key constraint fk_userdata_knights").
+-- Re-seed it every time this script truncates knights (see 20260207000011_seed_knights_zero.sql).
+INSERT INTO knights (id_num, flag, nation, id_name, chief) VALUES (0, 0, 0, '', '')
+ON CONFLICT (id_num) DO NOTHING;
+
 COMMIT;
 
 -- NOT included on purpose (static game content / config, never wipe these):
