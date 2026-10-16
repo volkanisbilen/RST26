@@ -1500,8 +1500,8 @@ async fn set_inventory(
         true
     } else {
         sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(SELECT 1 FROM item WHERE num=$1) OR
-               ($1 > 0 AND $1 < 100000000 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))"#,
+            r#"SELECT $1 >= 100000000 OR EXISTS(SELECT 1 FROM item WHERE num=$1) OR
+               ($1 > 0 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))"#,
         )
         .bind(p.item_id)
         .fetch_one(&mut *tx)
@@ -1793,8 +1793,8 @@ async fn edit_drop(
     // no matching `item.num` row exists.
     let valid_drop_code = p.item_id == 0
         || sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(SELECT 1 FROM item WHERE num=$1) OR
-               ($1 > 0 AND $1 < 100000000 AND EXISTS(
+            r#"SELECT $1 >= 100000000 OR EXISTS(SELECT 1 FROM item WHERE num=$1) OR
+               ($1 > 0 AND EXISTS(
                    SELECT 1 FROM make_item_group WHERE group_num=$1
                ))"#,
         )

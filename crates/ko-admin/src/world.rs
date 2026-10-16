@@ -464,7 +464,11 @@ async fn drop_replace(
         .ok_or(ApiError::NotFound)?;
     for (id, _) in p.slots.iter().filter(|(i, _)| *i > 0) {
         let ok: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM item WHERE num=$1) OR ($1 > 0 AND $1 < 100000000 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))",
+            // code >= 100,000,000 is a literal item id to the game itself (resolve_drop_item in
+            // npc_loot.rs) with no existence check at all, so the admin side must not be any
+            // stricter -- an id missing from `item` here (stale import, unreleased item) would
+            // otherwise block saving the *entire* drop table over an untouched slot.
+            "SELECT $1 >= 100000000 OR EXISTS(SELECT 1 FROM item WHERE num=$1) OR ($1 > 0 AND EXISTS(SELECT 1 FROM make_item_group WHERE group_num=$1))",
         )
         .bind(*id)
         .fetch_one(&app.pool)
