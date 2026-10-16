@@ -302,11 +302,11 @@ bool Launcher::DownloadPatch(std::string server, std::string path, std::string f
 		zip_extract(file.c_str(), WorkingPath, on_extract_entry, NULL);
 		std::remove(file.c_str());
 		WritePrivateProfileStringA(xorstr("Version"), xorstr("Files"), std::to_string(m_settingsVersion).c_str(), (std::string(WorkingPath) + xorstr("\\Server.ini")).c_str());
-		if (m_settingsVersion == m_iVersion)
-			return true;
-		else
-			return false;
 	}
+	// true = this one file is done (downloaded, extracted, version persisted), regardless of
+	// whether m_settingsVersion has caught up to m_iVersion yet -- the caller (HandlePacket's
+	// opcode 2) loops over every file the server listed and must not abort just because this
+	// wasn't the last one.
 	return true;
 }
 
