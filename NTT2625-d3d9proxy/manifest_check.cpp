@@ -92,19 +92,33 @@ namespace
 
         char dir[MAX_PATH];
         GameDir(dir, sizeof(dir));
+        {
+            char buf[320];
+            sprintf_s(buf, "INTEGRITY: checking %d files under %s", MANIFEST_COUNT, dir);
+            Log(buf);
+        }
         bool tampered = false;
         char firstBad[MAX_PATH] = {};
+        char firstBadDetail[256] = {};
         int badCount = 0;
         for (int i = 0; i < MANIFEST_COUNT; i++)
         {
             char full[MAX_PATH];
             sprintf_s(full, "%s\\%s", dir, MANIFEST[i].path);
             char hex[65] = {};
-            if (!Sha256FileRetrying(alg, full, hex) || _stricmp(hex, MANIFEST[i].sha256) != 0)
+            bool read = Sha256FileRetrying(alg, full, hex);
+            if (!read || _stricmp(hex, MANIFEST[i].sha256) != 0)
             {
                 tampered = true;
                 badCount++;
-                if (!firstBad[0]) strcpy_s(firstBad, MANIFEST[i].path);
+                if (!firstBad[0])
+                {
+                    strcpy_s(firstBad, MANIFEST[i].path);
+                    if (!read)
+                        strcpy_s(firstBadDetail, "could not open/read the file");
+                    else
+                        sprintf_s(firstBadDetail, "got %.16s... expected %.16s...", hex, MANIFEST[i].sha256);
+                }
             }
         }
         BCryptCloseAlgorithmProvider(alg, 0);
@@ -115,8 +129,8 @@ namespace
         }
         if (tampered)
         {
-            char buf[320];
-            sprintf_s(buf, "INTEGRITY: %d file(s) changed, e.g. %s", badCount, firstBad);
+            char buf[640];
+            sprintf_s(buf, "INTEGRITY: %d file(s) changed, e.g. %s (%s)", badCount, firstBad, firstBadDetail);
             Log(buf);
             // The handshake (gamestart) may already have gone out before this finished; tell
             // the server right away instead of waiting for the next login.
