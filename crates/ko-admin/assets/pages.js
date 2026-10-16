@@ -29,7 +29,7 @@ PAGE.dashboard=async function(main){
 PAGE.players=async function(main){
   let kind='';const out=h('div',{class:'tw'});
   const sb=searchBar('Hesap, karakter adı veya e-posta…',()=>run());
-  const seg=h('div',{class:'seg'},[['','Tümü'],['online','Çevrimiçi'],['banned','Yasaklı'],['gm','GM']].map(([k,l])=>h('button',{class:k===kind?'on':'',onclick:function(){kind=k;$$('button',seg).forEach(b=>b.classList.toggle('on',b===this));run()}},l)));
+  const seg=h('div',{class:'seg'},[['','Tümü'],['online','Çevrimiçi'],['banned','Yasaklı'],['gm','GM'],['unverified','Onaysız e-posta']].map(([k,l])=>h('button',{class:k===kind?'on':'',onclick:function(){kind=k;$$('button',seg).forEach(b=>b.classList.toggle('on',b===this));run()}},l)));
   main.append(head('Hesaplar & Oyuncular','Hesap, karakter veya e-posta ile ara'),h('div',{class:'row',style:'margin-bottom:12px'},sb.el,seg),h('div',{class:'card'},out));
   async function run(){
     const rows=await api('/accounts?kind='+kind+'&q='+encodeURIComponent(sb.input.value.trim()));
@@ -51,8 +51,10 @@ PAGE.account=async function(main,[id]){
         h('p',{class:'muted'},'Ad soyad ',((a.name||'')+' '+(a.surname||'')).trim()||'—',' · Telefon ',a.phone||'—'),
         h('p',{class:'muted'},'Gizli soru ',a.security_question||'—',' · Son IP ',a.client_ip||'—',' · Banka altını ',fmt(a.warehouse_coins)),
         h('p',{class:'muted'},'Yetki (str_authority) ',h('b',{},a.authority),' — ',a.authority<0?'yasaklı':a.authority===0||a.authority===2?'GM (web panel /admin erişimi açık)':'normal oyuncu'),
+        h('p',{class:'muted'},'E-posta onayı (account_check) ',a.account_check?h('span',{class:'chip ok'},'onaylı'):h('span',{class:'chip bad'},'onaysız — giriş yapamaz')),
         a.authority<0?h('p',{class:'muted'},'Ceza: ',when(a.punishment_date),' · ',a.punishment_days||0,' gün (0 = süresiz)'):null,
         h('div',{class:'row'},h('button',{class:'btn',onclick:()=>balanceDialog(a)},'KC / TL düzenle'),h('button',{class:'btn',onclick:()=>authorityDialog(a)},'Yetki değiştir'),
+          !a.account_check?h('button',{class:'btn primary',onclick:async()=>{try{await api('/accounts/'+encodeURIComponent(a.account)+'/activate',{body:{}});toast('Hesap onaylandı','ok');route()}catch(_){}}},'Hesabı onayla (mail atlanarak)'):null,
           a.authority<0?h('button',{class:'btn',onclick:()=>banDialog(a,false)},'Yasağı kaldır'):h('button',{class:'btn danger',onclick:()=>banDialog(a,true)},'Hesabı yasakla')),
         h('div',{class:'hint',style:'margin-top:12px'},'Parola, mühür parolası ve OTP hiçbir yerde gösterilmez. Bakiye değişikliği hesap çevrimiçiyken reddedilir.')),
       h('div',{class:'card'},h('h3',{},'Karakterler'),(a.characters||[]).length?h('div',{class:'mlist'},(a.characters||[]).map(c=>h('div',{class:'mrow',onclick:()=>location.hash='#/char/'+encodeURIComponent(c.name)},ico('shield'),

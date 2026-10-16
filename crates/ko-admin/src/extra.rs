@@ -27,6 +27,7 @@ pub fn routes() -> Router<App> {
         .route("/jstkoadminpanel/api/accounts/{id}/balance", post(balance))
         .route("/jstkoadminpanel/api/accounts/{id}/ban", post(ban))
         .route("/jstkoadminpanel/api/accounts/{id}/authority", post(set_authority))
+        .route("/jstkoadminpanel/api/accounts/{id}/activate", post(activate))
         .route("/jstkoadminpanel/api/clear-online/{name}", post(clear_online))
         .route("/jstkoadminpanel/api/item-search", get(item_search))
         .route("/jstkoadminpanel/api/item/{id}", get(item_detail))
@@ -114,6 +115,7 @@ async fn accounts(headers: HeaderMap, State(app): State<App>, Query(q): Query<Q>
     let v: Value = sqlx::query_scalar(
         r#"SELECT COALESCE(jsonb_agg(x),'[]'::jsonb) FROM (
             SELECT t.str_account_id account, t.cash_point kc, t.bonus_cash_point tl, t.str_authority authority,
+                   t.account_check account_check,
                    t.b_premium_type premium, t.dt_create_time created, t.email,
                    EXISTS(SELECT 1 FROM currentuser c WHERE c.str_account_id=t.str_account_id) online,
                    to_jsonb(ARRAY_REMOVE(ARRAY[ac.str_char_id1,ac.str_char_id2,ac.str_char_id3,ac.str_char_id4],NULL)) chars
@@ -122,7 +124,8 @@ async fn accounts(headers: HeaderMap, State(app): State<App>, Query(q): Query<Q>
                OR ac.str_char_id3 ILIKE $2 OR ac.str_char_id4 ILIKE $2 OR t.email ILIKE $2)
               AND ($5='' OR ($5='banned' AND t.str_authority<0)
                    OR ($5='online' AND EXISTS(SELECT 1 FROM currentuser c WHERE c.str_account_id=t.str_account_id))
-                   OR ($5='gm' AND t.str_authority=0))
+                   OR ($5='gm' AND t.str_authority=0)
+                   OR ($5='unverified' AND t.account_check=0))
             ORDER BY t.id DESC LIMIT $3 OFFSET $4) x"#,
     )
     .bind(&term)
@@ -142,7 +145,8 @@ async fn account(headers: HeaderMap, State(app): State<App>, Path(id): Path<Stri
     let v: Option<Value> = sqlx::query_scalar(
         r#"SELECT jsonb_build_object(
             'account', t.str_account_id, 'kc', t.cash_point, 'tl', t.bonus_cash_point,
-            'authority', t.str_authority, 'premium', t.b_premium_type, 'premium_until', t.dt_premium_time,
+            'authority', t.str_authority, 'account_check', t.account_check,
+            'premium', t.b_premium_type, 'premium_until', t.dt_premium_time,
             'created', t.dt_create_time, 'email', t.email, 'name', t.user_name, 'surname', t.user_surname,
             'phone', t.user_phone_number, 'security_question', t.security_question,
             'client_ip', t.str_client_ip, 'punishment_date', t.punishment_date, 'punishment_days', t.punishment_period,
@@ -326,6 +330,31 @@ async fn set_authority(
     .await?;
     tx.commit().await.map_err(internal("commit"))?;
     Ok(Json(json!({"ok":true,"authority":p.authority})))
+}
+
+/// Manually marks a web-panel registration as e-mail-verified (tb_user.account_check), for when
+/// SMTP isn't configured / the activation mail never arrived -- bypasses the e-mail link entirely.
+async fn activate(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> R {
+    let (_, s) = auth(&headers, true)?;
+    let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
+    let updated: Option<String> = sqlx::query_scalar(
+        "UPDATE tb_user SET account_check=1 WHERE lower(str_account_id)=lower($1) AND account_check=0 RETURNING str_account_id",
+    )
+    .bind(&id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(internal("activate"))?;
+    let Some(account) = updated else {
+        return Err(ApiError::NotFound);
+    };
+    audit(&mut tx, &s.actor, "account.activate", &account, json!({}), peer.ip()).await?;
+    tx.commit().await.map_err(internal("commit"))?;
+    Ok(Json(json!({"ok":true})))
 }
 
 /// A character that is shown online although the game server is down keeps its rows locked.
