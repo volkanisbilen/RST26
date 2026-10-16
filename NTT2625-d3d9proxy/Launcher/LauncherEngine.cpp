@@ -173,7 +173,8 @@ void Launcher::RequestNotices()
 bool Launcher::Start()
 {
     mSocket = new CAPISocket();
-    int iErr = mSocket->Connect(window, m_settingsIP.c_str(), 15100);
+    // 15110, not 15100: ko-server's own login server owns the 15100-15109 range.
+    int iErr = mSocket->Connect(window, m_settingsIP.c_str(), 15110);
     if (iErr)
     {
         m_stateString = xorstr("Connection failed. Please retry connecting.");

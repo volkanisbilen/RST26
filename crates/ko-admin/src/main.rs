@@ -82,7 +82,10 @@ async fn main() -> anyhow::Result<()> {
     // plain HTTP, see patch_tcp.rs) -- must be reachable from players' machines, so it's the
     // public VPS address + ko-admin's HTTP port, not ADMIN_BIND_ADDR's own (often 0.0.0.0) host.
     let patch_http_addr = std::env::var("JSTKO_PATCH_HTTP_ADDR").unwrap_or_else(|_| "84.247.183.23:8090".into());
-    let patch_tcp_bind = std::env::var("JSTKO_PATCH_TCP_ADDR").unwrap_or_else(|_| "0.0.0.0:15100".into());
+    // NOT 15100: ko-server's own login server binds the whole 15100-15109 range
+    // (crates/ko-game/src/login_server.rs), so anything in that span fighting it
+    // for the port crashes ko-server with "Address already in use" on startup.
+    let patch_tcp_bind = std::env::var("JSTKO_PATCH_TCP_ADDR").unwrap_or_else(|_| "0.0.0.0:15110".into());
     patch_tcp::spawn(patch_dir.clone(), patch_http_addr, patch_tcp_bind);
 
     let bind = std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
