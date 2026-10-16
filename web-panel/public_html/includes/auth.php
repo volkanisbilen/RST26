@@ -150,8 +150,9 @@ function jstko_register(array $f): array
     try {
         $stmt = $pdo->prepare(
             'INSERT INTO tb_user (str_account_id, str_passwd, str_seal_passwd, email,
-                security_question, security_answer, user_phone_number, str_authority, account_check, str_client_ip)
-             VALUES (:id, :pw, :seal, :email, :sq, :sa, :phone, 1, 0, :ip)'
+                security_question, security_answer, user_phone_number, str_authority, account_check, str_client_ip,
+                cash_point, bonus_cash_point)
+             VALUES (:id, :pw, :seal, :email, :sq, :sa, :phone, 1, 0, :ip, 5000, 500)'
         );
         $stmt->execute([
             'id' => $accountId,
