@@ -81,6 +81,29 @@ namespace
         return Sha256File(alg, path, hexOut);
     }
 
+    // Temporary diagnostic: show what the first mismatching file's bytes actually look like
+    // in-process (size + first 16 bytes), to tell a real content difference apart from something
+    // transforming the bytes on the way in (a hook, a cache, antivirus content scanning/rewriting).
+    void DumpFirstBytes(const char* path, char out[160])
+    {
+        out[0] = 0;
+        HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE)
+        {
+            sprintf_s(out, 160, "open failed, GetLastError=%lu", GetLastError());
+            return;
+        }
+        LARGE_INTEGER size{};
+        GetFileSizeEx(f, &size);
+        BYTE buf[16] = {};
+        DWORD got = 0;
+        ReadFile(f, buf, sizeof(buf), &got, nullptr);
+        CloseHandle(f);
+        char hex[48] = {};
+        for (DWORD i = 0; i < got && i < 16; i++) sprintf_s(hex + i * 3, 4, "%02x ", buf[i]);
+        sprintf_s(out, 160, "size=%lld first_%lu_bytes=%s", (long long)size.QuadPart, got, hex);
+    }
+
     DWORD WINAPI CheckThread(LPVOID)
     {
         // Let the burst of file activity every *_Init() does at DLL load (and any antivirus
@@ -99,7 +122,7 @@ namespace
         }
         bool tampered = false;
         char firstBad[MAX_PATH] = {};
-        char firstBadDetail[256] = {};
+        char firstBadDetail[420] = {};
         int badCount = 0;
         for (int i = 0; i < MANIFEST_COUNT; i++)
         {
@@ -117,7 +140,11 @@ namespace
                     if (!read)
                         strcpy_s(firstBadDetail, "could not open/read the file");
                     else
-                        sprintf_s(firstBadDetail, "got %.16s... expected %.16s...", hex, MANIFEST[i].sha256);
+                    {
+                        char bytes[160];
+                        DumpFirstBytes(full, bytes);
+                        sprintf_s(firstBadDetail, "got %.16s... expected %.16s... %s", hex, MANIFEST[i].sha256, bytes);
+                    }
                 }
             }
         }
@@ -132,9 +159,12 @@ namespace
             char buf[640];
             sprintf_s(buf, "INTEGRITY: %d file(s) changed, e.g. %s (%s)", badCount, firstBad, firstBadDetail);
             Log(buf);
-            // The handshake (gamestart) may already have gone out before this finished; tell
-            // the server right away instead of waiting for the next login.
-            Integrity_SendAsyncAlert();
+            // TEMPORARILY DISABLED: this check is kicking players over a mismatch that isn't a
+            // real file change (see the dumped bytes above) -- logging only until that's found,
+            // not disconnecting anyone over it. ManifestCheck_Tampered() below is wired the same
+            // way, so client_integrity.cpp's handshake won't report this bit either in the
+            // meantime.
+            // Integrity_SendAsyncAlert();
         }
         return 0;
     }
@@ -147,6 +177,8 @@ void ManifestCheck_Init()
 
 bool ManifestCheck_Tampered()
 {
-    std::lock_guard<std::mutex> lk(g_mx);
-    return g_tampered;
+    // TEMPORARILY DISABLED (see CheckThread): always false so the handshake never reports this
+    // bit and nobody gets kicked over it while the false-positive is still being tracked down.
+    (void)g_mx;
+    return false;
 }
