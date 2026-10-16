@@ -1,10 +1,12 @@
 // Client integrity handshake with the server (hook sub-op 0xF4, see
 // ko-game/src/handler/client_integrity.rs). Only this DLL knows KEY (it must match the
 // server's copy exactly), so a repacked client or a home-made bot can't answer the
-// challenge; module_guard.cpp's injection flag rides along in the same reply.
+// challenge; module_guard.cpp's injection flag and manifest_check.cpp's file-hash flag ride
+// along in the same reply.
 //   S2C [1][u8 nonce_len][nonce bytes]                          - challenge, once at game entry
-//   C2S [2][32 bytes HMAC-SHA256(KEY, nonce)][u8 tamper]        - reply
-//   C2S [3]                                                     - async: a module was injected after startup
+//   C2S [2][32 bytes HMAC-SHA256(KEY, nonce)][u8 tamper]        - reply; tamper bit0 = injected
+//                                                                  module, bit1 = tbl/pus hash mismatch
+//   C2S [3]                                                     - async: tamper became true outside the handshake
 #include <windows.h>
 #include <bcrypt.h>
 #include <string.h>
@@ -14,6 +16,7 @@
 void Log(const char* msg);
 void Drop_SendRaw(const std::vector<BYTE>& p);
 bool ModuleGuard_Tampered();
+bool ManifestCheck_Tampered();
 
 namespace
 {
@@ -60,8 +63,11 @@ void Integrity_OnRecv(const BYTE* p, size_t len)
         Log("INTEGRITY: HMAC computation failed, not answering the server challenge");
         return;
     }
+    BYTE tamper = 0;
+    if (ModuleGuard_Tampered()) tamper |= 1;
+    if (ManifestCheck_Tampered()) tamper |= 2;
     std::vector<BYTE> out = { 0xE9, SUB, 2 };
     out.insert(out.end(), mac, mac + 32);
-    out.push_back(ModuleGuard_Tampered() ? 1 : 0);
+    out.push_back(tamper);
     Drop_SendRaw(out);
 }

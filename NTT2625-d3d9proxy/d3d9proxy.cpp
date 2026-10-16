@@ -86,6 +86,7 @@ void SoloCapeIcon_Init();
 void SlaveMerc_Init();
 void SlaveMerc_OnRecv(const BYTE* p, size_t len);
 void ModuleGuard_Init();           // module_guard.cpp — watches for DLLs injected after startup
+void ManifestCheck_Init();         // manifest_check.cpp — hashes tracked Data\*.tbl / JstKO\**\*.pus
 void Integrity_OnRecv(const BYTE* p, size_t len);   // client_integrity.cpp — server handshake
 void DropBtn_Init();
 void CamRange_Init();
@@ -532,6 +533,7 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
         SoloCapeIcon_Init();
         SlaveMerc_Init();
         ModuleGuard_Init();     // watches for DLLs injected into the game process (module_guard.cpp)
+        ManifestCheck_Init();   // hashes the tracked tbl/pus files in the background (manifest_check.cpp)
         ItemTip_Init();         // inventory style item tooltip for our panels (item_tooltip.cpp)
         TargetHp_Init();        // level + HP numbers on the target bar (target_hp.cpp)
         ClanKasa_Init();        // "Clan Kasasi" button on the clan window (clan_kasa.cpp)
