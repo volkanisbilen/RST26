@@ -9,6 +9,7 @@ ko-core = { workspace = true }
 ko-protocol = { workspace = true }
 ko-db = { workspace = true }
 ko-tbl-import = { path = "../ko-tbl-import" }
+socket2 = "0.5"
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

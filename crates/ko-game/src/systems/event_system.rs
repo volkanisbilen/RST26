@@ -254,6 +254,14 @@ pub fn start_event_system_task(
                                     {
                                         world.update_npc_hp(nid, tmpl.max_hp as i32);
                                     }
+                                    // the killed altar waits for its map regen time (an hour): bring it back now
+                                    world.update_npc_ai(nid, |ai| {
+                                        if ai.state == crate::world::NpcState::Dead {
+                                            ai.state = crate::world::NpcState::Live;
+                                            ai.delay_ms = 0;
+                                            ai.last_tick_ms = 0;
+                                        }
+                                    });
                                 }
                             }
                         }

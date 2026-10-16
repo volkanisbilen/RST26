@@ -8135,13 +8135,15 @@ fn execute_type8(
     // 2625 client-table friend-summon skills (109004/110004/209004/210004,
     // 490042 and 490050); restrictions mirror MagicInstance::ExecuteType8.
     if warp_type == 12 {
-        let target_sid = match type8_warp12_target(world, caster_sid, instance, skill) {
-            Some(target_sid) => target_sid,
-            None => {
-                send_skill_failed(world, caster_sid, instance);
-                return false;
-            }
+        let targets: Vec<SessionId> = if skill.magic_num == 490050 {
+            type8_warp12_party(world, caster_sid, skill)
+        } else {
+            type8_warp12_target(world, caster_sid, instance, skill).into_iter().collect()
         };
+        if targets.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
         let Some(destination) = world.get_position(caster_sid) else {
             send_skill_failed(world, caster_sid, instance);
             return false;
@@ -8150,13 +8152,13 @@ fn execute_type8(
         instance.data[1] = 1;
         let effect = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &effect);
-        if !crate::handler::region::relocate_user_within_zone(
-            world,
-            target_sid,
-            destination.x,
-            destination.y,
-            destination.z,
-        ) {
+        let mut moved = 0;
+        for target_sid in targets {
+            if crate::handler::region::relocate_user_within_zone(world, target_sid, destination.x, destination.y, destination.z) {
+                moved += 1;
+            }
+        }
+        if moved == 0 {
             send_skill_failed(world, caster_sid, instance);
             return false;
         }
@@ -8560,14 +8562,36 @@ fn type8_warp12_target(
     instance: &MagicInstance,
     skill: &MagicRow,
 ) -> Option<SessionId> {
+    if skill.magic_num == 490050 {
+        // "Call Party": every party member comes, there is no single target
+        return type8_warp12_party(world, caster_sid, skill).first().copied();
+    }
     let target_sid = u16::try_from(instance.target_id).ok()?;
     if instance.target_id < 0 || (instance.target_id as u32) >= NPC_BAND {
         return None;
     }
-    let caster = world.get_character_info(caster_sid)?;
-    let target = world.get_character_info(target_sid)?;
-    let caster_pos = world.get_position(caster_sid)?;
-    let target_pos = world.get_position(target_sid)?;
+    type8_warp12_check(world, caster_sid, target_sid, skill).then_some(target_sid)
+}
+
+/// The party members a "Call Party" (490050) brings to the caster.
+fn type8_warp12_party(world: &WorldState, caster_sid: SessionId, skill: &MagicRow) -> Vec<SessionId> {
+    let Some(party) = world.get_party_id(caster_sid).and_then(|p| world.get_party(p)) else {
+        return Vec::new();
+    };
+    party
+        .active_members()
+        .into_iter()
+        .filter(|&m| m != caster_sid && type8_warp12_check(world, caster_sid, m, skill))
+        .collect()
+}
+
+fn type8_warp12_check(world: &WorldState, caster_sid: SessionId, target_sid: SessionId, skill: &MagicRow) -> bool {
+    let (Some(caster), Some(target)) = (world.get_character_info(caster_sid), world.get_character_info(target_sid)) else {
+        return false;
+    };
+    let (Some(caster_pos), Some(target_pos)) = (world.get_position(caster_sid), world.get_position(target_sid)) else {
+        return false;
+    };
     let now_unix = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
@@ -8579,26 +8603,25 @@ fn type8_warp12_target(
         || world.is_player_dead(target_sid)
         || world.is_player_blinking(target_sid, now_unix)
     {
-        return None;
+        return false;
     }
 
-    let zone = world.get_zone(caster_pos.zone_id)?;
-    let abilities = &zone.zone_info.as_ref()?.abilities;
+    let Some(zone) = world.get_zone(caster_pos.zone_id) else { return false };
+    let Some(info) = zone.zone_info.as_ref() else { return false };
+    let abilities = &info.abilities;
     match skill.magic_num {
-        490042 => return None, // Monster summon counterpart is not a friend-call skill.
-        490050 if !abilities.calling_friend => return None,
-        109004 | 110004 | 209004 | 210004 if !abilities.teleport_friend => return None,
+        490042 => return false, // Monster summon counterpart is not a friend-call skill.
+        490050 if !abilities.calling_friend => {
+            tracing::warn!("Call Party refused: zone {} has calling_friend off", caster_pos.zone_id);
+            return false;
+        }
+        109004 | 110004 | 209004 | 210004 if !abilities.teleport_friend => return false,
         _ => {}
     }
-    if matches!(skill.magic_num, 490042 | 490050)
-        && (caster_pos.zone_id == ZONE_FORGOTTEN_TEMPLE
-            || (caster_pos.zone_id == crate::world::ZONE_KARUS
-                || caster_pos.zone_id == crate::world::ZONE_ELMORAD)
-                && !abilities.calling_friend)
-    {
-        return None;
+    if matches!(skill.magic_num, 490042 | 490050) && caster_pos.zone_id == ZONE_FORGOTTEN_TEMPLE {
+        return false;
     }
-    Some(target_sid)
+    true
 }
 
 // ── Type 9: Stealth / Invisibility ──────────────────────────────────────

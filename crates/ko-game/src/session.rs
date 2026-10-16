@@ -34,6 +34,8 @@ use crate::zone::SessionId;
 /// Sessions that have connected (or even logged in) but haven't completed the
 /// game entry flow within this period are disconnected.
 const LOADING_TIMEOUT_SECS: u64 = 10 * 60;
+/// An in-game client that sends nothing for this long is dropped (hung / dead connection).
+const IN_GAME_IDLE_SECS: u64 = 45;
 
 /// Session states for the login flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +112,11 @@ impl ClientSession {
     ) -> Self {
         // Disable Nagle's algorithm — game servers need low-latency packet delivery.
         let _ = stream.set_nodelay(true);
+        // a dead peer (network cut, frozen / killed client machine) is noticed in about 30 s instead of never
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(20))
+            .with_interval(Duration::from_secs(5));
+        let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive);
         Self {
             stream: Some(stream),
             read_half: None,
@@ -171,10 +178,19 @@ impl ClientSession {
                     }
                 }
             } else {
-                match self.read_packet().await {
-                    Ok(pkt) => pkt,
-                    Err(e) => {
+                // the game client sends something at least every ~10 s (position, heartbeat): a client that stays
+                // silent is frozen or gone, so the character leaves the game instead of hanging in it
+                match tokio::time::timeout(Duration::from_secs(IN_GAME_IDLE_SECS), self.read_packet()).await {
+                    Ok(Ok(pkt)) => pkt,
+                    Ok(Err(e)) => {
                         info!("[{}] Connection closed: {}", self.addr, e);
+                        break;
+                    }
+                    Err(_) => {
+                        warn!(
+                            "[{}] No packet for {} s in game - dropping the hung client (sid={})",
+                            self.addr, IN_GAME_IDLE_SECS, self.session_id
+                        );
                         break;
                     }
                 }
