@@ -26,6 +26,7 @@ pub fn routes() -> Router<App> {
         .route("/jstkoadminpanel/api/accounts/{id}", get(account))
         .route("/jstkoadminpanel/api/accounts/{id}/balance", post(balance))
         .route("/jstkoadminpanel/api/accounts/{id}/ban", post(ban))
+        .route("/jstkoadminpanel/api/accounts/{id}/authority", post(set_authority))
         .route("/jstkoadminpanel/api/clear-online/{name}", post(clear_online))
         .route("/jstkoadminpanel/api/item-search", get(item_search))
         .route("/jstkoadminpanel/api/item/{id}", get(item_detail))
@@ -143,6 +144,7 @@ async fn account(headers: HeaderMap, State(app): State<App>, Path(id): Path<Stri
             'account', t.str_account_id, 'kc', t.cash_point, 'tl', t.bonus_cash_point,
             'authority', t.str_authority, 'premium', t.b_premium_type, 'premium_until', t.dt_premium_time,
             'created', t.dt_create_time, 'email', t.email, 'name', t.user_name, 'surname', t.user_surname,
+            'phone', t.user_phone_number, 'security_question', t.security_question,
             'client_ip', t.str_client_ip, 'punishment_date', t.punishment_date, 'punishment_days', t.punishment_period,
             'online', EXISTS(SELECT 1 FROM currentuser c WHERE c.str_account_id=t.str_account_id),
             'warehouse_coins', COALESCE((SELECT coins FROM user_warehouse_coins w WHERE w.str_account_id=t.str_account_id),0),
@@ -279,6 +281,51 @@ async fn ban(
         queue_command(&app.pool, "kick_account", json!({"account": id})).await?;
     }
     Ok(Json(json!({"ok":true,"authority":new_auth})))
+}
+
+#[derive(Deserialize)]
+struct AuthorityIn {
+    /// str_authority: 0 or 2 = GM (unlocks /admin/ on the player web panel), 1 = normal player,
+    /// negative = banned (use /ban instead so the ban/punishment fields stay consistent).
+    authority: i16,
+    reason: String,
+}
+
+async fn set_authority(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(p): Json<AuthorityIn>,
+) -> R {
+    let (_, s) = auth(&headers, true)?;
+    if p.reason.trim().chars().count() < 3 || !(0..=2).contains(&p.authority) {
+        return Err(ApiError::BadRequest);
+    }
+    let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
+    let before: i16 = sqlx::query_scalar("SELECT str_authority FROM tb_user WHERE lower(str_account_id)=lower($1) FOR UPDATE")
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal("authority read"))?
+        .ok_or(ApiError::NotFound)?;
+    sqlx::query("UPDATE tb_user SET str_authority=$2 WHERE lower(str_account_id)=lower($1)")
+        .bind(&id)
+        .bind(p.authority)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal("authority write"))?;
+    audit(
+        &mut tx,
+        &s.actor,
+        "account.set_authority",
+        &id,
+        json!({"before":before,"after":p.authority,"reason":p.reason.trim()}),
+        peer.ip(),
+    )
+    .await?;
+    tx.commit().await.map_err(internal("commit"))?;
+    Ok(Json(json!({"ok":true,"authority":p.authority})))
 }
 
 /// A character that is shown online although the game server is down keeps its rows locked.

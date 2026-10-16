@@ -48,9 +48,11 @@ PAGE.account=async function(main,[id]){
       h('div',{class:'card'},h('h3',{},'Hesap bilgileri'),
         h('div',{class:'grid g2',style:'gap:10px;margin-bottom:12px'},h('div',{class:'card flat kpi'},h('span',{class:'muted sm'},'KC (cash_point)'),h('b',{},fmt(a.kc))),h('div',{class:'card flat kpi'},h('span',{class:'muted sm'},'TL bakiyesi (bonus_cash_point)'),h('b',{},fmt(a.tl)))),
         h('p',{class:'muted'},'Premium tipi ',a.premium,' · Kayıt ',when(a.created),' · E-posta ',a.email||'—'),
-        h('p',{class:'muted'},'Son IP ',a.client_ip||'—',' · Banka altını ',fmt(a.warehouse_coins)),
+        h('p',{class:'muted'},'Ad soyad ',((a.name||'')+' '+(a.surname||'')).trim()||'—',' · Telefon ',a.phone||'—'),
+        h('p',{class:'muted'},'Gizli soru ',a.security_question||'—',' · Son IP ',a.client_ip||'—',' · Banka altını ',fmt(a.warehouse_coins)),
+        h('p',{class:'muted'},'Yetki (str_authority) ',h('b',{},a.authority),' — ',a.authority<0?'yasaklı':a.authority===0||a.authority===2?'GM (web panel /admin erişimi açık)':'normal oyuncu'),
         a.authority<0?h('p',{class:'muted'},'Ceza: ',when(a.punishment_date),' · ',a.punishment_days||0,' gün (0 = süresiz)'):null,
-        h('div',{class:'row'},h('button',{class:'btn',onclick:()=>balanceDialog(a)},'KC / TL düzenle'),
+        h('div',{class:'row'},h('button',{class:'btn',onclick:()=>balanceDialog(a)},'KC / TL düzenle'),h('button',{class:'btn',onclick:()=>authorityDialog(a)},'Yetki değiştir'),
           a.authority<0?h('button',{class:'btn',onclick:()=>banDialog(a,false)},'Yasağı kaldır'):h('button',{class:'btn danger',onclick:()=>banDialog(a,true)},'Hesabı yasakla')),
         h('div',{class:'hint',style:'margin-top:12px'},'Parola, mühür parolası ve OTP hiçbir yerde gösterilmez. Bakiye değişikliği hesap çevrimiçiyken reddedilir.')),
       h('div',{class:'card'},h('h3',{},'Karakterler'),(a.characters||[]).length?h('div',{class:'mlist'},(a.characters||[]).map(c=>h('div',{class:'mrow',onclick:()=>location.hash='#/char/'+encodeURIComponent(c.name)},ico('shield'),
@@ -65,6 +67,16 @@ function balanceDialog(a){
   modal('KC / TL düzenle — '+a.account,h('div',{class:'form'},field('Alan',f),field('İşlem',m),field('Miktar',n),field('Sebep',r,true),h('div',{class:'full'},info)),[
     {label:'İptal',cls:'ghost'},{label:'Uygula',cls:'primary',keep:true,fn:async close=>{
       try{const d=await api('/accounts/'+encodeURIComponent(a.account)+'/balance',{body:{field:f.value,mode:m.value,amount:Number(n.value),reason:r.value}});toast('Bakiye: '+fmt(d.before)+' → '+fmt(d.after),'ok');close();route()}catch(_){}return true}}]);
+}
+function authorityDialog(a){
+  const f=h('select',{},h('option',{value:'1',selected:a.authority!==0&&a.authority!==2},'1 · Normal oyuncu'),
+    h('option',{value:'0',selected:a.authority===0},'0 · GM (web panel /admin erişimi)'),
+    h('option',{value:'2',selected:a.authority===2},'2 · GM (web panel /admin erişimi)'));
+  const r=h('input',{placeholder:'Sebep (zorunlu)'});
+  modal('Yetki değiştir — '+a.account,h('div',{class:'form'},field('Yetki',f),field('Sebep',r,true),
+    h('p',{class:'xs muted full'},'Yasaklamak/yasağı kaldırmak için bu diyalog yerine "Hesabı yasakla" butonunu kullan.')),[
+    {label:'İptal',cls:'ghost'},{label:'Uygula',cls:'primary',keep:true,fn:async close=>{
+      try{await api('/accounts/'+encodeURIComponent(a.account)+'/authority',{body:{authority:Number(f.value),reason:r.value}});toast('Yetki güncellendi','ok');close();route()}catch(_){}return true}}]);
 }
 function banDialog(a,ban){
   const d=h('input',{type:'number',value:'0',min:'0'}),r=h('input',{placeholder:'Sebep (zorunlu)'});
