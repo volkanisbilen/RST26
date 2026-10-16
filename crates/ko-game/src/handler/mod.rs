@@ -41,6 +41,7 @@ pub mod clan_warehouse;
 pub mod clanpoints_battle;
 pub mod class_change;
 pub mod client_event;
+pub mod client_integrity;
 pub mod collection;
 pub mod collection_race;
 pub mod concurrent_user;
@@ -752,6 +753,7 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
             item_upgrade::handle_chaotic_opts(session, &pkt.data[1..]);
             Ok(())
         }
+        client_integrity::EXT_SUB_INTEGRITY => client_integrity::handle(session, repack_ext_data(&pkt)).await,
         slave_priest::EXT_SUB_SLAVEPRIEST => slave_priest::handle(session, repack_ext_data(&pkt)).await,
         slave_merchant::EXT_SUB_SLAVEMERC => slave_merchant::handle(session, repack_ext_data(&pkt)).await,
         manner_store::EXT_SUB_MANNER => manner_store::handle(session, repack_ext_data(&pkt)).await,

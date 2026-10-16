@@ -1721,6 +1721,9 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
     // 16e. the Slave Merchant icon
     super::slave_merchant::send_icon(&world, sid);
 
+    // 16f. Client integrity handshake — only the real d3d9.dll can answer it.
+    super::client_integrity::send_challenge(session).await?;
+
     // 17. ChangeFame — promote commander back to chief if still clan leader
     // if (GetFame() == COMMAND_CAPTAIN && isClanLeader()) ChangeFame(CHIEF);
     // After a war ends, commanders should revert to CHIEF if they're the clan leader.

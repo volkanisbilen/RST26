@@ -113,6 +113,8 @@ exit /b 0</Command>
     <ClCompile Include="register_panel.cpp" />
     <ClCompile Include="jstko_banner.cpp" />
     <ClCompile Include="slave_panel.cpp" />
+    <ClCompile Include="module_guard.cpp" />
+    <ClCompile Include="client_integrity.cpp" />
     <ClCompile Include="solocape_icon.cpp" />
     <ClCompile Include="drop_button.cpp" />
     <ClCompile Include="clan_kasa.cpp" />

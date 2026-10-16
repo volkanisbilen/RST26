@@ -747,6 +747,7 @@ pub fn start_event_system_task(
             crate::event_control::tick(&world);
             crate::handler::slave_priest::tick(&world);
             crate::handler::slave_merchant::tick(&world);
+            crate::handler::client_integrity::tick(&world).await;
             if now % 25 == 0 {
                 crate::handler::clan_premium::tick(&world);
             }

@@ -1728,8 +1728,16 @@ impl WorldState {
     /// tasks will detect the broken channel and exit, but since the session
     /// is already removed, the cleanup is handled here inline.
     pub async fn kick_session_for_duplicate(&self, id: SessionId) {
+        self.kick_session(id, "Another client has logged in with this account.")
+            .await
+    }
+
+    /// Kick a session for any reason (used for duplicate logins and the client
+    /// integrity handshake) — sends the reason, saves the character, and tears
+    /// the session down so the reader/writer tasks exit.
+    pub async fn kick_session(&self, id: SessionId, reason: &str) {
         // 0a. Send kick reason to client before disconnecting
-        self.send_kick_reason(id, "Another client has logged in with this account.");
+        self.send_kick_reason(id, reason);
 
         // 0b. Save character data before kicking — prevents data loss on duplicate login
         if let Some(pool) = self.db_pool() {
