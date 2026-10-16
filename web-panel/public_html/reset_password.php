@@ -43,11 +43,11 @@ require __DIR__ . '/partials/header.php';
         <input type="hidden" name="token" value="<?= jstko_e($token) ?>">
         <div>
           <label class="block text-xs font-medium text-slate-400 mb-1.5">YENİ ŞİFRE</label>
-          <input class="input" type="password" name="password" required minlength="6" maxlength="28">
+          <input class="input" type="password" name="password" required minlength="6" maxlength="16">
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-400 mb-1.5">YENİ ŞİFRE (TEKRAR)</label>
-          <input class="input" type="password" name="password_confirm" required minlength="6" maxlength="28">
+          <input class="input" type="password" name="password_confirm" required minlength="6" maxlength="16">
         </div>
         <button type="submit" class="btn-primary w-full">Şifreyi Güncelle</button>
       </form>

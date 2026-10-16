@@ -27,15 +27,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && jstko_csrf_check()) {
     } elseif ($action === 'change_password') {
         $current = (string)($_POST['current_password'] ?? '');
         $new = (string)($_POST['new_password'] ?? '');
-        if (!hash_equals((string)$user['str_passwd'], $current)) {
+        if (!hash_equals((string)$user['str_passwd'], jstko_ko_password_encode($current))) {
             $notice = 'Mevcut şifreniz hatalı.';
             $noticeType = 'error';
-        } elseif (strlen($new) < 6 || strlen($new) > 28) {
-            $notice = 'Yeni şifre 6-28 karakter olmalı.';
+        } elseif (strlen($new) < 6 || strlen($new) > 16) {
+            $notice = 'Yeni şifre 6-16 karakter olmalı.';
             $noticeType = 'error';
         } else {
             jstko_db()->prepare('UPDATE tb_user SET str_passwd = :pw WHERE str_account_id = :id')
-                ->execute(['pw' => $new, 'id' => $user['str_account_id']]);
+                ->execute(['pw' => jstko_ko_password_encode($new), 'id' => $user['str_account_id']]);
             $notice = 'Şifreniz güncellendi.';
         }
     }
@@ -109,8 +109,8 @@ require __DIR__ . '/partials/header.php';
     <form method="post" class="grid sm:grid-cols-3 gap-3">
       <?= jstko_csrf_field() ?>
       <input type="hidden" name="action" value="change_password">
-      <input class="input" type="password" name="current_password" placeholder="Mevcut şifre" required maxlength="28">
-      <input class="input" type="password" name="new_password" placeholder="Yeni şifre" required minlength="6" maxlength="28">
+      <input class="input" type="password" name="current_password" placeholder="Mevcut şifre" required maxlength="16">
+      <input class="input" type="password" name="new_password" placeholder="Yeni şifre" required minlength="6" maxlength="16">
       <button type="submit" class="btn-primary">Güncelle</button>
     </form>
   </div>

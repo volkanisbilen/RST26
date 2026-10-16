@@ -8,7 +8,7 @@ return [
     // (listen_addresses, pg_hba.conf, firewall) and for creating a restricted DB user.
     'db' => [
         'host' => '84.247.183.23',
-        'port' => 5432,
+        'port' => 443,
         'dbname' => 'ko_server',
         'user' => 'webpanel',
         'password' => 'CHANGE_ME',
@@ -31,7 +31,7 @@ return [
     'site' => [
         'name' => 'JstKO',
         // Must match this exact URL (no trailing slash) -- used to build activation/reset links.
-        'base_url' => 'https://panel.example.com',
+        'base_url' => 'https://jstko.com',
         // Game server TCP endpoint shown to players / used nowhere else by the panel itself.
         'game_server_ip' => '84.247.183.23',
         'game_server_port' => 15001,

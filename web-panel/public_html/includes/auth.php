@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/ko_password.php';
 require_once __DIR__ . '/mailer.php';
 require_once __DIR__ . '/ratelimit.php';
 
@@ -78,7 +79,7 @@ function jstko_login(string $accountId, string $password): array
     $stmt->execute(['id' => $accountId]);
     $user = $stmt->fetch();
 
-    if (!$user || !hash_equals((string)$user['str_passwd'], $password)) {
+    if (!$user || !hash_equals((string)$user['str_passwd'], jstko_ko_password_encode($password))) {
         return ['ok' => false, 'error' => 'Kullanıcı adı veya şifre hatalı.'];
     }
     if ((int)$user['str_authority'] < 0) {
@@ -118,8 +119,8 @@ function jstko_register(array $f): array
     if (!jstko_valid_account_id($accountId)) {
         return ['ok' => false, 'error' => 'Kullanıcı adı 3-21 karakter olmalı, sadece harf/rakam/":"/"_" içerebilir.'];
     }
-    if (strlen($password) < 6 || strlen($password) > 28) {
-        return ['ok' => false, 'error' => 'Şifre 6-28 karakter olmalı.'];
+    if (strlen($password) < 6 || strlen($password) > 16) {
+        return ['ok' => false, 'error' => 'Şifre 6-16 karakter olmalı.'];
     }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         return ['ok' => false, 'error' => 'Geçerli bir e-posta adresi girin.'];
@@ -158,7 +159,7 @@ function jstko_register(array $f): array
         );
         $stmt->execute([
             'id' => $accountId,
-            'pw' => $password,
+            'pw' => jstko_ko_password_encode($password),
             'seal' => $sealPassword,
             'otp' => $otpPassword,
             'email' => $email,
@@ -238,14 +239,14 @@ function jstko_reset_password(string $token, string $newPassword): array
     if (!$accountId) {
         return ['ok' => false, 'error' => 'Bağlantının süresi dolmuş veya geçersiz.'];
     }
-    if (strlen($newPassword) < 6 || strlen($newPassword) > 28) {
-        return ['ok' => false, 'error' => 'Şifre 6-28 karakter olmalı.'];
+    if (strlen($newPassword) < 6 || strlen($newPassword) > 16) {
+        return ['ok' => false, 'error' => 'Şifre 6-16 karakter olmalı.'];
     }
     $pdo = jstko_db();
     $pdo->beginTransaction();
     try {
         $pdo->prepare('UPDATE tb_user SET str_passwd = :pw WHERE str_account_id = :id')
-            ->execute(['pw' => $newPassword, 'id' => $accountId]);
+            ->execute(['pw' => jstko_ko_password_encode($newPassword), 'id' => $accountId]);
         $pdo->prepare('UPDATE web_password_reset SET used_at = now() WHERE token = :t')
             ->execute(['t' => $token]);
         $pdo->commit();

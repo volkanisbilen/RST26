@@ -68,11 +68,11 @@ require __DIR__ . '/partials/header.php';
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="block text-xs font-medium text-slate-400 mb-1.5">ŞİFRE</label>
-            <input class="input" type="password" name="password" required minlength="6" maxlength="28">
+            <input class="input" type="password" name="password" required minlength="6" maxlength="16">
           </div>
           <div>
             <label class="block text-xs font-medium text-slate-400 mb-1.5">ŞİFRE (TEKRAR)</label>
-            <input class="input" type="password" name="password_confirm" required minlength="6" maxlength="28">
+            <input class="input" type="password" name="password_confirm" required minlength="6" maxlength="16">
           </div>
         </div>
 

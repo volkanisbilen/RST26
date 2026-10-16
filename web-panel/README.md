@@ -76,6 +76,52 @@ If the host truly has no static IP, you can widen the `pg_hba.conf`/`ufw` rules 
 but then the Postgres password alone is what's standing between the internet and this database —
 make it long and random, and keep `sslmode=require`.
 
+**If port 5432 itself doesn't reach the VPS:** some shared hosting only allows outbound
+connections to a handful of "normal" ports (80, 443, 587, 25, 22, ...) and silently refuses
+everything else, 5432 included, no matter which host it's going to (confirmed this is what
+happened on the first real deploy — `fsockopen` to 84.247.183.23:8090 and :15100 failed the
+same way :5432 did, while :80/:443/:587 to *other* hosts worked fine). If that's the case, forward
+whatever port got through (443 worked for us) to local Postgres on the VPS instead of trying to
+get 5432 itself opened:
+
+```bash
+apt-get install -y socat
+cat > /etc/systemd/system/pg-443-proxy.service <<'UNIT'
+[Unit]
+Description=Forward :443 to local Postgres :5432 (hosting only allows outbound to standard ports)
+After=network.target postgresql.service
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:443,fork,reuseaddr TCP:127.0.0.1:5432
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now pg-443-proxy
+sudo ufw allow 443/tcp
+```
+
+Then just set `config.php`'s `db.port` to `443` (not 5432) — everything else (role, grants,
+`pg_hba.conf`, `sslmode=require`) stays exactly as above, since it's still the same Postgres
+instance underneath, only reached through a different front door. Obviously skip this if the VPS
+already runs a real HTTPS site on 443.
+
+## 8. The password in `tb_user.str_passwd` is not plaintext
+
+The real KnightOnline.exe client encodes the password itself, client-side, before it ever
+reaches the wire — `str_passwd` holds that encoded form, never what the player actually typed
+(confirmed by decompiling the client: `sub_6FD530` in
+`docs/reverse-engineering/2625/client_src/KnightOnline.exe.c`, verified bit-for-bit against 8
+known (plaintext, encoded) pairs). `includes/ko_password.php` (`jstko_ko_password_encode()`)
+reproduces that exact encoding; every place this panel touches a password — register, login,
+forgot/reset, change-password — runs it through that function first. Never write or compare a
+raw password against `str_passwd` directly. The real client also caps the password field at 16
+characters (so its encoded form never exceeds the `VARCHAR(28)` column) — this panel enforces
+the same 16-character limit for the same reason.
+
 ## 4. SMTP
 
 Any SMTP account works: a mailbox from the same hosting, Gmail with an

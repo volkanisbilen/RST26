@@ -6,6 +6,7 @@ ini_set('display_errors', '1'); // TEMP while we diagnose the first deploy -- fl
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/ko_password.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/content.php';
 

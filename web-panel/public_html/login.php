@@ -47,7 +47,7 @@ require __DIR__ . '/partials/header.php';
       <div>
         <label class="block text-xs font-medium text-slate-400 mb-1.5">ŞİFRE</label>
         <div class="relative">
-          <input class="input pr-10" type="password" name="password" id="loginPw" required maxlength="28">
+          <input class="input pr-10" type="password" name="password" id="loginPw" required maxlength="16">
           <button type="button" data-toggle-password="loginPw" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">GÖSTER</button>
         </div>
       </div>
