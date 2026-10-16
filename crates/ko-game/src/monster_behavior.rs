@@ -9,7 +9,10 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::world::types::{ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
+use crate::world::types::{
+    ZONE_ARDREAM, ZONE_MORADON, ZONE_MORADON2, ZONE_MORADON3, ZONE_MORADON4, ZONE_MORADON5,
+    ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+};
 use crate::npc::NpcTemplate;
 
 const FILE: &str = "monster_behavior.cfg";
@@ -21,7 +24,7 @@ pub const MANES_DRAGON_HP_FACTOR: u32 = 2;
 
 /// 0 = off: monsters only fight when they are attacked (the table's own aggressive monsters excepted).
 static AGGRO_MIN_LEVEL: AtomicU32 = AtomicU32::new(0);
-static ASSIST_RANGE_BITS: AtomicU32 = AtomicU32::new(0x40A0_0000); // 5.0
+static ASSIST_RANGE_BITS: AtomicU32 = AtomicU32::new(0x3F80_0000); // 1.0
 static GM_AGGRO: AtomicBool = AtomicBool::new(false);
 
 pub fn aggro_min_level() -> u32 {
@@ -114,9 +117,17 @@ pub fn adjust_template(t: &mut NpcTemplate) {
 
 /// `(is_aggressive, attack_type, has_friends)` for a monster AI state.
 pub fn ai_flags(tmpl: &NpcTemplate, zone_id: u16) -> (bool, u8, bool) {
+    let is_moradon = matches!(
+        zone_id,
+        ZONE_MORADON | ZONE_MORADON2 | ZONE_MORADON3 | ZONE_MORADON4 | ZONE_MORADON5
+    );
     let table_aggressive = !matches!(tmpl.act_type, 1..=4);
     let min = aggro_min_level();
-    let aggressive = table_aggressive || (min > 0 && tmpl.is_monster && tmpl.level as u32 >= min);
+    // `+aggro level` is a global "make everyone aggressive" override; it must not reach into
+    // Moradon, which is meant to fight alone and only when attacked regardless of that setting
+    // (a template-flagged aggressive monster there is untouched -- this only blocks the override).
+    let min_level_aggro = min > 0 && tmpl.is_monster && tmpl.level as u32 >= min && !is_moradon;
+    let aggressive = table_aggressive || min_level_aggro;
     let pk_zone = matches!(
         zone_id,
         ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
