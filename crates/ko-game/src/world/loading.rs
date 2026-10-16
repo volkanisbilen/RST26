@@ -2202,6 +2202,14 @@ impl WorldState {
                 Ok("collection race reloaded".into())
             }
             "reward_rules" => self.reload_reward_rules(pool).await.map(|n| format!("{n} reward rules")).map_err(|e| e.to_string()),
+            "send_messages" => {
+                let sched_repo = ko_db::repositories::scheduled_tasks::ScheduledTasksRepository::new(pool);
+                let rows = sched_repo.load_messages().await.map_err(|e| e.to_string())?;
+                let login_msgs: Vec<_> = rows.into_iter().filter(|m| m.send_type == 1).collect();
+                let n = login_msgs.len();
+                *self.send_messages.write() = login_msgs;
+                Ok(format!("{n} login messages"))
+            }
             "pus" => {
                 let cash_shop_repo = CashShopRepository::new(pool);
                 let cats = cash_shop_repo.load_all_categories().await.map_err(|e| e.to_string())?;

@@ -1908,8 +1908,7 @@ async fn drop_groups(
            FROM make_item_group g
            LEFT JOIN LATERAL unnest(g.items) AS u(item_id) ON true
            LEFT JOIN item i ON i.num=u.item_id
-           WHERE g.group_num BETWEEN 100 AND 99999999
-             AND (CAST(g.group_num AS TEXT)=$1 OR i.str_name ILIKE $2)
+           WHERE (CAST(g.group_num AS TEXT)=$1 OR i.str_name ILIKE $2)
            GROUP BY g.group_num ORDER BY g.group_num LIMIT $3"#,
     )
     .bind(&term)

@@ -154,7 +154,9 @@ const RW_PAGES={
     {sys:'lottery',mode:'rows',cardTitle:'Lottery',rowItems:[['reward_item1'],['reward_item2'],['reward_item3'],['reward_item4']],chips:[['user_limit','Kişi'],['event_time','Süre']],rowTitle:r=>'Lottery #'+r.lnum,addLabel:'Lottery ekle'}]},
   rw_pus:{title:'Power Up Store',sub:'Mağaza ürünleri ve kategorileri — kaydedince mağaza hemen güncellenir',sections:[
     {sys:'pus_category',mode:'rows',cardTitle:'Kategoriler (mağaza sekmeleri)',rowItems:[],chips:[['category_id','Kategori no']],rowTitle:r=>r.category_name+(r.description?' · '+r.description:'')+(r.status?'':' (kapalı)'),addLabel:'Kategori ekle',icon:'list'},
-    {sys:'pus_items',groupBy:'category',groupLabel:(g)=>'Kategori '+g,item:'item_id',count:'buy_count',detail:r=>Number(r.price).toLocaleString('tr-TR')+(r.price_type?' TL':' KC')+(r.item_name?' · '+r.item_name:''),addLabel:'Ürün ekle',icon:'box'}],
+    // groups listed explicitly (not just inferred from existing rows) so an empty category
+    // still shows its "Ürün ekle" button -- update this list when a new pus_category row is added.
+    {sys:'pus_items',groupBy:'category',groups:[1,2,3,4,5],groupLabel:(g)=>'Kategori '+g,item:'item_id',count:'buy_count',detail:r=>Number(r.price).toLocaleString('tr-TR')+(r.price_type?' TL':' KC')+(r.item_name?' · '+r.item_name:''),addLabel:'Ürün ekle',icon:'box'}],
     footer:'Fiyat tipi: 0 = Knight Cash, 1 = TL. Oyuncular mağazayı yeniden açınca yeni listeyi görür.'},
 };
 for(const [k,cfg] of Object.entries(RW_PAGES))PAGE[k]=rwPage(cfg);

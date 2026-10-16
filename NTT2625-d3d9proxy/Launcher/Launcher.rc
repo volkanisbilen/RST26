@@ -112,7 +112,7 @@ BEGIN
     BEGIN
         BLOCK "041f04b0"
         BEGIN
-            VALUE "CompanyName", "OPS ACS"
+            VALUE "CompanyName", "JstKO ACS"
             VALUE "FileDescription", "Launcher"
             VALUE "FileVersion", "1.0.0.1"
             VALUE "InternalName", "Launcher.exe"

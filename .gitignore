@@ -6,6 +6,7 @@
 # IDE
 .idea/
 .vscode/
+*.vcxproj.user
 *.swp
 *.swo
 *~

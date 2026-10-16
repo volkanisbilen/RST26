@@ -159,6 +159,13 @@ const SYSTEMS: &[Sys] = &[
             Col("currency", "Para birimi", "int"), Col("days", "Süre (gün)", "int"), Col("enabled", "Aktif", "bool")],
     },
     Sys {
+        key: "send_messages", title: "Giriş duyuruları", group: "Sunucu & Duyurular",
+        note: "Oyuncular oyuna girdiğinde sırayla gösterilen duyuru mesajları (send_type 1 = girişte gösterilir, şu an tek kullanılan tür). chat_type mesajın renk/kanalını belirler (2 = bildirim rengi). Kaydedince sunucu hemen yeni listeyi kullanır.",
+        table: "send_messages", pk: &["id"], serial: true, next_pk: false, group_col: "", reload: "send_messages", order: "id",
+        cols: &[Col("id", "No", "int"), Col("message", "Mesaj", "text"), Col("sender", "Gönderen", "text"),
+            Col("chat_type", "Sohbet tipi", "int"), Col("send_type", "Gönderim tipi", "int"), Col("send_hour_minute", "Saat kodu", "int")],
+    },
+    Sys {
         key: "native_coin", title: "Coin etkinliği ödülleri", group: "Mağaza & Çarklar",
         note: "required_points puana ulaşana verilir (reward_index 0-9).",
         table: "native_coin_reward", pk: &["reward_index"], serial: false, next_pk: false, group_col: "", reload: "", order: "reward_index",
