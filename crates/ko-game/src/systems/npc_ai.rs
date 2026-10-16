@@ -2587,6 +2587,14 @@ fn alert_pack(
     target_id: SessionId,
     is_boss: bool,
 ) {
+    // Moradon creatures never call nearby ones in for help -- every monster there fights alone.
+    if matches!(
+        ai.zone_id,
+        ZONE_MORADON | ZONE_MORADON2 | ZONE_MORADON3 | ZONE_MORADON4 | ZONE_MORADON5
+    ) {
+        return;
+    }
+
     let caller_inst = match world.get_npc_instance(npc_id) {
         Some(n) if n.is_monster => n,
         _ => return,

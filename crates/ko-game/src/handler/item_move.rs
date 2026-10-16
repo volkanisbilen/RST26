@@ -1308,8 +1308,15 @@ fn broadcast_look_change(
             }
         }
         ItemMoveDir::InvenToCosp => {
-            // C++ ItemHandler.cpp:1160-1162 — skip pos 5 (EMBLAM) and 6 (BAG1)
-            if dst_pos != 5 && dst_pos != 6 {
+            // C++ ItemHandler.cpp:1160-1162 — skip pos 5 (EMBLAM) and 6 (BAG1): the client's
+            // WIZ_USERLOOK_CHANGE slot mapping has no visual for either, so the original game
+            // never bothered. BAG1 really has nothing to show, but EMBLAM is a real item other
+            // players should see worn -- it's only visible through the full appearance packet
+            // (INOUT_WARP, same one Genie/zone-enter use), so nearby players who were already in
+            // range when it got equipped need that re-sent, or they never see it.
+            if dst_pos == 5 {
+                super::region::broadcast_user_appearance_update(world, sid);
+            } else if dst_pos != 6 {
                 let abs_idx = cosp_pos_to_abs_index(dst_pos).unwrap_or(0);
                 let dur = inventory
                     .get(abs_idx)
@@ -1350,8 +1357,12 @@ fn broadcast_look_change(
                 }
                 _ => {
                     // Other cosmetics: single clear broadcast.
-                    // Skip EMBLAM(5) and BAG slots — they have no visual appearance.
-                    if src_pos != COSP_EMBLAM && src_pos != COSP_BAG1 && src_pos != COSP_BAG2 {
+                    // EMBLAM(5) only shows through the full appearance packet (see InvenToCosp
+                    // above) -- removing it needs the same re-send, or nearby players keep
+                    // seeing the old emblem. BAG slots genuinely have no visual, still skipped.
+                    if src_pos == COSP_EMBLAM {
+                        super::region::broadcast_user_appearance_update(world, sid);
+                    } else if src_pos != COSP_BAG1 && src_pos != COSP_BAG2 {
                         send_look_change_packet(world, sid, pos, src_pos, 0, 0);
                     }
                 }
