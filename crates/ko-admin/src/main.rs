@@ -8,6 +8,7 @@ mod extra;
 mod beginner;
 mod events;
 mod patch;
+mod patch_tcp;
 mod pus;
 mod rewards;
 mod legacy;
@@ -24,7 +25,7 @@ use tracing::{info, warn};
 pub struct App {
     pub pool: DbPool,
     pub icon_dir: PathBuf,
-    /// Where the launcher patch set (manifest.json + files/) is packaged (see `patch.rs`).
+    /// Where the launcher patch set (zips/ + notices.txt) is packaged (see `patch.rs` / `patch_tcp.rs`).
     pub patch_dir: PathBuf,
 }
 
@@ -75,8 +76,14 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/opt/ko26xx-build-2625/client_patch_release"));
     if !patch_dir.is_dir() {
-        warn!(dir = %patch_dir.display(), "JSTKO_PATCH_DIR not found: the launcher patch endpoints serve nothing until package_patch.py is run");
+        warn!(dir = %patch_dir.display(), "JSTKO_PATCH_DIR not found: the launcher patch system serves version 0 (nothing) until package_patch_zip.py is run");
     }
+    // What the launcher is told to download zips from (CAPISocket::FTP_PROTOCOL::HSACSX is
+    // plain HTTP, see patch_tcp.rs) -- must be reachable from players' machines, so it's the
+    // public VPS address + ko-admin's HTTP port, not ADMIN_BIND_ADDR's own (often 0.0.0.0) host.
+    let patch_http_addr = std::env::var("JSTKO_PATCH_HTTP_ADDR").unwrap_or_else(|_| "84.247.183.23:8090".into());
+    let patch_tcp_bind = std::env::var("JSTKO_PATCH_TCP_ADDR").unwrap_or_else(|_| "0.0.0.0:15100".into());
+    patch_tcp::spawn(patch_dir.clone(), patch_http_addr, patch_tcp_bind);
 
     let bind = std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let app = App { pool, icon_dir, patch_dir };

@@ -56,6 +56,13 @@ Binary/
 # Packaged launcher patch set (built locally by package_patch.py, uploaded straight to the VPS)
 NTT2625-d3d9proxy/client_patch_release/
 
+# Launcher build output (MSBuild intermediates / Release binaries)
+NTT2625-d3d9proxy/Launcher/Intermediate/
+NTT2625-d3d9proxy/Launcher/Release_x86/
+NTT2625-d3d9proxy/Launcher/Release_x64/
+NTT2625-d3d9proxy/Launcher/x64/
+NTT2625-d3d9proxy/Launcher/.vs/
+
 # Config with secrets (template is committed, actual is not)
 config/server.local.toml
 web-panel/public_html/config.php
