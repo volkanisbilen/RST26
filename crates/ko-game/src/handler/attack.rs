@@ -2569,7 +2569,7 @@ pub(crate) async fn handle_npc_death(
     let base_exp = if is_manes_survival_kill {
         0
     } else {
-        tmpl.exp as i64
+        super::level::monster_exp_rate(world, tmpl.exp as i64)
     };
     let base_loyalty = if is_manes_survival_kill {
         0
@@ -3198,7 +3198,8 @@ pub(crate) async fn handle_npc_death(
 
             // Give EXP (C++ pUser->ExpChange("New Years Event", m_iExp, true))
             if tmpl.exp > 0 {
-                super::level::exp_change_with_bonus(world, sid, tmpl.exp as i64, true).await;
+                let exp = super::level::monster_exp_rate(world, tmpl.exp as i64);
+                super::level::exp_change_with_bonus(world, sid, exp, true).await;
             }
 
             // Give etrafa items from server settings.
@@ -3853,7 +3854,7 @@ async fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: 
     // Bosses give their EXP to everybody fighting around them.
     if reward.lunar_token {
         if let (Some(tmpl), Some(pos)) = (world.get_npc_template(proto_id, true), world.get_position(killer_sid)) {
-            let exp = tmpl.exp as i64;
+            let exp = super::level::monster_exp_rate(world, tmpl.exp as i64);
             for sid in world.collect_sessions_by(|h| h.event_room == event_room && h.position.zone_id == ZONE_DUNGEON_DEFENCE) {
                 let Some(p) = world.get_position(sid) else { continue };
                 let (dx, dz) = (p.x - pos.x, p.z - pos.z);

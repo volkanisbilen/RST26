@@ -241,7 +241,7 @@ async fn process_single_pet_attack(world: &WorldState, pd: &crate::world::PetAtt
 
         // Award pet EXP from the killed NPC.
         if let Some(ref tmpl) = target_tmpl {
-            let npc_exp = tmpl.exp as i32;
+            let npc_exp = crate::handler::level::monster_exp_rate(world, tmpl.exp as i64) as i32;
             if npc_exp > 0 {
                 award_pet_exp(world, pd.session_id, pd.pet_nid, npc_exp);
             }

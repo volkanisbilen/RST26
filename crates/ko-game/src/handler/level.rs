@@ -44,6 +44,19 @@ pub async fn exp_change(world: &WorldState, sid: SessionId, i_exp: i64) {
     exp_change_inner(world, sid, i_exp, false).await;
 }
 
+/// Scale a monster template's base EXP by the admin-configurable `server_settings.exp_rate`
+/// (percent, 100 = unchanged). Applied at every site that reads `npc_template.exp` directly,
+/// not inside `exp_change`/`exp_change_with_bonus` -- those are also used for quest rewards
+/// and other non-kill XP, which this rate must not touch.
+pub fn monster_exp_rate(world: &WorldState, raw_exp: i64) -> i64 {
+    let rate = world
+        .get_server_settings()
+        .map(|s| s.exp_rate)
+        .unwrap_or(100)
+        .max(0) as i64;
+    raw_exp * rate / 100
+}
+
 /// Apply an experience point change with explicit bonus-reward flag.
 /// When `is_bonus_reward` is true, the server-side XP multipliers (event XP,
 /// premium bonuses, etc.) are skipped — the XP is applied as-is.
