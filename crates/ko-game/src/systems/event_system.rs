@@ -746,6 +746,7 @@ pub fn start_event_system_task(
             world.manes_survival_manager.tick(&world);
             crate::event_control::tick(&world);
             crate::handler::slave_priest::tick(&world);
+            crate::handler::slave_merchant::tick(&world);
             if now % 25 == 0 {
                 crate::handler::clan_premium::tick(&world);
             }

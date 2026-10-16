@@ -299,9 +299,10 @@ fn write_character_slot(
         }
     }
 
-    // 54 trailing zero bytes.
-    for _ in 0..TRAILING_ZEROS {
-        pkt.write_u8(0);
+    // 54 trailing bytes. TEMPORARY DIAGNOSTIC: byte i = 100 + i, so the second number the character select shows
+    // ("level/x") tells which byte the client reads as the rebirth level; then that byte is set for real.
+    for i in 0..TRAILING_ZEROS {
+        pkt.write_u8(100 + i as u8);
     }
 }
 

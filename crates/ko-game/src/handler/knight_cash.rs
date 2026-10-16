@@ -437,6 +437,48 @@ pub fn cash_lose(
     true
 }
 
+/// Deduct TL from a player using WorldState (merchant purchases). `false` when the balance is too low.
+pub fn tl_lose(world: &crate::world::WorldState, pool: &ko_db::DbPool, sid: crate::zone::SessionId, amount: u32) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    let tl = world.get_tl_balance(sid);
+    if tl < amount {
+        return false;
+    }
+    set_tl(world, pool, sid, tl - amount, -(amount as i64));
+    true
+}
+
+/// Add TL to a player using WorldState (merchant sales).
+pub fn tl_gain(world: &crate::world::WorldState, pool: &ko_db::DbPool, sid: crate::zone::SessionId, amount: u32) {
+    if amount == 0 {
+        return;
+    }
+    let tl = world.get_tl_balance(sid);
+    set_tl(world, pool, sid, tl.saturating_add(amount), amount as i64);
+}
+
+fn set_tl(world: &crate::world::WorldState, pool: &ko_db::DbPool, sid: crate::zone::SessionId, new_tl: u32, delta: i64) {
+    let kc = world.get_knight_cash(sid);
+    world.set_kc_balance(sid, kc, new_tl);
+    world.send_to_session_owned(sid, build_cashchange_packet(kc, new_tl));
+    world.send_to_session_owned(sid, build_kc_chat_packet(kc, new_tl));
+    let (account_id, name) = world
+        .with_session(sid, |h| (h.account_id.clone(), h.character.as_ref().map(|c| c.name.clone()).unwrap_or_default()))
+        .unwrap_or_default();
+    if !account_id.is_empty() {
+        super::pus_codes::ledger(pool, &account_id, &name, 0, delta, kc, new_tl, "stall", "");
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let repo = CashShopRepository::new(&pool);
+            if let Err(e) = repo.update_kc_balances(&account_id, kc as i32, new_tl as i32).await {
+                warn!("Failed to persist TL change for {}: {}", account_id, e);
+            }
+        });
+    }
+}
+
 /// Add KC to a player using WorldState (no `ClientSession` required).
 /// - Adds KC, sends `CASHCHANGE` packet, queues DB save.
 pub fn cash_gain(

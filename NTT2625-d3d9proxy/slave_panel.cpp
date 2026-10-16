@@ -1,7 +1,7 @@
 // Slave Merchant window (slavemerchant.uif -> slave_ui\*.pus, layout slave_layout.h, built by build_slave_uif.py) and its
 // top-bar icon. The server (slave_merchant.rs, hook sub-op 0xDD) sends the icon flag once at game entry and the window
 // state on request:
-//   S2C [0][u8 show]   S2C [1][u8 active][u32 minutes][u32 gold][u32 kc] 12 x [u32 item][u32 icon][u16 cnt] (stall)
+//   S2C [0][u8 show]   S2C [1][u8 active][u8 licence][u32 minutes left][u32 gold][u32 kc] 12 x [u32 item][u32 icon][u16 cnt] (stall)
 //                                                                      28 x [u32 item][u32 icon][u16 cnt] (bag)
 //   C2S [1] refresh  [2] take KC  [3] take gold  [4] close the stall  [5] use the scroll (open a stall)
 // The icon sits at the right of the game window (JstKO\slave_icon.ini: [Slave] OffsetRight / Top, defaults 130 / 165).
@@ -27,8 +27,8 @@ namespace
 
     struct Cell { UINT32 item = 0, icon = 0; UINT16 cnt = 0; };
     CRITICAL_SECTION g_lock;
-    bool g_show = false, g_active = false;
-    UINT32 g_minutes = 0, g_gold = 0, g_kc = 0;
+    bool g_show = false, g_active = false, g_sub = false;
+    UINT32 g_minutes = 0, g_gold = 0, g_kc = 0, g_tl = 0;
     Cell g_stall[12], g_bag[28];
 
     struct Sprite { HDC dc = nullptr; int w = 0, h = 0; };
@@ -166,16 +166,23 @@ namespace
         memset(g_bits, 0, (size_t)SM_W * SM_H * 4);
         Blit(Spr("bg"), 0, 0);
         EnterCriticalSection(&g_lock);
-        Text(g_active ? "Slave merchant is open" : "Waiting for direct", SM_STATE, RGB(255, 255, 255), 9, DT_LEFT | DT_VCENTER);
-        Text(std::to_string(g_minutes) + " minutes", SM_DELAY, RGB(255, 255, 255), 9, DT_LEFT | DT_VCENTER);
-        Text(Num(g_kc), SM_CASHTXT, RGB(255, 235, 120), 9, DT_LEFT | DT_VCENTER, true);
+        Text(g_active ? "Slave merchant is open" : (g_sub ? "Waiting for direct" : "No scroll used"), SM_STATE, RGB(255, 255, 255), 9, DT_LEFT | DT_VCENTER);
+        {
+            char t[64];
+            UINT32 m = g_minutes;
+            if (m >= 1440) sprintf_s(t, "%ud %uh %um left", m / 1440, (m / 60) % 24, m % 60);
+            else if (m >= 60) sprintf_s(t, "%uh %um left", m / 60, m % 60);
+            else sprintf_s(t, "%u minutes", m);
+            Text(t, SM_DELAY, RGB(255, 255, 255), 9, DT_LEFT | DT_VCENTER);
+        }
+        Text(g_tl ? Num(g_kc) + " + " + Num(g_tl) + " TL" : Num(g_kc), SM_CASHTXT, RGB(255, 235, 120), 8, DT_LEFT | DT_VCENTER, true);
         Text(Num(g_gold), SM_GOLDTXT, RGB(255, 235, 120), 9, DT_LEFT | DT_VCENTER, true);
         for (int i = 0; i < 12; i++) DrawCell(g_stall[i], SM_STALL[i]);
         for (int i = 0; i < 28; i++) DrawCell(g_bag[i], SM_BAG[i]);
         bool active = g_active;
         LeaveCriticalSection(&g_lock);
         DrawBtn("close", SM_CLOSE, C_CLOSE);
-        DrawBtn("use", SM_USE, C_USE, active);
+        DrawBtn("use", SM_USE, C_USE);
         Text("Use Slave Scroll", SM_USE, RGB(255, 255, 255), 9, DT_CENTER | DT_VCENTER, true);
         DrawBtn("closem", SM_CLOSEM, C_CLOSEM, !active);
         Text("Close Merchant", SM_CLOSEM, RGB(255, 255, 255), 9, DT_CENTER | DT_VCENTER, true);
@@ -299,7 +306,7 @@ namespace
             {
                 EnterCriticalSection(&g_lock); bool active = g_active; LeaveCriticalSection(&g_lock);
                 if (hit == C_CLOSE) ClosePanel();
-                else if (hit == C_USE && !active) Request(5);
+                else if (hit == C_USE) Request(5);
                 else if (hit == C_CLOSEM && active) Request(4);
                 else if (hit == C_CASH) Request(2);
                 else if (hit == C_GOLD) Request(3);
@@ -374,12 +381,14 @@ void SlaveMerc_OnRecv(const BYTE* p, size_t len)
     }
     if (p[2] != 1) return;
     size_t at = 3;
-    if (len < 3 + 13 + 40 * 10) return;
+    if (len < 3 + 18 + 40 * 10) return;
     EnterCriticalSection(&g_lock);
     g_active = p[at++] != 0;
+    g_sub = p[at++] != 0;
     memcpy(&g_minutes, p + at, 4); at += 4;
     memcpy(&g_gold, p + at, 4); at += 4;
-    memcpy(&g_kc, p + at, 4); at += 4;
+    memcpy(&g_kc, p + at, 4); at += 4;
+    memcpy(&g_tl, p + at, 4); at += 4;
     auto cell = [&](Cell& c) { memcpy(&c.item, p + at, 4); memcpy(&c.icon, p + at + 4, 4); memcpy(&c.cnt, p + at + 8, 2); at += 10; };
     for (int i = 0; i < 12 && at + 10 <= len; i++) cell(g_stall[i]);
     for (int i = 0; i < 28 && at + 10 <= len; i++) cell(g_bag[i]);

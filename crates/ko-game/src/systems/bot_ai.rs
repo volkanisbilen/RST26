@@ -4085,6 +4085,7 @@ fn merchant_slots(
             original_slot: slot as u8,
             sold_out: item_id <= 0 || count <= 0,
             is_kc,
+            is_tl: false,
         }
     })
 }

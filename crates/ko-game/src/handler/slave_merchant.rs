@@ -7,9 +7,9 @@
 //!
 //! Window (slavemerchant.uif, DLL slave_panel.cpp), hook sub-op 0xDD:
 //!   S2C `[0][u8 show]`  the top-bar icon;
-//!   S2C `[1][u8 active][u32 minutes][u32 gold][u32 kc] 12 x [u32 item][u32 icon][u16 count] (the slave's stall)
+//!   S2C `[1][u8 active][u8 licence][u32 minutes left][u32 gold][u32 kc][u32 tl] 12 x [u32 item][u32 icon][u16 count] (the slave's stall)
 //!        28 x [u32 item][u32 icon][u16 count] (the bag)`
-//!   C2S `[1]` refresh, `[2]` take the KC, `[3]` take the gold, `[4]` close the stall, `[5]` use the scroll (open a stall).
+//!   C2S `[1]` refresh, `[2]` take the KC, `[3]` take the gold, `[4]` close the stall, `[5]` use the scroll (one scroll = a week of use).
 
 use std::sync::LazyLock;
 
@@ -27,7 +27,12 @@ use crate::world::{
 use crate::zone::calc_region;
 
 /// The item a player must carry for his stall to be taken over by a slave.
-pub const SLAVE_ITEM: u32 = 910_941_725;
+pub const SLAVE_ITEM: u32 = 810_107_000;
+/// One scroll gives a week of slave merchant use.
+const SUB_SECS: u64 = 7 * 24 * 3600;
+/// lower-case owner -> unix seconds the slave merchant licence ends
+static SUBS: LazyLock<DashMap<String, u64>> = LazyLock::new(DashMap::new);
+static LAST_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub const EXT_SUB_SLAVEMERC: u8 = 0xDD;
 const MERCHANT_CLOSE: u8 = 2;
@@ -58,7 +63,7 @@ fn items_json(items: &[MerchData; MAX_MERCH_ITEMS]) -> Value {
             .iter()
             .map(|m| {
                 json!({"id": m.item_id, "dur": m.durability, "cnt": m.sell_count, "orig": m.original_count,
-                       "serial": m.serial_num, "price": m.price, "slot": m.original_slot, "sold": m.sold_out, "kc": m.is_kc})
+                       "serial": m.serial_num, "price": m.price, "slot": m.original_slot, "sold": m.sold_out, "kc": m.is_kc, "tl": m.is_tl})
             })
             .collect(),
     )
@@ -78,6 +83,7 @@ fn items_from_json(v: &Value) -> [MerchData; MAX_MERCH_ITEMS] {
                 original_slot: e["slot"].as_u64().unwrap_or(0) as u8,
                 sold_out: e["sold"].as_bool().unwrap_or(false),
                 is_kc: e["kc"].as_bool().unwrap_or(false),
+                is_tl: e["tl"].as_bool().unwrap_or(false),
             };
         }
     }
@@ -225,10 +231,18 @@ pub async fn init(world: &WorldState, pool: &DbPool) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
         "CREATE TABLE IF NOT EXISTS slave_merchant_credit (
             owner VARCHAR(21) PRIMARY KEY, gold BIGINT NOT NULL DEFAULT 0, kc BIGINT NOT NULL DEFAULT 0)",
+        "ALTER TABLE slave_merchant_credit ADD COLUMN IF NOT EXISTS tl BIGINT NOT NULL DEFAULT 0",
+        "CREATE TABLE IF NOT EXISTS slave_merchant_sub (
+            owner VARCHAR(21) PRIMARY KEY, expires BIGINT NOT NULL DEFAULT 0)",
     ] {
         if let Err(e) = sqlx::query(sql).execute(pool).await {
             warn!("slave merchant: table setup failed: {e}");
             return;
+        }
+    }
+    if let Ok(subs) = sqlx::query("SELECT owner, expires FROM slave_merchant_sub").fetch_all(pool).await {
+        for r in subs {
+            SUBS.insert(r.try_get::<String, _>("owner").unwrap_or_default().to_lowercase(), r.try_get::<i64, _>("expires").unwrap_or(0).max(0) as u64);
         }
     }
     let rows = match sqlx::query("SELECT owner, nation, race, class, level, face, hair, knights_id, fame, zone, x, y, z, advert, visual, items, EXTRACT(EPOCH FROM created_at)::BIGINT AS started FROM slave_merchant")
@@ -295,30 +309,33 @@ fn delete_row(pool: &DbPool, owner: &str) {
     });
 }
 
-fn add_credit(pool: &DbPool, owner: &str, gold: u32, kc: u32) {
+fn add_credit(pool: &DbPool, owner: &str, gold: u32, kc: u32, tl: u32) {
     let pool = pool.clone();
     let owner = owner.to_string();
     tokio::spawn(async move {
         let _ = sqlx::query(
-            "INSERT INTO slave_merchant_credit(owner, gold, kc) VALUES($1,$2,$3) ON CONFLICT(owner) DO UPDATE SET gold = slave_merchant_credit.gold + $2, kc = slave_merchant_credit.kc + $3",
+            "INSERT INTO slave_merchant_credit(owner, gold, kc, tl) VALUES($1,$2,$3,$4) ON CONFLICT(owner) DO UPDATE SET gold = slave_merchant_credit.gold + $2, kc = slave_merchant_credit.kc + $3, tl = slave_merchant_credit.tl + $4",
         )
         .bind(owner)
         .bind(gold as i64)
         .bind(kc as i64)
+        .bind(tl as i64)
         .execute(&pool)
         .await;
     });
 }
 
-/// MERCHANT_INSERT hook: when the player carries the scroll, a slave takes the stall over. Returns `true` when it did.
+/// Seconds of slave merchant licence the character has left.
+fn sub_left(name: &str) -> u64 {
+    SUBS.get(&name.to_lowercase()).map(|e| e.saturating_sub(now_unix())).unwrap_or(0)
+}
+
+/// MERCHANT_INSERT hook: a player with an active Slave Merchant licence gets a slave at his stall. Returns `true` when it did.
 pub fn try_convert(session: &mut ClientSession, advert: &str) -> bool {
     let world = session.world().clone();
     let sid = session.session_id();
     let Some(ch) = world.get_character_info(sid) else { return false };
-    let has_scroll = world
-        .with_session(sid, |h| h.inventory.iter().any(|s| s.item_id == SLAVE_ITEM && s.count > 0))
-        .unwrap_or(false);
-    if !has_scroll {
+    if sub_left(&ch.name) == 0 {
         return false;
     }
     if BY_OWNER.contains_key(&ch.name.to_lowercase()) {
@@ -428,19 +445,20 @@ pub fn try_convert(session: &mut ClientSession, advert: &str) -> bool {
 }
 
 /// Called after a buyer bought from a bot stall: pays the owner when the stall is a slave's.
-pub fn on_sale(world: &WorldState, pool: &DbPool, bot_id: u32, price: u32, is_kc: bool) {
+/// `currency`: 0 coins, 1 Knight Cash, 2 TL.
+pub fn on_sale(world: &WorldState, pool: &DbPool, bot_id: u32, price: u32, currency: u8) {
     let Some(owner) = BY_BOT.get(&bot_id).map(|e| e.clone()) else { return };
-    if !is_kc {
+    if currency == 0 {
         world.update_bot(bot_id, |b| b.gold = b.gold.saturating_sub(price));
     }
     // the earnings pile up for the owner; the Slave Merchant window pays them out
-    if is_kc {
-        add_credit(pool, &owner, 0, price);
-    } else {
-        add_credit(pool, &owner, price, 0);
+    match currency {
+        2 => add_credit(pool, &owner, 0, 0, price),
+        1 => add_credit(pool, &owner, 0, price, 0),
+        _ => add_credit(pool, &owner, price, 0, 0),
     }
     if let Some(osid) = world.find_session_by_name(&owner) {
-        notice(world, osid, &format!("[Slave] Satis: +{price} {}", if is_kc { "KC" } else { "coin" }));
+        notice(world, osid, &format!("[Slave] Satis: +{price} {}", match currency { 2 => "TL", 1 => "KC", _ => "coin" }));
     }
     if let Some(bot) = world.get_bot(bot_id) {
         save_items(pool, &owner, &bot.merchant_items);
@@ -484,7 +502,7 @@ async fn send_state(session: &mut ClientSession) -> anyhow::Result<()> {
     let sid = session.session_id();
     let Some(ch) = world.get_character_info(sid) else { return Ok(()) };
     let bot = BY_OWNER.get(&ch.name.to_lowercase()).and_then(|id| world.get_bot(*id));
-    let (gold, kc) = match sqlx::query("SELECT gold, kc FROM slave_merchant_credit WHERE owner = $1")
+    let (gold, kc, tl) = match sqlx::query("SELECT gold, kc, tl FROM slave_merchant_credit WHERE owner = $1")
         .bind(&ch.name)
         .fetch_optional(session.pool())
         .await
@@ -492,8 +510,9 @@ async fn send_state(session: &mut ClientSession) -> anyhow::Result<()> {
         Ok(Some(r)) => (
             r.try_get::<i64, _>("gold").unwrap_or(0).clamp(0, u32::MAX as i64) as u32,
             r.try_get::<i64, _>("kc").unwrap_or(0).clamp(0, u32::MAX as i64) as u32,
+            r.try_get::<i64, _>("tl").unwrap_or(0).clamp(0, u32::MAX as i64) as u32,
         ),
-        _ => (0, 0),
+        _ => (0, 0, 0),
     };
     let minutes = bot
         .as_ref()
@@ -503,9 +522,12 @@ async fn send_state(session: &mut ClientSession) -> anyhow::Result<()> {
     p.write_u8(EXT_SUB_SLAVEMERC);
     p.write_u8(1);
     p.write_u8(u8::from(bot.is_some()));
-    p.write_u32(minutes);
+    p.write_u8(u8::from(sub_left(&ch.name) > 0));
+    let _ = minutes;
+    p.write_u32((sub_left(&ch.name) / 60) as u32);
     p.write_u32(gold);
     p.write_u32(kc);
+    p.write_u32(tl);
     for i in 0..MAX_MERCH_ITEMS {
         let (id, icon, cnt) = match &bot {
             Some(b) if !b.merchant_items[i].sold_out && b.merchant_items[i].sell_count > 0 => {
@@ -528,8 +550,7 @@ async fn send_state(session: &mut ClientSession) -> anyhow::Result<()> {
 }
 
 /// Takes the KC or the gold the slave earned (the amount is read and zeroed in one statement).
-async fn withdraw(session: &mut ClientSession, name: &str, kc: bool) {
-    let col = if kc { "kc" } else { "gold" };
+async fn withdraw(session: &mut ClientSession, name: &str, col: &str) {
     let sql = format!(
         "UPDATE slave_merchant_credit c SET {col} = 0 FROM (SELECT {col} AS old FROM slave_merchant_credit WHERE owner = $1 FOR UPDATE) o \
          WHERE c.owner = $1 RETURNING o.old"
@@ -539,8 +560,11 @@ async fn withdraw(session: &mut ClientSession, name: &str, kc: bool) {
     if let Ok(Some(r)) = sqlx::query(&sql).bind(name).fetch_optional(session.pool()).await {
         let v = r.try_get::<i64, _>("old").unwrap_or(0).clamp(0, u32::MAX as i64) as u32;
         if v == 0 {
-            notice(&world, sid, "[Slave] Alinacak kazanc yok.");
-        } else if kc {
+            // nothing of this kind waits
+        } else if col == "tl" {
+            crate::handler::knight_cash::tl_gain(&world, session.pool(), sid, v);
+            notice(&world, sid, &format!("[Slave] {v} TL alindi."));
+        } else if col == "kc" {
             crate::handler::knight_cash::cash_gain(&world, session.pool(), sid, v);
             notice(&world, sid, &format!("[Slave] {v} KC alindi."));
         } else {
@@ -593,23 +617,72 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let sid = session.session_id();
     let Some(ch) = world.get_character_info(sid) else { return Ok(()) };
     match op {
-        2 => withdraw(session, &ch.name, true).await,
-        3 => withdraw(session, &ch.name, false).await,
+        2 => {
+            withdraw(session, &ch.name, "kc").await;
+            withdraw(session, &ch.name, "tl").await;
+        }
+        3 => withdraw(session, &ch.name, "gold").await,
         4 => close_stall(session, &ch.name).await,
         5 => {
-            // "Use Slave Scroll": the normal stall opens; with the scroll in the bag a slave takes the stall over
-            let has_scroll = world
-                .with_session(sid, |h| h.inventory.iter().any(|s| s.item_id == SLAVE_ITEM && s.count > 0))
-                .unwrap_or(false);
-            if !has_scroll {
-                notice(&world, sid, "[Slave] Slave Scroll ustunde degil.");
-            } else if BY_OWNER.contains_key(&ch.name.to_lowercase()) {
-                notice(&world, sid, "[Slave] Zaten acik bir slave pazarin var.");
+            // "Use Slave Scroll": one scroll = a week of slave merchant use (it adds up when used again)
+            if !world.take_one_item(sid, SLAVE_ITEM) {
+                notice(&world, sid, "[Slave] Slave Merchant esyan yok. Power Up Store'dan alabilirsin.");
             } else {
-                crate::handler::merchant::open_for_slave(session).await?;
+                let base = SUBS.get(&ch.name.to_lowercase()).map(|e| *e).unwrap_or(0).max(now_unix());
+                let exp = base + SUB_SECS;
+                SUBS.insert(ch.name.to_lowercase(), exp);
+                let pool = session.pool().clone();
+                let owner = ch.name.clone();
+                tokio::spawn(async move {
+                    let _ = sqlx::query("INSERT INTO slave_merchant_sub(owner, expires) VALUES($1,$2) ON CONFLICT(owner) DO UPDATE SET expires = $2")
+                        .bind(owner)
+                        .bind(exp as i64)
+                        .execute(&pool)
+                        .await;
+                });
+                notice(&world, sid, "[Slave] Slave Merchant 1 hafta aktif. Pazar kurunca slave devralir.");
             }
         }
         _ => {}
     }
     send_state(session).await
+}
+
+/// Once a minute: a stall whose licence ended is closed and the unsold items go back to the owner (when he is online).
+pub fn tick(world: &WorldState) {
+    let now = now_unix();
+    if now / 60 == LAST_TICK.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    LAST_TICK.store(now / 60, std::sync::atomic::Ordering::Relaxed);
+    let Some(pool) = world.db_pool().cloned() else { return };
+    let owners: Vec<(u32, String)> = BY_BOT.iter().map(|e| (*e.key(), e.value().clone())).collect();
+    for (bot_id, owner) in owners {
+        if sub_left(&owner) > 0 {
+            continue;
+        }
+        let Some(osid) = world.find_session_by_name(&owner) else { continue };
+        let Some(bot) = world.get_bot(bot_id) else { continue };
+        let mut items = bot.merchant_items.clone();
+        let mut kept = 0;
+        for m in items.iter_mut() {
+            if m.item_id == 0 || m.sold_out || m.sell_count == 0 {
+                continue;
+            }
+            if world.give_item(osid, m.item_id, m.sell_count) {
+                m.sold_out = true;
+                m.sell_count = 0;
+            } else {
+                kept += 1;
+            }
+        }
+        if kept > 0 {
+            world.update_bot(bot_id, |b| b.merchant_items = items.clone());
+            save_items(&pool, &owner, &items);
+            notice(world, osid, "[Slave] Slave Merchant suresi bitti ama cantanda yer yok. Yer acinca pazar kapanir.");
+        } else {
+            finish(world, &pool, bot_id, &owner);
+            notice(world, osid, "[Slave] Slave Merchant suren bitti, pazar kapandi, esyalar cantana geldi.");
+        }
+    }
 }

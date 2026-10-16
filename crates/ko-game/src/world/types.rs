@@ -1636,6 +1636,8 @@ pub struct MerchData {
     pub sold_out: bool,
     /// Whether price is in KC (Knight Cash) instead of gold.
     pub is_kc: bool,
+    /// Whether price is in TL (the TL balance).
+    pub is_tl: bool,
 }
 
 /// A single inventory slot's runtime data.

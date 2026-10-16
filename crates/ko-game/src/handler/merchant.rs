@@ -550,7 +550,8 @@ async fn merchant_item_add(
             price: gold,
             original_slot: src_pos + SLOT_MAX as u8,
             sold_out: false,
-            is_kc: is_kc != 0,
+            is_kc: is_kc == 1,
+            is_tl: is_kc == 2,
         },
     );
 
@@ -750,12 +751,27 @@ async fn merchant_item_list(
         .await;
     }
 
-    // KC flags
+    // currency flags: 0 coins, 1 Knight Cash, 2 TL
     for item in &merch_items {
-        result.write_u8(if item.is_kc { 1 } else { 0 });
+        result.write_u8(if item.is_tl { 2 } else if item.is_kc { 1 } else { 0 });
     }
 
-    session.send_packet(&result).await
+    session.send_packet(&result).await?;
+
+    // the native window shows every price as coins: name the real currency of the Knight Cash / TL items in the chat
+    let lines: Vec<String> = merch_items
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.item_id != 0 && !m.sold_out && (m.is_kc || m.is_tl))
+        .map(|(i, m)| {
+            let name = world.get_item(m.item_id).and_then(|d| d.str_name.clone()).unwrap_or_else(|| format!("#{}", m.item_id));
+            format!("{}. {} = {} {}", i + 1, name, m.price, if m.is_tl { "TL" } else { "Knight Cash" })
+        })
+        .collect();
+    if !lines.is_empty() {
+        send_buy_note(&world, sid, &format!("[Pazar] Coin degil: {}", lines.join(" | ")));
+    }
+    Ok(())
 }
 
 /// MERCHANT_ITEM_BUY (6): Buy an item from a player merchant.
@@ -858,6 +874,7 @@ async fn merchant_item_buy(
 
     // ── Verify seller's actual inventory still has the item (ghost-item prevention) ──
     let is_kc;
+    let is_tl;
     {
         let merch_preview = match world.get_merchant_item(merchant_sid, item_slot as usize) {
             Some(m) if m.item_id == item_id && !m.sold_out && m.sell_count >= item_count => m,
@@ -868,6 +885,7 @@ async fn merchant_item_buy(
             return send_merch_buy_fail(session).await;
         }
         is_kc = merch_preview.is_kc;
+        is_tl = merch_preview.is_tl;
         match world.get_inventory_slot(merchant_sid, merch_preview.original_slot as usize) {
             Some(seller_item)
                 if seller_item.item_id == item_id
@@ -891,10 +909,21 @@ async fn merchant_item_buy(
 
     // Check payment (after atomic take — if check fails we must restore)
     let req_price = merch.price.saturating_mul(item_count as u32);
-    if is_kc {
+    if is_tl {
+        // TL payment
+        if !crate::handler::knight_cash::tl_lose(&world, session.pool(), sid, req_price) {
+            world.restore_merchant_buy(merchant_sid, item_slot as usize, item_id, item_count);
+            send_buy_note(&world, sid, "Yetersiz TL bakiyesi.");
+            return send_merch_buy_fail(session).await;
+        }
+        if !merchant_is_bot && !world.is_offline_status(merchant_sid) {
+            crate::handler::knight_cash::tl_gain(&world, session.pool(), merchant_sid, req_price);
+        }
+    } else if is_kc {
         // KC (Knight Cash) payment path
         if !crate::handler::knight_cash::cash_lose(&world, session.pool(), sid, req_price) {
             world.restore_merchant_buy(merchant_sid, item_slot as usize, item_id, item_count);
+            send_buy_note(&world, sid, "Yetersiz Knight Cash.");
             return send_merch_buy_fail(session).await;
         }
         // Seller gains KC (skip for offline/bot — C++ only calls CashGain on real users)
@@ -939,7 +968,7 @@ async fn merchant_item_buy(
 
     // a slave's stall pays its owner
     if merchant_is_bot {
-        super::slave_merchant::on_sale(&world, session.pool(), merchant_sid as u32, req_price, is_kc);
+        super::slave_merchant::on_sale(&world, session.pool(), merchant_sid as u32, req_price, if is_tl { 2 } else if is_kc { 1 } else { 0 });
     }
 
     // Daily rank stat: GMTotalSold += req_price (merchant seller earns gold)
@@ -1150,6 +1179,11 @@ async fn send_merch_add_fail(
 }
 
 /// Send merchant buy failure.
+/// A one-line chat note to the buyer (the native window only knows coins).
+fn send_buy_note(world: &crate::world::WorldState, sid: crate::zone::SessionId, msg: &str) {
+    world.send_to_session_owned(sid, crate::systems::timed_notice::build_notice_packet(8, msg));
+}
+
 async fn send_merch_buy_fail(session: &mut ClientSession) -> anyhow::Result<()> {
     let mut result = Packet::new(Opcode::WizMerchant as u8);
     result.write_u8(MERCHANT_ITEM_BUY);
@@ -1318,6 +1352,7 @@ fn buying_merchant_insert(
                 original_slot: 0,
                 sold_out: false,
                 is_kc: false,
+                is_tl: false,
             },
         );
     }
