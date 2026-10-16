@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../includes/bootstrap.php';
+require_once __DIR__ . '/includes/bootstrap.php';
 
 $token = (string)($_GET['token'] ?? '');
 $result = $token !== '' ? jstko_activate_account($token) : ['ok' => false, 'error' => 'Geçersiz bağlantı.'];

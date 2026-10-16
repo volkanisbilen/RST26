@@ -8,13 +8,19 @@ not the VPS the game server runs on — it talks to the same PostgreSQL database
 No framework, no Composer dependency (works on plain shared hosting): PDO (`pdo_pgsql`) for the
 database and a small built-in SMTP client for mail.
 
-## 1. Hosting requirements
+## 1. Upload and hosting requirements
+
+Upload the whole `web-panel/public_html/` folder's **contents** (not the `public_html` folder
+itself) straight into your hosting account's web root (the folder your host already serves as
+`https://yourdomain/`, typically also called `public_html` in cPanel) — `config.php`, `includes/`
+and everything else sit flat, side by side with `index.php`. Nothing needs to live outside the
+web root; `config.php`, `config.example.php` and `includes/` are blocked from direct HTTP access
+by the two `.htaccess` files already in this folder (Apache/`mod_php` hosting — if your host runs
+something else, e.g. OpenLiteSpeed or Nginx with PHP-FPM, ask them to equivalently deny
+`config.php`, `config.example.php` and `/includes/`).
 
 - PHP 8.1+ with the **pdo_pgsql** extension enabled (ask your host if unsure — cPanel hosts
   usually have a "PHP Extensions" toggle for this).
-- **Set the hosting's document root to `web-panel/public_html/`**, not `web-panel/` itself. This
-  keeps `config.php` and `includes/` unreachable over HTTP without relying on the included
-  `.htaccess` files (which only help if the host ignores the document root setting).
 - HTTPS (a free Let's Encrypt cert from the host is enough) — the activation/reset e-mails link
   back to `site.base_url`, and cookies are marked `secure` automatically when the request is HTTPS.
 - Outbound TCP to the VPS's Postgres port (whatever you open it on, see below) and outbound SMTP
@@ -26,7 +32,7 @@ database and a small built-in SMTP client for mail.
 cp config.example.php config.php
 ```
 
-Edit `config.php` (next to this README, **not** inside `public_html/`): database host/port/user/
+Edit `config.php` (same folder): database host/port/user/
 password, SMTP credentials, `site.base_url` (exact URL this panel will be reached at, no trailing
 slash), `site.name`.
 

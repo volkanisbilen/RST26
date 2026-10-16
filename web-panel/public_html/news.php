@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../includes/bootstrap.php';
+require_once __DIR__ . '/includes/bootstrap.php';
 
 $id = (int)($_GET['id'] ?? 0);
 $stmt = jstko_db()->prepare('SELECT * FROM web_news WHERE id = :id AND published');

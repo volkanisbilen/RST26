@@ -20,7 +20,7 @@ function jstko_admin_save_upload(string $fileField): ?string
         throw new RuntimeException('Sadece JPG, PNG, WEBP veya GIF resim yüklenebilir.');
     }
     $name = bin2hex(random_bytes(8)) . '.' . $allowed[$info['mime']];
-    $dest = __DIR__ . '/../public_html/uploads/' . $name;
+    $dest = __DIR__ . '/../uploads/' . $name;
     if (!move_uploaded_file($file['tmp_name'], $dest)) {
         throw new RuntimeException('Dosya kaydedilemedi.');
     }

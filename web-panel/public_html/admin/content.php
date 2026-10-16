@@ -1,6 +1,6 @@
 <?php
-require_once __DIR__ . '/../../includes/bootstrap.php';
-require_once __DIR__ . '/../../includes/admin_upload.php';
+require_once __DIR__ . '/../includes/bootstrap.php';
+require_once __DIR__ . '/../includes/admin_upload.php';
 $user = jstko_require_gm();
 
 $notice = null;

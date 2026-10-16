@@ -1,6 +1,6 @@
 <?php
-require_once __DIR__ . '/../includes/bootstrap.php';
-require_once __DIR__ . '/../includes/rescue.php';
+require_once __DIR__ . '/includes/bootstrap.php';
+require_once __DIR__ . '/includes/rescue.php';
 
 $user = jstko_require_login();
 $message = null;

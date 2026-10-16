@@ -1,7 +1,6 @@
 <?php
-// Copy this file to config.php (next to it, NOT inside public_html/) and fill in real values.
-// config.php must never be reachable over HTTP — keep it outside the hosting's web root if your
-// host lets you, otherwise rely on .htaccess (included) to block it.
+// Copy this file to config.php (same folder) and fill in real values. config.php is blocked
+// from direct HTTP access by this folder's .htaccess -- don't remove that block.
 
 return [
     // --- Database: the SAME Postgres the game server/ko-admin use, reached remotely from this

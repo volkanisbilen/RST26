@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../../includes/bootstrap.php';
+require_once __DIR__ . '/../includes/bootstrap.php';
 $user = jstko_require_gm();
 
 $pdo = jstko_db();

@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../includes/bootstrap.php';
+require_once __DIR__ . '/includes/bootstrap.php';
 $pageTitle = 'Online Oyuncular';
 require __DIR__ . '/partials/header.php';
 

@@ -1,6 +1,6 @@
 <?php
 /** @var string|null $pageTitle set by the including page before require'ing this partial */
-require_once __DIR__ . '/../../includes/bootstrap.php';
+require_once __DIR__ . '/../includes/bootstrap.php';
 $user = jstko_current_user();
 $siteName = jstko_c('site_name', 'JstKO');
 $logo = jstko_c_image('logo_image');
