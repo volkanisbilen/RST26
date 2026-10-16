@@ -32,6 +32,7 @@ bool Drop_CursorOverPanel(); // drop_panel.cpp
 bool Cross_CursorOverPanel(); // cross_exch.cpp
 bool Reconnect_CursorOverPanel(); // reconnect.cpp
 bool SoloCapeIcon_CursorOverPanel(); // solocape_icon.cpp
+bool SlaveMerc_CursorOverPanel(); // slave_panel.cpp
 bool Tag_CursorOverPanel(); // tag_panel.cpp
 bool JobChange_CursorOverPanel(); // jobchange_panel.cpp
 bool DropBtn_CursorOverPanel(); // drop_button.cpp
@@ -1070,7 +1071,7 @@ static bool CursorOverPanel()
 static SHORT WINAPI hkGetAsyncKeyState(int vKey)
 {
     if ((vKey == VK_LBUTTON || vKey == VK_RBUTTON || vKey == VK_MBUTTON) &&
-        (CursorOverPanel() || Rce_CursorOverPanel() || Cr_CursorOverPanel() || Sp_CursorOverPanel() || Cind_CursorOverPanel() || Csw_CursorOverPanel() || MerchCur_CursorOverPanel() || Lottery_CursorOverPanel() || Daily_CursorOverPanel() || MannerStore_CursorOverPanel() || DropBox_CursorOverPanel() || EvReward_CursorOverPanel() || Drop_CursorOverPanel() || Cross_CursorOverPanel() || Reconnect_CursorOverPanel() || SoloCapeIcon_CursorOverPanel() || Tag_CursorOverPanel() || JobChange_CursorOverPanel() || DropBtn_CursorOverPanel() || ClanKasa_CursorOverPanel() || CamRange_CursorOverPanel() || GmPanel_CursorOverPanel() || Register_CursorOverPanel()))
+        (CursorOverPanel() || Rce_CursorOverPanel() || Cr_CursorOverPanel() || Sp_CursorOverPanel() || Cind_CursorOverPanel() || Csw_CursorOverPanel() || MerchCur_CursorOverPanel() || Lottery_CursorOverPanel() || Daily_CursorOverPanel() || MannerStore_CursorOverPanel() || DropBox_CursorOverPanel() || EvReward_CursorOverPanel() || Drop_CursorOverPanel() || Cross_CursorOverPanel() || Reconnect_CursorOverPanel() || SoloCapeIcon_CursorOverPanel() || SlaveMerc_CursorOverPanel() || Tag_CursorOverPanel() || JobChange_CursorOverPanel() || DropBtn_CursorOverPanel() || ClanKasa_CursorOverPanel() || CamRange_CursorOverPanel() || GmPanel_CursorOverPanel() || Register_CursorOverPanel()))
         return 0;
     return g_oGetAsyncKeyState(vKey);
 }

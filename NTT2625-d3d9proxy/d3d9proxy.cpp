@@ -83,6 +83,8 @@ void Tag_Init();
 void JstKOBanner_Init();
 void JstKOSplash_Wait();
 void SoloCapeIcon_Init();
+void SlaveMerc_Init();
+void SlaveMerc_OnRecv(const BYTE* p, size_t len);
 void DropBtn_Init();
 void CamRange_Init();
 void InfStone_Init();
@@ -346,6 +348,7 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
                 Reconnect_OnRecv(pkt, data[1] - *offset);
                 LaunchGuard_OnRecv(pkt, data[1] - *offset);
                 SoloCapeIcon_OnRecv(pkt, data[1] - *offset);
+                SlaveMerc_OnRecv(pkt, data[1] - *offset);
                 ItemTip_OnRecv(pkt, data[1] - *offset);
                 PriceFix_OnRecv(pkt, data[1] - *offset);
                 GmPanel_OnRecv(pkt, data[1] - *offset);
@@ -524,6 +527,7 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
         QuoteKeyBlock_Init();
         Register_Init();
         SoloCapeIcon_Init();
+        SlaveMerc_Init();
         ItemTip_Init();         // inventory style item tooltip for our panels (item_tooltip.cpp)
         TargetHp_Init();        // level + HP numbers on the target bar (target_hp.cpp)
         ClanKasa_Init();        // "Clan Kasasi" button on the clan window (clan_kasa.cpp)
