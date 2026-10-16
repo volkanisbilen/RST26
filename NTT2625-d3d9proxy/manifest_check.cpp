@@ -33,43 +33,63 @@ namespace
         strcpy_s(out, cap, self);
     }
 
-    bool Sha256File(const char* path, char hexOut[65])
+    // alg is opened once by the caller and reused -- opening a fresh CNG provider for each of
+    // ~3000 files was slow and, under load (antivirus scanning every freshly-touched file right
+    // as this runs at DLL load), occasionally left a file's read failing. That failure used to
+    // fall through silently and hash as if the file were empty instead of being reported as
+    // "couldn't check" -- fixed below (readOk is now false whenever ReadFile itself fails, not
+    // just when BCryptHashData does).
+    bool Sha256File(BCRYPT_ALG_HANDLE alg, const char* path, char hexOut[65])
     {
-        HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (f == INVALID_HANDLE_VALUE) return false;
         bool ok = false;
-        BCRYPT_ALG_HANDLE alg = nullptr;
-        if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0)
+        BCRYPT_HASH_HANDLE hash = nullptr;
+        if (BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0)
         {
-            BCRYPT_HASH_HANDLE hash = nullptr;
-            if (BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0)
+            static BYTE buf[1 << 16];
+            bool readOk = true;
+            for (;;)
             {
-                static BYTE buf[1 << 16];
                 DWORD got = 0;
-                bool readOk = true;
-                while (ReadFile(f, buf, sizeof(buf), &got, nullptr) && got > 0)
-                {
-                    if (BCryptHashData(hash, buf, got, 0) != 0) { readOk = false; break; }
-                }
-                if (readOk)
-                {
-                    BYTE out[32];
-                    if (BCryptFinishHash(hash, out, 32, 0) == 0)
-                    {
-                        for (int i = 0; i < 32; i++) sprintf_s(hexOut + i * 2, 3, "%02x", out[i]);
-                        ok = true;
-                    }
-                }
-                BCryptDestroyHash(hash);
+                if (!ReadFile(f, buf, sizeof(buf), &got, nullptr)) { readOk = false; break; }
+                if (got == 0) break; // clean EOF
+                if (BCryptHashData(hash, buf, got, 0) != 0) { readOk = false; break; }
             }
-            BCryptCloseAlgorithmProvider(alg, 0);
+            if (readOk)
+            {
+                BYTE out[32];
+                if (BCryptFinishHash(hash, out, 32, 0) == 0)
+                {
+                    for (int i = 0; i < 32; i++) sprintf_s(hexOut + i * 2, 3, "%02x", out[i]);
+                    ok = true;
+                }
+            }
+            BCryptDestroyHash(hash);
         }
         CloseHandle(f);
         return ok;
     }
 
+    // One retry after a short wait for a file that failed to open/read/hash -- almost always a
+    // transient sharing lock (antivirus, the game's own loaders touching the same file) rather
+    // than an actual change, so a single immediate failure must not count as tampering.
+    bool Sha256FileRetrying(BCRYPT_ALG_HANDLE alg, const char* path, char hexOut[65])
+    {
+        if (Sha256File(alg, path, hexOut)) return true;
+        Sleep(150);
+        return Sha256File(alg, path, hexOut);
+    }
+
     DWORD WINAPI CheckThread(LPVOID)
     {
+        // Let the burst of file activity every *_Init() does at DLL load (and any antivirus
+        // on-access scan it triggers) settle before we start opening ~3000 files ourselves.
+        Sleep(5000);
+
+        BCRYPT_ALG_HANDLE alg = nullptr;
+        if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return 0;
+
         char dir[MAX_PATH];
         GameDir(dir, sizeof(dir));
         bool tampered = false;
@@ -80,13 +100,14 @@ namespace
             char full[MAX_PATH];
             sprintf_s(full, "%s\\%s", dir, MANIFEST[i].path);
             char hex[65] = {};
-            if (!Sha256File(full, hex) || _stricmp(hex, MANIFEST[i].sha256) != 0)
+            if (!Sha256FileRetrying(alg, full, hex) || _stricmp(hex, MANIFEST[i].sha256) != 0)
             {
                 tampered = true;
                 badCount++;
                 if (!firstBad[0]) strcpy_s(firstBad, MANIFEST[i].path);
             }
         }
+        BCryptCloseAlgorithmProvider(alg, 0);
         {
             std::lock_guard<std::mutex> lk(g_mx);
             g_checked = true;
