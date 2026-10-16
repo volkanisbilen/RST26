@@ -78,6 +78,10 @@ namespace
     HDC g_dc = nullptr; void* g_bits = nullptr;
     HDC g_idc = nullptr; void* g_ibits = nullptr;
     bool g_open = false, g_track = false, g_dragging = false, g_iconHover = false, g_iconTrack = false;
+    // the icon is dragged with the mouse; the place is kept in JstKO\slave_icon.ini ([Slave] OffsetRight / Top)
+    int g_offR = 130, g_offTop = 165;
+    bool g_iconDrag = false, g_iconMoved = false;
+    POINT g_iconStart = {}, g_iconWin = {};
     POINT g_dragFrom;
     int g_hover = 0, g_pressed = 0, g_tipCell = -1;
     DWORD g_lastReq = 0;
@@ -232,12 +236,11 @@ namespace
         // the icon
         if (show && front)
         {
-            char ini[MAX_PATH]; sprintf_s(ini, "%s\\slave_icon.ini", g_dir);
-            int offR = GetPrivateProfileIntA("Slave", "OffsetRight", 130, ini), top = GetPrivateProfileIntA("Slave", "Top", 165, ini);
+            int offR = g_offR, top = g_offTop;
             RECT gr; GetClientRect(game, &gr); MapWindowPoints(game, nullptr, (POINT*)&gr, 2);
             int x = gr.right - offR - SM_ICON_W, y = gr.top + top;
             RECT wr; GetWindowRect(g_hIcon, &wr);
-            if (!IsWindowVisible(g_hIcon) || wr.left != x || wr.top != y)
+            if (!g_iconDrag && (!IsWindowVisible(g_hIcon) || wr.left != x || wr.top != y))
             {
                 SetWindowPos(g_hIcon, HWND_TOPMOST, x, y, SM_ICON_W, SM_ICON_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
                 PaintIcon();
@@ -327,12 +330,40 @@ namespace
         switch (msg)
         {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+        case WM_LBUTTONDOWN:
+            g_iconDrag = true; g_iconMoved = false;
+            GetCursorPos(&g_iconStart);
+            { RECT wr; GetWindowRect(h, &wr); g_iconWin = { wr.left, wr.top }; }
+            SetCapture(h);
+            return 0;
         case WM_MOUSEMOVE:
+            if (g_iconDrag)
+            {
+                POINT c; GetCursorPos(&c);
+                int dx = c.x - g_iconStart.x, dy = c.y - g_iconStart.y;
+                if (!g_iconMoved && (abs(dx) > 3 || abs(dy) > 3)) g_iconMoved = true;
+                if (g_iconMoved) { SetWindowPos(h, nullptr, g_iconWin.x + dx, g_iconWin.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); return 0; }
+            }
             if (!g_iconTrack) { TRACKMOUSEEVENT t = { sizeof(t), TME_LEAVE, h, 0 }; g_iconTrack = TrackMouseEvent(&t) != FALSE; }
             if (!g_iconHover) { g_iconHover = true; PaintIcon(); }
             return 0;
         case WM_MOUSELEAVE: g_iconTrack = false; g_iconHover = false; PaintIcon(); return 0;
-        case WM_LBUTTONUP: PostMessageW(g_hWnd, WM_SM_TOGGLE, 0, 0); return 0;
+        case WM_LBUTTONUP:
+            ReleaseCapture();
+            if (g_iconDrag && g_iconMoved)
+            {
+                HWND game = Proxy_GameWnd();
+                RECT gr = { 0, 0, 1920, 1080 }, wr; GetWindowRect(h, &wr);
+                if (game) { GetClientRect(game, &gr); MapWindowPoints(game, nullptr, (POINT*)&gr, 2); }
+                g_offR = gr.right - wr.right;
+                g_offTop = wr.top - gr.top;
+                char ini[MAX_PATH], v[16]; sprintf_s(ini, "%s\\slave_icon.ini", g_dir);
+                sprintf_s(v, "%d", g_offR); WritePrivateProfileStringA("Slave", "OffsetRight", v, ini);
+                sprintf_s(v, "%d", g_offTop); WritePrivateProfileStringA("Slave", "Top", v, ini);
+            }
+            else if (g_iconDrag) PostMessageW(g_hWnd, WM_SM_TOGGLE, 0, 0);
+            g_iconDrag = false;
+            return 0;
         case WM_SETCURSOR: SetCursor(LoadCursor(nullptr, IDC_ARROW)); return TRUE;
         }
         return DefWindowProcW(h, msg, wp, lp);
@@ -353,6 +384,11 @@ namespace
         g_dc = CreateCompatibleDC(nullptr); SelectObject(g_dc, CreateDIBSection(g_dc, &bmi, DIB_RGB_COLORS, &g_bits, nullptr, 0));
         BITMAPINFO ibi = {}; ibi.bmiHeader = { sizeof(BITMAPINFOHEADER), SM_ICON_W, -SM_ICON_H, 1, 32, BI_RGB };
         g_idc = CreateCompatibleDC(nullptr); SelectObject(g_idc, CreateDIBSection(g_idc, &ibi, DIB_RGB_COLORS, &g_ibits, nullptr, 0));
+        {
+            char ini[MAX_PATH]; sprintf_s(ini, "%s\\slave_icon.ini", g_dir);
+            g_offR = GetPrivateProfileIntA("Slave", "OffsetRight", 130, ini);
+            g_offTop = GetPrivateProfileIntA("Slave", "Top", 165, ini);
+        }
         Log(Spr("bg") ? "SLAVEMERC: window ready" : "SLAVEMERC: skin MISSING (JstKO\\slave_ui)");
         SetTimer(g_hWnd, 1, 200, nullptr);
         MSG m;
@@ -387,7 +423,8 @@ void SlaveMerc_OnRecv(const BYTE* p, size_t len)
     g_sub = p[at++] != 0;
     memcpy(&g_minutes, p + at, 4); at += 4;
     memcpy(&g_gold, p + at, 4); at += 4;
-    memcpy(&g_kc, p + at, 4); at += 4;
+    memcpy(&g_kc, p + at, 4); at += 4;
+
     memcpy(&g_tl, p + at, 4); at += 4;
     auto cell = [&](Cell& c) { memcpy(&c.item, p + at, 4); memcpy(&c.icon, p + at + 4, 4); memcpy(&c.cnt, p + at + 8, 2); at += 10; };
     for (int i = 0; i < 12 && at + 10 <= len; i++) cell(g_stall[i]);

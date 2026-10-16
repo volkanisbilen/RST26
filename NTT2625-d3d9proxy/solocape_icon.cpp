@@ -24,8 +24,33 @@ namespace
     const BYTE SC_SUBOP = 0xF3;
     const int TIP_W = 230, TIP_MAXH = 220;
     // position: left of the coin gauge (1920-wide reference: coin centre x ~1357, top row)
-    const double POS_X = 1274.0 / 1920.0;
-    const int POS_Y = -4;
+    // the icon can be dragged with the mouse; the place is kept in JstKO\solocape_icon.ini ([Icon] X = share of the game width, Y = pixels)
+    double g_posX = 1274.0 / 1920.0;
+    int g_posY = -4;
+    bool g_drag = false, g_dragMoved = false;
+    POINT g_dragStart = {}, g_dragWin = {};
+    void IniPath(char* out)
+    {
+        GetModuleFileNameA(nullptr, out, MAX_PATH);
+        strcpy_s(strrchr(out, 92) + 1, 40, "JstKO\\solocape_icon.ini");
+    }
+    void LoadPos()
+    {
+        char p[MAX_PATH], v[32];
+        IniPath(p);
+        GetPrivateProfileStringA("Icon", "X", "", v, sizeof(v), p);
+        if (v[0]) g_posX = atof(v);
+        g_posY = GetPrivateProfileIntA("Icon", "Y", g_posY, p);
+    }
+    void SavePos(double x, int y)
+    {
+        char p[MAX_PATH], v[32];
+        IniPath(p);
+        sprintf_s(v, "%.5f", x);
+        WritePrivateProfileStringA("Icon", "X", v, p);
+        sprintf_s(v, "%d", y);
+        WritePrivateProfileStringA("Icon", "Y", v, p);
+    }
     const UINT WM_SC_UPDATE = WM_APP + 81;
 
     struct Info { bool show = false; short cape = -1; BYTE r = 0, g = 0, b = 0; std::string name; std::vector<std::pair<BYTE, std::string>> lines; };
@@ -273,8 +298,9 @@ namespace
             return;
         }
         RECT gr; GetClientRect(game, &gr); MapWindowPoints(game, nullptr, (POINT*)&gr, 2);
-        int x = gr.left + (int)((gr.right - gr.left) * POS_X), y = gr.top + POS_Y;
+        int x = gr.left + (int)((gr.right - gr.left) * g_posX), y = gr.top + g_posY;
         RECT wr; GetWindowRect(g_hWnd, &wr);
+        if (g_drag) return;
         if (!IsWindowVisible(g_hWnd) || wr.left != x || wr.top != y)
         {
             SetWindowPos(g_hWnd, HWND_TOPMOST, x, y, SCI_SIZE, SCI_SIZE, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -294,14 +320,45 @@ namespace
             int dx = p.x - SCI_SIZE / 2, dy = p.y - SCI_SIZE / 2;
             return dx * dx + dy * dy <= 18 * 18 ? HTCLIENT : HTTRANSPARENT;
         }
+        case WM_LBUTTONDOWN:
+            g_drag = true; g_dragMoved = false;
+            GetCursorPos(&g_dragStart);
+            { RECT wr; GetWindowRect(h, &wr); g_dragWin = { wr.left, wr.top }; }
+            SetCapture(h);
+            return 0;
+        case WM_LBUTTONUP:
+            if (g_drag)
+            {
+                ReleaseCapture();
+                g_drag = false;
+                if (g_dragMoved)
+                {
+                    HWND game = Proxy_GameWnd();
+                    RECT gr, wr; GetWindowRect(h, &wr);
+                    if (game) { GetClientRect(game, &gr); MapWindowPoints(game, nullptr, (POINT*)&gr, 2); }
+                    else gr = { 0, 0, 1920, 1080 };
+                    double w = max(1, (int)(gr.right - gr.left));
+                    g_posX = (wr.left - gr.left) / w;
+                    g_posY = wr.top - gr.top;
+                    SavePos(g_posX, g_posY);
+                }
+            }
+            return 0;
         case WM_MOUSEMOVE:
+            if (g_drag)
+            {
+                POINT c; GetCursorPos(&c);
+                int dx = c.x - g_dragStart.x, dy = c.y - g_dragStart.y;
+                if (!g_dragMoved && (abs(dx) > 3 || abs(dy) > 3)) { g_dragMoved = true; ShowWindow(g_hTip, SW_HIDE); }
+                if (g_dragMoved) { SetWindowPos(h, nullptr, g_dragWin.x + dx, g_dragWin.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); return 0; }
+            }
             if (!g_track) { TRACKMOUSEEVENT t = { sizeof(t), TME_LEAVE, h, 0 }; g_track = TrackMouseEvent(&t) != FALSE; }
             if (!g_hover) { g_hover = true; PaintIcon(); ShowTip(); }
             return 0;
         case WM_MOUSELEAVE:
             g_track = false; g_hover = false; PaintIcon(); ShowWindow(g_hTip, SW_HIDE);
             return 0;
-        case WM_LBUTTONDBLCLK: ShowWindow(g_hTip, SW_HIDE); OpenBox(); return 0;
+        case WM_LBUTTONDBLCLK: g_drag = false; ShowWindow(g_hTip, SW_HIDE); OpenBox(); return 0;
         case WM_SETCURSOR: SetCursor(LoadCursor(nullptr, IDC_ARROW)); return TRUE;
         case WM_TIMER:
             Sync();
@@ -338,6 +395,7 @@ namespace
         g_dc = CreateCompatibleDC(nullptr); SelectObject(g_dc, CreateDIBSection(g_dc, &bmi, DIB_RGB_COLORS, &g_bits, nullptr, 0));
         BITMAPINFO tbi = {}; tbi.bmiHeader = { sizeof(BITMAPINFOHEADER), TIP_W, -TIP_MAXH, 1, 32, BI_RGB };
         g_tipDC = CreateCompatibleDC(nullptr); SelectObject(g_tipDC, CreateDIBSection(g_tipDC, &tbi, DIB_RGB_COLORS, &g_tipBits, nullptr, 0));
+        LoadPos();
         LoadPus("icon_n", g_n); LoadPus("icon_o", g_o);
         LoadPus("bg", g_boxBg, "JstKO\\reconnect_ui"); LoadPus("btn_n", g_btnN, "JstKO\\reconnect_ui");
         LoadPus("btn_o", g_btnO, "JstKO\\reconnect_ui"); LoadPus("btn_d", g_btnD, "JstKO\\reconnect_ui");
