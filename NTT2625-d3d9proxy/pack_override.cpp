@@ -173,7 +173,18 @@ void PackOverride_Init()
     LoadOverrides();
     if (g_over.empty()) return;
     g_oClose = (FnClose)HookHot("CloseHandle", (void*)HkClose);
+    // PackOf() caches pack-or-not by raw HANDLE value and only clears an entry when HkClose runs;
+    // Windows reuses handle values, so without that hook in place a later, unrelated file can
+    // inherit a closed handle's stale "this is a pack" verdict and get override bytes spliced
+    // into its reads -- silent, wrong-looking file content with nothing to say why. Seen in
+    // practice: a plain .pus file hashing differently from its own bytes on disk. If the
+    // CloseHandle hook didn't take, skip the ReadFile hook too rather than run unsafely.
+    if (!g_oClose)
+    {
+        Log("PACKOVR: CloseHandle hook failed, skipping overrides (ReadFile hook would be unsafe without it)");
+        return;
+    }
     g_oRead = (FnRead)HookHot("ReadFile", (void*)HkRead);
-    char b[120]; sprintf_s(b, "PACKOVR: %u override(s), ReadFile hook %s", (unsigned)g_over.size(), g_oRead ? "on" : "FAILED");
+    char b[150]; sprintf_s(b, "PACKOVR: %u override(s), CloseHandle hook on, ReadFile hook %s", (unsigned)g_over.size(), g_oRead ? "on" : "FAILED");
     Log(b);
 }
