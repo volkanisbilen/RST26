@@ -320,6 +320,11 @@ pub fn handle_inout(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 }
 
 /// MERCHANT_OPEN (1): Request to open merchant setup UI.
+/// The Slave Merchant window's "Use Slave Scroll": opens the normal stall setup.
+pub(crate) async fn open_for_slave(session: &mut ClientSession) -> anyhow::Result<()> {
+    merchant_open(session).await
+}
+
 async fn merchant_open(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();

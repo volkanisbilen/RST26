@@ -420,11 +420,6 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
-    // player commands of the slave merchant (!slave, !slavekapat)
-    if message.starts_with('!') && super::slave_merchant::chat_command(session, &message).await? {
-        return Ok(());
-    }
-
     // Process GM chat commands (messages starting with "+" or "/")
     // "/" prefix added for convenience (C++ only uses "+", but many GMs expect "/" too)
     if (message.starts_with('+') || message.starts_with('/'))

@@ -4,8 +4,14 @@
 //! (gold / Knight Cash into the bag; when the owner is offline the money waits in `slave_merchant_credit` and is paid
 //! at the next login). The owner closes the stall with the chat command `!slavekapat` (the unsold items come back to
 //! the bag), `!slave` shows the state. The stall survives a server restart (table `slave_merchant`).
+//!
+//! Window (slavemerchant.uif, DLL slave_panel.cpp), hook sub-op 0xDD:
+//!   S2C `[0][u8 show]`  the top-bar icon;
+//!   S2C `[1][u8 active][u32 minutes][u32 gold][u32 kc] 12 x [u32 item][u32 icon][u16 count] (the slave's stall)
+//!        28 x [u32 item][u32 icon][u16 count] (the bag)`
+//!   C2S `[1]` refresh, `[2]` take the KC, `[3]` take the gold, `[4]` close the stall, `[5]` use the scroll (open a stall).
 
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use dashmap::DashMap;
 use ko_db::DbPool;
@@ -23,6 +29,7 @@ use crate::zone::calc_region;
 /// The item a player must carry for his stall to be taken over by a slave.
 pub const SLAVE_ITEM: u32 = 910_941_725;
 
+pub const EXT_SUB_SLAVEMERC: u8 = 0xDD;
 const MERCHANT_CLOSE: u8 = 2;
 const SLOT_MAX: usize = 14;
 
@@ -30,6 +37,12 @@ const SLOT_MAX: usize = 14;
 static BY_BOT: LazyLock<DashMap<u32, String>> = LazyLock::new(DashMap::new);
 /// lower-case owner name -> bot id
 static BY_OWNER: LazyLock<DashMap<String, u32>> = LazyLock::new(DashMap::new);
+/// bot id -> unix seconds the slave started
+static STARTED: LazyLock<DashMap<u32, u64>> = LazyLock::new(DashMap::new);
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
 
 pub fn is_slave(bot_id: u32) -> bool {
     BY_BOT.contains_key(&bot_id)
@@ -218,7 +231,7 @@ pub async fn init(world: &WorldState, pool: &DbPool) {
             return;
         }
     }
-    let rows = match sqlx::query("SELECT owner, nation, race, class, level, face, hair, knights_id, fame, zone, x, y, z, advert, visual, items FROM slave_merchant")
+    let rows = match sqlx::query("SELECT owner, nation, race, class, level, face, hair, knights_id, fame, zone, x, y, z, advert, visual, items, EXTRACT(EPOCH FROM created_at)::BIGINT AS started FROM slave_merchant")
         .fetch_all(pool)
         .await
     {
@@ -255,6 +268,7 @@ pub async fn init(world: &WorldState, pool: &DbPool) {
         let id = spawn_bot(world, &look, items);
         BY_BOT.insert(id, owner.clone());
         BY_OWNER.insert(owner.to_lowercase(), id);
+        STARTED.insert(id, r.try_get::<i64, _>("started").unwrap_or(0).max(0) as u64);
         n += 1;
     }
     if n > 0 {
@@ -308,7 +322,7 @@ pub fn try_convert(session: &mut ClientSession, advert: &str) -> bool {
         return false;
     }
     if BY_OWNER.contains_key(&ch.name.to_lowercase()) {
-        notice(&world, sid, "[Slave] Zaten acik bir slave pazarin var. Once !slavekapat yaz.");
+        notice(&world, sid, "[Slave] Zaten acik bir slave pazarin var. Slave Merchant penceresinden kapatabilirsin.");
         return false;
     }
     let stall = world.get_merchant_items(sid);
@@ -386,6 +400,7 @@ pub fn try_convert(session: &mut ClientSession, advert: &str) -> bool {
     let bot_id = spawn_bot(&world, &look, items.clone());
     BY_BOT.insert(bot_id, ch.name.clone());
     BY_OWNER.insert(ch.name.to_lowercase(), bot_id);
+    STARTED.insert(bot_id, now_unix());
 
     let pool = session.pool().clone();
     let (owner, vis, itv) = (ch.name.clone(), visual_json(&look.visual), items_json(&items));
@@ -407,7 +422,7 @@ pub fn try_convert(session: &mut ClientSession, advert: &str) -> bool {
             warn!("slave merchant: save failed for {owner}: {e}");
         }
     });
-    notice(&world, sid, "[Slave] Pazarini slave kurdu. Satislarin parasi sana gelir. Kapatmak icin !slavekapat yaz.");
+    notice(&world, sid, "[Slave] Pazarini slave kurdu. Kazanc Slave Merchant penceresinde birikir, oradan alirsin.");
     info!(owner = %ch.name, bot_id, items = removed.len(), "slave merchant opened");
     true
 }
@@ -418,30 +433,21 @@ pub fn on_sale(world: &WorldState, pool: &DbPool, bot_id: u32, price: u32, is_kc
     if !is_kc {
         world.update_bot(bot_id, |b| b.gold = b.gold.saturating_sub(price));
     }
-    match world.find_session_by_name(&owner) {
-        Some(osid) => {
-            if is_kc {
-                crate::handler::knight_cash::cash_gain(world, pool, osid, price);
-                notice(world, osid, &format!("[Slave] Satis: +{price} KC"));
-            } else {
-                world.gold_gain(osid, price);
-                notice(world, osid, &format!("[Slave] Satis: +{price} coin"));
-            }
-        }
-        None => {
-            if is_kc {
-                add_credit(pool, &owner, 0, price);
-            } else {
-                add_credit(pool, &owner, price, 0);
-            }
-        }
+    // the earnings pile up for the owner; the Slave Merchant window pays them out
+    if is_kc {
+        add_credit(pool, &owner, 0, price);
+    } else {
+        add_credit(pool, &owner, price, 0);
+    }
+    if let Some(osid) = world.find_session_by_name(&owner) {
+        notice(world, osid, &format!("[Slave] Satis: +{price} {}", if is_kc { "KC" } else { "coin" }));
     }
     if let Some(bot) = world.get_bot(bot_id) {
         save_items(pool, &owner, &bot.merchant_items);
         if all_sold(&bot.merchant_items) {
             finish(world, pool, bot_id, &owner);
             if let Some(osid) = world.find_session_by_name(&owner) {
-                notice(world, osid, "[Slave] Tum esyalar satildi, slave pazar kapandi.");
+                notice(world, osid, "[Slave] Tum esyalar satildi, slave pazar kapandi. Kazancini Slave Merchant penceresinden al.");
             }
         }
     }
@@ -451,57 +457,112 @@ fn finish(world: &WorldState, pool: &DbPool, bot_id: u32, owner: &str) {
     crate::systems::bot_ai::despawn_bot(world, bot_id);
     BY_BOT.remove(&bot_id);
     BY_OWNER.remove(&owner.to_lowercase());
+    STARTED.remove(&bot_id);
     delete_row(pool, owner);
 }
 
-/// The money earned while the owner was away.
-pub async fn pay_pending(session: &mut ClientSession) {
+fn item_cell(world: &WorldState, id: u32, count: u32) -> (u32, u32, u16) {
+    if id == 0 || count == 0 {
+        return (0, 0, 0);
+    }
+    let icon = world.get_item(id).and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32;
+    (id, icon, count.min(u16::MAX as u32) as u16)
+}
+
+/// The top-bar icon (every player gets it at game entry).
+pub fn send_icon(world: &WorldState, sid: crate::zone::SessionId) {
+    let mut p = Packet::new(Opcode::EXT_HOOK_S2C);
+    p.write_u8(EXT_SUB_SLAVEMERC);
+    p.write_u8(0);
+    p.write_u8(1);
+    world.send_to_session_owned(sid, p);
+}
+
+/// State of the window: the slave's stall, the bag and the money waiting for the owner.
+async fn send_state(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
-    let Some(ch) = world.get_character_info(sid) else { return };
-    let row = sqlx::query("DELETE FROM slave_merchant_credit WHERE owner = $1 RETURNING gold, kc")
+    let Some(ch) = world.get_character_info(sid) else { return Ok(()) };
+    let bot = BY_OWNER.get(&ch.name.to_lowercase()).and_then(|id| world.get_bot(*id));
+    let (gold, kc) = match sqlx::query("SELECT gold, kc FROM slave_merchant_credit WHERE owner = $1")
         .bind(&ch.name)
         .fetch_optional(session.pool())
-        .await;
-    if let Ok(Some(r)) = row {
-        let gold = r.try_get::<i64, _>("gold").unwrap_or(0).clamp(0, u32::MAX as i64) as u32;
-        let kc = r.try_get::<i64, _>("kc").unwrap_or(0).clamp(0, u32::MAX as i64) as u32;
-        if gold > 0 {
-            world.gold_gain(sid, gold);
-        }
-        if kc > 0 {
-            crate::handler::knight_cash::cash_gain(&world, session.pool(), sid, kc);
-        }
-        if gold > 0 || kc > 0 {
-            notice(&world, sid, &format!("[Slave] Sen yokken slave pazarin kazandi: {gold} coin, {kc} KC."));
+        .await
+    {
+        Ok(Some(r)) => (
+            r.try_get::<i64, _>("gold").unwrap_or(0).clamp(0, u32::MAX as i64) as u32,
+            r.try_get::<i64, _>("kc").unwrap_or(0).clamp(0, u32::MAX as i64) as u32,
+        ),
+        _ => (0, 0),
+    };
+    let minutes = bot
+        .as_ref()
+        .and_then(|b| STARTED.get(&b.id).map(|t| (now_unix().saturating_sub(*t) / 60) as u32))
+        .unwrap_or(0);
+    let mut p = Packet::new(Opcode::EXT_HOOK_S2C);
+    p.write_u8(EXT_SUB_SLAVEMERC);
+    p.write_u8(1);
+    p.write_u8(u8::from(bot.is_some()));
+    p.write_u32(minutes);
+    p.write_u32(gold);
+    p.write_u32(kc);
+    for i in 0..MAX_MERCH_ITEMS {
+        let (id, icon, cnt) = match &bot {
+            Some(b) if !b.merchant_items[i].sold_out && b.merchant_items[i].sell_count > 0 => {
+                item_cell(&world, b.merchant_items[i].item_id, b.merchant_items[i].sell_count as u32)
+            }
+            _ => (0, 0, 0),
+        };
+        p.write_u32(id);
+        p.write_u32(icon);
+        p.write_u16(cnt);
+    }
+    for i in 0..28 {
+        let slot = world.get_inventory_slot(sid, SLOT_MAX + i).unwrap_or_default();
+        let (id, icon, cnt) = item_cell(&world, slot.item_id, slot.count as u32);
+        p.write_u32(id);
+        p.write_u32(icon);
+        p.write_u16(cnt);
+    }
+    session.send_packet(&p).await
+}
+
+/// Takes the KC or the gold the slave earned (the amount is read and zeroed in one statement).
+async fn withdraw(session: &mut ClientSession, name: &str, kc: bool) {
+    let col = if kc { "kc" } else { "gold" };
+    let sql = format!(
+        "UPDATE slave_merchant_credit c SET {col} = 0 FROM (SELECT {col} AS old FROM slave_merchant_credit WHERE owner = $1 FOR UPDATE) o \
+         WHERE c.owner = $1 RETURNING o.old"
+    );
+    let world = session.world().clone();
+    let sid = session.session_id();
+    if let Ok(Some(r)) = sqlx::query(&sql).bind(name).fetch_optional(session.pool()).await {
+        let v = r.try_get::<i64, _>("old").unwrap_or(0).clamp(0, u32::MAX as i64) as u32;
+        if v == 0 {
+            notice(&world, sid, "[Slave] Alinacak kazanc yok.");
+        } else if kc {
+            crate::handler::knight_cash::cash_gain(&world, session.pool(), sid, v);
+            notice(&world, sid, &format!("[Slave] {v} KC alindi."));
+        } else {
+            world.gold_gain(sid, v);
+            notice(&world, sid, &format!("[Slave] {v} coin alindi."));
         }
     }
 }
 
-/// `!slave` (state) and `!slavekapat` (close and take the unsold items back).
-pub async fn chat_command(session: &mut ClientSession, text: &str) -> anyhow::Result<bool> {
-    let cmd = text.trim().to_lowercase();
-    if cmd != "!slave" && cmd != "!slavekapat" {
-        return Ok(false);
-    }
+/// Close the stall: the unsold items go back to the owner's bag.
+async fn close_stall(session: &mut ClientSession, name: &str) {
     let world = session.world().clone();
     let sid = session.session_id();
-    let Some(ch) = world.get_character_info(sid) else { return Ok(true) };
-    let Some(bot_id) = BY_OWNER.get(&ch.name.to_lowercase()).map(|e| *e) else {
-        notice(&world, sid, "[Slave] Acik bir slave pazarin yok. Slave Scroll tasirken pazar kurarsan slave kurar.");
-        return Ok(true);
+    let Some(bot_id) = BY_OWNER.get(&name.to_lowercase()).map(|e| *e) else {
+        notice(&world, sid, "[Slave] Acik bir slave pazarin yok.");
+        return;
     };
     let Some(bot) = world.get_bot(bot_id) else {
         BY_BOT.remove(&bot_id);
-        BY_OWNER.remove(&ch.name.to_lowercase());
-        return Ok(true);
+        BY_OWNER.remove(&name.to_lowercase());
+        return;
     };
-    if cmd == "!slave" {
-        let left = bot.merchant_items.iter().filter(|m| m.item_id != 0 && !m.sold_out && m.sell_count > 0).count();
-        notice(&world, sid, &format!("[Slave] Pazar acik, satilmayan {left} kalem var. Kapatmak icin !slavekapat."));
-        return Ok(true);
-    }
-    // close: the unsold items go back to the owner's bag
     let mut items = bot.merchant_items.clone();
     let mut kept = 0;
     for m in items.iter_mut() {
@@ -517,12 +578,38 @@ pub async fn chat_command(session: &mut ClientSession, text: &str) -> anyhow::Re
     }
     if kept > 0 {
         world.update_bot(bot_id, |b| b.merchant_items = items.clone());
-        save_items(session.pool(), &ch.name, &items);
-        notice(&world, sid, &format!("[Slave] Cantanda yer yok, {kept} kalem slave'de kaldi. Yer acip tekrar !slavekapat yaz."));
-        return Ok(true);
+        save_items(session.pool(), name, &items);
+        notice(&world, sid, &format!("[Slave] Cantanda yer yok, {kept} kalem slave'de kaldi. Yer acip tekrar kapat."));
+        return;
     }
-    finish(&world, session.pool(), bot_id, &ch.name);
+    finish(&world, session.pool(), bot_id, name);
     notice(&world, sid, "[Slave] Slave pazar kapandi, satilmayan esyalar cantana geri geldi.");
-    let _ = Arc::strong_count(&world);
-    Ok(true)
+}
+
+/// Window requests (hook sub-op 0xDD, the data after the sub-op).
+pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
+    let op = pkt.data.first().copied().unwrap_or(0);
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let Some(ch) = world.get_character_info(sid) else { return Ok(()) };
+    match op {
+        2 => withdraw(session, &ch.name, true).await,
+        3 => withdraw(session, &ch.name, false).await,
+        4 => close_stall(session, &ch.name).await,
+        5 => {
+            // "Use Slave Scroll": the normal stall opens; with the scroll in the bag a slave takes the stall over
+            let has_scroll = world
+                .with_session(sid, |h| h.inventory.iter().any(|s| s.item_id == SLAVE_ITEM && s.count > 0))
+                .unwrap_or(false);
+            if !has_scroll {
+                notice(&world, sid, "[Slave] Slave Scroll ustunde degil.");
+            } else if BY_OWNER.contains_key(&ch.name.to_lowercase()) {
+                notice(&world, sid, "[Slave] Zaten acik bir slave pazarin var.");
+            } else {
+                crate::handler::merchant::open_for_slave(session).await?;
+            }
+        }
+        _ => {}
+    }
+    send_state(session).await
 }

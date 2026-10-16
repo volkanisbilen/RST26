@@ -753,6 +753,7 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
             Ok(())
         }
         slave_priest::EXT_SUB_SLAVEPRIEST => slave_priest::handle(session, repack_ext_data(&pkt)).await,
+        slave_merchant::EXT_SUB_SLAVEMERC => slave_merchant::handle(session, repack_ext_data(&pkt)).await,
         manner_store::EXT_SUB_MANNER => manner_store::handle(session, repack_ext_data(&pkt)).await,
         ext_hook::EXT_SUB_RESETREBSTAT => ext_hook::handle_resetrebstat(session),
         // Sprint 26: BANSYSTEM (0xBF) — life skill data query (C++ repurposed this sub-opcode)
