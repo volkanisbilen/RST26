@@ -71,10 +71,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     let world = session.world().clone();
 
-    let (max_hp, current_hp, target_level) = if let Some(bot) = world.get_bot(target_id) {
+    // target_sid: the NPC/monster's template SID (npc_template.s_sid) for GM identification
+    // (+ekle, drop editor, etc. all key off this number); 0 for bots/players, which have none.
+    let (max_hp, current_hp, target_level, target_sid) = if let Some(bot) = world.get_bot(target_id)
+    {
         // Resolve runtime bots before numeric bands. This remains correct if a
         // future shard changes its bot ID allocation.
-        (bot.max_hp as u32, bot.hp.max(0) as u32, bot.level as u16)
+        (bot.max_hp as u32, bot.hp.max(0) as u32, bot.level as u16, 0u32)
     } else if target_id >= NPC_BAND {
         // NPC/Monster target
         let instance = match world.get_npc_instance(target_id) {
@@ -89,7 +92,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         let current = world
             .get_npc_hp(target_id)
             .unwrap_or(template.max_hp as i32);
-        (template.max_hp, current.max(0) as u32, template.level as u16)
+        (
+            template.max_hp,
+            current.max(0) as u32,
+            template.level as u16,
+            instance.proto_id as u32,
+        )
     } else {
         // Player target
         let other_sid = target_id as SessionId;
@@ -97,7 +105,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             Some(c) => c,
             None => return Ok(()),
         };
-        (ch.max_hp as u32, ch.hp as u32, ch.level as u16)
+        (ch.max_hp as u32, ch.hp as u32, ch.level as u16, 0u32)
     };
 
     // C++ stores m_targetID for use by GM commands like +npcinfo.  Its target
@@ -129,11 +137,15 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     session.send_packet(&response).await?;
 
-    // JstKO client: the level of the target, drawn on its HP bar together with the HP numbers
+    // JstKO client: the level of the target, drawn on its HP bar together with the HP numbers.
+    // The trailing SID is only ever shown by the client when the local player is a GM
+    // (target_hp.cpp's IsGM(), same check as gm_panel.cpp) -- sent for every target regardless,
+    // it's 0 for players/bots and harmless for a non-GM client to receive but never render.
     let mut info = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
     info.write_u8(EXT_SUB_TARGET_LEVEL);
     info.write_u32(target_id);
     info.write_u16(target_level);
+    info.write_u32(target_sid);
     session.send_packet(&info).await?;
 
     tracing::debug!(

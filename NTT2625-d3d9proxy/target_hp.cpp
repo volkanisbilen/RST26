@@ -1,7 +1,10 @@
 // Level and HP numbers on the target's HP bar. The HP comes from the game's own WIZ_TARGET_HP answers
 // (0x22: u32 id, u8 echo, u32 max, u32 current), the level from the server's hook packet
-// 0xE9 / 0xB6 (u32 id, u16 level). The text sits in a click-through layered window centred on the
-// target bar (top centre of the game window). Position tuning without a rebuild: JstKO\target_hp.ini
+// 0xE9 / 0xB6 (u32 id, u16 level, u32 npc_template_sid -- the last field is 0 for players/bots).
+// The SID is only ever shown when the local player is a GM (IsGM(), same check as gm_panel.cpp),
+// so GMs can read off a monster/NPC's SID (for +ekle, the drop editor, etc.) just by targeting it.
+// The text sits in a click-through layered window centred on the target bar (top centre of the
+// game window). Position tuning without a rebuild: JstKO\target_hp.ini
 // ([text] x=, y=, w=, h=; x/y = offset of the text's centre from the window's top centre / top edge).
 #include <windows.h>
 #include <stdio.h>
@@ -14,9 +17,19 @@ UINT32 DropBtn_CurrentTargetId();
 namespace
 {
     CRITICAL_SECTION g_lock;
-    UINT32 g_id = 0, g_max = 0, g_cur = 0, g_levelId = 0;
+    UINT32 g_id = 0, g_max = 0, g_cur = 0, g_levelId = 0, g_sid = 0;
     UINT16 g_level = 0;
-    int g_x = 0, g_y = 46, g_w = 240, g_h = 18;
+    const DWORD KO_PTR_ME = 0x01115834;    // same as gm_panel.cpp
+    bool IsGM()
+    {
+        __try
+        {
+            BYTE* me = *(BYTE**)KO_PTR_ME;
+            return me && *(DWORD*)(me + 0x6DC) == 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    int g_x = 0, g_y = 46, g_w = 300, g_h = 18;    // wider than before: GMs also get "#<sid>" here
 
     HWND g_hWnd = nullptr; HDC g_dc = nullptr; void* g_bits = nullptr;
     std::string g_shown;
@@ -89,8 +102,12 @@ namespace
         EnterCriticalSection(&g_lock);
         if (front && target && target == g_id && g_max)
         {
-            char lv[24] = "";
-            if (g_levelId == g_id && g_level) sprintf_s(lv, "Lv %u   ", (unsigned)g_level);
+            char lv[48] = "";
+            if (g_levelId == g_id && g_level)
+            {
+                if (IsGM() && g_sid) sprintf_s(lv, "Lv %u  #%u   ", (unsigned)g_level, (unsigned)g_sid);
+                else sprintf_s(lv, "Lv %u   ", (unsigned)g_level);
+            }
             text = std::string(lv) + Num(g_cur) + " / " + Num(g_max);
         }
         LeaveCriticalSection(&g_lock);
@@ -151,10 +168,11 @@ void TargetHp_OnRecv(const BYTE* pkt, int len)
         memcpy(&g_id, pkt + 1, 4); memcpy(&g_max, pkt + 6, 4); memcpy(&g_cur, pkt + 10, 4);
         LeaveCriticalSection(&g_lock);
     }
-    else if (pkt[0] == 0xE9 && len >= 8 && pkt[1] == 0xB6) // server hook: level of the target
+    else if (pkt[0] == 0xE9 && len >= 8 && pkt[1] == 0xB6) // server hook: level (+ SID for GMs) of the target
     {
         EnterCriticalSection(&g_lock);
         memcpy(&g_levelId, pkt + 2, 4); memcpy(&g_level, pkt + 6, 2);
+        g_sid = (len >= 12) ? *(const UINT32*)(pkt + 8) : 0;
         LeaveCriticalSection(&g_lock);
     }
 }
