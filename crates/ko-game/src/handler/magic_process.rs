@@ -7086,7 +7086,15 @@ async fn apply_skill_damage_to_npc(
                     return;
                 }
             }
-            if tmpl.npc_type == NPC_PVP_MONUMENT || tmpl.npc_type == NPC_CLAN_WAR_MONUMENT {
+            if tmpl.npc_type == NPC_PVP_MONUMENT {
+                let caster_nation = world
+                    .get_character_info(caster_sid)
+                    .map(|ch| ch.nation)
+                    .unwrap_or(0);
+                if world.get_pvp_monument_nation(npc.zone_id) == caster_nation {
+                    return;
+                }
+            } else if tmpl.npc_type == NPC_CLAN_WAR_MONUMENT {
                 let caster_nation = world
                     .get_character_info(caster_sid)
                     .map(|ch| ch.nation)

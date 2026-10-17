@@ -104,15 +104,17 @@ fn pvp_monument_process(
     // The hand-rolled MONUMENT_NOTICE packet this used to send did not match
     // the real WIZ_CHAT wire format (missing the u32 sender id and the
     // length-prefixed name/message fields `build_chat_packet` writes), so the
-    // client showed the capture template with an empty name. Use the shared
-    // builder with the capturer's name spelled directly into the message.
+    // client showed the capture template with an empty name. This chat type
+    // renders only the `message` text (the dedicated sender_name field is not
+    // displayed for WAR_SYSTEM announcements), so the name has to be part of
+    // the message itself.
     let nation_name = if killer_nation == 1 { "Karus" } else { "El Morad" };
-    let notice_msg = format!("has captured {} for {}!", tmpl.name, nation_name);
+    let notice_msg = format!("{} has captured {} for {}!", killer_name, tmpl.name, nation_name);
     let notice_pkt = super::chat::build_chat_packet(
         CHAT_WAR_SYSTEM,
         killer_nation,
         0xFFFF,
-        killer_name,
+        "",
         &notice_msg,
         0,
         0,

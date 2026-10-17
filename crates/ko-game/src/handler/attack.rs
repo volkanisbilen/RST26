@@ -1866,7 +1866,18 @@ async fn handle_npc_attack(
                 }
             }
 
-            if npc_type == NPC_PVP_MONUMENT || npc_type == NPC_CLAN_WAR_MONUMENT {
+            if npc_type == NPC_PVP_MONUMENT {
+                let attacker_nation = world
+                    .get_character_info(attacker_sid)
+                    .map(|ch| ch.nation)
+                    .unwrap_or(0);
+                // Model-swap monuments (ArdReam/Ronark Land/Ronark Land Base) keep the
+                // same proto_id after capture — only the template's visual pid changes —
+                // so ownership has to be read from the tracked capture state, not proto_id.
+                if world.get_pvp_monument_nation(npc.zone_id) == attacker_nation {
+                    return;
+                }
+            } else if npc_type == NPC_CLAN_WAR_MONUMENT {
                 let attacker_nation = world
                     .get_character_info(attacker_sid)
                     .map(|ch| ch.nation)
