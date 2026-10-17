@@ -2346,41 +2346,38 @@ async fn execute_type2(
         };
         let mut rng = rand::rngs::StdRng::from_entropy();
 
-        // Multi-arrow skills (Multiple Shot = 3, Arrow Shower = 5, per NeedArrow)
-        // land that many separate hits on the same target, each independently
-        // rolled, instead of one combined hit.
-        let hit_count = type2_data.need_arrow.unwrap_or(1).max(1);
-        let mut any_hit = false;
-        for _ in 0..hit_count {
-            if world.get_npc_hp(npc_id).unwrap_or(0) <= 0 {
-                break;
-            }
-            let mut damage = compute_type2_hit_damage(
-                t2_npc_snap.equipped_stats.total_hit,
-                npc_ac,
-                &type2_data,
-                caster_hitrate,
-                1.0,
-                t2_npc_snap.attack_amount,
-                100,
-                &mut rng,
-            );
+        // Multi-arrow skills (Multiple Shot/Arrow Shower) are multi-TARGET, not
+        // multi-hit-on-one-target: the client fires NeedArrow separate arrows, each
+        // potentially at a different nearby NPC, sending one EFFECTING call per arrow
+        // that actually connects (C++ MagicInstance.cpp:3029-3038 — "the client chooses
+        // the target(s) to be hit by the arrows"). This handler already runs once per
+        // such call with its own target_id, so a single hit here is correct; looping
+        // NeedArrow hits onto this one call's target multiplied damage on top of the
+        // client's own separate calls instead of spreading it across targets.
+        let mut damage = compute_type2_hit_damage(
+            t2_npc_snap.equipped_stats.total_hit,
+            npc_ac,
+            &type2_data,
+            caster_hitrate,
+            1.0,
+            t2_npc_snap.attack_amount,
+            100,
+            &mut rng,
+        );
 
-            damage = scale_monster_damage(world, damage);
-            let adp_npc = type2_data.add_dmg_perc_to_npc.unwrap_or(0);
-            if adp_npc != 0 {
-                damage = ((damage as i32 * adp_npc as i32) / 100).clamp(0, 32000) as i16;
-            }
-            instance.data[3] = if damage == 0 {
-                SKILLMAGIC_FAIL_ATTACKZERO
-            } else {
-                0
-            };
-            instance.data[1] = 1; // bResult = success
-            apply_skill_damage_to_npc(world, caster_sid, npc_id, instance, damage, skill, 0).await;
-            any_hit = true;
+        damage = scale_monster_damage(world, damage);
+        let adp_npc = type2_data.add_dmg_perc_to_npc.unwrap_or(0);
+        if adp_npc != 0 {
+            damage = ((damage as i32 * adp_npc as i32) / 100).clamp(0, 32000) as i16;
         }
-        return any_hit;
+        instance.data[3] = if damage == 0 {
+            SKILLMAGIC_FAIL_ATTACKZERO
+        } else {
+            0
+        };
+        instance.data[1] = 1; // bResult = success
+        apply_skill_damage_to_npc(world, caster_sid, npc_id, instance, damage, skill, 0).await;
+        return true;
     }
 
     let target_sid = target_id as SessionId;
