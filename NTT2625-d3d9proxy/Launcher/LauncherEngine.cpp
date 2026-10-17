@@ -317,46 +317,15 @@ bool Launcher::DownloadPatch(std::string server, std::string path, std::string f
 	// whether m_settingsVersion has caught up to m_iVersion yet -- the caller (HandlePacket's
 	// opcode 2) loops over every file the server listed and must not abort just because this
 	// wasn't the last one.
+	//
+	// Launcher self-updates are deliberately NOT handled here: a running Launcher.exe can't
+	// reliably overwrite its own image (renaming it out from under itself while still executing
+	// is flaky in practice). A patch instead drops the new build as "Launcher.upd" next to us
+	// (see package_patch_zip.py); d3d9proxy.cpp's LauncherSwap thread, already wired into every
+	// client's DllMain, waits for Launcher.exe to fully exit (it always does right after
+	// starting the game) and retries the rename for up to 60s. No restart prompt needed -- the
+	// swap happens in the background while the player is already in game.
 	return true;
-}
-
-// Self-update: if a patch extracted a file named "launcher2.exe" next to us, swap it in for
-// Launcher.exe and relaunch isn't attempted automatically (the running exe's own image can be
-// renamed out from under it on Windows, but we still can't safely exec a brand-new image from
-// inside our own process while the old one is mid-teardown) -- instead we install it under the
-// real name and ask the player to restart. Called only after every file in this patch batch
-// extracted successfully, so Server.ini's Version is already correct either way.
-bool Launcher::ApplySelfUpdateIfPresent()
-{
-    std::string newExe = std::string(WorkingPath) + "\\launcher2.exe";
-    if (!is_file_exist(newExe.c_str()))
-        return false;
-
-    char selfPath[MAX_PATH]{ 0 };
-    GetModuleFileNameA(NULL, selfPath, MAX_PATH);
-
-    std::string oldExe = std::string(WorkingPath) + "\\Launcher_old.exe";
-    std::remove(oldExe.c_str()); // best effort; may still be locked from a previous update, ignore
-
-    // Renaming the file backing a currently-running image is allowed on Windows -- the process
-    // keeps executing from its open handle, only the directory entry moves. This is how we
-    // vacate "Launcher.exe" without needing to terminate first.
-    if (!MoveFileExA(selfPath, oldExe.c_str(), MOVEFILE_REPLACE_EXISTING))
-    {
-        SetState(xorstr("Launcher update failed (could not rename running exe)."));
-        return false;
-    }
-    if (!MoveFileExA(newExe.c_str(), selfPath, MOVEFILE_REPLACE_EXISTING))
-    {
-        // Put ourselves back so the folder isn't left without a Launcher.exe.
-        MoveFileExA(oldExe.c_str(), selfPath, MOVEFILE_REPLACE_EXISTING);
-        SetState(xorstr("Launcher update failed (could not install new exe)."));
-        return false;
-    }
-
-    MessageBoxA(NULL, xorstr("Launcher guncellendi. Lutfen bu pencereyi kapatip launcher'i yeniden acin."), xorstr("HSACSX"), MB_ICONINFORMATION);
-    ExitProcess(0);
-    return true; // unreachable
 }
 
 void Launcher::Download()
@@ -448,8 +417,6 @@ bool Launcher::HandlePacket(Packet& pkt)
                 return false;
             }
 		}
-        if (ApplySelfUpdateIfPresent())
-            return false; // unreachable: ApplySelfUpdateIfPresent exits the process on success
         SetState(xorstr("Files are being packed..."));
         CHDRSystem* hdrPacker = new CHDRSystem;
         hdrPacker->Pack();

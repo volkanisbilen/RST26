@@ -45,15 +45,15 @@ def collect():
     if os.path.isfile(dll):
         entries.append(('d3d9.dll', dll))
 
-    # Drop a freshly built Launcher.exe at CLIENT_DIR\launcher2.exe (NOT Launcher.exe itself --
+    # Drop a freshly built Launcher.exe at CLIENT_DIR\Launcher.upd (NOT Launcher.exe itself --
     # that one is still running when this script runs on a dev box, and players' running
-    # Launcher.exe needs the file to land under this alternate name too, since
-    # LauncherEngine.cpp's ApplySelfUpdateIfPresent() looks for exactly this name to swap itself
-    # out for). It gets delivered like any other patch file; the running launcher renames it
-    # into place and asks the player to restart.
-    launcher2 = os.path.join(CLIENT_DIR, 'launcher2.exe')
-    if os.path.isfile(launcher2):
-        entries.append(('launcher2.exe', launcher2))
+    # Launcher.exe is still running too when the patch lands). d3d9proxy.cpp's LauncherSwap
+    # thread (wired into every client's DllMain) waits for Launcher.exe to exit -- which it
+    # always does right after starting the game -- and renames Launcher.upd over it, retrying
+    # for up to 60s. No restart prompt needed.
+    launcher_upd = os.path.join(CLIENT_DIR, 'Launcher.upd')
+    if os.path.isfile(launcher_upd):
+        entries.append(('Launcher.upd', launcher_upd))
 
     # Launch guard (launch_ticket.h): its whitelisted Launcher.exe hashes live in the same
     # header d3d9.dll is built from, so whenever that header changes xldr must be rebuilt and
