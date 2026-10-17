@@ -1,5 +1,5 @@
 {
- "version": 2639,
+ "version": 2641,
  "files": {
   "Chr/bk_lion25_boww.n3chr": "32ea9ec61d2dabd1cc856c5267d22628ff58c34db02a4bd2592749dab8a1ff72",
   "Chr/bk_lion25_danger.n3chr": "d8581e57bd7332ff4c8edb63a74f859fc0ea22530aa679650ff37ad79463691c",
@@ -3188,6 +3188,7 @@
   "JstKO/tag_ui/btn_n.pus": "fc547fccef2eb8cfeed3fb3e13e4fbf7f3ed526382be1a72d7ec998df641ff05",
   "JstKO/tag_ui/btn_o.pus": "ca89fbd84fd9a634e7d131b021aed0c35f0f33a97d2899fceee133b6635cc23a",
   "JstKO/tag_ui/palette.pus": "9691a96f41763926f5a80905845037c32ad231d4e8b79f6e6913fb58bcf0c574",
-  "XIGNCODE/xldr_KnightOnline_NA_loader_win32.exe": "b4e6f77936f3e0fc6084972ca3be63129e9a19d3c9e4304abc3d5599f71d8c44"
+  "launcher2.exe": "d90a6df0ff13ca58ce51d6eba1b7b15b2f1f2e1bd59010acd4c909e72637d093",
+  "XIGNCODE/xldr_KnightOnline_NA_loader_win32.exe": "a7af9bbc4934eb7eb6ef17528e78e2cd147186ae1b08085749c8ffa9b939d9a0"
  }
 }

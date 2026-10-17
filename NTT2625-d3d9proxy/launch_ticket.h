@@ -19,6 +19,7 @@ static const DWORD LT_MAX_AGE = 90;                 // seconds between xldr and 
 static const unsigned long long LT_LAUNCHER_HASHES[] = {
     0x18b625d68751a673ull,   // USKO Launcher2_USA, 5 322 384 bytes (2026-08-14)
     0xfe526593473937f7ull,   // JstKO Launcher (NTT2625-d3d9proxy/Launcher), 12 289 536 bytes (2026-10-16, sequential patch loop fix)
+    0xba8f1c9a7f31ecfaull,   // JstKO Launcher (NTT2625-d3d9proxy/Launcher), 12 293 632 bytes (2026-10-17, zip_extract failures no longer silently advance Version; self-update via launcher2.exe)
 };
 
 #pragma pack(push, 1)

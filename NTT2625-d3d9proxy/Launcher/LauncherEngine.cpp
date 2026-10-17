@@ -296,11 +296,21 @@ bool Launcher::DownloadPatch(std::string server, std::string path, std::string f
             return false;
         }
 		FTPClient.CleanupSession();
+        Sleep(50);
+        int extractStatus = zip_extract(file.c_str(), WorkingPath, on_extract_entry, NULL);
+		std::remove(file.c_str());
+        if (extractStatus != 0)
+        {
+            // A file inside the archive (e.g. d3d9.dll) failed to write -- most likely it was
+            // locked/scanned by antivirus right after being written, or access was denied. Do
+            // NOT persist the version bump here: if we did, the launcher would believe this
+            // patch is fully applied and would never retry it again, permanently stranding the
+            // player on a partially-patched client that then fails the server's integrity check.
+            SetState(std::format("Patch extraction failed: {} (check antivirus/permissions)", file));
+            return false;
+        }
         std::string versionFromFile = m_currentFile.substr(0, m_currentFile.length() - 4);
         m_settingsVersion = atoi(versionFromFile.c_str());
-        Sleep(50);
-		zip_extract(file.c_str(), WorkingPath, on_extract_entry, NULL);
-		std::remove(file.c_str());
 		WritePrivateProfileStringA(xorstr("Version"), xorstr("Files"), std::to_string(m_settingsVersion).c_str(), (std::string(WorkingPath) + xorstr("\\Server.ini")).c_str());
 	}
 	// true = this one file is done (downloaded, extracted, version persisted), regardless of
@@ -308,6 +318,45 @@ bool Launcher::DownloadPatch(std::string server, std::string path, std::string f
 	// opcode 2) loops over every file the server listed and must not abort just because this
 	// wasn't the last one.
 	return true;
+}
+
+// Self-update: if a patch extracted a file named "launcher2.exe" next to us, swap it in for
+// Launcher.exe and relaunch isn't attempted automatically (the running exe's own image can be
+// renamed out from under it on Windows, but we still can't safely exec a brand-new image from
+// inside our own process while the old one is mid-teardown) -- instead we install it under the
+// real name and ask the player to restart. Called only after every file in this patch batch
+// extracted successfully, so Server.ini's Version is already correct either way.
+bool Launcher::ApplySelfUpdateIfPresent()
+{
+    std::string newExe = std::string(WorkingPath) + "\\launcher2.exe";
+    if (!is_file_exist(newExe.c_str()))
+        return false;
+
+    char selfPath[MAX_PATH]{ 0 };
+    GetModuleFileNameA(NULL, selfPath, MAX_PATH);
+
+    std::string oldExe = std::string(WorkingPath) + "\\Launcher_old.exe";
+    std::remove(oldExe.c_str()); // best effort; may still be locked from a previous update, ignore
+
+    // Renaming the file backing a currently-running image is allowed on Windows -- the process
+    // keeps executing from its open handle, only the directory entry moves. This is how we
+    // vacate "Launcher.exe" without needing to terminate first.
+    if (!MoveFileExA(selfPath, oldExe.c_str(), MOVEFILE_REPLACE_EXISTING))
+    {
+        SetState(xorstr("Launcher update failed (could not rename running exe)."));
+        return false;
+    }
+    if (!MoveFileExA(newExe.c_str(), selfPath, MOVEFILE_REPLACE_EXISTING))
+    {
+        // Put ourselves back so the folder isn't left without a Launcher.exe.
+        MoveFileExA(oldExe.c_str(), selfPath, MOVEFILE_REPLACE_EXISTING);
+        SetState(xorstr("Launcher update failed (could not install new exe)."));
+        return false;
+    }
+
+    MessageBoxA(NULL, xorstr("Launcher guncellendi. Lutfen bu pencereyi kapatip launcher'i yeniden acin."), xorstr("HSACSX"), MB_ICONINFORMATION);
+    ExitProcess(0);
+    return true; // unreachable
 }
 
 void Launcher::Download()
@@ -399,6 +448,8 @@ bool Launcher::HandlePacket(Packet& pkt)
                 return false;
             }
 		}
+        if (ApplySelfUpdateIfPresent())
+            return false; // unreachable: ApplySelfUpdateIfPresent exits the process on success
         SetState(xorstr("Files are being packed..."));
         CHDRSystem* hdrPacker = new CHDRSystem;
         hdrPacker->Pack();
