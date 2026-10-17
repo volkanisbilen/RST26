@@ -7897,8 +7897,8 @@ mod tests {
         pkt.write_u16(0); // v2625 SendStackChange trailing field
 
         assert_eq!(pkt.opcode, Opcode::WizItemCountChange as u8);
-        // u16 + u8 + u8 + u32 + u32 + u8 + u16 + u32 + u32 + u16 = 24 bytes
-        assert_eq!(pkt.data.len(), 24);
+        // u16 + u8 + u8 + u32 + u32 + u8 + u16 + u32 + u32 + u16 = 25 bytes
+        assert_eq!(pkt.data.len(), 25);
     }
 
     /// Test +clear sends one WIZ_ITEM_COUNT_CHANGE per bag slot (28 slots).
@@ -8257,7 +8257,7 @@ mod tests {
 
         let _r = PacketReader::new(&pkt.data);
         assert_eq!(pkt.opcode, Opcode::WizItemCountChange as u8);
-        assert_eq!(pkt.data.len(), 24);
+        assert_eq!(pkt.data.len(), 25);
     }
 
     /// Test +clearinventory slot range constants.
