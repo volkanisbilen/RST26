@@ -1,5 +1,5 @@
 {
- "version": 2641,
+ "version": 2642,
  "files": {
   "Chr/bk_lion25_boww.n3chr": "32ea9ec61d2dabd1cc856c5267d22628ff58c34db02a4bd2592749dab8a1ff72",
   "Chr/bk_lion25_danger.n3chr": "d8581e57bd7332ff4c8edb63a74f859fc0ea22530aa679650ff37ad79463691c",
@@ -11,7 +11,7 @@
   "Chr/bk_lion25_staff_lightning.n3chr": "f9175f277db88dc77fcc0c29c767e2ef082265c31d397b91cdd6257c9ac87374",
   "Chr/bk_lion25_wea_axe.n3chr": "1232924c6c77037c1953e0620640daf7080d17d41e76b8c4b02a439a34a91c8b",
   "Chr/bk_lion25_wea_spear.n3chr": "2c37ea094c9b6615c410534c7a545b8e2d87c9196a3ac26aee82ef18e963d1e0",
-  "d3d9.dll": "b131c1be42d36b8e6f48a923dc840aa32ac6299e963430ec78ce5e2bd8ab72a9",
+  "d3d9.dll": "b39bc6c5a42d1d7a53d2d08aca14f021144a8dcb1d002b7d9e0466904a905edf",
   "Data/ACHIEVE_com.tbl": "3740a12a7400f1636abbeb9bb32c5d0d1068a499dd8f646f57fc5b15c7bf4dfd",
   "Data/ACHIEVE_main.tbl": "0676a83edd54adc763c939d6acc6488d19460ccec69912cc0ee6e0e714084cf0",
   "Data/ACHIEVE_mon.tbl": "1c488bdd0e0e5929f7c43638c188b35d00551486575fc01337f690f5f63c4266",
@@ -196,7 +196,7 @@
   "Data/NpcMopMap_info_tk.tbl": "e1a2a3920044f5de23dfb79744bdd71b79fbd4ff14780e387d202df872b62025",
   "Data/NpcMopMap_info_us.tbl": "1ea4a9b1428bad34276b27094526979474a83841f05c278413a86e0b5e0ade86",
   "Data/Pet_exchange.tbl": "25bb008401ddbbf4db6b78cdac476eb968dd6ef6b5b9a793a3684f8a05e494c5",
-  "Data/piece_Exchange_us.tbl": "db61c85ef9784e8e330b57452ef83873fee81b3557fc3fea9d6dca8e11fcfdbb",
+  "Data/piece_Exchange_us.tbl": "0eae54fe21cb465e6dac309a42b671992bbb20be79e6b3e79da87cb6e4e0d8d6",
   "Data/Player_experience.tbl": "22ce7e1a527d19e791498df05c7808fba8b8ffe94ab2481acb6d34125a42c2d6",
   "Data/powerupprboard.tbl": "f98a5fdfb09e2810c9a5721238476569f47b0c0479ceb3b493055b21a1e70ccf",
   "Data/Queset_Talk_us.tbl": "b5bc75fb97078ed3519261ed2d5df5a8b5a3a40377fe8d9cd51b7d61d4ad6673",
@@ -3188,6 +3188,7 @@
   "JstKO/tag_ui/btn_n.pus": "fc547fccef2eb8cfeed3fb3e13e4fbf7f3ed526382be1a72d7ec998df641ff05",
   "JstKO/tag_ui/btn_o.pus": "ca89fbd84fd9a634e7d131b021aed0c35f0f33a97d2899fceee133b6635cc23a",
   "JstKO/tag_ui/palette.pus": "9691a96f41763926f5a80905845037c32ad231d4e8b79f6e6913fb58bcf0c574",
-  "XIGNCODE/xldr_KnightOnline_NA_loader_win32.exe": "a7af9bbc4934eb7eb6ef17528e78e2cd147186ae1b08085749c8ffa9b939d9a0"
+  "Launcher.upd": "8035371d907b441a0d1f4fc32529a027016264fc5c5d2bf094a8882ce44f298b",
+  "XIGNCODE/xldr_KnightOnline_NA_loader_win32.exe": "74823cdbb2482d318ca5044daea494b2f642575a4ad0cf242a5f41649deaa2a0"
  }
 }

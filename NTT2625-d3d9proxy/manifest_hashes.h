@@ -190,7 +190,7 @@ static const ManifestEntry MANIFEST[] = {
     { "Data\\NpcMopMap_info_tk.tbl", "e1a2a3920044f5de23dfb79744bdd71b79fbd4ff14780e387d202df872b62025" },
     { "Data\\NpcMopMap_info_us.tbl", "1ea4a9b1428bad34276b27094526979474a83841f05c278413a86e0b5e0ade86" },
     { "Data\\Pet_exchange.tbl", "25bb008401ddbbf4db6b78cdac476eb968dd6ef6b5b9a793a3684f8a05e494c5" },
-    { "Data\\piece_Exchange_us.tbl", "db61c85ef9784e8e330b57452ef83873fee81b3557fc3fea9d6dca8e11fcfdbb" },
+    { "Data\\piece_Exchange_us.tbl", "0eae54fe21cb465e6dac309a42b671992bbb20be79e6b3e79da87cb6e4e0d8d6" },
     { "Data\\Player_experience.tbl", "22ce7e1a527d19e791498df05c7808fba8b8ffe94ab2481acb6d34125a42c2d6" },
     { "Data\\powerupprboard.tbl", "f98a5fdfb09e2810c9a5721238476569f47b0c0479ceb3b493055b21a1e70ccf" },
     { "Data\\Queset_Talk_us.tbl", "b5bc75fb97078ed3519261ed2d5df5a8b5a3a40377fe8d9cd51b7d61d4ad6673" },
