@@ -67,22 +67,24 @@ async function chaoticBoxDetail(main, boxId) {
     clear(wrap);
     const d = await api('/chaotic/boxes/' + boxId + '/rewards');
     if (!d.rewards.length) { wrap.append(h('div', { class: 'card empty' }, 'Bu kutunun hiç ödülü yok — oyuncular kırınca hata alır.')); return }
-    wrap.append(h('div', { class: 'card' }, h('div', { class: 'tw' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['Item', 'Ağırlık', 'Yaklaşık Şans', ''].map(x => h('th', {}, x)))),
-      h('tbody', {}, d.rewards.map(r => h('tr', {},
-        h('td', {}, h('div', { class: 'row', style: 'gap:8px;align-items:center' },
-          h('div', { class: 'slot full', style: 'width:28px;height:28px' }, h('img', { src: icon(r.icon), onerror: iconErr })),
-          h('span', {}, r.name || ('#' + r.item_id)))),
-        h('td', {}, r.weight),
-        h('td', {}, r.pct.toFixed(2) + '%'),
-        h('td', {}, h('button', {
-          class: 'btn sm danger', onclick: async () => {
-            if (!await confirmBox('Ödülü kaldır', (r.name || ('#' + r.item_id)) + ' bu kutudan kaldırılacak.', 'Kaldır', true)) return;
-            await api('/chaotic/boxes/' + boxId + '/rewards/' + r.n_index, { method: 'DELETE' });
-            toast('Kaldırıldı', 'ok'); render();
-          }
-        }, 'Kaldır'))
-      ))))));
+    const headRow = h('tr', {}, ['Item', 'Ağırlık', 'Yaklaşık Şans', ''].map(x => h('th', {}, x)));
+    const bodyRows = d.rewards.map(r => {
+      const nameCell = h('td', {}, h('div', { class: 'row', style: 'gap:8px;align-items:center' },
+        h('div', { class: 'slot full', style: 'width:28px;height:28px' }, h('img', { src: icon(r.icon), onerror: iconErr })),
+        h('span', {}, r.name || ('#' + r.item_id))));
+      const weightCell = h('td', {}, String(r.weight));
+      const pctCell = h('td', {}, r.pct.toFixed(2) + '%');
+      const removeBtn = h('button', {
+        class: 'btn sm danger', onclick: async () => {
+          if (!await confirmBox('Ödülü kaldır', (r.name || ('#' + r.item_id)) + ' bu kutudan kaldırılacak.', 'Kaldır', true)) return;
+          await api('/chaotic/boxes/' + boxId + '/rewards/' + r.n_index, { method: 'DELETE' });
+          toast('Kaldırıldı', 'ok'); render();
+        }
+      }, 'Kaldır');
+      return h('tr', {}, nameCell, weightCell, pctCell, h('td', {}, removeBtn));
+    });
+    const table = h('table', {}, h('thead', {}, headRow), h('tbody', {}, bodyRows));
+    wrap.append(h('div', { class: 'card' }, h('div', { class: 'tw' }, table)));
   }
   await render();
 }
