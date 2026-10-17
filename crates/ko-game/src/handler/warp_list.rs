@@ -342,13 +342,34 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
 
     let zone = match world.get_zone(pos.zone_id) {
         Some(z) => z,
-        None => return Ok(false),
+        None => {
+            warn!(
+                "[{}] send_warp_list: zone {} not found",
+                session.addr(),
+                pos.zone_id
+            );
+            return Ok(false);
+        }
     };
 
     let warps = match zone.map_data.as_ref() {
         Some(md) => md.get_warp_list(warp_group),
-        None => return Ok(false),
+        None => {
+            warn!(
+                "[{}] send_warp_list: zone {} has no map_data",
+                session.addr(),
+                pos.zone_id
+            );
+            return Ok(false);
+        }
     };
+    warn!(
+        "[{}] send_warp_list: zone {} group {} raw_warps={}",
+        session.addr(),
+        pos.zone_id,
+        warp_group,
+        warps.len()
+    );
 
     // Filter warps: nation check, destination zone must exist and be active
     let battle = world.get_battle_state();
