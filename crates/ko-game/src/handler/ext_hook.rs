@@ -1586,7 +1586,13 @@ pub async fn handle_chaotic_exchange(
     let world = session.world().clone();
     let sid = session.session_id();
 
+    warn!(
+        "[chaotic] sid={} npc_id={} item={} src_pos={} bank={} sell={} count={}",
+        sid, npc_id, exchange_item_id, src_pos, bank, sell, count
+    );
+
     if count == 0 || count > 100 {
+        warn!("[chaotic] sid={} reject: bad count={}", sid, count);
         return send_bifrost_fail(session, error_code).await;
     }
 
@@ -1600,19 +1606,30 @@ pub async fn handle_chaotic_exchange(
     if chaotic_coins > 0 {
         let gold = world.get_character_info(sid).map(|ch| ch.gold).unwrap_or(0);
         if gold < chaotic_coins as u32 {
+            warn!(
+                "[chaotic] sid={} reject: not enough chaotic coins (have {}, need {})",
+                sid, gold, chaotic_coins
+            );
             return send_bifrost_fail(session, error_code).await;
         }
     }
 
     // Validate player has enough of the exchange item
     if !world.check_exist_item(sid, exchange_item_id, count as u16) {
+        warn!(
+            "[chaotic] sid={} reject: doesn't have {}x item {}",
+            sid, count, exchange_item_id
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Validate NPC exists and is chaotic generator type
     let npc = match world.get_npc_instance(npc_id as u32) {
         Some(n) => n,
-        None => return send_bifrost_fail(session, error_code).await,
+        None => {
+            warn!("[chaotic] sid={} reject: no npc instance {}", sid, npc_id);
+            return send_bifrost_fail(session, error_code).await;
+        }
     };
 
     // State checks
@@ -1622,6 +1639,7 @@ pub async fn handle_chaotic_exchange(
         || world.is_mining(sid)
         || world.is_fishing(sid)
     {
+        warn!("[chaotic] sid={} reject: busy state", sid);
         return send_bifrost_fail(session, error_code).await;
     }
 
@@ -1631,28 +1649,44 @@ pub async fn handle_chaotic_exchange(
         .map(|t| t.npc_type)
         .unwrap_or(0);
     if npc_type != 137 && npc_type != 162 {
+        warn!(
+            "[chaotic] sid={} reject: npc proto_id={} has npc_type={} (need 137/162)",
+            sid, npc.proto_id, npc_type
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Validate item template: must be countable with effect2 == 251
     let item_tmpl = match world.get_item(exchange_item_id) {
         Some(t) => t,
-        None => return send_bifrost_fail(session, error_code).await,
+        None => {
+            warn!("[chaotic] sid={} reject: no item template {}", sid, exchange_item_id);
+            return send_bifrost_fail(session, error_code).await;
+        }
     };
 
     if item_tmpl.countable.unwrap_or(0) != 1 || item_tmpl.effect2.unwrap_or(0) != 251 {
+        warn!(
+            "[chaotic] sid={} reject: item {} countable={:?} effect2={:?}",
+            sid, exchange_item_id, item_tmpl.countable, item_tmpl.effect2
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Check free slots
     let free_slots = world.count_free_slots(sid);
     if free_slots < 1 {
+        warn!("[chaotic] sid={} reject: no free inventory slots", sid);
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Load matching exchanges
     let exchanges = world.get_bifrost_exchanges(exchange_item_id);
     if exchanges.is_empty() {
+        warn!(
+            "[chaotic] sid={} reject: no item_exchange rows for piece {}",
+            sid, exchange_item_id
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
@@ -1687,6 +1721,10 @@ pub async fn handle_chaotic_exchange(
         }
 
         if total_weight == 0 {
+            warn!(
+                "[chaotic] sid={} reject: {} item_exchange rows for piece {} but none passed origin_item_count1 check",
+                sid, exchanges.len(), exchange_item_id
+            );
             return send_bifrost_fail(session, error_code).await;
         }
 
