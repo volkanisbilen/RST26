@@ -145,6 +145,31 @@ if ($q !== '' && !$mob) {
     $stmt->execute(['q' => '%' . $q . '%']);
     $mobResults = $stmt->fetchAll();
 }
+
+// Batch-fetch each result's spawn zone(s) in one query per creature/NPC split, instead of
+// re-querying per row.
+$resultZones = [];
+if ($mobResults) {
+    foreach (['m' => true, 'n' => false] as $suffix => $isMonster) {
+        $sids = array_values(array_unique(array_map('intval', array_column(
+            array_filter($mobResults, fn($r) => jstko_pg_bool($r['is_monster']) === $isMonster), 's_sid'
+        ))));
+        if (!$sids) continue;
+        $placeholders = implode(',', array_fill(0, count($sids), '?'));
+        $stmt = $pdo->prepare(
+            "SELECT ns.npc_id, z.zone_name
+             FROM npc_spawn ns JOIN zone_info z ON z.zone_no = ns.zone_id
+             WHERE ns.npc_id IN ($placeholders) AND ns.is_monster = ?
+             GROUP BY ns.npc_id, z.zone_name ORDER BY z.zone_name"
+        );
+        $stmt->execute(array_merge($sids, [$isMonster]));
+        foreach ($stmt->fetchAll() as $row) {
+            $key = $row['npc_id'] . ':' . $suffix;
+            $resultZones[$key] = $resultZones[$key] ?? [];
+            $resultZones[$key][] = $row['zone_name'];
+        }
+    }
+}
 ?>
 <section class="max-w-5xl mx-auto px-4 py-10">
   <h1 class="text-2xl font-bold text-white mb-1">Droplar</h1>
@@ -193,12 +218,14 @@ if ($q !== '' && !$mob) {
     <?php else: ?>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <?php foreach ($mobResults as $r):
-            $token = (int)$r['s_sid'] . ':' . (jstko_pg_bool($r['is_monster']) ? 'm' : 'n');
+            $suffix = jstko_pg_bool($r['is_monster']) ? 'm' : 'n';
+            $token = (int)$r['s_sid'] . ':' . $suffix;
+            $zones = $resultZones[(int)$r['s_sid'] . ':' . $suffix] ?? [];
         ?>
         <a href="/items.php?mob=<?= urlencode($token) ?><?= $q !== '' ? '&q=' . urlencode($q) : '' ?>"
            class="card p-3 flex items-center justify-between hover:border-gold-400 border border-transparent transition">
           <span class="text-sm font-medium text-white"><?= jstko_e($r['str_name'] ?: 'Yaratık') ?></span>
-          <span class="text-xs text-slate-500">Lv<?= (int)$r['s_level'] ?> &middot; <?= jstko_pg_bool($r['is_monster']) ? 'Canavar' : 'NPC' ?></span>
+          <span class="text-xs text-slate-500">Lv<?= (int)$r['s_level'] ?> &middot; <?= jstko_e($zones ? implode(', ', $zones) : '-') ?></span>
         </a>
         <?php endforeach; ?>
       </div>

@@ -2309,6 +2309,14 @@ async fn execute_type2(
             None => return false,
         };
 
+        // Archery (Type2) skills against NPCs had no range check at all, letting any
+        // such skill — including multi-arrow Multiple Shot / Arrow Shower — land from
+        // any distance. Mirror the player-target branch's check_skill_range below.
+        if !check_skill_range_npc(world, caster_sid, npc_id, skill) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+
         let npc_ac = {
             let npc = world.get_npc_instance(npc_id);
             npc.and_then(|n| world.get_npc_template(n.proto_id, n.is_monster))
@@ -6006,6 +6014,65 @@ fn check_skill_range(
         return false;
     }
 
+    let effective_range = resolve_skill_range(world, caster_sid, skill, target_sid);
+    if effective_range == 0 {
+        return true;
+    }
+
+    let dx = caster_pos.x - target_pos.x;
+    let dz = caster_pos.z - target_pos.z;
+    let dist_sq = dx * dx + dz * dz;
+    let range_sq = (effective_range as f32) * (effective_range as f32);
+
+    dist_sq <= range_sq
+}
+
+/// Same range rule as `check_skill_range`, but against an NPC target (npc_id-based, not
+/// session-based) -- Type2 archery skills vs NPCs never had this check at all, letting
+/// any archer skill (including multi-arrow ones) land from literally any distance.
+fn check_skill_range_npc(
+    world: &WorldState,
+    caster_sid: SessionId,
+    npc_id: u32,
+    skill: &MagicRow,
+) -> bool {
+    let caster_pos = match world.get_position(caster_sid) {
+        Some(p) => p,
+        None => return false,
+    };
+    let npc = match world.get_npc_instance(npc_id) {
+        Some(n) => n,
+        None => return false,
+    };
+
+    if caster_pos.zone_id != npc.zone_id {
+        return false;
+    }
+
+    // NPC targets can't match the PID-6200 drain-skill override (session-only, and
+    // is_target_npc_pid_6200 always returns false anyway) -- 0 is a safe placeholder.
+    let effective_range = resolve_skill_range(world, caster_sid, skill, 0);
+    if effective_range == 0 {
+        return true;
+    }
+
+    let dx = caster_pos.x - npc.x;
+    let dz = caster_pos.z - npc.z;
+    let dist_sq = dx * dx + dz * dz;
+    let range_sq = (effective_range as f32) * (effective_range as f32);
+
+    dist_sq <= range_sq
+}
+
+/// Resolve the effective skill range (0 = unlimited) per C++ MagicInstance.cpp:241-273.
+/// `target_sid` is only consulted for the PID-6200 drain-skill override; pass 0 for NPC
+/// targets (that override is session-only and never applies to them).
+fn resolve_skill_range(
+    world: &WorldState,
+    caster_sid: SessionId,
+    skill: &MagicRow,
+    target_sid: SessionId,
+) -> i32 {
     let base_range = skill.range.unwrap_or(0) as i32;
     let skill_id = skill.magic_num as u32;
     let type1 = skill.type1.unwrap_or(0);
@@ -6064,23 +6131,16 @@ fn check_skill_range(
     // C++ MagicInstance.cpp:279 only checks distance when the resolved range is non-zero
     // (cast-time skills with `range 0`, e.g. archery, have no limit).
     if skill_range == 0 {
-        return true;
+        return 0;
     }
 
     // Item 391010000 special range
     // C++ line 273
-    let effective_range = if use_item == 391010000 {
+    if use_item == 391010000 {
         55
     } else {
         skill_range
-    };
-
-    let dx = caster_pos.x - target_pos.x;
-    let dz = caster_pos.z - target_pos.z;
-    let dist_sq = dx * dx + dz * dz;
-    let range_sq = (effective_range as f32) * (effective_range as f32);
-
-    dist_sq <= range_sq
+    }
 }
 
 /// Check if the target is NPC with proto_id 6200 (used for drain skill range override).

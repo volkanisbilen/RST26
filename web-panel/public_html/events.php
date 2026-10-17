@@ -27,11 +27,6 @@ function jstko_days_text(int $mask): string
     return $out ? implode(' ', $out) : '-';
 }
 
-$groups = [];
-foreach ($rows as $r) {
-    $groups[$r['name']][] = $r;
-}
-ksort($groups, SORT_NATURAL | SORT_FLAG_CASE);
 ?>
 <section class="max-w-5xl mx-auto px-4 py-10">
   <h1 class="text-2xl font-bold text-white mb-1">Etkinlik Takvimi</h1>
@@ -48,17 +43,17 @@ ksort($groups, SORT_NATURAL | SORT_FLAG_CASE);
         </tr>
       </thead>
       <tbody>
-        <?php foreach ($groups as $name => $sessions): foreach ($sessions as $i => $r): ?>
+        <?php foreach ($rows as $r): ?>
         <tr class="table-row border-t border-ink-500/50">
           <td class="py-2.5 px-4 text-gold-400 font-semibold whitespace-nowrap"><?= sprintf('%02d:%02d', (int)$r['hour'], (int)$r['minute']) ?></td>
           <td class="py-2.5 px-4">
-            <div class="font-medium text-white"><?= jstko_e($name) ?></div>
+            <div class="font-medium text-white"><?= jstko_e($r['name']) ?></div>
             <?php if (!empty($r['note'])): ?><div class="text-xs text-slate-500"><?= jstko_e($r['note']) ?></div><?php endif; ?>
           </td>
           <td class="py-2.5 px-4 text-slate-300"><?= jstko_e(jstko_days_text((int)$r['days'])) ?></td>
           <td class="py-2.5 px-4 text-slate-400"><?= $r['arg'] !== '' ? jstko_e(($r['arg_label'] ?: '') . ($r['arg_label'] ? ': ' : '') . $r['arg']) : '-' ?></td>
         </tr>
-        <?php endforeach; endforeach; ?>
+        <?php endforeach; ?>
       </tbody>
     </table>
   </div>
