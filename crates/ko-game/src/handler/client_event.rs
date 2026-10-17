@@ -157,6 +157,7 @@ async fn handle_ticket_exchange(session: &mut ClientSession, pkt: &Packet) -> an
     let _sub = reader.read_u8();
     let ticket_item = reader.read_u32().unwrap_or(0);
     let reward_item = reader.read_u32().unwrap_or(0);
+    tracing::info!(sid = session.session_id(), ticket_item, reward_item, "Ticket Exchange request received");
 
     // The allow-list is imported from the client's TICKET_EXCHANGE.tbl. The
     // client controls both IDs on the wire, so never trust the pair without
@@ -182,6 +183,11 @@ async fn handle_ticket_exchange(session: &mut ClientSession, pkt: &Packet) -> an
         _ => true,
     });
     let status = if !selector_allowed || world.get_item(reward_item).is_none() {
+        tracing::warn!(
+            sid, ticket_item, reward_item,
+            rule_found = rule.is_some(), selector_allowed,
+            "Ticket Exchange rejected: invalid ticket/reward pair (status 3)"
+        );
         3u8 // invalid ticket/reward pair
     } else {
         let ticket_count: u32 = world
@@ -191,10 +197,13 @@ async fn handle_ticket_exchange(session: &mut ClientSession, pkt: &Packet) -> an
             .map(|slot| slot.count as u32)
             .sum();
         if ticket_count == 0 {
+            tracing::warn!(sid, ticket_item, reward_item, "Ticket Exchange rejected: ticket not in inventory (status 2)");
             2u8 // ticket is no longer in inventory
         } else if !world.check_weight(sid, reward_item, 1) {
+            tracing::warn!(sid, ticket_item, reward_item, "Ticket Exchange rejected: inventory/weight full (status 4)");
             4u8 // inventory slot or weight failure
         } else if !world.rob_item(sid, ticket_item, 1) {
+            tracing::warn!(sid, ticket_item, reward_item, ticket_count, "Ticket Exchange rejected: rob_item failed despite ticket_count>0 (status 2)");
             2u8
         } else {
             let hours = rule.map(|(hours, _)| hours).unwrap_or(0).max(0) as u32;
@@ -230,6 +239,7 @@ async fn handle_ticket_exchange(session: &mut ClientSession, pkt: &Packet) -> an
                 );
                 1u8
             } else {
+                tracing::warn!(sid, ticket_item, reward_item, "Ticket Exchange rejected: give_item(_with_expiry) failed after rob_item succeeded (status 5)");
                 // Pre-validation should make this exceptional; restore the
                 // consumed ticket if delivery still fails.
                 let _ = world.give_item(sid, ticket_item, 1);
