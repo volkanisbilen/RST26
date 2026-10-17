@@ -71,10 +71,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let mut r = PacketReader::new(&pkt.data);
     let op = r.read_u8().unwrap_or(0);
     if op == 3 {
-        // Async alert: module_guard.cpp or manifest_check.cpp found tampering any time during play,
-        // not just at login — the client doesn't say which, that's enough to drop the session.
-        warn!("[integrity] sid={} tamper reported mid-session — disconnecting", sid);
-        anyhow::bail!("client integrity: tamper reported mid-session");
+        // Async alert: module_guard.cpp or manifest_check.cpp found tampering any time during play.
+        // TEMPORARILY log-only, not a disconnect: the launcher's patch delivery has a known bug
+        // (silently stranding some players on a stale d3d9.dll/tbl combo no matter how many times
+        // they repatch, see LauncherEngine.cpp's DownloadPatch fix) that trips manifest_check.cpp's
+        // tbl/pus hash check as a false positive. Re-enable the bail! once that's confirmed fixed
+        // for the affected players.
+        warn!("[integrity] sid={} tamper reported mid-session (not disconnecting, enforcement paused)", sid);
+        return Ok(());
     }
     if op != 2 {
         return Ok(());
@@ -102,8 +106,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if tamper & 2 != 0 {
             reasons.push("tbl/pus hash mismatch");
         }
-        warn!("[integrity] sid={} tamper: {} — disconnecting", sid, reasons.join(", "));
-        anyhow::bail!("client integrity: tamper flags set");
+        if tamper & 1 != 0 {
+            // Real cheat signal (injected module) -- unaffected by the launcher bug below, keep enforcing.
+            warn!("[integrity] sid={} tamper: {} — disconnecting", sid, reasons.join(", "));
+            anyhow::bail!("client integrity: tamper flags set");
+        }
+        // bit 2 only (tbl/pus hash mismatch): TEMPORARILY log-only, see the op==3 comment above --
+        // this is a known false positive from the launcher's patch-delivery bug, not a real tamper.
+        warn!("[integrity] sid={} tamper: {} (not disconnecting, enforcement paused)", sid, reasons.join(", "));
     }
     if !ok {
         warn!(
