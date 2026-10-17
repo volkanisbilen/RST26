@@ -681,16 +681,19 @@ if (EVENT == 556) then -- Wing Of Dragon
 	SelectMsg(UID, 3, -1, 3018, NPC,7679,205,45238,552,45239,35264, 40536,111,8611,118,9017,138,4296, 100);
 end
 
-if (EVENT == 205) then
+if (EVENT == 205) then -- Wing Of Dragon
 	ITEMDRGN = HowmuchItem(UID, 810164000);
 	if (ITEMDRGN < 1 or ITEMDRGN == 0) then
 		SelectMsg(UID, 2, -1, 10593, NPC, 18, 5000);
 	else
 	NATION = CheckNation(UID);
-	if (NATION == 1 ) then
-		SelectMsg(UID, 5, 6900, 10592, NPC, 4006, 206, 4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+	elseif (NATION == 1 ) then
+		RunQuestExchange(UID,6900,STEP,1);
 	elseif (NATION == 2 ) then
-		SelectMsg(UID, 5, 6901, 10592, NPC, 4006, 207, 4005,-1);
+		RunQuestExchange(UID,6901,STEP,1);
 		end
 	end
 end
@@ -762,10 +765,13 @@ if (EVENT == 35264) then -- Battle Hero Wing
 		SelectMsg(UID, 2, -1, 9546, NPC, 18, 5000);
 	else
 	NATION = CheckNation(UID);
-	if (NATION == 1 ) then
-		SelectMsg(UID, 4, 6903, 10592, NPC, 4006, 554, 4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+	elseif (NATION == 1 ) then
+		RunQuestExchange(UID,639,STEP,1);
 	elseif (NATION == 2 ) then
-		SelectMsg(UID, 4, 6904, 10592, NPC, 4006, 555, 4005,-1);
+		RunQuestExchange(UID,640,STEP,1);
 		end
 	end
 end
@@ -806,7 +812,12 @@ if (EVENT == 111) then -- Cupid Wing
 	if (CUPIDWING < 1 or CUPIDWING == 0) then
 		SelectMsg(UID, 2, -1, 44440, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 5, 6905, 44439, NPC, 4006, 112, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6905,STEP,1);
+		end
 	end
 end
 
@@ -837,7 +848,12 @@ if (EVENT == 119) then -- Alencia Wing Blue
 	if (BLUEWING < 1 or BLUEWING == 0) then
 		SelectMsg(UID, 2, -1, 12061, NPC, 18,5000);
 	else
-		SelectMsg(UID, 5, 6911, 12060, NPC, 4006,121,4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6911,STEP,1);
+		end
 	end
 end
 
@@ -863,7 +879,12 @@ if (EVENT == 120) then -- Alencia Wing Red
 	if (REDWING < 1 or REDWING == 0) then
 		SelectMsg(UID, 2, -1, 12058, NPC, 18,5000);
 	else
-		SelectMsg(UID, 5, 6912, 12057, NPC, 4006,125,4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6912,STEP,1);
+		end
 	end
 end
 
@@ -888,7 +909,12 @@ if (EVENT == 138) then -- Wings Of Hellfire
 	if (Hellfire < 1 or Hellfire == 0) then
 		SelectMsg(UID, 2, -1, 9528, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 5, 6913, 9527, NPC, 4006, 156,4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6913,STEP,1);
+		end
 	end
 end
 
