@@ -39,7 +39,7 @@ static const ManifestEntry MANIFEST[] = {
     { "Data\\INDUN_SCHEDULE_us.tbl", "8a592d44e99ee9801a9ed9bdea070b87c4ce2ec4cf28a640100974a1bc740976" },
     { "Data\\Item_Exchange.tbl", "df513f7ad8f67c6314ceda5329db572fda3fa9b61977e898654a1fe5d513cb67" },
     { "Data\\Item_Exchange_exp.tbl", "e8a1f15303e1f780b7376d66e37abef1215156f24188f90c05b6b7852eda94a1" },
-    { "Data\\Item_Exchange_us.tbl", "69977d3af75df94873f78fc3dcd019a81e93db604f7258a9a7d4e3a771630753" },
+    { "Data\\Item_Exchange_us.tbl", "5fb12fde04abc3ca9f71d9b9fc9ceffc8331bcfd6fa331f632e1ab051539d487" },
     { "Data\\item_ext22_tk.tbl", "c32415bd89885876083abcf31a16297a918d6f5677a2d8706fdeaf01d22c954b" },
     { "Data\\Item_Ext_0.tbl", "730150936b04390a4207b6e044fa459d2bdc5b1149cdacdd1885c6ca713948cf" },
     { "Data\\Item_Ext_0_tk.tbl", "d903b4a235857f6cf11aadfa913d3c19cd0d9f3d08ae73a7850075838dc97b13" },
