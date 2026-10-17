@@ -317,7 +317,11 @@ impl SmdFile {
                 for coordinate in vertex { *coordinate = read_f32(reader)?; }
             }
             if v.iter().flatten().any(|c| !c.is_finite()) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid collision vertex"));
+                // Some exported SMDs (e.g. the "freezone" event maps) contain a handful of
+                // degenerate/garbage collision faces. The original client tolerates this
+                // silently; aborting the whole map load over one bad face took down the
+                // entire zone (no warps, no NPCs, nothing). Skip just this face instead.
+                continue;
             }
             let a = [v[1][0]-v[0][0], v[1][1]-v[0][1], v[1][2]-v[0][2]];
             let b = [v[2][0]-v[0][0], v[2][1]-v[0][1], v[2][2]-v[0][2]];
