@@ -79,7 +79,12 @@ function rwPage(cfg){
             content=h('div',{class:'col',style:'gap:8px'},grows.map(r=>rwRow(m,s,sec,r,draw)),
               h('div',{class:'dslots'},rwAdd(sec.addLabel||'Satır ekle',add)));
           }else{
-            content=h('div',{class:'dslots'},grows.map(r=>rwTile(r[sec.item],sec.count?r[sec.count]:1,sec.detail?sec.detail(r):'',()=>rwEdit(m,s,r,null,draw))),rwAdd(sec.addLabel,add));
+            const tiles=grows.map(r=>{
+              const t=rwTile(r[sec.item],sec.count?r[sec.count]:1,sec.detail?sec.detail(r):'',()=>rwEdit(m,s,r,null,draw));
+              if(sec.sortable)rwMakeSortable(t,s,r,grows,draw);
+              return t;
+            });
+            content=h('div',{class:'dslots'},tiles,rwAdd(sec.addLabel,add));
           }
           body.append(h('div',{class:'card',style:'margin-bottom:14px'},
             h('div',{class:'row',style:'margin-bottom:10px'},ico(sec.icon||'flag'),h('h2',{},gtitle),sec.groupBy&&sec.chip?h('span',{class:'chip'},sec.chip(g)):null,h('span',{class:'grow'}),h('span',{class:'chip'},grows.length+' kayıt')),
@@ -90,6 +95,38 @@ function rwPage(cfg){
     };
     draw();
   };
+}
+
+/* drag-and-drop reordering for a tile (sec.sortable:true): drop one tile onto another to swap
+   their place, persist new sort_order values (10, 20, 30 …) for every row whose order actually
+   changed, then redraw. Only wires up tiles within the same group (grows is already filtered to it). */
+function rwMakeSortable(tile,s,r,grows,draw){
+  const pkName=s.pk[0];
+  tile.draggable=true;
+  tile.style.cursor='grab';
+  tile.addEventListener('dragstart',e=>{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(r[pkName]));tile.classList.add('dragging')});
+  tile.addEventListener('dragend',()=>tile.classList.remove('dragging'));
+  tile.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='move';tile.classList.add('over')});
+  tile.addEventListener('dragleave',()=>tile.classList.remove('over'));
+  tile.addEventListener('drop',async e=>{
+    e.preventDefault();
+    tile.classList.remove('over');
+    const draggedId=e.dataTransfer.getData('text/plain');
+    if(!draggedId||String(draggedId)===String(r[pkName]))return;
+    const fromIdx=grows.findIndex(x=>String(x[pkName])===String(draggedId));
+    const toIdx=grows.findIndex(x=>String(x[pkName])===String(r[pkName]));
+    if(fromIdx<0||toIdx<0)return;
+    const reordered=grows.slice();
+    const [moved]=reordered.splice(fromIdx,1);
+    reordered.splice(toIdx,0,moved);
+    const saves=[];
+    reordered.forEach((row,i)=>{
+      const newOrder=(i+1)*10;
+      if(Number(row.sort_order)!==newOrder)saves.push(api('/rewards/'+s.key+'/save',{body:{pk:{[pkName]:row[pkName]},row:{sort_order:newOrder}},quiet:true}));
+    });
+    if(saves.length){try{await Promise.all(saves);toast('Sıra güncellendi','ok')}catch(_){toast('Sıra kaydedilemedi','err')}}
+    draw();
+  });
 }
 
 /* a row with several reward items (event rewards, daily quests …): title, item tiles, number chips */
@@ -156,8 +193,8 @@ const RW_PAGES={
     {sys:'pus_category',mode:'rows',cardTitle:'Kategoriler (mağaza sekmeleri)',rowItems:[],chips:[['category_id','Kategori no']],rowTitle:r=>r.category_name+(r.description?' · '+r.description:'')+(r.status?'':' (kapalı)'),addLabel:'Kategori ekle',icon:'list'},
     // groups listed explicitly (not just inferred from existing rows) so an empty category
     // still shows its "Ürün ekle" button -- update this list when a new pus_category row is added.
-    {sys:'pus_items',groupBy:'category',groups:[1,2,3,4,5],groupLabel:(g)=>'Kategori '+g,item:'item_id',count:'buy_count',detail:r=>Number(r.price).toLocaleString('tr-TR')+(r.price_type?' TL':' KC')+(r.item_name?' · '+r.item_name:''),addLabel:'Ürün ekle',icon:'box'}],
-    footer:'Fiyat tipi: 0 = Knight Cash, 1 = TL. Oyuncular mağazayı yeniden açınca yeni listeyi görür.'},
+    {sys:'pus_items',groupBy:'category',groups:[1,2,3,4,5],groupLabel:(g)=>'Kategori '+g,item:'item_id',count:'buy_count',detail:r=>Number(r.price).toLocaleString('tr-TR')+(r.price_type?' TL':' KC')+(r.item_name?' · '+r.item_name:''),addLabel:'Ürün ekle',icon:'box',sortable:true}],
+    footer:'Fiyat tipi: 0 = Knight Cash, 1 = TL. Ürünleri sürükleyip bırakarak sırasını değiştirebilirsin. Oyuncular mağazayı yeniden açınca yeni listeyi görür.'},
 };
 for(const [k,cfg] of Object.entries(RW_PAGES))PAGE[k]=rwPage(cfg);
 

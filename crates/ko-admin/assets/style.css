@@ -157,6 +157,7 @@ tr.click{cursor:pointer}tr.click:hover td{background:#10224d}
 .ds-slot{display:flex;gap:9px;align-items:center;padding:6px;border-radius:10px;background:#0a1534;border:1px dashed #223f80;min-height:58px;position:relative}
 .ds-slot.full{border-style:solid;background:#0d1d47;border-color:#2c56ac}
 .ds-slot.over{outline:2px dashed var(--ok);outline-offset:1px}
+.ds-slot.dragging{opacity:.4}
 .ds-slot .slot{width:42px;height:42px;flex:none}
 .ds-slot .t{min-width:0;font-size:11.5px;line-height:1.25}.ds-slot .t b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ds-slot .pct{display:inline-block;margin-top:2px;padding:0 7px;border-radius:99px;background:#16346f;color:#9cd1ff;font-weight:700;font-size:11px}

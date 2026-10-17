@@ -321,6 +321,7 @@ mod tests {
             category: 1,
             price_type: PRICE_TYPE_KC,
             duration_days: 0,
+            sort_order: 0,
         };
         let item2 = PusItemRow {
             id: 29,
@@ -334,6 +335,7 @@ mod tests {
             category: 2,
             price_type: PRICE_TYPE_TL,
             duration_days: 0,
+            sort_order: 0,
         };
         let item3 = PusItemRow {
             id: 112,
@@ -347,6 +349,7 @@ mod tests {
             category: 5,
             price_type: PRICE_TYPE_TL,
             duration_days: 0,
+            sort_order: 0,
         };
 
         world.pus_items_by_id.insert(item1.id, item1.clone());
@@ -487,6 +490,7 @@ mod tests {
             category: 2,
             price_type: PRICE_TYPE_TL,
             duration_days: 0,
+            sort_order: 0,
         };
         world.pus_items_by_id.insert(free_item.id, free_item);
 
