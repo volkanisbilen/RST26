@@ -2074,7 +2074,15 @@ fn lua_run_give_item_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaR
         }
 
         let item_id_u = item_id as u32;
-        give_exchange_item(&w, sid, item_id_u, count as u32);
+        let expiry_days = (*exchange.give_item_times.get(i).unwrap_or(&0)).max(0) as u32;
+        if expiry_days > 0 && !matches!(
+            item_id_u,
+            ITEM_GOLD | ITEM_EXP | ITEM_SKILL | ITEM_COUNT | ITEM_LADDERPOINT
+        ) {
+            w.give_item_with_expiry(sid, item_id_u, (count as u32).min(u16::MAX as u32) as u16, expiry_days);
+        } else {
+            give_exchange_item(&w, sid, item_id_u, count as u32);
+        }
     }
     tracing::info!(sid, exchange_id, "RunGiveItemExchange: completed");
 
