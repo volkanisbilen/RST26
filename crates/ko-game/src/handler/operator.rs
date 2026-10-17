@@ -2461,7 +2461,13 @@ fn handle_clear(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()
         session.session_id()
     };
 
-    // Clear all bag inventory slots (14..42) — keep equipment slots (0..14)
+    // Clear all bag inventory slots (14..42) — keep equipment slots (0..14).
+    // One WIZ_ITEM_COUNT_CHANGE per slot, not a single bulk WIZ_ITEM_MOVE refresh:
+    // that bulk packet only refreshes derived equipment stats client-side and
+    // leaves deleted bag items visible as ghosts the player can't interact with
+    // (see manes_survival.rs's cleanup_temporary_items_for_session for the same
+    // finding) — exactly the "cleared server-side but still shown" symptom this
+    // command was supposed to produce for GM testing.
     world.update_session(target_sid, |h| {
         for slot in h.inventory.iter_mut().skip(14).take(28) {
             slot.item_id = 0;
@@ -2473,23 +2479,21 @@ fn handle_clear(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()
         }
     });
 
-    // C++ sends WIZ_ITEM_MOVE (type=2, success=1) with all cleared slot data
-    // so the client's inventory UI refreshes properly.
-    let mut refresh = Packet::new(Opcode::WizItemMove as u8);
-    refresh.write_u8(2); // type = inventory refresh
-    refresh.write_u8(1); // success
-    for _slot_idx in 0..28 {
-        // All slots are zeroed: nNum(u32) + sDuration(u16) + sCount(u16) +
-        // bFlag(u8) + sRemainingRentalTime(u16) + padding(u32) + nExpirationTime(u32)
-        refresh.write_u32(0); // item_id
-        refresh.write_u16(0); // durability
-        refresh.write_u16(0); // count
-        refresh.write_u8(0); // flag
-        refresh.write_u16(0); // rental_time
-        refresh.write_u32(0); // padding
-        refresh.write_u32(0); // expiration
+    for slot_idx in 0..28u8 {
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(slot_idx);
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem = false
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
+        world.send_to_session_owned(target_sid, pkt);
     }
-    world.send_to_session_owned(target_sid, refresh);
+    world.set_user_ability(target_sid);
 
     let name_display = target_name.unwrap_or("self");
     send_help(session, &format!("Inventory cleared for {}.", name_display));
@@ -5087,22 +5091,25 @@ fn handle_clear_inventory(session: &mut ClientSession, args: &[&str]) -> anyhow:
         }
     });
 
-    // Build WIZ_ITEM_MOVE response packet (sub 2, type 1) with cleared items
-    // C++ sends: [u8(2)] [u8(1)] then for each slot: [u32 nNum] [u16 sDuration]
-    //            [u16 sCount] [u8 bFlag] [u16 sRemainingRentalTime] [u32 0] [u32 nExpirationTime]
-    let mut result = Packet::new(Opcode::WizItemMove as u8);
-    result.write_u8(2); // sub-opcode
-    result.write_u8(1); // type
-    for _i in 0..super::HAVE_MAX {
-        result.write_u32(0); // nNum (cleared)
-        result.write_u16(0); // sDuration
-        result.write_u16(0); // sCount
-        result.write_u8(0); // bFlag
-        result.write_u16(0); // sRemainingRentalTime
-        result.write_u32(0); // reserved
-        result.write_u32(0); // nExpirationTime
+    // One WIZ_ITEM_COUNT_CHANGE per slot, not a single bulk WIZ_ITEM_MOVE refresh:
+    // that bulk packet only refreshes derived equipment stats client-side and
+    // leaves deleted bag items visible as ghosts the player can't interact with
+    // (see manes_survival.rs's cleanup_temporary_items_for_session for the same
+    // finding, and handle_clear's "+clear" above for the identical bug).
+    for slot_idx in 0..super::HAVE_MAX as u8 {
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(slot_idx);
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem = false
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
+        world.send_to_session_owned(target_sid, pkt);
     }
-    world.send_to_session_owned(target_sid, result);
 
     // Update abilities (weight notification is integrated into set_user_ability)
     world.set_user_ability(target_sid);
@@ -7870,27 +7877,34 @@ mod tests {
 
     // ── Clear command tests ──────────────────────────────────────
 
-    /// Test WIZ_ITEM_MOVE refresh packet format for inventory clear.
+    /// Test +clear's per-slot WIZ_ITEM_COUNT_CHANGE packet format. A single bulk
+    /// WIZ_ITEM_MOVE refresh (the old approach) only updates derived equipment
+    /// stats client-side and leaves cleared bag items visible as ghosts — see
+    /// manes_survival.rs's cleanup_temporary_items_for_session for the same
+    /// finding, which is why +clear sends one packet per slot instead.
     #[test]
-    fn test_clear_item_move_packet_format() {
-        let mut refresh = Packet::new(Opcode::WizItemMove as u8);
-        refresh.write_u8(2); // type = inventory refresh
-        refresh.write_u8(1); // success
+    fn test_clear_item_count_change_packet_format() {
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(0); // slot_idx
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
 
-        assert_eq!(refresh.opcode, Opcode::WizItemMove as u8);
-        assert_eq!(refresh.data[0], 2);
-        assert_eq!(refresh.data[1], 1);
+        assert_eq!(pkt.opcode, Opcode::WizItemCountChange as u8);
+        // u16 + u8 + u8 + u32 + u32 + u8 + u16 + u32 + u32 + u16 = 24 bytes
+        assert_eq!(pkt.data.len(), 24);
     }
 
-    /// Test clear inventory slot data size (28 slots, 17 bytes each).
+    /// Test +clear sends one WIZ_ITEM_COUNT_CHANGE per bag slot (28 slots).
     #[test]
-    fn test_clear_slot_data_size() {
-        // Each cleared slot writes: u32 + u16 + u16 + u8 + u16 + u32 + u32 = 17 bytes
-        let slot_size = 4 + 2 + 2 + 1 + 2 + 4 + 4;
-        assert_eq!(slot_size, 19); // 19 bytes per slot (corrected from comment)
-                                   // Total for 28 slots = 28 * 19 = 532 bytes + 2 header bytes
-        let total = 28 * slot_size + 2;
-        assert_eq!(total, 534);
+    fn test_clear_slot_count() {
+        assert_eq!(super::super::HAVE_MAX, 28);
     }
 
     // ── Bot spawn/kill command parsing tests ──────────────────────
@@ -8225,27 +8239,25 @@ mod tests {
         assert!(over_limit > max_words);
     }
 
-    /// Test +clearinventory packet format (WIZ_ITEM_MOVE sub 2, type 1).
+    /// Test +clearinventory's per-slot WIZ_ITEM_COUNT_CHANGE packet format —
+    /// same fix and same reasoning as +clear above (test_clear_item_count_change_packet_format).
     #[test]
     fn test_clearinventory_packet_format() {
-        let mut result = Packet::new(Opcode::WizItemMove as u8);
-        result.write_u8(2); // sub-opcode
-        result.write_u8(1); // type
-        for _ in 0..super::super::HAVE_MAX {
-            result.write_u32(0); // nNum
-            result.write_u16(0); // sDuration
-            result.write_u16(0); // sCount
-            result.write_u8(0); // bFlag
-            result.write_u16(0); // sRemainingRentalTime
-            result.write_u32(0); // reserved
-            result.write_u32(0); // nExpirationTime
-        }
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(0); // slot_idx
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
 
-        let _r = PacketReader::new(&result.data);
-        assert_eq!(result.opcode, Opcode::WizItemMove as u8);
-        // sub=2, type=1, then 28 items × 19 bytes each = 2 + 28*19 = 534 bytes
-        // Each item: u32(4) + u16(2) + u16(2) + u8(1) + u16(2) + u32(4) + u32(4) = 19 bytes
-        assert_eq!(result.data.len(), 2 + super::super::HAVE_MAX * 19);
+        let _r = PacketReader::new(&pkt.data);
+        assert_eq!(pkt.opcode, Opcode::WizItemCountChange as u8);
+        assert_eq!(pkt.data.len(), 24);
     }
 
     /// Test +clearinventory slot range constants.
