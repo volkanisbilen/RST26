@@ -1956,7 +1956,10 @@ fn lua_run_give_item_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaR
 
     let exchange = match w.get_item_give_exchange(exchange_id) {
         Some(e) => e,
-        None => return Ok(false),
+        None => {
+            tracing::warn!(sid, exchange_id, "RunGiveItemExchange: no such exchange_id");
+            return Ok(false);
+        }
     };
 
     // Validate all rob items exist in inventory
@@ -1973,11 +1976,13 @@ fn lua_run_give_item_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaR
         if item_id_u == ITEM_GOLD {
             let gold = w.get_character_info(sid).map(|c| c.gold).unwrap_or(0);
             if gold < count.max(0) as u32 {
+                tracing::warn!(sid, exchange_id, need = count, have = gold, "RunGiveItemExchange: not enough gold");
                 return Ok(false);
             }
         } else if item_id_u == ITEM_COUNT || item_id_u == ITEM_LADDERPOINT {
             let loyalty = w.get_character_info(sid).map(|c| c.loyalty).unwrap_or(0);
             if loyalty < count.max(0) as u32 {
+                tracing::warn!(sid, exchange_id, need = count, have = loyalty, "RunGiveItemExchange: not enough loyalty");
                 return Ok(false);
             }
         } else if is_special_origin_skip(item_id_u) {
@@ -1986,6 +1991,7 @@ fn lua_run_give_item_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaR
         } else {
             let have = lua_howmuch_item(lua, (uid, item_id_u))?;
             if have < count as u32 {
+                tracing::warn!(sid, exchange_id, item_id = item_id_u, need = count, have, "RunGiveItemExchange: not enough of rob item");
                 return Ok(false);
             }
         }
@@ -2019,6 +2025,7 @@ fn lua_run_give_item_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaR
             continue;
         }
         if w.find_slot_for_item(sid, item_id_u, 1).is_none() {
+            tracing::warn!(sid, exchange_id, give_item_id = item_id_u, "RunGiveItemExchange: no free slot for give item");
             return Ok(false);
         }
     }
@@ -2038,17 +2045,20 @@ fn lua_run_give_item_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaR
             continue;
         } else if item_id_u == ITEM_GOLD {
             if !w.gold_lose(sid, count as u32) {
+                tracing::warn!(sid, exchange_id, "RunGiveItemExchange: gold_lose failed");
                 return Ok(false);
             }
         } else if item_id_u == ITEM_COUNT || item_id_u == ITEM_LADDERPOINT {
             let loyalty = w.get_character_info(sid).map(|c| c.loyalty).unwrap_or(0);
             if loyalty < count as u32 {
+                tracing::warn!(sid, exchange_id, "RunGiveItemExchange: loyalty dropped below need before removal");
                 return Ok(false);
             }
             w.update_character_stats(sid, |ch| {
                 ch.loyalty = ch.loyalty.saturating_sub(count as u32);
             });
         } else if !w.rob_item(sid, item_id_u, count as u16) {
+            tracing::warn!(sid, exchange_id, rob_item_id = item_id_u, count, "RunGiveItemExchange: rob_item failed");
             return Ok(false);
         }
     }
@@ -2066,6 +2076,7 @@ fn lua_run_give_item_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaR
         let item_id_u = item_id as u32;
         give_exchange_item(&w, sid, item_id_u, count as u32);
     }
+    tracing::info!(sid, exchange_id, "RunGiveItemExchange: completed");
 
     Ok(true)
 }
