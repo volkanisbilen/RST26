@@ -33,6 +33,20 @@ function jstko_event_times(array $e): array
     }
     return $out;
 }
+
+// Collection Race has its own schedule table (auto_start/auto_hour/auto_minute, daily
+// repeat) separate from event_schedule_main_list.
+$races = $pdo->query(
+    "SELECT event_name, min_level, max_level, auto_start, auto_hour, auto_minute, is_repeat
+     FROM collection_race_settings ORDER BY event_name"
+)->fetchAll();
+
+// These events have no persisted automatic schedule in this server (manes_survival.rs,
+// rift_entry.rs, ultima.rs, golem_war.rs) -- a GM opens them by hand whenever. Golem War's
+// "auto" toggle (daily 14:00/22:00) exists but lives only in server memory and resets to
+// off on every restart, so it isn't something this page can show reliably either. Listed
+// here so the page covers every event, without claiming a fixed time that may not hold.
+$manualEvents = ['Manes Survival', 'Full Moon Rift', "Ultima'nın Zindanı", 'Golem Savaşı'];
 ?>
 <section class="max-w-5xl mx-auto px-4 py-10">
   <h1 class="text-2xl font-bold text-white mb-1">Etkinlikler</h1>
@@ -77,6 +91,40 @@ function jstko_event_times(array $e): array
           <td class="py-2.5 px-4">
             <span class="text-xs px-2 py-1 rounded <?= $active ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-700' : 'bg-ink-700 text-slate-500 border border-ink-500' ?>"><?= $active ? 'Aktif' : 'Kapalı' ?></span>
           </td>
+        </tr>
+        <?php endforeach; ?>
+
+        <?php foreach ($races as $r):
+            $active = jstko_pg_bool($r['auto_start']);
+            $repeat = jstko_pg_bool($r['is_repeat']);
+            $minLv = (int)$r['min_level'];
+            $maxLv = (int)$r['max_level'];
+        ?>
+        <tr class="table-row border-t border-ink-500/50 <?= $active ? '' : 'opacity-40' ?>">
+          <td class="py-2.5 px-4 font-medium text-white"><?= jstko_e($r['event_name']) ?> <span class="text-xs text-slate-500">(Collection Race)</span></td>
+          <td class="py-2.5 px-4">
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-gold-500/20 text-gold-400 border border-gold-500/40"><?= $repeat ? 'Her gün' : 'Tek seferlik' ?></span>
+          </td>
+          <td class="py-2.5 px-4 text-slate-300"><?= sprintf('%02d:%02d', (int)$r['auto_hour'], (int)$r['auto_minute']) ?></td>
+          <td class="py-2.5 px-4 text-slate-400"><?= ($minLv > 0 || $maxLv > 0) ? jstko_e(($minLv > 0 ? $minLv : '1') . '-' . ($maxLv > 0 ? $maxLv : '83')) : '-' ?></td>
+          <td class="py-2.5 px-4">
+            <span class="text-xs px-2 py-1 rounded <?= $active ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-700' : 'bg-ink-700 text-slate-500 border border-ink-500' ?>"><?= $active ? 'Aktif' : 'Kapalı' ?></span>
+          </td>
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 class="text-lg font-semibold text-white mt-10 mb-3">GM Tarafından Manuel Açılan Etkinlikler</h2>
+  <p class="text-sm text-slate-400 mb-4">Bunların sabit bir takvimi yok; bir GM uygun gördüğünde başlatır.</p>
+  <div class="card overflow-x-auto">
+    <table class="w-full text-sm">
+      <tbody>
+        <?php foreach ($manualEvents as $name): ?>
+        <tr class="table-row border-t border-ink-500/50 first:border-t-0">
+          <td class="py-2.5 px-4 font-medium text-white"><?= jstko_e($name) ?></td>
+          <td class="py-2.5 px-4 text-slate-500 text-right">Manuel</td>
         </tr>
         <?php endforeach; ?>
       </tbody>
