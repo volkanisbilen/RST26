@@ -385,7 +385,9 @@ pub fn try_convert(session: &mut ClientSession, advert: &str) -> bool {
         p.write_u32(now.count as u32);
         p.write_u8(0);
         p.write_u16(now.durability as u16);
-        p.write_u32(0);
+        p.write_u32(0); // reserved
+        p.write_u32(0); // expiration
+        p.write_u16(0); // v2625 SendStackChange trailing field
         world.send_to_session_owned(sid, p);
     }
     // the owner's own stall is closed

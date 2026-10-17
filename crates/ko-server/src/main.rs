@@ -121,10 +121,23 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Wait for shutdown — either server exiting or signal terminates both.
-    tokio::select! {
-        _ = login_handle => warn!("Login server exited"),
-        _ = game_handle => warn!("Game server exited"),
+    // Wait for BOTH servers to finish their own shutdown before the process exits.
+    //
+    // This used to be a `tokio::select!` on whichever finished first, which raced login
+    // and game shutdown: both register their own SIGTERM/Ctrl-C handler and wake on the
+    // same signal, but login's shutdown is near-instant (no save) while game's does an
+    // awaited, up-to-30s save_all_characters_sync pass over every online character.
+    // Whichever branch `select!` picked first (almost always login, since it does
+    // nothing) made the whole process exit immediately, dropping game_handle mid-save —
+    // silently truncating that save and rolling players still online at restart time
+    // back to their last periodic autosave (every 10 minutes). Waiting for both ensures
+    // the character-save pass always finishes before the binary actually exits.
+    let (login_res, game_res) = tokio::join!(login_handle, game_handle);
+    if let Err(e) = login_res {
+        warn!("Login server task panicked: {e}");
+    }
+    if let Err(e) = game_res {
+        warn!("Game server task panicked: {e}");
     }
 
     Ok(())
