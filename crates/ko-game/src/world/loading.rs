@@ -2210,6 +2210,15 @@ impl WorldState {
                 *self.send_messages.write() = login_msgs;
                 Ok(format!("{n} login messages"))
             }
+            "item_exchange" => {
+                let rows = ItemTablesRepository::new(pool).load_all_item_exchanges().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.item_exchanges.clear();
+                for r in rows {
+                    self.item_exchanges.insert(r.n_index, r);
+                }
+                Ok(format!("{n} item_exchange rows"))
+            }
             "pus" => {
                 let cash_shop_repo = CashShopRepository::new(pool);
                 let cats = cash_shop_repo.load_all_categories().await.map_err(|e| e.to_string())?;
