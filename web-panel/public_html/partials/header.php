@@ -46,6 +46,8 @@ $logo = jstko_c_image('logo_image');
       <nav class="hidden md:flex items-center gap-6 text-sm font-medium">
         <a href="/" class="hover:text-gold-400 transition">Anasayfa</a>
         <a href="/rankings.php" class="hover:text-gold-400 transition">Sıralamalar</a>
+        <a href="/items.php" class="hover:text-gold-400 transition">Itemler</a>
+        <a href="/events.php" class="hover:text-gold-400 transition">Etkinlikler</a>
         <a href="/online.php" class="hover:text-gold-400 transition">Online Oyuncular</a>
         <a href="/gms.php" class="hover:text-gold-400 transition">Online GM'ler</a>
         <a href="/character_rescue.php" class="hover:text-gold-400 transition">Karakter Kurtar</a>
@@ -75,6 +77,8 @@ $logo = jstko_c_image('logo_image');
     <nav class="flex flex-col px-4 py-3 gap-1 text-sm font-medium">
       <a href="/" class="py-2 hover:text-gold-400">Anasayfa</a>
       <a href="/rankings.php" class="py-2 hover:text-gold-400">Sıralamalar</a>
+      <a href="/items.php" class="py-2 hover:text-gold-400">Itemler</a>
+      <a href="/events.php" class="py-2 hover:text-gold-400">Etkinlikler</a>
       <a href="/online.php" class="py-2 hover:text-gold-400">Online Oyuncular</a>
       <a href="/gms.php" class="py-2 hover:text-gold-400">Online GM'ler</a>
       <a href="/character_rescue.php" class="py-2 hover:text-gold-400">Karakter Kurtar</a>
