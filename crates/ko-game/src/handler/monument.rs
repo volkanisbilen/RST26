@@ -101,31 +101,23 @@ fn pvp_monument_process(
     killer_nation: u8,
     killer_name: &str,
 ) {
-    // Build WIZ_CHAT packet with MONUMENT_NOTICE type
-    // C++ format: WIZ_CHAT, MONUMENT_NOTICE, FORCE_CHAT, nation, name
-    let mut chat_pkt = Packet::new(Opcode::WizChat as u8);
-    chat_pkt.write_u8(CHAT_MONUMENT_NOTICE);
-    chat_pkt.write_u8(CHAT_FORCE);
-    chat_pkt.write_u8(killer_nation);
-    // Write name as null-terminated C string
-    chat_pkt.data.extend_from_slice(killer_name.as_bytes());
-    chat_pkt.data.push(0);
-
-    world.broadcast_to_zone(npc.zone_id, Arc::new(chat_pkt), None);
-
-    // Plain-text zone announcement too (CHAT_MONUMENT_NOTICE above relies on
-    // the client resolving the nation/name into a localized string client
-    // side, which this build may not do — WAR_SYSTEM chat with the message
-    // spelled out here is already proven to render, see the nation monument
-    // functions below).
+    // The hand-rolled MONUMENT_NOTICE packet this used to send did not match
+    // the real WIZ_CHAT wire format (missing the u32 sender id and the
+    // length-prefixed name/message fields `build_chat_packet` writes), so the
+    // client showed the capture template with an empty name. Use the shared
+    // builder with the capturer's name spelled directly into the message.
     let nation_name = if killer_nation == 1 { "Karus" } else { "El Morad" };
-    let notice_msg = format!("{} captured by {} ({})!", tmpl.name, nation_name, killer_name);
-    let mut notice_pkt = Packet::new(Opcode::WizChat as u8);
-    notice_pkt.write_u8(CHAT_WAR_SYSTEM);
-    notice_pkt.write_u8(0);
-    notice_pkt.write_u8(killer_nation);
-    notice_pkt.data.extend_from_slice(notice_msg.as_bytes());
-    notice_pkt.data.push(0);
+    let notice_msg = format!("<{}> has captured {} for {}!", killer_name, tmpl.name, nation_name);
+    let notice_pkt = super::chat::build_chat_packet(
+        CHAT_WAR_SYSTEM,
+        killer_nation,
+        0xFFFF,
+        "",
+        &notice_msg,
+        0,
+        0,
+        0,
+    );
     world.broadcast_to_zone(npc.zone_id, Arc::new(notice_pkt), None);
 
     // Update PVP monument ownership for this zone
@@ -140,8 +132,8 @@ fn pvp_monument_process(
     world.npc_template_update(tmpl.s_sid, tmpl.is_monster, killer_nation, new_pid);
 
     // PVP monuments are capture points, not ordinary one-life event NPCs.
-    // Rebuild it almost immediately from the newly-owned template.
-    world.update_npc_ai(npc.nid, |ai| ai.regen_time_ms = 250);
+    // Rebuild it from the newly-owned template after 30s.
+    world.update_npc_ai(npc.nid, |ai| ai.regen_time_ms = 30_000);
 
     tracing::info!(
         zone_id = npc.zone_id,

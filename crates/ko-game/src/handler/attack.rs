@@ -3126,10 +3126,26 @@ pub(crate) async fn handle_npc_death(
 
             // Spawn each monster and register runtime IDs for boss tracking
             // C++ NpcThread.cpp:790-825 — ChaosStoneSummon stores GetID() in sBoosID[]
+            // Scatter the summoned bosses around the stone instead of stacking
+            // them all on the exact same tile.
+            const SUMMON_SCATTER_RADIUS: f32 = 15.0;
             let mut spawned_ids: Vec<u32> = Vec::new();
             for &mid in &monster_ids {
                 if mid > 0 {
-                    let ids = world.spawn_event_npc(mid as u16, true, npc.zone_id, npc.x, npc.z, 1);
+                    let (ox, oz) = {
+                        let mut rng = rand::thread_rng();
+                        let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                        let dist = rng.gen_range(0.0..SUMMON_SCATTER_RADIUS);
+                        (angle.cos() * dist, angle.sin() * dist)
+                    };
+                    let ids = world.spawn_event_npc(
+                        mid as u16,
+                        true,
+                        npc.zone_id,
+                        npc.x + ox,
+                        npc.z + oz,
+                        1,
+                    );
                     if ids.is_empty() {
                         tracing::warn!(zone_id = npc.zone_id, monster_id = mid, "Chaos Stone: boss spawn_event_npc returned no ids");
                     }
