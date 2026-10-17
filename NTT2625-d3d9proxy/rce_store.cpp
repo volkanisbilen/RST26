@@ -1210,7 +1210,12 @@ void Rce_Init()
     InitializeCriticalSection(&g_sendLockR);
     InitializeCriticalSection(&g_dataLockR);
     CloseHandle(CreateThread(nullptr, 0, WindowThreadR, nullptr, 0, nullptr));
-    CloseHandle(CreateThread(nullptr, 0, InstallInvHook, nullptr, 0, nullptr));
+    // The inventory right-click hook (hkInvRClick) intercepted box/coupon right-clicks
+    // before the native client's own item-breaking handler ever saw them, which fought
+    // with the in-game item breaking system. Leaving it uninstalled means a right-click
+    // always falls straight through to the native handler; the rest of this panel (Cross
+    // Exchange, opened via its own inventory button for Ticket Exchange) is unaffected.
+    // CloseHandle(CreateThread(nullptr, 0, InstallInvHook, nullptr, 0, nullptr));
 }
 
 // kept for pus_store.cpp's declaration; the panel now opens from the inventory right-click
