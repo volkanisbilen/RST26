@@ -107,12 +107,12 @@ fn pvp_monument_process(
     // client showed the capture template with an empty name. Use the shared
     // builder with the capturer's name spelled directly into the message.
     let nation_name = if killer_nation == 1 { "Karus" } else { "El Morad" };
-    let notice_msg = format!("<{}> has captured {} for {}!", killer_name, tmpl.name, nation_name);
+    let notice_msg = format!("has captured {} for {}!", tmpl.name, nation_name);
     let notice_pkt = super::chat::build_chat_packet(
         CHAT_WAR_SYSTEM,
         killer_nation,
         0xFFFF,
-        "",
+        killer_name,
         &notice_msg,
         0,
         0,
@@ -132,8 +132,11 @@ fn pvp_monument_process(
     world.npc_template_update(tmpl.s_sid, tmpl.is_monster, killer_nation, new_pid);
 
     // PVP monuments are capture points, not ordinary one-life event NPCs.
-    // Rebuild it from the newly-owned template after 30s.
-    world.update_npc_ai(npc.nid, |ai| ai.regen_time_ms = 30_000);
+    // Rebuild it from the newly-owned template after 30s. `schedule_npc_respawn`
+    // (not a plain `update_npc_ai` regen_time_ms tweak) is what actually resets
+    // the AI tick's death clock — see csw_monument_process below for the same
+    // pattern on the other capturable-object monument type.
+    let respawn_scheduled = world.schedule_npc_respawn(npc.nid, 30_000);
 
     tracing::info!(
         zone_id = npc.zone_id,
@@ -145,6 +148,7 @@ fn pvp_monument_process(
         template_group_after = world
             .get_npc_template(tmpl.s_sid, tmpl.is_monster)
             .map(|t| t.group),
+        respawn_scheduled,
         "PVP monument captured"
     );
 }
