@@ -3113,6 +3113,13 @@ pub(crate) async fn handle_npc_death(
             let summon_list = world.chaos_stone_summon_list();
             let monster_ids =
                 super::chaos_stone::death_respawn_monsters(&cs_infos, &summon_list, &stages, idx);
+            tracing::info!(
+                zone_id = npc.zone_id,
+                chaos_index = idx,
+                summon_list_total = summon_list.len(),
+                monster_ids = ?monster_ids,
+                "Chaos Stone: resolved summon monster ids"
+            );
             drop(cs_spawns);
             drop(stages);
             drop(summon_list);
@@ -3123,9 +3130,18 @@ pub(crate) async fn handle_npc_death(
             for &mid in &monster_ids {
                 if mid > 0 {
                     let ids = world.spawn_event_npc(mid as u16, true, npc.zone_id, npc.x, npc.z, 1);
+                    if ids.is_empty() {
+                        tracing::warn!(zone_id = npc.zone_id, monster_id = mid, "Chaos Stone: boss spawn_event_npc returned no ids");
+                    }
                     spawned_ids.extend(ids);
                 }
             }
+            tracing::info!(
+                zone_id = npc.zone_id,
+                chaos_index = idx,
+                spawned_ids = ?spawned_ids,
+                "Chaos Stone: boss spawn result"
+            );
             super::chaos_stone::register_spawned_bosses(&cs_infos, idx, &spawned_ids);
             drop(cs_infos);
         } else {

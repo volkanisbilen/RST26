@@ -942,6 +942,11 @@ pub fn pvp_loyalty_on_death(world: &WorldState, killer_sid: SessionId, victim_si
     }
 
     let rates = LoyaltyRates::default();
+    let loyalty_before = world
+        .get_character_info(killer_sid)
+        .map(|c| c.loyalty)
+        .unwrap_or(0);
+
     let in_party = world.is_in_party(killer_sid);
     if in_party {
         let party_id = world.get_party_id(killer_sid);
@@ -953,6 +958,29 @@ pub fn pvp_loyalty_on_death(world: &WorldState, killer_sid: SessionId, victim_si
         }
     } else {
         loyalty::loyalty_change(world, killer_sid, victim_sid, 0, &rates);
+    }
+
+    // ArdReam / Ronark Land Base / Ronark Land: +15% NP for whichever nation
+    // currently holds that zone's monument, on top of whatever NP the kill
+    // above already granted.
+    if matches!(
+        killer_zone,
+        crate::world::types::ZONE_ARDREAM
+            | crate::world::types::ZONE_RONARK_LAND_BASE
+            | crate::world::types::ZONE_RONARK_LAND
+    ) && world.get_pvp_monument_nation(killer_zone) == killer_nation
+    {
+        let loyalty_after = world
+            .get_character_info(killer_sid)
+            .map(|c| c.loyalty)
+            .unwrap_or(0);
+        let gained = loyalty_after.saturating_sub(loyalty_before) as i64;
+        if gained > 0 {
+            let bonus = ((gained as f64) * 0.15).round() as i32;
+            if bonus > 0 {
+                loyalty::send_loyalty_change(world, killer_sid, bonus, true, false, false);
+            }
+        }
     }
 }
 

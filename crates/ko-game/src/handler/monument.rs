@@ -113,6 +113,21 @@ fn pvp_monument_process(
 
     world.broadcast_to_zone(npc.zone_id, Arc::new(chat_pkt), None);
 
+    // Plain-text zone announcement too (CHAT_MONUMENT_NOTICE above relies on
+    // the client resolving the nation/name into a localized string client
+    // side, which this build may not do — WAR_SYSTEM chat with the message
+    // spelled out here is already proven to render, see the nation monument
+    // functions below).
+    let nation_name = if killer_nation == 1 { "Karus" } else { "El Morad" };
+    let notice_msg = format!("{} captured by {} ({})!", tmpl.name, nation_name, killer_name);
+    let mut notice_pkt = Packet::new(Opcode::WizChat as u8);
+    notice_pkt.write_u8(CHAT_WAR_SYSTEM);
+    notice_pkt.write_u8(0);
+    notice_pkt.write_u8(killer_nation);
+    notice_pkt.data.extend_from_slice(notice_msg.as_bytes());
+    notice_pkt.data.push(0);
+    world.broadcast_to_zone(npc.zone_id, Arc::new(notice_pkt), None);
+
     // Update PVP monument ownership for this zone
     world.set_pvp_monument_nation(npc.zone_id, killer_nation);
 
@@ -128,9 +143,17 @@ fn pvp_monument_process(
     // Rebuild it almost immediately from the newly-owned template.
     world.update_npc_ai(npc.nid, |ai| ai.regen_time_ms = 250);
 
-    debug!(
-        "PVP monument captured: zone={}, nation={}, proto={}, respawn_ms=250",
-        npc.zone_id, killer_nation, tmpl.s_sid
+    tracing::info!(
+        zone_id = npc.zone_id,
+        killer_nation,
+        killer_name,
+        proto = tmpl.s_sid,
+        new_pid,
+        stored_nation = world.get_pvp_monument_nation(npc.zone_id),
+        template_group_after = world
+            .get_npc_template(tmpl.s_sid, tmpl.is_monster)
+            .map(|t| t.group),
+        "PVP monument captured"
     );
 }
 
