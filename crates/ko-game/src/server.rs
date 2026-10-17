@@ -213,6 +213,13 @@ impl GameServer {
         );
         info!("Chaos stone respawn tick started (1s interval)");
 
+        bg_tasks.push(
+            crate::systems::zone_level_kick_tick::start_zone_level_kick_tick_task(
+                self.world.clone(),
+            ),
+        );
+        info!("ArdReam/Ronark Land Base level-bracket kick tick started (15s interval)");
+
         bg_tasks.push(crate::systems::daily_reset::start_daily_reset_task(
             self.world.clone(),
             self.pool.clone(),

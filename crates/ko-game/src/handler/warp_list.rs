@@ -258,6 +258,30 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 send_select_fail(session).await?;
                 return Ok(());
             }
+
+            // ArdReam / Ronark Land Base / Ronark Land enforce level brackets:
+            // GMs bypass (matches reference CUser::CanChangeZone isGM() early-out).
+            if matches!(
+                effective_dest_zone,
+                ZONE_ARDREAM | ZONE_RONARK_LAND_BASE | ZONE_RONARK_LAND
+            ) && !world.is_gm(sid)
+            {
+                if let Some(info) = z.zone_info.as_ref() {
+                    let level = char_info.level;
+                    if level < info.min_level || level > info.max_level {
+                        warn!(
+                            "[{}] SelectWarpList: level {} outside zone {} bracket {}-{}",
+                            session.addr(),
+                            level,
+                            effective_dest_zone,
+                            info.min_level,
+                            info.max_level,
+                        );
+                        send_select_fail(session).await?;
+                        return Ok(());
+                    }
+                }
+            }
         }
         None => {
             send_select_fail(session).await?;
