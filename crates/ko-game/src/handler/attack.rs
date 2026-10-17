@@ -176,7 +176,7 @@ fn is_bow_weapon(kind: i32) -> bool {
 
 /// Get the weapon range in game units for server-side distance validation.
 /// falls back to left-hand. Returns `pTable.m_sRange / 10.0`.
-fn get_weapon_range(world: &WorldState, sid: SessionId) -> f32 {
+pub(crate) fn get_weapon_range(world: &WorldState, sid: SessionId) -> f32 {
     // Single session lock for both weapon slot item IDs (2 DashMap reads → 1)
     let (rh_id, lh_id) = world
         .with_session(sid, |h| {
