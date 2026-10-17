@@ -102,7 +102,10 @@ function jstko_npc_zones(PDO $pdo, int $sSid, bool $isMonster): array
          WHERE ns.npc_id = :sid AND ns.is_monster = :mon
          ORDER BY z.zone_name"
     );
-    $stmt->execute(['sid' => $sSid, 'mon' => $isMonster]);
+    // PDO stringifies a bound PHP bool via (string) cast -- true -> "1" (Postgres accepts
+    // it) but false -> "" (Postgres rejects it: "invalid input syntax for type boolean").
+    // Pass the Postgres literal explicitly instead of relying on PDO's implicit cast.
+    $stmt->execute(['sid' => $sSid, 'mon' => $isMonster ? 'true' : 'false']);
     return array_column($stmt->fetchAll(), 'zone_name');
 }
 
@@ -122,7 +125,7 @@ if ($mobToken !== '' && preg_match('/^(\d+):([mn])$/', $mobToken, $mm)) {
          WHERE nt.s_sid = :sid AND nt.is_monster = :mon
            AND EXISTS (SELECT 1 FROM npc_spawn ns WHERE ns.npc_id = nt.s_sid AND ns.is_monster = nt.is_monster)"
     );
-    $stmt->execute(['sid' => $mobSid, 'mon' => $isMonster]);
+    $stmt->execute(['sid' => $mobSid, 'mon' => $isMonster ? 'true' : 'false']);
     $mob = $stmt->fetch() ?: null;
     if ($mob) {
         $sItem = (int)$mob['s_item'];
@@ -162,7 +165,7 @@ if ($mobResults) {
              WHERE ns.npc_id IN ($placeholders) AND ns.is_monster = ?
              GROUP BY ns.npc_id, z.zone_name ORDER BY z.zone_name"
         );
-        $stmt->execute(array_merge($sids, [$isMonster]));
+        $stmt->execute(array_merge($sids, [$isMonster ? 'true' : 'false']));
         foreach ($stmt->fetchAll() as $row) {
             $key = $row['npc_id'] . ':' . $suffix;
             $resultZones[$key] = $resultZones[$key] ?? [];
