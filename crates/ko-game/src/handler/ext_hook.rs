@@ -1102,7 +1102,17 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
             return Ok(());
         }
         for _ in 0..count {
-            if !world.give_item(sid, game_item_id, pus_item.buy_count as u16) {
+            let given = if pus_item.duration_days > 0 {
+                world.give_item_with_expiry(
+                    sid,
+                    game_item_id,
+                    pus_item.buy_count as u16,
+                    pus_item.duration_days as u32,
+                )
+            } else {
+                world.give_item(sid, game_item_id, pus_item.buy_count as u16)
+            };
+            if !given {
                 continue;
             }
             crate::handler::knight_cash::cash_lose(&world, session.pool(), sid, price);
@@ -1134,7 +1144,17 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
                 send_cash_change(session).await?;
                 continue;
             }
-            if !world.give_item(sid, game_item_id, pus_item.buy_count as u16) {
+            let given = if pus_item.duration_days > 0 {
+                world.give_item_with_expiry(
+                    sid,
+                    game_item_id,
+                    pus_item.buy_count as u16,
+                    pus_item.duration_days as u32,
+                )
+            } else {
+                world.give_item(sid, game_item_id, pus_item.buy_count as u16)
+            };
+            if !given {
                 continue;
             }
             world.update_session(sid, |h| {
@@ -1221,11 +1241,21 @@ async fn handle_pus_gift(session: &mut ClientSession, data: &[u8]) -> anyhow::Re
     };
 
     // Give item to target
-    if !world.give_item(
-        target_sid,
-        pus_item.item_id as u32,
-        pus_item.buy_count as u16,
-    ) {
+    let given = if pus_item.duration_days > 0 {
+        world.give_item_with_expiry(
+            target_sid,
+            pus_item.item_id as u32,
+            pus_item.buy_count as u16,
+            pus_item.duration_days as u32,
+        )
+    } else {
+        world.give_item(
+            target_sid,
+            pus_item.item_id as u32,
+            pus_item.buy_count as u16,
+        )
+    };
+    if !given {
         return Ok(());
     }
 

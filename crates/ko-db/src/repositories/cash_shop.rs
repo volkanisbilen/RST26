@@ -35,7 +35,7 @@ impl<'a> CashShopRepository<'a> {
     pub async fn load_all_items(&self) -> Result<Vec<PusItemRow>, sqlx::Error> {
         sqlx::query_as::<_, PusItemRow>(
             "SELECT id, item_id, item_name, item_title, price, send_type, \
-             buy_count, item_desc, category, price_type \
+             buy_count, item_desc, category, price_type, duration_days \
              FROM pus_items ORDER BY category, id",
         )
         .fetch_all(self.pool)

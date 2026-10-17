@@ -320,6 +320,7 @@ mod tests {
             item_desc: "HP Scroll 60%".into(),
             category: 1,
             price_type: PRICE_TYPE_KC,
+            duration_days: 0,
         };
         let item2 = PusItemRow {
             id: 29,
@@ -332,6 +333,7 @@ mod tests {
             item_desc: "Switching Premium".into(),
             category: 2,
             price_type: PRICE_TYPE_TL,
+            duration_days: 0,
         };
         let item3 = PusItemRow {
             id: 112,
@@ -344,6 +346,7 @@ mod tests {
             item_desc: "10 TL To 200 KC".into(),
             category: 5,
             price_type: PRICE_TYPE_TL,
+            duration_days: 0,
         };
 
         world.pus_items_by_id.insert(item1.id, item1.clone());
@@ -483,6 +486,7 @@ mod tests {
             item_desc: "VIP Hazir Paket".into(),
             category: 2,
             price_type: PRICE_TYPE_TL,
+            duration_days: 0,
         };
         world.pus_items_by_id.insert(free_item.id, free_item);
 

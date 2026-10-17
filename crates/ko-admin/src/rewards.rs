@@ -59,10 +59,10 @@ const SYSTEMS: &[Sys] = &[
     },
     Sys {
         key: "pus_items", title: "Power Up Store ürünleri", group: "Mağaza & Çarklar",
-        note: "Mağazadaki ürünler. category = kategori numarası (aşağıdaki kategori tablosundan), price_type 0 = KC, 1 = TL, buy_count = bir alımda verilen adet. Kaydedince mağaza hemen güncellenir (oyuncular mağazayı yeniden açınca yeni listeyi görür).",
+        note: "Mağazadaki ürünler. category = kategori numarası (aşağıdaki kategori tablosundan), price_type 0 = KC, 1 = TL, buy_count = bir alımda verilen adet, süre (gün) 0 = süresiz (kalıcı), >0 ise eşya o kadar gün sonra düşer. Kaydedince mağaza hemen güncellenir (oyuncular mağazayı yeniden açınca yeni listeyi görür).",
         table: "pus_items", pk: &["id"], serial: false, next_pk: true, group_col: "category", reload: "pus", order: "category, id",
         cols: &[Col("id", "No", "int"), Col("item_id", "Eşya", "item"), Col("item_name", "Ad", "text"), Col("price", "Fiyat", "int"), Col("price_type", "Fiyat tipi (0 KC / 1 TL)", "int"),
-            Col("buy_count", "Alım adedi", "int"), Col("category", "Kategori", "int"), Col("send_type", "Gönderim tipi", "int")],
+            Col("buy_count", "Alım adedi", "int"), Col("category", "Kategori", "int"), Col("send_type", "Gönderim tipi", "int"), Col("duration_days", "Süre (gün, 0=süresiz)", "int")],
     },
     Sys {
         key: "pus_category", title: "Power Up Store kategorileri", group: "Mağaza & Çarklar",
