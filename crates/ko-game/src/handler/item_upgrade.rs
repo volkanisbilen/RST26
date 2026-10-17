@@ -2152,9 +2152,32 @@ async fn item_disassemble(
         }
         session.send_packet(&pkt).await?;
 
-        // Accessory Return consumes the legacy 31-byte result above.  A
-        // second normal-upgrade (53-byte) result makes the 2615 client parse
-        // an unrelated contract and disconnect with 10054.
+        // Accessory Return consumes the legacy 31-byte result above. A second
+        // *WizItemUpgrade* result made the old 2615 client parse an unrelated
+        // contract and disconnect with 10054 -- client is 2625 now, and the
+        // follow-up below is a different opcode (WizItemCountChange, not a
+        // second WizItemUpgrade), so it doesn't hit that conflict. Same
+        // authoritative-slot-refresh pattern as the anvil upgrade path and the
+        // general smash branch above: fixes the smashed/reward slots staying
+        // visible as "ghosts" until the bag is reopened.
+        let mut touched_slots: Vec<u8> = vec![slot];
+        touched_slots.extend(reward_slots.iter().map(|&(_, s)| s));
+        for pos in touched_slots {
+            if let Some(inv_slot) = world.get_inventory_slot(sid, SLOT_MAX + pos as usize) {
+                let mut update = Packet::new(Opcode::WizItemCountChange as u8);
+                update.write_u16(1);
+                update.write_u8(1);
+                update.write_u8(pos);
+                update.write_u32(inv_slot.item_id);
+                update.write_u32(inv_slot.count as u32);
+                update.write_u8(0);
+                update.write_u16(inv_slot.durability as u16);
+                update.write_u32(0);
+                update.write_u32(inv_slot.expire_time);
+                update.write_u16(0); // v2625 SendStackChange trailing field
+                session.send_packet(&update).await?;
+            }
+        }
 
         world.set_user_ability(sid);
         return Ok(());
@@ -2295,6 +2318,7 @@ async fn item_disassemble(
     pkt.write_u16(roll_count);
 
     // Give each result item
+    let mut touched_slots: Vec<u8> = vec![slot];
     for res in &results {
         if res.item_id == 0 || res.count == 0 {
             continue;
@@ -2306,11 +2330,35 @@ async fn item_disassemble(
                 pkt.write_u32(res.item_id);
                 pkt.write_u8(pos_byte);
                 pkt.write_u16(res.count);
+                touched_slots.push(pos_byte);
             }
         }
     }
 
     session.send_packet(&pkt).await?;
+
+    // Send authoritative slot counts after the smash response, same as the anvil
+    // upgrade path (see the UPGRADE_TYPE_PREVIEW branch above): this NPC's own
+    // response packet drives the Old Man window's animation, but the player's bag
+    // UI doesn't reliably clear the smashed slot / show the new reward without
+    // this follow-up -- reported as items staying visible ("ghost") after smashing
+    // at NPC 31524.
+    for pos in touched_slots {
+        if let Some(inv_slot) = world.get_inventory_slot(sid, SLOT_MAX + pos as usize) {
+            let mut update = Packet::new(Opcode::WizItemCountChange as u8);
+            update.write_u16(1);
+            update.write_u8(1);
+            update.write_u8(pos);
+            update.write_u32(inv_slot.item_id);
+            update.write_u32(inv_slot.count as u32);
+            update.write_u8(0);
+            update.write_u16(inv_slot.durability as u16);
+            update.write_u32(0);
+            update.write_u32(inv_slot.expire_time);
+            update.write_u16(0); // v2625 SendStackChange trailing field
+            session.send_packet(&update).await?;
+        }
+    }
 
     // Recalculate stats
     world.set_user_ability(sid);
