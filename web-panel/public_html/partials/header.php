@@ -46,8 +46,24 @@ $logo = jstko_c_image('logo_image');
       <nav class="hidden md:flex items-center gap-6 text-sm font-medium">
         <a href="/" class="hover:text-gold-400 transition">Anasayfa</a>
         <a href="/rankings.php" class="hover:text-gold-400 transition">Sıralamalar</a>
-        <a href="/items.php" class="hover:text-gold-400 transition">Itemler</a>
-        <a href="/events.php" class="hover:text-gold-400 transition">Etkinlikler</a>
+        <a href="/items.php" class="hover:text-gold-400 transition">Droplar</a>
+        <div class="relative group">
+          <button type="button" class="hover:text-gold-400 transition flex items-center gap-1">
+            Etkinlikler
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="hidden group-hover:block absolute left-0 top-full pt-2 w-56 z-50">
+            <div class="bg-ink-700 border border-ink-500 rounded-lg shadow-xl py-1.5">
+              <a href="/events.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Etkinlik Takvimi</a>
+              <a href="/daily_quests.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Günlük Görevler</a>
+              <div class="h-px bg-ink-500 my-1"></div>
+              <a href="/event_coin.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Coin Etkinliği</a>
+              <a href="/event_puzzle.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Puzzle Etkinliği</a>
+              <a href="/event_roulette.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Çark Ödülleri</a>
+              <a href="/event_lottery.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Lottery</a>
+            </div>
+          </div>
+        </div>
         <a href="/online.php" class="hover:text-gold-400 transition">Online Oyuncular</a>
         <a href="/gms.php" class="hover:text-gold-400 transition">Online GM'ler</a>
         <a href="/character_rescue.php" class="hover:text-gold-400 transition">Karakter Kurtar</a>
@@ -77,9 +93,15 @@ $logo = jstko_c_image('logo_image');
     <nav class="flex flex-col px-4 py-3 gap-1 text-sm font-medium">
       <a href="/" class="py-2 hover:text-gold-400">Anasayfa</a>
       <a href="/rankings.php" class="py-2 hover:text-gold-400">Sıralamalar</a>
-      <a href="/items.php" class="py-2 hover:text-gold-400">Itemler</a>
-      <a href="/events.php" class="py-2 hover:text-gold-400">Etkinlikler</a>
-      <a href="/online.php" class="py-2 hover:text-gold-400">Online Oyuncular</a>
+      <a href="/items.php" class="py-2 hover:text-gold-400">Droplar</a>
+      <div class="py-1 text-xs uppercase text-slate-500 mt-1">Etkinlikler</div>
+      <a href="/events.php" class="py-2 pl-3 hover:text-gold-400">Etkinlik Takvimi</a>
+      <a href="/daily_quests.php" class="py-2 pl-3 hover:text-gold-400">Günlük Görevler</a>
+      <a href="/event_coin.php" class="py-2 pl-3 hover:text-gold-400">Coin Etkinliği</a>
+      <a href="/event_puzzle.php" class="py-2 pl-3 hover:text-gold-400">Puzzle Etkinliği</a>
+      <a href="/event_roulette.php" class="py-2 pl-3 hover:text-gold-400">Çark Ödülleri</a>
+      <a href="/event_lottery.php" class="py-2 pl-3 hover:text-gold-400">Lottery</a>
+      <a href="/online.php" class="py-2 hover:text-gold-400 mt-1">Online Oyuncular</a>
       <a href="/gms.php" class="py-2 hover:text-gold-400">Online GM'ler</a>
       <a href="/character_rescue.php" class="py-2 hover:text-gold-400">Karakter Kurtar</a>
       <a href="/support.php" class="py-2 hover:text-gold-400">Destek</a>

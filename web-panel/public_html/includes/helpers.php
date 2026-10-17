@@ -58,6 +58,37 @@ function jstko_random_token(int $bytes = 32): string
     return bin2hex(random_bytes($bytes));
 }
 
+/** Icon filename the client uses for an item_icon_id1, mirrors the admin panel's resolver
+ * (itemicon_<lead>_<dddd>_<dd>_<d>.jpg -- last 7 digits split 4/2/1 behind the leading digits). */
+function jstko_item_icon_candidates(int $id): array
+{
+    $build = function (int $v): ?string {
+        $s = (string)$v;
+        $n = strlen($s);
+        if ($n < 8) return null;
+        $lead = substr($s, 0, $n - 7);
+        $a = substr($s, $n - 7, 4);
+        $b = substr($s, $n - 3, 2);
+        $c = substr($s, $n - 1, 1);
+        return "itemicon_{$lead}_{$a}_{$b}_{$c}.jpg";
+    };
+    $out = [];
+    if ($f = $build($id)) $out[] = $f;
+    if ($f = $build(intdiv($id, 10) * 10)) $out[] = $f;
+    return $out;
+}
+
+function jstko_item_icon_url(?int $iconId): string
+{
+    if (!$iconId) return '/assets/itemicon/noicon.png';
+    foreach (jstko_item_icon_candidates($iconId) as $file) {
+        if (is_file(__DIR__ . '/../assets/itemicon/' . $file)) {
+            return '/assets/itemicon/' . $file;
+        }
+    }
+    return '/assets/itemicon/noicon.png';
+}
+
 function jstko_e(?string $s): string
 {
     return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
