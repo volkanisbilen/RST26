@@ -89,8 +89,10 @@ impl WorldState {
     /// Only ONE caller will succeed — prevents item duplication race conditions.
     /// Returns `Some((item_id, count))` on success, `None` if already taken.
     pub fn try_take_bundle_item(&self, bundle_id: u32, slot_id: u16) -> Option<(u32, u16)> {
+        let mut looter = 0u16;
         let (result, should_remove) =
             if let Some(mut bundle) = self.ground_bundles.get_mut(&bundle_id) {
+                looter = bundle.looter;
                 if (slot_id as usize) < NPC_HAVE_ITEM_LIST {
                     let slot = &mut bundle.items[slot_id as usize];
                     if slot.item_id == 0 || slot.count == 0 {
@@ -111,6 +113,9 @@ impl WorldState {
 
         if should_remove {
             self.ground_bundles.remove(&bundle_id);
+        }
+        if result.is_some() && looter != 0 {
+            crate::handler::drop_box::notify_taken(self, bundle_id, slot_id, looter);
         }
         result
     }

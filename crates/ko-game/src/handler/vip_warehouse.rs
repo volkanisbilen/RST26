@@ -44,6 +44,17 @@ use super::{HAVE_MAX, ITEM_KIND_UNIQUE, SLOT_MAX};
 const VIP_VAULT_KEY: u32 = 800_442_000;
 const VIP_SAFE_KEY_1: u32 = 810_442_000;
 const VIP_SAFE_KEY_7: u32 = 998_019_000;
+/// v2615 `ITEM`/`Item_Org` replacement for the 30-day VIP Vault key.
+const VIP_VAULT_KEY_V2615: u32 = 931_695_000;
+
+fn vip_key_days(item_id: u32) -> Option<u32> {
+    match item_id {
+        VIP_VAULT_KEY | VIP_VAULT_KEY_V2615 => Some(30),
+        VIP_SAFE_KEY_1 => Some(1),
+        VIP_SAFE_KEY_7 => Some(7),
+        _ => None,
+    }
+}
 
 // Item flag constants imported from crate::world (ITEM_FLAG_RENTED, ITEM_FLAG_DUPLICATE, ITEM_FLAG_SEALED).
 
@@ -666,6 +677,7 @@ async fn handle_storage_to_store(
     if success {
         save_vip_warehouse_slot_async(session, src_idx);
         save_vip_warehouse_slot_async(session, dst_idx);
+        super::warehouse::gm_move_note(&world, sid, "Vault", item_id, src_idx, dst_idx);
         let ok = build_error(VIP_STORAGE_TO_STORE, 1);
         session.send_packet(&ok).await?;
     } else {
@@ -733,14 +745,6 @@ async fn handle_use_vault(
     let world = session.world().clone();
     let sid = session.session_id();
 
-    // C++ check: password must be set (length == 4)
-    let password = world.get_vip_password(sid);
-    if password.len() != 4 {
-        let err = build_error(VIP_USE_VAULT, 2);
-        session.send_packet(&err).await?;
-        return Ok(());
-    }
-
     let now = unix_now();
     let current_expiry = world.get_vip_vault_expiry(sid);
 
@@ -757,19 +761,23 @@ async fn handle_use_vault(
     let src_pos = reader.read_u8().unwrap_or(0);
     let _dst_pos = reader.read_u8().unwrap_or(0);
 
-    // Validate vault key item ID
-    if item_id != VIP_VAULT_KEY && item_id != VIP_SAFE_KEY_1 && item_id != VIP_SAFE_KEY_7 {
-        let err = build_error(VIP_USE_VAULT, 2);
-        session.send_packet(&err).await?;
-        return Ok(());
-    }
+    debug!(
+        "[{}] VIP_UseVault request: npc_id={} item_id={} src_pos={} current_expiry={}",
+        session.addr(),
+        _npc_id,
+        item_id,
+        src_pos,
+        current_expiry
+    );
 
-    // Determine number of days
-    let days = match item_id {
-        VIP_VAULT_KEY => 30u32,
-        VIP_SAFE_KEY_1 => 1,
-        VIP_SAFE_KEY_7 => 7,
-        _ => {
+    let days = match vip_key_days(item_id) {
+        Some(days) => days,
+        None => {
+            warn!(
+                "[{}] VIP_UseVault rejected unsupported key item_id={}",
+                session.addr(),
+                item_id
+            );
             let err = build_error(VIP_USE_VAULT, 2);
             session.send_packet(&err).await?;
             return Ok(());
@@ -789,6 +797,10 @@ async fn handle_use_vault(
         .get_inventory_slot(sid, src_slot_idx)
         .unwrap_or_default();
     if slot.item_id != item_id {
+        warn!(
+            "[{}] VIP_UseVault slot mismatch: item_id={} src_pos={} absolute_slot={} slot_item={} count={} flag={}",
+            session.addr(), item_id, src_pos, src_slot_idx, slot.item_id, slot.count, slot.flag
+        );
         let err = build_error(VIP_USE_VAULT, 2);
         session.send_packet(&err).await?;
         return Ok(());
@@ -796,31 +808,55 @@ async fn handle_use_vault(
 
     // C++ checks: no rented, duplicate items
     if slot.flag == ITEM_FLAG_RENTED || slot.flag == ITEM_FLAG_DUPLICATE {
+        warn!(
+            "[{}] VIP_UseVault rejected item flag: item_id={} flag={}",
+            session.addr(),
+            item_id,
+            slot.flag
+        );
         let err = build_error(VIP_USE_VAULT, 2);
         session.send_packet(&err).await?;
         return Ok(());
     }
 
-    // No-trade items cannot be used as vault keys (shouldn't happen, but safety)
-    if (ITEM_NO_TRADE_MIN..=ITEM_NO_TRADE_MAX).contains(&item_id) {
-        let err = build_error(VIP_USE_VAULT, 2);
-        session.send_packet(&err).await?;
-        return Ok(());
-    }
+    // v2615 Safe/Vault keys (931695000 and 998019000) intentionally live in
+    // the generic no-trade ID range. `vip_key_days()` is the authoritative
+    // allowlist here; applying ITEM_NO_TRADE_* again rejects valid keys.
 
     let new_expiry = now + 60 * 60 * 24 * days;
 
-    // Remove the key item from inventory
-    world.update_inventory(sid, |inv| {
-        if src_slot_idx < inv.len() {
-            inv[src_slot_idx] = UserItemSlot::default();
+    // Consume exactly one key; v2615 keys are countable.
+    let consumed = world.update_inventory(sid, |inv| {
+        let Some(src) = inv.get_mut(src_slot_idx) else {
+            return false;
+        };
+        if src.item_id != item_id || src.count == 0 {
+            return false;
+        }
+        if src.count > 1 {
+            src.count -= 1;
+        } else {
+            *src = UserItemSlot::default();
         }
         true
     });
+    if !consumed {
+        let err = build_error(VIP_USE_VAULT, 2);
+        session.send_packet(&err).await?;
+        return Ok(());
+    }
 
     // Set vault expiry
     world.set_vip_vault_expiry(sid, new_expiry);
     world.set_user_ability(sid);
+
+    debug!(
+        "[{}] VIP_UseVault activated: item_id={} days={} expiry={}",
+        session.addr(),
+        item_id,
+        days,
+        new_expiry
+    );
 
     // Save to DB
     save_inventory_slot_async(session, src_slot_idx);
@@ -1112,6 +1148,7 @@ mod tests {
     fn test_vip_constants() {
         assert_eq!(VIPWAREHOUSE_MAX, 48);
         assert_eq!(VIP_VAULT_KEY, 800_442_000);
+        assert_eq!(VIP_VAULT_KEY_V2615, 931_695_000);
         assert_eq!(VIP_SAFE_KEY_1, 810_442_000);
         assert_eq!(VIP_SAFE_KEY_7, 998_019_000);
     }
@@ -1130,12 +1167,11 @@ mod tests {
 
     #[test]
     fn test_vault_key_days() {
-        // VIP_VAULT_KEY = 30 days
-        assert_eq!(VIP_VAULT_KEY, 800_442_000);
-        // VIP_SAFE_KEY_1 = 1 day
-        assert_eq!(VIP_SAFE_KEY_1, 810_442_000);
-        // VIP_SAFE_KEY_7 = 7 days
-        assert_eq!(VIP_SAFE_KEY_7, 998_019_000);
+        assert_eq!(vip_key_days(VIP_VAULT_KEY), Some(30));
+        assert_eq!(vip_key_days(VIP_VAULT_KEY_V2615), Some(30));
+        assert_eq!(vip_key_days(VIP_SAFE_KEY_1), Some(1));
+        assert_eq!(vip_key_days(VIP_SAFE_KEY_7), Some(7));
+        assert_eq!(vip_key_days(931_694_000), None);
     }
 
     #[tokio::test]
@@ -1296,6 +1332,7 @@ mod tests {
     fn test_vault_key_ids_distinct() {
         assert_ne!(VIP_VAULT_KEY, VIP_SAFE_KEY_1);
         assert_ne!(VIP_VAULT_KEY, VIP_SAFE_KEY_7);
+        assert_ne!(VIP_VAULT_KEY, VIP_VAULT_KEY_V2615);
         assert_ne!(VIP_SAFE_KEY_1, VIP_SAFE_KEY_7);
     }
 
@@ -1386,7 +1423,12 @@ mod tests {
     /// build_error produces correct opcode and 2-byte payload.
     #[test]
     fn test_build_error_all_subcodes() {
-        for sub in [VIP_OPEN, VIP_USE_VAULT, VIP_SET_PASSWORD, VIP_ENTER_PASSWORD] {
+        for sub in [
+            VIP_OPEN,
+            VIP_USE_VAULT,
+            VIP_SET_PASSWORD,
+            VIP_ENTER_PASSWORD,
+        ] {
             let pkt = build_error(sub, 1);
             assert_eq!(pkt.opcode, Opcode::WizVipwarehouse as u8);
             assert_eq!(pkt.data[0], sub);

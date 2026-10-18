@@ -17,6 +17,13 @@ use ko_protocol::{Opcode, Packet, PacketReader};
 /// Maximum number of text IDs in an NPC_SAY dialog.
 const MAX_SAY_TEXT_IDS: usize = 8;
 
+/// Native starter quest shown by the client's small helper character.
+/// Verified against the v2615 Quest_Guide/Quest_Helper tables and 01_main.lua.
+pub const STARTER_SEED_QUEST_ID: u16 = 500;
+const STARTER_SEED_KARUS_HELPER_ID: u32 = 5002;
+const STARTER_SEED_ELMORAD_HELPER_ID: u32 = 5005;
+const STARTER_SEED_WORMS: [u16; 4] = [700, 701, 750, 751];
+
 use crate::handler::zone_change;
 use crate::session::{ClientSession, SessionState};
 use crate::world::types::ZONE_MORADON;
@@ -395,7 +402,6 @@ fn handle_check_fulfill(
     if let Some(quest_monster) = world.get_quest_monster(quest_id) {
         // Special case: quest 812 skips kill count check
         if quest_monster.s_quest_num != 812 {
-
             let counts = [
                 quest_monster.s_count1,
                 quest_monster.s_count2,
@@ -475,6 +481,7 @@ pub(crate) async fn save_event(
             pkt.write_u16(quest_id);
             pkt.write_u8(quest_state);
             session.send_packet(&pkt).await?;
+            super::achieve::on_quest_completed(&world, sid);
         }
         3 => {
             // Ready to complete
@@ -646,7 +653,11 @@ pub fn quest_monster_count_add(
 
                 let new_count = current_count + 1;
                 tracked_counts[group] = new_count;
-                updates.push(KillUpdate { quest_num, group, new_count });
+                updates.push(KillUpdate {
+                    quest_num,
+                    group,
+                    new_count,
+                });
             }
         }
 
@@ -681,6 +692,51 @@ pub fn quest_monster_count_add(
             world.send_to_session_owned(sid, pkt);
         }
 
+        let char_id = world
+            .get_character_info(sid)
+            .map(|ch| ch.name.clone())
+            .unwrap_or_default();
+        let persisted_state = if all_fulfilled { 3 } else { 1 };
+
+        tracing::info!(
+            sid,
+            character = %char_id,
+            quest_num,
+            npc_proto_id,
+            counts = ?tracked_counts,
+            required = ?required_counts,
+            completed = all_fulfilled,
+            "Quest monster progress updated"
+        );
+
+        // Persist partial progress too. Previously Ancient Hunt progress was
+        // only saved on the final kill and was lost on reconnect/restart.
+        if !char_id.is_empty() {
+            if let Some(pool) = world.db_pool() {
+                let pool = pool.clone();
+                let kc = [
+                    tracked_counts[0] as i16,
+                    tracked_counts[1] as i16,
+                    tracked_counts[2] as i16,
+                    tracked_counts[3] as i16,
+                ];
+                tokio::spawn(async move {
+                    let repo = QuestRepository::new(&pool);
+                    if let Err(e) = repo
+                        .save_user_quest_progress(&char_id, quest_num as i16, persisted_state, kc)
+                        .await
+                    {
+                        tracing::error!(
+                            "Failed to save quest {} state {}: {}",
+                            quest_num,
+                            persisted_state,
+                            e
+                        );
+                    }
+                });
+            }
+        }
+
         if all_fulfilled {
             // Send state update
             let mut pkt = Packet::new(Opcode::WizQuest as u8);
@@ -688,32 +744,6 @@ pub fn quest_monster_count_add(
             pkt.write_u16(quest_num);
             pkt.write_u8(3);
             world.send_to_session_owned(sid, pkt);
-
-            let char_id = world
-                .get_character_info(sid)
-                .map(|ch| ch.name.clone())
-                .unwrap_or_default();
-
-            if !char_id.is_empty() {
-                if let Some(pool) = world.db_pool() {
-                    let pool = pool.clone();
-                    let kc = [
-                        tracked_counts[0] as i16,
-                        tracked_counts[1] as i16,
-                        tracked_counts[2] as i16,
-                        tracked_counts[3] as i16,
-                    ];
-                    tokio::spawn(async move {
-                        let repo = QuestRepository::new(&pool);
-                        if let Err(e) = repo
-                            .save_user_quest(&char_id, quest_num as i16, 3, kc)
-                            .await
-                        {
-                            tracing::error!("Failed to save quest {} state 3: {}", quest_num, e);
-                        }
-                    });
-                }
-            }
         }
     }
 }
@@ -747,6 +777,46 @@ pub async fn load_quest_data(session: &mut ClientSession) -> anyhow::Result<()> 
         }
     });
 
+    // Quest 500 is the native one-time "Rescuing Sid" starter quest.  It has
+    // no NPC acceptance step: the v2615 tables route a Worm death directly to
+    // helper 5002/5005 and 01_main.lua EVENT 502.  Seed it as ongoing only
+    // when the character has never completed it; this deliberately has no
+    // upper-level restriction, matching Quest_Guide's 1..100 range.
+    let starter_seed_needs_initialising = rows
+        .iter()
+        .find(|row| row.quest_id as u16 == STARTER_SEED_QUEST_ID)
+        .map(|row| row.quest_state == 0)
+        .unwrap_or(true);
+    if starter_seed_needs_initialising {
+        world.update_session(sid, |h| {
+            h.quests.insert(
+                STARTER_SEED_QUEST_ID,
+                crate::world::UserQuestInfo {
+                    quest_state: 1,
+                    kill_counts: [0; 4],
+                },
+            );
+        });
+
+        if let Err(error) = repo
+            .save_user_quest(&char_id, STARTER_SEED_QUEST_ID as i16, 1, [0; 4])
+            .await
+        {
+            tracing::error!(
+                char_name = %char_id,
+                quest_id = STARTER_SEED_QUEST_ID,
+                %error,
+                "failed to initialise native starter quest"
+            );
+        } else {
+            tracing::info!(
+                char_name = %char_id,
+                quest_id = STARTER_SEED_QUEST_ID,
+                "native Rescuing Sid quest initialised as ongoing"
+            );
+        }
+    }
+
     tracing::debug!(
         "[{}] Loaded {} quest entries for {}",
         session.addr(),
@@ -755,6 +825,130 @@ pub async fn load_quest_data(session: &mut ClientSession) -> anyhow::Result<()> 
     );
 
     Ok(())
+}
+
+/// Complete the v2615 native "Rescuing Sid" flow after the first starter Worm
+/// kill.  The first EVENT 502 result is emitted here because NPC death code
+/// holds `&WorldState`; subsequent dialog buttons continue through 01_main.lua
+/// using the stored helper ID exactly like a normal SelectMsg chain.
+pub fn complete_starter_seed_quest_on_worm_kill(
+    world: &crate::world::WorldState,
+    sid: SessionId,
+    npc_proto_id: u16,
+) -> bool {
+    if !STARTER_SEED_WORMS.contains(&npc_proto_id) {
+        return false;
+    }
+
+    let (quest_state, nation) = match world.with_session(sid, |h| {
+        (
+            h.quests
+                .get(&STARTER_SEED_QUEST_ID)
+                .map(|quest| quest.quest_state)
+                .unwrap_or(0),
+            h.character.as_ref().map(|ch| ch.nation).unwrap_or(0),
+        )
+    }) {
+        Some(values) => values,
+        None => return false,
+    };
+    if quest_state != 1 {
+        return false;
+    }
+
+    let (helper_id, header_text, button_text) = match nation {
+        1 => (STARTER_SEED_KARUS_HELPER_ID, 5002, 5001),
+        2 => (STARTER_SEED_ELMORAD_HELPER_ID, 5003, 5004),
+        _ => return false,
+    };
+    let helper = match world.get_quest_helper(helper_id) {
+        Some(helper)
+            if helper.s_event_data_index == STARTER_SEED_QUEST_ID as i16
+                && helper.b_event_status == 2
+                && helper.n_event_trigger_index == 502
+                && helper.str_lua_filename.eq_ignore_ascii_case("01_main.lua") =>
+        {
+            helper
+        }
+        Some(helper) => {
+            tracing::error!(
+                sid,
+                helper_id,
+                event_data = helper.s_event_data_index,
+                event_status = helper.b_event_status,
+                trigger = helper.n_event_trigger_index,
+                lua = %helper.str_lua_filename,
+                "v2615 Rescuing Sid helper contract mismatch"
+            );
+            return false;
+        }
+        None => {
+            tracing::error!(sid, helper_id, "v2615 Rescuing Sid helper is missing");
+            return false;
+        }
+    };
+
+    // 01_main.lua EVENT 502 starts with SaveEvent(5002/5005), whose helper
+    // maps quest 500 to state 2.  NPC=0 is significant for this system dialog.
+    world.update_session(sid, |h| {
+        if let Some(quest) = h.quests.get_mut(&STARTER_SEED_QUEST_ID) {
+            quest.quest_state = 2;
+        }
+        h.quest_helper_id = helper_id;
+        h.event_sid = 0;
+        h.event_nid = -1;
+    });
+
+    let mut state_packet = Packet::new(Opcode::WizQuest as u8);
+    state_packet.write_u8(2);
+    state_packet.write_u16(STARTER_SEED_QUEST_ID);
+    state_packet.write_u8(2);
+    world.send_to_session_owned(sid, state_packet);
+
+    let mut button_texts = [-1i32; 12];
+    let mut button_events = [-1i32; 12];
+    button_texts[0] = button_text;
+    button_events[0] = 505;
+    super::select_msg::send_select_msg(
+        world,
+        sid,
+        6,
+        STARTER_SEED_QUEST_ID as i32,
+        header_text,
+        &button_texts,
+        &button_events,
+        &helper.str_lua_filename,
+    );
+
+    if let (Some(pool), Some(character)) = (world.db_pool(), world.get_character_info(sid)) {
+        let pool = pool.clone();
+        let char_name = character.name;
+        tokio::spawn(async move {
+            let repo = QuestRepository::new(&pool);
+            if let Err(error) = repo
+                .save_user_quest(&char_name, STARTER_SEED_QUEST_ID as i16, 2, [0; 4])
+                .await
+            {
+                tracing::error!(
+                    char_name,
+                    quest_id = STARTER_SEED_QUEST_ID,
+                    %error,
+                    "failed to persist Rescuing Sid completion"
+                );
+            }
+        });
+    }
+
+    tracing::info!(
+        sid,
+        npc_proto_id,
+        quest_id = STARTER_SEED_QUEST_ID,
+        helper_id,
+        lua = %helper.str_lua_filename,
+        event_id = 502,
+        "Rescuing Sid completed through the v2615 starter quest flow"
+    );
+    true
 }
 
 /// Build a WIZ_NPC_SAY (0x56) packet for NPC dialog text.
@@ -934,7 +1128,7 @@ mod tests {
         assert!(job_group_check(201, 1)); // El Morad Warrior base
         assert!(job_group_check(205, 1)); // El Morad Warrior Novice
         assert!(job_group_check(206, 1)); // El Morad Warrior Master
-        // Rogue should NOT match Warrior group
+                                          // Rogue should NOT match Warrior group
         assert!(!job_group_check(102, 1));
         assert!(!job_group_check(107, 1));
     }
@@ -989,11 +1183,11 @@ mod tests {
         let mut pkt = Packet::new(Opcode::WizQuest as u8);
         pkt.write_u8(8);
         pkt.write_u16(2026); // year
-        pkt.write_u8(3);     // month
-        pkt.write_u8(13);    // day
-        pkt.write_u8(14);    // hour
-        pkt.write_u8(30);    // minute
-        pkt.write_u8(0);     // second
+        pkt.write_u8(3); // month
+        pkt.write_u8(13); // day
+        pkt.write_u8(14); // hour
+        pkt.write_u8(30); // minute
+        pkt.write_u8(0); // second
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u8(), Some(8)); // sub=8
@@ -1010,9 +1204,9 @@ mod tests {
     fn test_quest_save_event_packet_format() {
         // Sub-opcode 2: save event (state change notification)
         let mut pkt = Packet::new(Opcode::WizQuest as u8);
-        pkt.write_u8(2);       // sub=2
-        pkt.write_u16(1001);   // quest_id
-        pkt.write_u8(1);       // state=ongoing
+        pkt.write_u8(2); // sub=2
+        pkt.write_u16(1001); // quest_id
+        pkt.write_u8(1); // state=ongoing
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u8(), Some(2));
@@ -1026,12 +1220,12 @@ mod tests {
         // Sub-opcode 9, type 1: initial monster data
         let mut pkt = Packet::new(Opcode::WizQuest as u8);
         pkt.write_u8(9);
-        pkt.write_u8(1);       // type=1 (initial)
-        pkt.write_u16(500);    // quest_id
-        pkt.write_u16(3);      // kill_count[0]
-        pkt.write_u16(0);      // kill_count[1]
-        pkt.write_u16(5);      // kill_count[2]
-        pkt.write_u16(0);      // kill_count[3]
+        pkt.write_u8(1); // type=1 (initial)
+        pkt.write_u16(500); // quest_id
+        pkt.write_u16(3); // kill_count[0]
+        pkt.write_u16(0); // kill_count[1]
+        pkt.write_u16(5); // kill_count[2]
+        pkt.write_u16(0); // kill_count[3]
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u8(), Some(9));
@@ -1049,10 +1243,10 @@ mod tests {
         // Sub-opcode 9, type 2: per-group kill count update
         let mut pkt = Packet::new(Opcode::WizQuest as u8);
         pkt.write_u8(9);
-        pkt.write_u8(2);       // type=2 (update)
-        pkt.write_u16(500);    // quest_id
-        pkt.write_u8(1);       // group (1-indexed)
-        pkt.write_u16(4);      // new_count
+        pkt.write_u8(2); // type=2 (update)
+        pkt.write_u16(500); // quest_id
+        pkt.write_u8(1); // group (1-indexed)
+        pkt.write_u16(4); // new_count
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u8(), Some(9));
@@ -1097,8 +1291,17 @@ mod tests {
         let quest_monster: u8 = 9;
         let quest_accept: u8 = 12;
         // All distinct
-        let ops = [quest_list, quest_save, quest_execute1, quest_fulfill, quest_abandon,
-                   quest_execute2, quest_time, quest_monster, quest_accept];
+        let ops = [
+            quest_list,
+            quest_save,
+            quest_execute1,
+            quest_fulfill,
+            quest_abandon,
+            quest_execute2,
+            quest_time,
+            quest_monster,
+            quest_accept,
+        ];
         for i in 0..ops.len() {
             for j in (i + 1)..ops.len() {
                 assert_ne!(ops[i], ops[j]);
@@ -1120,7 +1323,11 @@ mod tests {
     fn test_job_group_any_class_sentinel() {
         // required_class=5 matches all classes
         for class in [101u16, 102, 103, 104, 113, 201, 202, 203, 204, 213] {
-            assert!(job_group_check(class, 5), "class {} should pass any-class check", class);
+            assert!(
+                job_group_check(class, 5),
+                "class {} should pass any-class check",
+                class
+            );
         }
     }
 
@@ -1143,7 +1350,7 @@ mod tests {
         assert!(job_group_check(101, 101));
         assert!(!job_group_check(201, 101)); // El Morad Warrior doesn't match
         assert!(!job_group_check(102, 101)); // Rogue doesn't match
-        // 213 = El Morad Kurian master — only matches class 213
+                                             // 213 = El Morad Kurian master — only matches class 213
         assert!(job_group_check(213, 213));
         assert!(!job_group_check(113, 213));
     }

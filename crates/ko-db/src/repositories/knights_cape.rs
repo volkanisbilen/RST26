@@ -208,15 +208,18 @@ impl<'a> KnightsCapeRepository<'a> {
         cape_r: i16,
         cape_g: i16,
         cape_b: i16,
+        expiry_time: i32,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE knights SET s_cast_cape = $1, b_cast_cape_r = $2, \
-             b_cast_cape_g = $3, b_cast_cape_b = $4 WHERE id_num = $5",
+             b_cast_cape_g = $3, b_cast_cape_b = $4, b_cast_time = $5 \
+             WHERE id_num = $6",
         )
         .bind(cape_index)
         .bind(cape_r)
         .bind(cape_g)
         .bind(cape_b)
+        .bind(expiry_time)
         .bind(clan_id)
         .execute(self.pool)
         .await?;

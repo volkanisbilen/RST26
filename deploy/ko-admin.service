@@ -1,0 +1,17 @@
+[Unit]
+Description=JstKO standalone admin panel (ko-admin)
+After=network.target postgresql.service
+
+[Service]
+# same DATABASE_URL / ADMIN_USERNAME / ADMIN_PASSWORD_HASH as the game server
+EnvironmentFile=/etc/ko-server.env
+Environment=ADMIN_BIND_ADDR=0.0.0.0:8090
+Environment=ITEM_ICON_DIR=/opt/ko26xx-build-2625/crates/ko-admin/assets/itemicon
+Environment=JSTKO_QUEST_DIR=/opt/ko26xx/Quests
+WorkingDirectory=/opt/ko26xx
+ExecStart=/opt/ko26xx/ko-admin
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

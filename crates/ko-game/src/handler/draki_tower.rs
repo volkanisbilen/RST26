@@ -540,8 +540,13 @@ pub fn room_close_tick(room: &mut DrakiTowerRoomInfo) -> bool {
 
 /// Apply kick-out state to the room.
 pub fn apply_kickout(room: &mut DrakiTowerRoomInfo, now: u64) {
-    room.draki_out_timer = now + KICK_TIMER as u64;
-    room.out_timer_active = true;
+    // The final NPC can be clicked repeatedly while OUT1 is visible.  Never
+    // extend an evacuation that is already counting down; otherwise each click
+    // postpones the exit another 20 seconds and can keep the room alive.
+    if !room.out_timer_active {
+        room.draki_out_timer = now + KICK_TIMER as u64;
+        room.out_timer_active = true;
+    }
 }
 
 /// Apply town-return state to the room.
@@ -1113,6 +1118,13 @@ mod tests {
         apply_kickout(&mut room, 1000);
         assert!(room.out_timer_active);
         assert_eq!(room.draki_out_timer, 1000 + KICK_TIMER as u64);
+
+        apply_kickout(&mut room, 1010);
+        assert_eq!(
+            room.draki_out_timer,
+            1000 + KICK_TIMER as u64,
+            "re-clicking the final NPC must not extend the active exit timer"
+        );
     }
 
     #[test]

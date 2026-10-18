@@ -188,6 +188,10 @@ pub fn start_npc_ai_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()> 
 /// Process one AI tick for all active NPCs.
 /// NPCs are grouped by zone and processed in parallel across tokio worker threads.
 async fn process_ai_tick(world: Arc<WorldState>, now_ms: u64) {
+    world
+        .manes_survival_manager
+        .finalize_requested_event(world.clone());
+
     // ── Process scheduled respawns (monster respawn loop chain) ──────
     {
         let now_secs = std::time::SystemTime::now()
@@ -411,6 +415,15 @@ async fn process_single_npc(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, 
     //       && pNpc->m_iSpawnedTime
     //       && (int32(UNIXTIME) - pNpc->m_iSpawnedTime > pNpc->m_sDuration))
     //       pNpc->Dead();
+    // Timed summons are spawned without access to the AI clock: stamp the spawn time on the
+    // first tick that sees a duration.
+    if !is_dead && ai.duration_secs > 0 && ai.spawned_at_ms == 0 {
+        world.update_npc_ai(npc_id, |s| {
+            if s.spawned_at_ms == 0 {
+                s.spawned_at_ms = now_ms.max(1);
+            }
+        });
+    }
     if !is_dead && ai.duration_secs > 0 && ai.spawned_at_ms > 0 {
         let duration_ms = ai.duration_secs as u64 * 1000;
         let alive_ms = now_ms.saturating_sub(ai.spawned_at_ms);
@@ -448,11 +461,23 @@ fn npc_dead(
     ai: &NpcAiState,
     _tmpl: &NpcTemplate,
 ) -> Option<u64> {
+    // A zero regen time explicitly marks dynamically spawned event NPCs as
+    // non-respawning. Monster Stone monsters use this path; treating zero as
+    // the minimum delay made them come back at the same location after 250ms.
+    if !can_auto_respawn(ai.regen_time_ms) {
+        return None;
+    }
+
     // Transition to LIVE (which will restore HP and set standing)
     world.update_npc_ai(npc_id, |s| {
         s.state = NpcState::Live;
     });
     Some(ai.regen_time_ms.max(250))
+}
+
+#[inline]
+fn can_auto_respawn(regen_time_ms: u64) -> bool {
+    regen_time_ms > 0
 }
 
 /// NPC_LIVE state: Restore HP to max, reposition to spawn, transition to Standing.
@@ -473,6 +498,11 @@ fn npc_live(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, tmpl: &NpcTempla
             zone.add_npc(region_x, region_z, npc_id);
         }
     }
+
+    // NPC_IN serializes the canonical NpcInstance, not just the AI state.
+    // Keep it at the spawn point before publishing the respawn packet, or the
+    // client will recreate the monster at its previous/death position.
+    world.update_npc_position(npc_id, spawn_x, spawn_z);
 
     // Send NPC_IN to region so clients see it again
     send_npc_respawn(world, npc_id, ai.zone_id, region_x, region_z, tmpl);
@@ -536,6 +566,29 @@ fn npc_standing(
         }
     }
 
+    // Full Moon Rift: with no player in sight the wave walks the lane towards the first standing tower.
+    if ai.zone_id == crate::world::types::ZONE_DUNGEON_DEFENCE && tmpl.speed_1 > 0 {
+        if let Some(inst) = world.get_npc_instance(npc_id) {
+            if inst.is_monster && inst.event_room > 0 {
+                if let Some((gx, gz)) = crate::handler::dungeon_defence::march_goal(world, inst.event_room) {
+                    let (rx, rz) = (gx - ai.cur_x, gz - ai.cur_z);
+                    if (rx * rx + rz * rz).sqrt() <= 8.0 {
+                        return Some(1000); // at the tower: tower_tick makes it attack
+                    }
+                    let step = tmpl.speed_1 as f32 * (MONSTER_SPEED as f32 / 1000.0);
+                    let (tx, tz) = crate::handler::dungeon_defence::route_target(ai.cur_x, ai.cur_z);
+                    let (nx, nz) = pathfind::step_no_path_move(ai.cur_x, ai.cur_z, tx, tz, step * 5.0);
+                    world.update_npc_ai(npc_id, |s| {
+                        s.dest_x = nx;
+                        s.dest_z = nz;
+                        s.state = NpcState::Moving;
+                    });
+                    return Some(0);
+                }
+            }
+        }
+    }
+
     // Random movement -- only if users are nearby (GetUserInView check)
     // and search_range > 0 and move_type = 1 (random)
     if tmpl.search_range > 0 && tmpl.speed_1 > 0 {
@@ -565,24 +618,6 @@ fn npc_standing(
             return Some(tmpl.stand_time as u64);
         }
 
-        // Packet speed = actual_distance / (MONSTER_SPEED/1000)
-        let dx = dest_x - ai.cur_x;
-        let dz = dest_z - ai.cur_z;
-        let dist = (dx * dx + dz * dz).sqrt();
-        let pkt_speed = dist / (MONSTER_SPEED as f32 / 1000.0);
-
-        // Send initial move packet to broadcast the movement
-        send_npc_move(
-            world,
-            npc_id,
-            ai.zone_id,
-            ai.region_x,
-            ai.region_z,
-            dest_x,
-            dest_z,
-            pkt_speed,
-        );
-
         world.update_npc_ai(npc_id, |s| {
             s.dest_x = dest_x;
             s.dest_z = dest_z;
@@ -590,7 +625,11 @@ fn npc_standing(
             s.pattern_frame = (pattern + 1) % 3;
         });
 
-        return Some(tmpl.stand_time.max(1000) as u64);
+        // npc_moving broadcasts each incremental step and advances the server
+        // position by the same amount. Sending the full destination here made
+        // clients run ahead of the server, then snap back on the next update.
+        // The standing delay has already elapsed before this handler runs.
+        return Some(0);
     }
 
     // ── Gate NPC Logic ──────────────────────────────────────────────────
@@ -623,7 +662,11 @@ fn npc_moving(
         }
     }
 
-    let step_dist = tmpl.speed_1 as f32 * (MONSTER_SPEED as f32 / 1000.0);
+    let move_factor = world.npc_move_factor(npc_id);
+    if move_factor == 0.0 {
+        return Some(500);
+    }
+    let step_dist = tmpl.speed_1 as f32 * (MONSTER_SPEED as f32 / 1000.0) * move_factor;
     let dx = ai.dest_x - ai.cur_x;
     let dz = ai.dest_z - ai.cur_z;
     let remaining = (dx * dx + dz * dz).sqrt();
@@ -647,6 +690,22 @@ fn npc_moving(
             s.region_z = new_rz;
             s.state = NpcState::Standing;
         });
+        // Keep the canonical NPC record in sync with the AI position. Region
+        // snapshots and INOUT packets read NpcInstance, not NpcAiState.
+        world.update_npc_position(npc_id, ai.dest_x, ai.dest_z);
+        // Publish the final short step too; otherwise clients stop at the prior
+        // interpolation target while the server has already reached dest_x/z.
+        let final_speed = step_dist / (MONSTER_SPEED as f32 / 1000.0);
+        send_npc_move(
+            world,
+            npc_id,
+            ai.zone_id,
+            new_rx,
+            new_rz,
+            ai.dest_x,
+            ai.dest_z,
+            final_speed,
+        );
         return Some(tmpl.stand_time as u64);
     }
 
@@ -685,6 +744,7 @@ fn npc_moving(
         s.region_x = new_rx;
         s.region_z = new_rz;
     });
+    world.update_npc_position(npc_id, new_x, new_z);
 
     // C++ returns m_sSpeed (1500ms) between each step
     Some(MONSTER_SPEED)
@@ -843,6 +903,7 @@ fn npc_attacking_npc(
             s.region_x = new_rx;
             s.region_z = new_rz;
         });
+        world.update_npc_position(npc_id, new_x, new_z);
 
         Some((dist / speed * 1000.0) as u64)
     }
@@ -884,6 +945,13 @@ fn npc_tracing(
         && now_ms.saturating_sub(ai.last_combat_time_ms) > TRACER_TIMEOUT_MS
     {
         tracing::debug!("NPC {} tracer timeout (12s no combat)", npc_id);
+        // TENDER NPCs use the damage ledger as their aggro list. Leaving the
+        // entry behind after disengaging makes them reacquire the same player
+        // whenever they pass by, even long after the fight ended. Remove only
+        // this target's entry; retain other attackers' loot/threat records.
+        if ai.attack_type == TENDER_ATTACK_TYPE {
+            world.clear_npc_player_damage(npc_id, target_id);
+        }
         world.update_npc_ai(npc_id, |s| {
             s.state = NpcState::Standing;
             s.target_id = None;
@@ -923,6 +991,10 @@ fn npc_tracing(
                 zone.add_npc(new_region_x, new_region_z, npc_id);
             }
         }
+
+        // The following INOUT_IN packet serializes NpcInstance. Update that
+        // source of truth before broadcasting the monster at its home point.
+        world.update_npc_position(npc_id, spawn_x, spawn_z);
 
         world.update_npc_ai(npc_id, |s| {
             s.state = NpcState::Standing;
@@ -1004,7 +1076,11 @@ fn npc_tracing(
         return Some(tmpl.stand_time as u64);
     }
 
-    let speed = tmpl.speed_2 as f32 * (MONSTER_SPEED as f32 / 1000.0);
+    let trace_factor = world.npc_move_factor(npc_id);
+    if trace_factor == 0.0 {
+        return Some(500);
+    }
+    let speed = tmpl.speed_2 as f32 * (MONSTER_SPEED as f32 / 1000.0) * trace_factor;
 
     // Check if target has moved enough to warrant path recalculation
     let target_moved_dx = target_pos.x - ai.path_target_x;
@@ -1069,6 +1145,7 @@ fn npc_tracing(
         s.path_target_z = new_target_z;
         s.path_is_direct = new_is_direct;
     });
+    world.update_npc_position(npc_id, new_x, new_z);
 
     // C++ returns m_sSpeed (1500ms) between each chase step
     Some(MONSTER_SPEED)
@@ -1132,6 +1209,11 @@ async fn npc_fighting(
     ai: &NpcAiState,
     tmpl: &NpcTemplate,
 ) -> Option<u64> {
+    // A stunned monster (Type4 STUN debuff) cannot attack.
+    if world.npc_move_factor(npc_id) == 0.0 {
+        return Some(500);
+    }
+
     // NPC-vs-NPC fighting path
     if let Some(npc_target) = ai.npc_target_id {
         return npc_fighting_npc(world, npc_id, ai, tmpl, npc_target);
@@ -1201,12 +1283,12 @@ async fn npc_fighting(
         }
     };
 
-    // Group AI: call nearby same-family NPCs to help
-    //   if (m_bHasFriends || GetType() == NPC_BOSS)
-    //     FindFriend(GetType() == NPC_BOSS ? MonSearchAny : MonSearchSameFamily);
+    // Friend packs may assist; bosses never recruit nearby monsters.
     let is_boss = tmpl.npc_type == NPC_BOSS;
-    if ai.has_friends || is_boss {
-        alert_pack(world, npc_id, ai, target_id, is_boss);
+    // Bosses such as Manticore and Attila fight only the player who hit them;
+    // they must not recruit nearby same-family spawns into the encounter.
+    if ai.has_friends && !is_boss && world.npc_damage_contains(npc_id, target_id) {
+        alert_pack(world, npc_id, ai, tmpl, target_id, is_boss);
     }
 
     // Ranged/magic attack — NPCs with direct_attack > 0 use skills
@@ -1384,6 +1466,9 @@ async fn npc_fighting(
         }
     }
 
+    final_damage = world
+        .manes_survival_manager
+        .reduce_incoming_damage(target_id, final_damage);
     let new_hp = (target.hp - final_damage).max(0);
     world.update_character_hp(target_id, new_hp);
 
@@ -1569,13 +1654,10 @@ fn npc_fighting_npc(
                 pet.hp = cur_hp;
             }
         });
-        let hp_pkt =
-            crate::handler::pet::build_pet_hp_change_packet(max_hp, cur_hp, npc_id);
+        let hp_pkt = crate::handler::pet::build_pet_hp_change_packet(max_hp, cur_hp, npc_id);
         world.send_to_session_owned(owner_sid, hp_pkt);
-        let dmg_pkt = crate::handler::pet::build_pet_damage_display_packet(
-            npc_target as i32,
-            damage as i16,
-        );
+        let dmg_pkt =
+            crate::handler::pet::build_pet_damage_display_packet(npc_target as i32, damage as i16);
         world.send_to_session_owned(owner_sid, dmg_pkt);
     }
 
@@ -1628,14 +1710,25 @@ fn npc_back(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, tmpl: &NpcTempla
 
     if dist <= 2.0 {
         // Arrived at spawn
+        let spawn_rx = calc_region(ai.spawn_x);
+        let spawn_rz = calc_region(ai.spawn_z);
+        if spawn_rx != ai.region_x || spawn_rz != ai.region_z {
+            if let Some(zone) = world.get_zone(ai.zone_id) {
+                zone.remove_npc(ai.region_x, ai.region_z, npc_id);
+                zone.add_npc(spawn_rx, spawn_rz, npc_id);
+            }
+        }
         world.update_npc_ai(npc_id, |s| {
             s.state = NpcState::Standing;
             s.cur_x = s.spawn_x;
             s.cur_z = s.spawn_z;
+            s.region_x = spawn_rx;
+            s.region_z = spawn_rz;
             s.target_id = None;
             s.path_waypoints.clear();
             s.path_index = 0;
         });
+        world.update_npc_position(npc_id, ai.spawn_x, ai.spawn_z);
         send_npc_move(
             world,
             npc_id,
@@ -1728,6 +1821,7 @@ fn npc_back(world: &WorldState, npc_id: NpcId, ai: &NpcAiState, tmpl: &NpcTempla
         s.path_waypoints = new_waypoints;
         s.path_index = new_index;
     });
+    world.update_npc_position(npc_id, new_x, new_z);
 
     // C++ returns m_sSpeed (1500ms) between each return step
     Some(MONSTER_SPEED)
@@ -2483,16 +2577,28 @@ async fn try_boss_magic(
 /// Searches the 3x3 region grid for same-family NPCs. If found, sets their
 /// target to the current attacker and transitions them to Attacking state.
 /// Alert nearby NPCs to join combat when a pack NPC or boss is attacked.
-/// When `is_boss` is true, uses MonSearchAny — alerts ANY nearby NPC regardless
-/// of family type. When false, uses MonSearchSameFamily — only alerts NPCs with
-/// matching `family_type` that also have `has_friends`.
+/// Boss type alone does not establish an alliance. All callers require a
+/// nonzero matching family; recruited allies cannot relay an unprovoked shout.
 fn alert_pack(
     world: &WorldState,
     npc_id: NpcId,
     ai: &NpcAiState,
+    caller_template: &NpcTemplate,
     target_id: SessionId,
     is_boss: bool,
 ) {
+    // Moradon creatures never call nearby ones in for help -- every monster there fights alone.
+    if matches!(
+        ai.zone_id,
+        ZONE_MORADON | ZONE_MORADON2 | ZONE_MORADON3 | ZONE_MORADON4 | ZONE_MORADON5
+    ) {
+        return;
+    }
+
+    let caller_inst = match world.get_npc_instance(npc_id) {
+        Some(n) if n.is_monster => n,
+        _ => return,
+    };
     let zone = match world.get_zone(ai.zone_id) {
         Some(z) => z,
         None => return,
@@ -2523,35 +2629,37 @@ fn alert_pack(
             continue;
         }
 
-        if is_boss {
-            // MonSearchAny: alert any NPC in range (boss path)
-        } else {
-            // MonSearchSameFamily: only same-family NPCs with has_friends
-            if !ally_ai.has_friends || ally_ai.family_type != ai.family_type {
-                continue;
-            }
-        }
-
         // Skip gate NPCs — they should not be called as friends
         let ally_inst = match world.get_npc_instance(ally_nid) {
             Some(n) => n,
             None => continue,
         };
+
+        // any monster within the assist range joins, whatever its kind (bosses never recruit)
+        if is_boss || !ally_ai.has_friends {
+            continue;
+        }
         let ally_tmpl = match world.get_npc_template(ally_inst.proto_id, ally_inst.is_monster) {
             Some(t) => t,
             None => continue,
         };
 
-        if is_gate_npc_type(ally_tmpl.npc_type) {
+        if !ally_inst.is_monster
+            || !caller_inst.is_monster
+            || ally_inst.event_room != caller_inst.event_room
+            || ally_tmpl.group != caller_template.group
+            || is_gate_npc_type(ally_tmpl.npc_type)
+        {
             continue;
         }
 
-        // Distance check — use tracing range
+        // Assistance uses the caller's local awareness, not its longer chase
+        // radius. Otherwise one attacked monster recruits unrelated spawns.
         let dx = ai.cur_x - ally_ai.cur_x;
         let dz = ai.cur_z - ally_ai.cur_z;
         let dist = (dx * dx + dz * dz).sqrt();
 
-        if dist > ally_tmpl.tracing_range.max(ally_tmpl.search_range) as f32 {
+        if caller_template.search_range == 0 || dist > crate::monster_behavior::assist_range() {
             continue;
         }
 
@@ -2565,6 +2673,10 @@ fn alert_pack(
             s.skill_cooldown_ms = s.last_tick_ms + NPC_SKILL_COOLDOWN_MS;
         });
     }
+}
+
+fn pack_family_matches(caller: u8, ally: u8, boss: bool, has_friends: bool) -> bool {
+    !boss && caller != 0 && caller == ally && has_friends
 }
 
 /// Find the most injured same-family NPC for healer AI.
@@ -2724,8 +2836,8 @@ fn find_enemy(world: &WorldState, ai: &NpcAiState, npc_id: NpcId) -> Option<Sess
                 return None;
             }
 
-            // Skip GMs (authority == 0)
-            if ch.authority == 0 {
+            // Skip GMs (authority == 0) unless `+aggro gm on`
+            if ch.authority == 0 && !crate::monster_behavior::gm_aggro() {
                 return None;
             }
 
@@ -3228,6 +3340,9 @@ async fn npc_apply_magic_effect(
         }
     }
 
+    final_damage = world
+        .manes_survival_manager
+        .reduce_incoming_damage(target_sid, final_damage);
     let new_hp = (target.hp - final_damage).max(0);
     world.update_character_hp(target_sid, new_hp);
 
@@ -3644,6 +3759,17 @@ fn send_gate_flag(
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn test_zero_regen_time_disables_auto_respawn() {
+        assert!(!can_auto_respawn(0));
+    }
+
+    #[test]
+    fn test_positive_regen_time_allows_auto_respawn() {
+        assert!(can_auto_respawn(250));
+        assert!(can_auto_respawn(30_000));
+    }
 
     #[test]
     fn test_npc_state_values_match_cpp() {
@@ -5327,55 +5453,22 @@ mod tests {
 
     #[test]
     fn test_boss_alert_pack_condition() {
-        //   if (m_bHasFriends || GetType() == NPC_BOSS)
-        //     FindFriend(GetType() == NPC_BOSS ? MonSearchAny : MonSearchSameFamily);
-
-        // Case 1: has_friends=true, not boss -> should alert (same-family)
         let ai = NpcAiState {
             has_friends: true,
             ..make_test_ai()
         };
-        let npc_type: u8 = 0; // regular monster
-        let is_boss = npc_type == NPC_BOSS;
-        assert!(
-            ai.has_friends || is_boss,
-            "has_friends=true should trigger alert"
-        );
-        assert!(!is_boss, "Regular monster is not a boss");
-
-        // Case 2: has_friends=false, is boss -> should alert (any)
-        let ai2 = NpcAiState {
-            has_friends: false,
-            ..make_test_ai()
-        };
-        let npc_type2: u8 = NPC_BOSS;
-        let is_boss2 = npc_type2 == NPC_BOSS;
-        assert!(
-            ai2.has_friends || is_boss2,
-            "Boss NPC should trigger alert even without has_friends"
-        );
-        assert!(is_boss2, "NPC_BOSS type should be detected");
-
-        // Case 3: has_friends=false, not boss -> should NOT alert
-        let ai3 = NpcAiState {
-            has_friends: false,
-            ..make_test_ai()
-        };
-        let npc_type3: u8 = 0;
-        let is_boss3 = npc_type3 == NPC_BOSS;
-        assert!(
-            !(ai3.has_friends || is_boss3),
-            "Non-boss without has_friends should not alert"
-        );
+        assert!(ai.has_friends);
+        assert!(pack_family_matches(14, 14, false, ai.has_friends));
+        assert!(!pack_family_matches(14, 14, true, ai.has_friends));
     }
 
     #[test]
     fn test_boss_search_type_selection() {
-        // Boss: MonSearchAny (skips family check)
-        // Non-boss: MonSearchSameFamily (requires family match)
+        // Bosses must not call allies even if family IDs match.
         let boss_type: u8 = NPC_BOSS;
         let is_boss = boss_type == NPC_BOSS;
         assert!(is_boss, "Boss should use MonSearchAny");
+        assert!(!pack_family_matches(14, 14, is_boss, true));
 
         let regular_type: u8 = 0;
         let is_regular_boss = regular_type == NPC_BOSS;
@@ -5386,9 +5479,8 @@ mod tests {
     }
 
     #[test]
-    fn test_alert_pack_boss_skips_family_check() {
-        // In alert_pack with is_boss=true, NPCs of different family
-        // should still be eligible (MonSearchAny).
+    fn test_alert_pack_boss_requires_family_check() {
+        // Bosses never recruit allies, regardless of family.
         let caller_ai = NpcAiState {
             has_friends: false,
             family_type: 10,
@@ -5403,16 +5495,26 @@ mod tests {
         };
         let is_boss = true;
 
-        // Boss path: should NOT skip due to family mismatch
-        let skip_for_family = if is_boss {
-            false // MonSearchAny: don't check family
-        } else {
-            !ally_ai.has_friends || ally_ai.family_type != caller_ai.family_type
-        };
-        assert!(
-            !skip_for_family,
-            "Boss should not skip allies of different family"
+        let skip_for_family = !pack_family_matches(
+            caller_ai.family_type,
+            ally_ai.family_type,
+            is_boss,
+            ally_ai.has_friends,
         );
+        assert!(skip_for_family, "Boss must not recruit unrelated monsters");
+    }
+
+    #[test]
+    fn test_pack_atross_manticore_centaur_family_rules() {
+        for family in [14, 18, 26] {
+            assert!(!pack_family_matches(family, family, true, false));
+            for other in [14, 18, 26] {
+                assert_eq!(pack_family_matches(family, other, true, true), false);
+            }
+        }
+        assert!(!pack_family_matches(0, 0, true, true));
+        assert!(!pack_family_matches(14, 14, false, false));
+        assert!(pack_family_matches(14, 14, false, true));
     }
 
     #[test]
@@ -5433,11 +5535,12 @@ mod tests {
         };
         let is_boss = false;
 
-        let skip_for_family = if is_boss {
-            false
-        } else {
-            !ally_ai.has_friends || ally_ai.family_type != caller_ai.family_type
-        };
+        let skip_for_family = !pack_family_matches(
+            caller_ai.family_type,
+            ally_ai.family_type,
+            is_boss,
+            ally_ai.has_friends,
+        );
         assert!(
             skip_for_family,
             "Non-boss should skip allies of different family"
@@ -5946,6 +6049,8 @@ mod tests {
         let unit_dist = 4.0;
         let map_width = (size - 1) as f32 * unit_dist;
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: size,
             unit_dist,
             map_width,
@@ -5980,6 +6085,8 @@ mod tests {
         let unit_dist = 4.0;
         let map_width = (size - 1) as f32 * unit_dist;
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: size,
             unit_dist,
             map_width,
@@ -6009,6 +6116,8 @@ mod tests {
         let unit_dist = 4.0;
         let map_width = (size - 1) as f32 * unit_dist;
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: size,
             unit_dist,
             map_width,
@@ -8301,9 +8410,11 @@ mod tests {
         let result2 = world.apply_pet_decay(sid2, -(PET_DECAY_AMOUNT), now);
         assert!(result2.is_none(), "Pet with 50 sat should die");
 
-        // Verify sid2's pet is gone
-        let has_pet = world.with_session(sid2, |h| h.pet_data.is_some()).unwrap();
-        assert!(!has_pet);
+        // Satisfaction zero despawns the pet but keeps its persisted record
+        // and equipment so it can be summoned again after feeding it.
+        let pet = world.with_session(sid2, |h| h.pet_data.clone()).unwrap();
+        assert!(pet.is_some());
+        assert_eq!(pet.unwrap().nid, 0);
     }
 
     /// Integration: Pet decay respects the 60-second interval timer.
@@ -8376,9 +8487,9 @@ mod tests {
         let result = world.apply_pet_decay(sid, -100, 100);
         assert!(result.is_none(), "Pet should be dead at 0");
 
-        // Verify pet data is completely removed
+        // Verify the runtime pet is gone, while persistent pet data remains.
         let pet_data = world.with_session(sid, |h| h.pet_data.clone()).unwrap();
-        assert!(pet_data.is_none(), "Pet data should be None after death");
+        assert_eq!(pet_data.as_ref().map(|pet| pet.nid), Some(0));
 
         // Verify get_pet_packet_data also returns None
         let pkt_data = world.get_pet_packet_data(sid);
@@ -9140,11 +9251,11 @@ mod tests {
             }
         }
 
-        // Verify pet is gone from session
-        let has_pet = world.with_session(sid, |h| h.pet_data.is_some()).unwrap();
+        // Verify the pet is de-summoned but its record remains equipped.
+        let pet = world.with_session(sid, |h| h.pet_data.clone()).unwrap();
         assert!(
-            !has_pet,
-            "Pet should be de-summoned after satisfaction hits 0"
+            pet.is_some_and(|pet| pet.nid == 0),
+            "Pet should be de-summoned after satisfaction hits 0 while keeping its record"
         );
 
         // Should have taken ceil(250 / PET_DECAY_AMOUNT) ticks

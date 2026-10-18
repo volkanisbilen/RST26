@@ -23,6 +23,77 @@ pub fn start_chaos_stone_tick_task(world: Arc<WorldState>) -> tokio::task::JoinH
     })
 }
 
+/// Materialise every enabled rank-1 Chaos Stone when the server starts.
+/// The table loader only builds timer state; it does not create map NPCs.
+pub fn spawn_initial_chaos_stones(world: &WorldState) -> usize {
+    let spawns: Vec<_> = world
+        .chaos_stone_spawns()
+        .iter()
+        .filter(|row| row.is_open && row.rank == 1)
+        .cloned()
+        .collect();
+
+    spawns
+        .iter()
+        .map(|row| spawn_chaos_stone_row(world, row, false))
+        .sum()
+}
+
+fn spawn_chaos_stone_row(
+    world: &WorldState,
+    row: &ko_db::models::chaos_stone::ChaosStoneSpawnRow,
+    replace_existing: bool,
+) -> usize {
+    let existing = world.find_all_npcs_in_zone(row.chaos_id as u16, row.zone_id as u16);
+    if !replace_existing
+        && existing
+            .iter()
+            .any(|npc| world.get_npc_hp(npc.nid).unwrap_or(0) > 0)
+    {
+        return 0;
+    }
+
+    // Event NPCs have no normal AI regeneration. Remove the dead instance
+    // before recreating the configured rank at its authoritative coordinates.
+    for npc in existing {
+        world.kill_npc(npc.nid);
+    }
+
+    let ids = world.spawn_event_npc_ex_with_direction(
+        row.chaos_id as u16,
+        true,
+        row.zone_id as u16,
+        row.spawn_x as f32,
+        row.spawn_z as f32,
+        row.count.max(1) as u16,
+        0,
+        0,
+        row.direction.clamp(0, u8::MAX as i16) as u8,
+    );
+
+    if ids.is_empty() {
+        tracing::error!(
+            chaos_id = row.chaos_id,
+            rank = row.rank,
+            zone_id = row.zone_id,
+            x = row.spawn_x,
+            z = row.spawn_z,
+            "Chaos Stone spawn failed"
+        );
+    } else {
+        tracing::info!(
+            chaos_id = row.chaos_id,
+            rank = row.rank,
+            zone_id = row.zone_id,
+            x = row.spawn_x,
+            z = row.spawn_z,
+            runtime_ids = ?ids,
+            "Chaos Stone spawned"
+        );
+    }
+    ids.len()
+}
+
 /// Process one second of chaos stone respawn timers.
 fn process_chaos_stone_tick(world: &WorldState) {
     let results = {
@@ -33,16 +104,28 @@ fn process_chaos_stone_tick(world: &WorldState) {
     for result in results {
         use crate::handler::chaos_stone::ChaosStoneTimerResult;
         if let ChaosStoneTimerResult::Respawn(chaos_id, rank, zone_id) = result {
-            tracing::debug!(
-                chaos_id,
-                rank,
-                zone_id,
-                "Chaos stone respawn timer expired — stone ready to respawn"
-            );
-            // The actual NPC re-spawn is performed by the NPC AI tick system
-            // when it detects a Dead NPC whose respawn timer has elapsed.
-            // Here we only log the event; in a full implementation this would
-            // call the NPC spawn path with the data from chaos_stone_spawns.
+            let row = world
+                .chaos_stone_spawns()
+                .iter()
+                .find(|row| {
+                    row.is_open
+                        && row.chaos_id as u16 == chaos_id
+                        && row.rank as u8 == rank
+                        && row.zone_id as u16 == zone_id
+                })
+                .cloned();
+
+            match row {
+                Some(row) => {
+                    spawn_chaos_stone_row(world, &row, true);
+                }
+                None => tracing::error!(
+                    chaos_id,
+                    rank,
+                    zone_id,
+                    "Chaos Stone respawn row is missing"
+                ),
+            }
         }
     }
 }

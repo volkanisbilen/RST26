@@ -25,7 +25,7 @@ use dashmap::DashMap;
 use ko_protocol::{Opcode, Packet};
 
 use crate::state_change_constants::{STATE_CHANGE_INVISIBILITY, STATE_CHANGE_PARTY_LEADER};
-use crate::world::types::{ZONE_ELMORAD, ZONE_KARUS, ZONE_MORADON, ZONE_RONARK_LAND};
+use crate::world::types::{ZONE_ELMORAD, ZONE_KARUS, ZONE_MORADON};
 use crate::world::WorldState;
 use crate::zone::SessionId;
 
@@ -641,11 +641,14 @@ impl EventRoomManager {
 
     /// List all rooms for an event type.
     pub fn list_rooms(&self, event_type: TempleEventType) -> Vec<u8> {
-        self.rooms
+        let mut rooms: Vec<u8> = self
+            .rooms
             .iter()
             .filter(|r| r.key().0 == event_type)
             .map(|r| r.key().1)
-            .collect()
+            .collect();
+        rooms.sort_unstable();
+        rooms
     }
 
     /// Count total rooms of a given type.
@@ -864,10 +867,53 @@ pub struct SpawnEventNpcParams {
     pub direction: i16,
 }
 
+/// Event id of the Border Defence join window the client opens for Juraid (the client has no Juraid window).
+pub const JURAID_WINDOW_EVENT_ID: i16 = 4;
+
+/// Zones whose players do not get event windows (event zones, Monster Stone, prison).
+const NO_WINDOW_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
+
+fn in_window_zone(world: &WorldState, sid: SessionId) -> bool {
+    world
+        .get_position(sid)
+        .map(|p| !NO_WINDOW_ZONES.contains(&p.zone_id))
+        .unwrap_or(false)
+}
+
+/// Open the Juraid join window for everybody online (like Ultima / Rift / Manes): the start broadcast of
+/// the Border Defence window, the current counter and the title. The server keeps the event as Juraid.
+pub fn broadcast_juraid_window(world: &WorldState, remaining_secs: u16) {
+    let (karus, elmo) = world
+        .event_room_manager
+        .read_temple_event(|te| (te.karus_user_count, te.elmorad_user_count));
+    let open = Arc::new(build_event_start_broadcast(JURAID_WINDOW_EVENT_ID, remaining_secs));
+    let count = Arc::new(build_bdw_counter_packet(karus, elmo));
+    let title = Arc::new(crate::handler::survival::build_window_title("Juraid Mountain"));
+    for sid in world.get_in_game_session_ids() {
+        if !in_window_zone(world, sid) {
+            continue;
+        }
+        world.send_to_session_arc(sid, Arc::clone(&open));
+        world.send_to_session_arc(sid, Arc::clone(&count));
+        // the title goes last: the window object only exists once the open packet has been handled
+        world.send_to_session_arc(sid, Arc::clone(&title));
+    }
+}
+
+/// The registration was cancelled: let the open join windows run out (one second left) so they close by themselves.
+pub fn broadcast_juraid_window_close(world: &WorldState) {
+    let pkt = Arc::new(build_event_start_broadcast(JURAID_WINDOW_EVENT_ID, 1));
+    for sid in world.get_in_game_session_ids() {
+        if in_window_zone(world, sid) {
+            world.send_to_session_arc(sid, Arc::clone(&pkt));
+        }
+    }
+}
+
 /// Broadcast the event counter (sign-up counts) to all signed-up users.
 ///   - BDW: `TemplEventBDWSendJoinScreenUpdate()` — sends karus + elmo counts
 ///   - Chaos: `TemplEventChaosSendJoinScreenUpdate()` — sends total count only
-///   - Juraid: `TemplEventJuraidSendJoinScreenUpdate()` — sends via WIZ_EXT_HOOK
+///   - Juraid: `TemplEventJuraidSendJoinScreenUpdate()` — sends EXT_HOOK and v2615 WIZ_EVENT
 /// Called when a user joins/leaves the event.
 /// Returns the built packet so the caller can also send it to a specific user.
 pub fn broadcast_event_counter(world: &WorldState) -> Option<Packet> {
@@ -896,21 +942,65 @@ pub fn broadcast_event_counter(world: &WorldState) -> Option<Packet> {
     };
     drop(te);
 
-    // Build the correct per-event counter packet
+    // Build the native counter packet. Juraid additionally needs the 2615
+    // EXT_HOOK join-screen update: registration logs proved that WIZ_EVENT
+    // alone is accepted by the server flow but does not open/update the UI.
     let counter_pkt = match active_event {
         4 => build_bdw_counter_packet(karus_count, elmo_count),
         24 => build_chaos_counter_packet(all_count),
-        100 => build_juraid_counter_packet(karus_count, elmo_count, sign_remain),
+        // 2615 uses the native WIZ_EVENT counter contract. The older C++
+        // reference's XSafe/JURAID packet is not authoritative for this
+        // client and must not replace the reverse-engineered packet.
+        100 => build_juraid_event_counter_packet(karus_count, elmo_count, sign_remain),
         _ => return None,
     };
+
+    // Juraid: the open window belongs to everybody, so everybody gets the Border Defence style counter
+    if active_event == 100 {
+        let arc = Arc::new(build_bdw_counter_packet(karus_count, elmo_count));
+        for sid in world.get_in_game_session_ids() {
+            if in_window_zone(world, sid) {
+                world.send_to_session_arc(sid, Arc::clone(&arc));
+            }
+        }
+        return Some(build_bdw_counter_packet(karus_count, elmo_count));
+    }
 
     // Send to all signed-up users (clone once, Arc share in loop)
     let users = erm.signed_up_users.read();
     let arc_counter = Arc::new(counter_pkt.clone());
+    let arc_juraid_hook = (active_event == 100).then(|| {
+        Arc::new(build_juraid_counter_packet(
+            karus_count,
+            elmo_count,
+            sign_remain,
+        ))
+    });
+    let arc_juraid_native = (active_event == 100).then(|| {
+        Arc::new(build_juraid_select_counter_packet(
+            karus_count,
+            elmo_count,
+            sign_remain,
+        ))
+    });
+    if active_event == 100 {
+        tracing::info!(
+            karus_count,
+            elmorad_count = elmo_count,
+            remaining_secs = sign_remain,
+            signed_users = users.len(),
+            "Juraid registration counter packets sent (WIZ_EVENT + v2615 WIZ_SELECT_MSG)"
+        );
+    }
     for user in users.iter() {
         world.send_to_session_arc(user.session_id, Arc::clone(&arc_counter));
+        if let Some(hook) = &arc_juraid_hook {
+            world.send_to_session_arc(user.session_id, Arc::clone(hook));
+        }
+        if let Some(native) = &arc_juraid_native {
+            world.send_to_session_arc(user.session_id, Arc::clone(native));
+        }
     }
-
     Some(counter_pkt)
 }
 
@@ -1038,6 +1128,8 @@ pub fn send_winner_screen(world: &WorldState, active_event: i16, now: u64) {
             // Determine winner nation for this room
             let winner = if is_chaos {
                 0 // Chaos: always FFA (no winner nation)
+            } else if room.winner_nation != 0 {
+                room.winner_nation
             } else if room.karus_score > room.elmorad_score {
                 1 // Karus wins
             } else if room.elmorad_score > room.karus_score {
@@ -1091,7 +1183,9 @@ pub fn send_winner_screen(world: &WorldState, active_event: i16, now: u64) {
                 world.set_invisibility_type(*sid, 0);
                 let sc_pkt =
                     build_state_change_broadcast(*sid as u32, STATE_CHANGE_INVISIBILITY, 0);
-                if let Some((pos, sender_event_room)) = world.with_session(*sid, |h| (h.position, h.event_room)) {
+                if let Some((pos, sender_event_room)) =
+                    world.with_session(*sid, |h| (h.position, h.event_room))
+                {
                     world.broadcast_to_region_sync(
                         pos.zone_id,
                         pos.region_x,
@@ -1179,7 +1273,7 @@ pub fn send_active_event_time(world: &WorldState, sid: SessionId) {
 
     // Read active event and remaining seconds atomically
     let (active_event, remaining_secs) = erm.read_temple_event(|te| {
-        if !te.is_active {
+        if !te.is_active && !te.allow_join {
             return (-1i16, 0u16);
         }
         let now = std::time::SystemTime::now()
@@ -1251,9 +1345,27 @@ pub fn send_active_event_time(world: &WorldState, sid: SessionId) {
             world.send_to_session_owned(sid, pkt);
         }
         100 => {
-            // Juraid: WIZ_EXT_HOOK + u8(JURAID) + u16(karus) + u16(elmo) + u16(remaining)
-            // Note: Only for older client versions (#if __VERSION < 2369)
-            // Most modern clients don't need this, but sending it doesn't hurt.
+            let (k_count, e_count, remain) = erm.read_temple_event(|te| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let remain = if te.sign_remain_seconds > now {
+                    (te.sign_remain_seconds - now) as u16
+                } else {
+                    0
+                };
+                (te.karus_user_count, te.elmorad_user_count, remain)
+            });
+            world.send_to_session_owned(
+                sid,
+                build_juraid_event_counter_packet(k_count, e_count, remain),
+            );
+            world.send_to_session_owned(sid, build_juraid_counter_packet(k_count, e_count, remain));
+            world.send_to_session_owned(
+                sid,
+                build_juraid_select_counter_packet(k_count, e_count, remain),
+            );
         }
         _ => {}
     }
@@ -1318,6 +1430,48 @@ pub fn build_juraid_counter_packet(
     pkt
 }
 
+/// Build a v2615-compatible WIZ_EVENT Juraid join counter packet.
+/// Packet format: `[0x5F] [u8:16] [u16:100] [u16:karus] [u16:elmo] [u16:remaining_secs]`
+pub fn build_juraid_event_counter_packet(
+    karus_count: u16,
+    elmo_count: u16,
+    remaining_secs: u16,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizEvent as u8);
+    pkt.write_u8(16); // TEMPLE_EVENT_COUNTER sub-opcode
+    pkt.write_u16(TempleEventType::JuraidMountain as u16);
+    pkt.write_u16(karus_count);
+    pkt.write_u16(elmo_count);
+    pkt.write_u16(remaining_secs);
+    pkt
+}
+
+/// Native Juraid registration panel payload used by the stock client before
+/// the old C++ source replaced it with its private XSafe extension.
+///
+/// Reference: EventSigningSystem.cpp::TemplEventJuraidSendJoinScreenUpdate.
+/// v2615's WIZ_SELECT_MSG dispatcher reads the common leading event SID as
+/// u32 (the same contract used by quest menus, Draki timers and winner UI).
+/// `[u32 0][u8 7][u64 0][u32 6][u16 K][u16 0][u16 E][u16 0][u16 remain][u16 0]`
+pub fn build_juraid_select_counter_packet(
+    karus_count: u16,
+    elmo_count: u16,
+    remaining_secs: u16,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizSelectMsg as u8);
+    pkt.write_u32(0);
+    pkt.write_u8(7);
+    pkt.write_u64(0);
+    pkt.write_u32(6);
+    pkt.write_u16(karus_count);
+    pkt.write_u16(0);
+    pkt.write_u16(elmo_count);
+    pkt.write_u16(0);
+    pkt.write_u16(remaining_secs);
+    pkt.write_u16(0);
+    pkt
+}
+
 /// Teleport all assigned room users into the event zone.
 /// After room assignment, each user is zone-changed into the event zone
 /// at coordinates (0, 0) — the server uses random spawn from start_position.
@@ -1357,13 +1511,7 @@ pub fn teleport_users_to_event(world: &WorldState, event_type: TempleEventType) 
         };
 
         for sid in &session_ids {
-            // Get player nation for zone change packet
-            let nation = world
-                .get_character_info(*sid)
-                .map(|c| c.nation)
-                .unwrap_or(0);
-
-            send_event_zone_change(world, *sid, zone_id, nation, *room_id);
+            send_event_zone_change(world, *sid, zone_id, *room_id);
 
             // Send timer overlay packets per C++ TempleEventTeleportUsers
             world.send_to_session_arc(*sid, Arc::clone(&arc_select));
@@ -1509,16 +1657,15 @@ pub fn temple_event_create_parties(world: &WorldState, event_type: TempleEventTy
 }
 
 /// Send a zone change packet for event teleport.
-/// Coordinates (0, 0) cause the client to use default spawn for the zone.
-fn send_event_zone_change(
-    world: &WorldState,
-    sid: SessionId,
-    zone_id: u16,
-    nation: u8,
-    event_room: u8,
-) {
-    // Update server-side position (0,0,0 = use zone default spawn)
-    world.update_position(sid, zone_id, 0.0, 0.0, 0.0);
+///
+/// Event entry must use the regular server-side teleport path. Sending raw
+/// `(0, 0)` coordinates leaves modern clients below the BDW map and also
+/// skips region-grid and zone-changing bookkeeping.
+fn send_event_zone_change(world: &WorldState, sid: SessionId, zone_id: u16, event_room: u8) {
+    // Resolve (0,0) through start_position and perform the complete zone
+    // transition before switching the room filter. This preserves the old
+    // room while broadcasting INOUT_OUT from the source zone.
+    crate::handler::zone_change::server_teleport_to_zone(world, sid, zone_id, 0.0, 0.0);
 
     //   if (eventroom == 0 && GetEventRoom() > 0) m_bEventRoom = 0;
     //   else if (eventroom > 0)                    m_bEventRoom = eventroom;
@@ -1534,23 +1681,11 @@ fn send_event_zone_change(
             });
         }
     }
-
-    let mut pkt = Packet::new(Opcode::WizZoneChange as u8);
-    pkt.write_u8(3); // ZONE_CHANGE_TELEPORT
-    pkt.write_u16(zone_id);
-    pkt.write_u16(0); // unk
-    pkt.write_u16(0); // x (0 = use zone default spawn)
-    pkt.write_u16(0); // z (0 = use zone default spawn)
-    pkt.write_u16(0); // unk
-    pkt.write_u8(nation);
-    pkt.write_u16(0xFFFF);
-
-    world.send_to_session_owned(sid, pkt);
 }
 
 /// Determine the kick-out destination zone for a player leaving an event.
 /// - BDW/Chaos: Nation capital (level >= 35) or Moradon
-/// - Juraid: Ronark Land or Moradon
+/// - Juraid: Moradon
 pub fn kick_out_destination(event_zone: u16, nation: u8, level: u8) -> u16 {
     match event_zone {
         // BDW (84) or Chaos (85): nation capital if level >= 35
@@ -1565,14 +1700,8 @@ pub fn kick_out_destination(event_zone: u16, nation: u8, level: u8) -> u16 {
                 ZONE_MORADON
             }
         }
-        // Juraid (87): Ronark Land if level sufficient, else Moradon
-        87 => {
-            if level >= NATION_CAPITAL_MIN_LEVEL {
-                ZONE_RONARK_LAND
-            } else {
-                ZONE_MORADON
-            }
-        }
+        // Juraid (87): original 2615 flow now exits to Moradon for this server.
+        87 => ZONE_MORADON,
         _ => ZONE_MORADON,
     }
 }
@@ -1633,20 +1762,17 @@ pub fn temple_event_room_close(world: &WorldState, event_type: TempleEventType, 
             let event_zone = event_type.zone_id();
             for (sid, nation, level) in &users {
                 let dest_zone = kick_out_destination(event_zone, *nation, *level);
-                world.update_position(*sid, dest_zone, 0.0, 0.0, 0.0);
-
-                let mut pkt = Packet::new(Opcode::WizZoneChange as u8);
-                pkt.write_u8(3); // ZONE_CHANGE_TELEPORT
-                pkt.write_u16(dest_zone);
-                pkt.write_u16(0);
-                pkt.write_u16(0);
-                pkt.write_u16(0);
-                pkt.write_u16(0);
-                pkt.write_u8(*nation);
-                pkt.write_u16(0xFFFF);
-
-                world.send_to_session_owned(*sid, pkt);
+                world.update_session(*sid, |h| {
+                    h.event_room = 0;
+                    h.joined_event = false;
+                    h.is_final_joined_event = false;
+                });
+                crate::handler::zone_change::server_teleport_to_zone(
+                    world, *sid, dest_zone, 0.0, 0.0,
+                );
             }
+
+            world.despawn_room_npcs(event_zone, *room_id as u16);
 
             tracing::info!(
                 "Event {:?} room {} — finish countdown expired, kicked {} users",
@@ -2511,8 +2637,8 @@ mod tests {
 
     #[test]
     fn test_kick_out_destination_juraid_high_level() {
-        assert_eq!(kick_out_destination(87, 1, 60), ZONE_RONARK_LAND);
-        assert_eq!(kick_out_destination(87, 2, 35), ZONE_RONARK_LAND);
+        assert_eq!(kick_out_destination(87, 1, 60), ZONE_MORADON);
+        assert_eq!(kick_out_destination(87, 2, 35), ZONE_MORADON);
     }
 
     #[test]
@@ -2624,6 +2750,37 @@ mod tests {
         assert_eq!(r.read_u16(), Some(6)); // elmo count
         assert_eq!(r.read_u16(), Some(180)); // remaining seconds
         assert!(r.read_u8().is_none()); // no more data
+    }
+
+    #[test]
+    fn test_build_juraid_event_counter_packet() {
+        let pkt = build_juraid_event_counter_packet(4, 6, 180);
+        assert_eq!(pkt.opcode, Opcode::WizEvent as u8);
+        let mut r = ko_protocol::PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(16)); // TEMPLE_EVENT_COUNTER
+        assert_eq!(r.read_u16(), Some(100)); // Juraid
+        assert_eq!(r.read_u16(), Some(4)); // karus count
+        assert_eq!(r.read_u16(), Some(6)); // elmo count
+        assert_eq!(r.read_u16(), Some(180)); // remaining seconds
+        assert!(r.read_u8().is_none());
+    }
+
+    #[test]
+    fn test_build_juraid_select_counter_packet() {
+        let pkt = build_juraid_select_counter_packet(4, 6, 180);
+        assert_eq!(pkt.opcode, Opcode::WizSelectMsg as u8);
+        let mut r = ko_protocol::PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u32(), Some(0));
+        assert_eq!(r.read_u8(), Some(7));
+        assert_eq!(r.read_u64(), Some(0));
+        assert_eq!(r.read_u32(), Some(6));
+        assert_eq!(r.read_u16(), Some(4));
+        assert_eq!(r.read_u16(), Some(0));
+        assert_eq!(r.read_u16(), Some(6));
+        assert_eq!(r.read_u16(), Some(0));
+        assert_eq!(r.read_u16(), Some(180));
+        assert_eq!(r.read_u16(), Some(0));
+        assert!(r.read_u8().is_none());
     }
 
     #[test]
@@ -3030,15 +3187,49 @@ mod tests {
         let world = crate::world::WorldState::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         world.register_session(1, tx);
+        world.register_ingame(
+            1,
+            crate::world::CharacterInfo {
+                session_id: 1,
+                nation: 1,
+                name: "BdwSpawnTest".into(),
+                ..Default::default()
+            },
+            crate::world::Position {
+                zone_id: 21,
+                x: 816.0,
+                y: 0.0,
+                z: 532.0,
+                region_x: crate::zone::calc_region(816.0),
+                region_z: crate::zone::calc_region(532.0),
+            },
+        );
+        world.insert_start_position(ko_db::models::StartPositionRow {
+            zone_id: 84,
+            karus_x: 51,
+            karus_z: 58,
+            elmorad_x: 201,
+            elmorad_z: 207,
+            karus_gate_x: 5,
+            karus_gate_z: 5,
+            elmo_gate_x: 0,
+            elmo_gate_z: 0,
+            range_x: 0,
+            range_z: 0,
+        });
 
         assert_eq!(world.get_event_room(1), 0);
 
         // Teleport into event zone with room 3
-        send_event_zone_change(&world, 1, 84, 1, 3);
+        send_event_zone_change(&world, 1, 84, 3);
         assert_eq!(world.get_event_room(1), 3);
+        let pos = world.get_position(1).unwrap();
+        assert_eq!(pos.zone_id, 84);
+        assert_eq!((pos.x, pos.z), (51.0, 58.0));
+        assert!(world.is_zone_changing(1));
 
         // Teleport with event_room=0 should clear it
-        send_event_zone_change(&world, 1, 21, 1, 0);
+        send_event_zone_change(&world, 1, 21, 0);
         assert_eq!(world.get_event_room(1), 0);
     }
 
@@ -3050,7 +3241,7 @@ mod tests {
         world.register_session(1, tx);
 
         assert_eq!(world.get_event_room(1), 0);
-        send_event_zone_change(&world, 1, 21, 1, 0);
+        send_event_zone_change(&world, 1, 21, 0);
         assert_eq!(world.get_event_room(1), 0);
     }
 }

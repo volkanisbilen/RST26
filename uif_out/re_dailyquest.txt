@@ -1,0 +1,374 @@
+BASE  [0, 0, 0, 0] 
+  IMAGE  [41, 32, 647, 82] ui\re_akara_01.dxt uv=[0.082, 0.066, 0.812, 0.137]
+  IMAGE  [44, 501, 654, 551] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [44, 83, 651, 371] ui\certified_2020.dxt uv=[0.174, 0.363, 0.271, 0.49]
+  IMAGE  [-1, 6, 75, 161] ui\re_akara_01.dxt uv=[0.717, 0.835, 0.791, 0.986]
+  IMAGE  [75, 10, 609, 37] ui\re_akara_01.dxt uv=[0.789, 0.839, 0.803, 0.865]
+  IMAGE  [609, 6, 695, 161] ui\re_akara_01.dxt uv=[0.818, 0.835, 0.902, 0.986]
+  IMAGE  [-1, 408, 82, 580] ui\re_akara_01.dxt uv=[0.527, 0.829, 0.608, 0.997]
+  IMAGE  [215, 10, 516, 77] ui\re_skill04.dxt uv=[0.48, 0.67, 0.833, 0.755]
+  IMAGE  [13, 161, 45, 408] ui\re_akara_01.dxt uv=[0.541, 0.825, 0.572, 0.845]
+  IMAGE  [611, 413, 695, 580] ui\re_akara_01.dxt uv=[0.631, 0.834, 0.713, 0.997]
+  IMAGE  [649, 161, 681, 413] ui\re_akara_01.dxt uv=[0.668, 0.825, 0.699, 0.84]
+  IMAGE  [82, 541, 611, 578] ui\re_akara_01.dxt uv=[0.596, 0.959, 0.618, 0.995]
+  IMAGE  [39, 81, 70, 88] ui\re_akara_01.dxt uv=[0.141, 0.976, 0.171, 0.982]
+  IMAGE  [70, 81, 620, 88] ui\re_akara_01.dxt uv=[0.146, 0.976, 0.202, 0.982]
+  IMAGE  [620, 81, 655, 88] ui\re_akara_01.dxt uv=[0.298, 0.976, 0.332, 0.982]
+  IMAGE  [39, 119, 70, 126] ui\re_akara_01.dxt uv=[0.141, 0.976, 0.171, 0.982]
+  IMAGE  [70, 119, 620, 126] ui\re_akara_01.dxt uv=[0.146, 0.976, 0.202, 0.982]
+  IMAGE  [620, 119, 655, 126] ui\re_akara_01.dxt uv=[0.298, 0.976, 0.332, 0.982]
+  IMAGE  [620, 495, 655, 502] ui\re_akara_01.dxt uv=[0.298, 0.976, 0.332, 0.982]
+  IMAGE  [39, 495, 70, 502] ui\re_akara_01.dxt uv=[0.141, 0.976, 0.171, 0.982]
+  IMAGE  [70, 495, 620, 502] ui\re_akara_01.dxt uv=[0.146, 0.976, 0.202, 0.982]
+  IMAGE  [42, 85, 652, 111] ui\re_akara_01.dxt uv=[0.434, 0.756, 0.455, 0.809]
+  IMAGE  [42, 123, 652, 149] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 148, 652, 174] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 171, 652, 197] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 196, 652, 222] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 219, 652, 245] ui\re_akara_01.dxt uv=[0.435, 0.76, 0.456, 0.805]
+  IMAGE  [42, 244, 652, 270] ui\re_akara_01.dxt uv=[0.435, 0.76, 0.456, 0.805]
+  IMAGE  [42, 269, 652, 295] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 294, 652, 320] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 319, 652, 345] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 344, 652, 370] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 85, 652, 120] ui\re_akara_01.dxt uv=[0.045, 0.76, 0.856, 0.805]
+  IMAGE  [42, 369, 652, 395] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 394, 652, 420] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 419, 652, 445] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 444, 652, 470] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+  IMAGE  [42, 469, 652, 495] ui\re_akara_01.dxt uv=[0.434, 0.76, 0.455, 0.805]
+BASE group_quest [38, 82, 679, 536] 
+  STRING text_page [303, 511, 391, 532]  "1"
+  STRING  [290, 93, 385, 112]  "Time"
+  STRING  [191, 93, 291, 112]  "Status"
+  STRING  [44, 93, 194, 112]  "Quest"
+  BASE group_quest_11 [41, 398, 649, 417] 
+    BUTTON btn_selectquest11 [41, 398, 195, 417] 
+      IMAGE  [41, 398, 195, 417] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 398, 195, 417] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 398, 195, 417] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 398, 195, 417] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [298, 398, 387, 417]  "00:00:00"
+    STRING txt_quest_status [199, 398, 292, 417]  "Completed"
+    STRING txt_quest_title [41, 398, 190, 417]  "Quest Title 12"
+    STRING txt_quest_zone [504, 398, 649, 417]  "Zone"
+    STRING txt_quest_type [392, 398, 497, 417]  "Solo or Party"
+  BASE group_quest_10 [41, 373, 649, 392] 
+    BUTTON btn_selectquest10 [41, 373, 195, 392] 
+      IMAGE  [41, 373, 195, 392] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 373, 195, 392] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 373, 195, 392] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 373, 195, 392] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [298, 373, 387, 392]  "00:00:00"
+    STRING txt_quest_status [199, 373, 292, 392]  "Completed"
+    STRING txt_quest_title [41, 373, 190, 392]  "Quest Title 11"
+    STRING txt_quest_zone [504, 373, 649, 392]  "Zone"
+    STRING txt_quest_type [392, 373, 497, 392]  "Solo or Party"
+  BASE group_quest_09 [40, 348, 651, 367] 
+    BUTTON btn_selectquest09 [42, 348, 196, 367] 
+      IMAGE  [42, 348, 196, 367] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [42, 348, 196, 367] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [42, 348, 196, 367] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [42, 348, 196, 367] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [298, 348, 387, 367]  "00:00:00"
+    STRING txt_quest_status [199, 348, 292, 367]  "Completed"
+    STRING txt_quest_title [41, 348, 190, 367]  "Quest Title 10"
+    STRING txt_quest_zone [504, 348, 648, 367]  "Zone"
+    STRING txt_quest_type [392, 348, 497, 367]  "Solo or Party"
+  BASE group_quest_08 [41, 323, 652, 342] 
+    BUTTON btn_selectquest08 [41, 323, 195, 342] 
+      IMAGE  [41, 323, 195, 342] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 323, 195, 342] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 323, 195, 342] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 323, 195, 342] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_title [43, 323, 192, 342]  "Quest Title 9"
+    STRING txt_quest_time [300, 323, 389, 342]  "00:00:00"
+    STRING txt_quest_status [201, 323, 294, 342]  "Completed"
+    STRING txt_quest_zone [504, 323, 649, 342]  "Zone"
+    STRING txt_quest_type [394, 323, 499, 342]  "Solo or Party"
+  BASE group_quest_07 [41, 298, 649, 317] 
+    BUTTON btn_selectquest07 [41, 298, 195, 317] 
+      IMAGE  [41, 298, 195, 317] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 298, 195, 317] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 298, 195, 317] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 298, 195, 317] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [298, 298, 387, 317]  "00:00:00"
+    STRING txt_quest_status [199, 298, 292, 317]  "Completed"
+    STRING txt_quest_title [41, 298, 190, 317]  "Quest Title 8"
+    STRING txt_quest_zone [504, 298, 649, 317]  "Zone"
+    STRING txt_quest_type [392, 298, 497, 317]  "Solo or Party"
+  BASE group_quest_06 [41, 273, 649, 292] 
+    BUTTON btn_selectquest06 [41, 273, 195, 292] 
+      IMAGE  [41, 273, 195, 292] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 273, 195, 292] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 273, 195, 292] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 273, 195, 292] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [298, 273, 387, 292]  "00:00:00"
+    STRING txt_quest_status [199, 273, 292, 292]  "Completed"
+    STRING txt_quest_title [41, 273, 190, 292]  "Quest Title 7"
+    STRING txt_quest_zone [504, 273, 649, 292]  "Zone"
+    STRING txt_quest_type [392, 273, 497, 292]  "Solo or Party"
+  BASE group_quest_05 [41, 248, 651, 267] 
+    BUTTON btn_selectquest05 [42, 248, 196, 267] 
+      IMAGE  [42, 248, 196, 267] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [42, 248, 196, 267] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [42, 248, 196, 267] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [42, 248, 196, 267] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [299, 248, 388, 267]  "00:00:00"
+    STRING txt_quest_status [200, 248, 293, 267]  "Completed"
+    STRING txt_quest_title [42, 248, 191, 267]  "Quest Title 6"
+    STRING txt_quest_zone [504, 248, 650, 267]  "Zone"
+    STRING txt_quest_type [393, 248, 498, 267]  "Solo or Party"
+  BASE group_quest_04 [41, 223, 651, 242] 
+    BUTTON btn_selectquest04 [42, 223, 196, 242] 
+      IMAGE  [42, 223, 196, 242] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [42, 223, 196, 242] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [42, 223, 196, 242] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [42, 223, 196, 242] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [299, 223, 388, 242]  "00:00:00"
+    STRING txt_quest_status [200, 223, 293, 242]  "Completed"
+    STRING txt_quest_title [42, 223, 191, 242]  "Quest Title 5"
+    STRING txt_quest_zone [504, 223, 649, 242]  "Zone"
+    STRING txt_quest_type [393, 223, 498, 242]  "Solo or Party"
+  BASE group_quest_03 [41, 200, 657, 219] 
+    BUTTON btn_selectquest03 [42, 200, 196, 219] 
+      IMAGE  [42, 200, 196, 219] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [42, 200, 196, 219] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [42, 200, 196, 219] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [42, 200, 196, 219] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [299, 200, 388, 219]  "00:00:00"
+    STRING txt_quest_status [200, 200, 293, 219]  "Completed"
+    STRING txt_quest_title [42, 200, 191, 219]  "Quest Title 4"
+    STRING txt_quest_zone [504, 200, 649, 219]  "Zone"
+    STRING txt_quest_type [393, 200, 498, 219]  "Solo or Party"
+  BASE group_quest_02 [41, 175, 651, 194] 
+    BUTTON btn_selectquest02 [42, 175, 196, 194] 
+      IMAGE  [42, 175, 196, 194] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [42, 175, 196, 194] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [42, 175, 196, 194] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [42, 175, 196, 194] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [299, 175, 388, 194]  "00:00:00"
+    STRING txt_quest_status [200, 175, 293, 194]  "Completed"
+    STRING txt_quest_title [42, 175, 191, 194]  "Quest Title 3"
+    STRING txt_quest_zone [504, 175, 650, 194]  "Zone"
+    STRING txt_quest_type [393, 175, 498, 194]  "Solo or Party"
+  BASE group_quest_01 [41, 152, 651, 171] 
+    BUTTON btn_selectquest01 [42, 152, 196, 171] 
+      IMAGE  [42, 152, 196, 171] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [42, 152, 196, 171] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [42, 152, 196, 171] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [42, 152, 196, 171] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [299, 152, 388, 171]  "00:00:00"
+    STRING txt_quest_status [200, 152, 293, 171]  "Completed"
+    STRING txt_quest_title [42, 152, 191, 171]  "Quest Title 2"
+    STRING txt_quest_zone [504, 152, 649, 171]  "Zone"
+    STRING txt_quest_type [393, 152, 498, 171]  "Solo or Party"
+  BASE group_quest_00 [41, 127, 652, 148] 
+    BUTTON btn_selectquest00 [42, 127, 196, 146] 
+      IMAGE  [42, 127, 196, 146] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [42, 127, 196, 146] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [42, 127, 196, 146] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [42, 127, 196, 146] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_title [42, 127, 191, 146]  "Quest Title 1"
+    STRING txt_quest_status [199, 127, 294, 146]  "Completed"
+    STRING txt_quest_time [299, 127, 388, 146]  "00:00:00"
+    STRING txt_quest_zone [504, 127, 650, 146]  "Zone"
+    STRING txt_quest_type [393, 127, 498, 146]  "Solo or Party"
+  STRING  [391, 93, 500, 112]  "Type"
+  STRING  [501, 93, 649, 112]  "Zone"
+  BASE group_quest_12 [41, 422, 649, 441] 
+    STRING txt_quest_type [392, 422, 497, 441]  "Solo or Party"
+    STRING txt_quest_zone [504, 422, 649, 441]  "Zone"
+    STRING txt_quest_title [41, 422, 190, 441]  "Quest Title 13"
+    STRING txt_quest_status [199, 422, 292, 441]  "Completed"
+    STRING txt_quest_time [298, 422, 387, 441]  "00:00:00"
+    BUTTON btn_selectquest12 [41, 422, 195, 441] 
+      IMAGE  [41, 422, 195, 441] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 422, 195, 441] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 422, 195, 441] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 422, 195, 441] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+  BASE group_quest_13 [41, 448, 649, 467] 
+    BUTTON btn_selectquest13 [41, 448, 195, 467] 
+      IMAGE  [41, 448, 195, 467] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 448, 195, 467] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 448, 195, 467] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 448, 195, 467] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+    STRING txt_quest_time [298, 448, 387, 467]  "00:00:00"
+    STRING txt_quest_status [199, 448, 292, 467]  "Completed"
+    STRING txt_quest_title [41, 448, 190, 467]  "Quest Title 14"
+    STRING txt_quest_zone [504, 448, 649, 467]  "Zone"
+    STRING txt_quest_type [392, 448, 497, 467]  "Solo or Party"
+  BASE group_quest_14 [41, 474, 649, 493] 
+    STRING txt_quest_type [392, 474, 497, 493]  "Solo or Party"
+    STRING txt_quest_zone [504, 474, 649, 493]  "Zone"
+    STRING txt_quest_title [41, 474, 190, 493]  "Quest Title 15"
+    STRING txt_quest_status [199, 474, 292, 493]  "Completed"
+    STRING txt_quest_time [298, 474, 387, 493]  "00:00:00"
+    BUTTON btn_selectquest14 [41, 474, 195, 493] 
+      IMAGE  [41, 474, 195, 493] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+      IMAGE  [41, 474, 195, 493] ui\re_chatroom.dxt uv=[0.004, 0.953, 0.385, 0.984]
+      IMAGE  [41, 474, 195, 493] ui\re_chatroom.dxt uv=[0.008, 0.908, 0.391, 0.945]
+      IMAGE  [41, 474, 195, 493] ui\re_chatroom.dxt uv=[0.01, 0.988, 0.146, 0.998]
+  BUTTON btn_nextpage [396, 508, 424, 536] 
+    IMAGE  [396, 508, 424, 536] ui\re_charactercreate05.dxt uv=[0.611, 0.912, 0.682, 0.982]
+    IMAGE  [396, 508, 424, 536] ui\re_charactercreate05.dxt uv=[0.771, 0.912, 0.842, 0.982]
+    IMAGE  [396, 508, 424, 536] ui\re_charactercreate05.dxt uv=[0.691, 0.912, 0.762, 0.982]
+    IMAGE  [396, 508, 424, 536] ui\re_charactercreate05.dxt uv=[0.852, 0.912, 0.922, 0.982]
+  BUTTON btn_previouspage [271, 508, 299, 536] 
+    IMAGE  [271, 508, 299, 536] ui\re_charactercreate05.dxt uv=[0.291, 0.912, 0.361, 0.982]
+    IMAGE  [271, 508, 299, 536] ui\re_charactercreate05.dxt uv=[0.451, 0.912, 0.521, 0.982]
+    IMAGE  [271, 508, 299, 536] ui\re_charactercreate05.dxt uv=[0.371, 0.912, 0.441, 0.982]
+    IMAGE  [271, 508, 299, 536] ui\re_charactercreate05.dxt uv=[0.531, 0.912, 0.602, 0.982]
+BASE quest_rewards [669, 14, 886, 541] 
+  IMAGE  [864, 29, 880, 45] ui\re_akara_01.dxt uv=[0.148, 0.878, 0.164, 0.894]
+  IMAGE  [680, 90, 874, 110] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+  IMAGE  [674, 29, 690, 45] ui\re_akara_01.dxt uv=[0.13, 0.878, 0.146, 0.894]
+  IMAGE  [680, 35, 874, 79] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+  IMAGE  [690, 29, 864, 45] ui\re_akara_01.dxt uv=[0.143, 0.878, 0.146, 0.894]
+  IMAGE  [690, 68, 864, 84] ui\re_akara_01.dxt uv=[0.142, 0.898, 0.146, 0.914]
+  IMAGE  [864, 68, 880, 84] ui\re_akara_01.dxt uv=[0.148, 0.898, 0.164, 0.914]
+  IMAGE  [864, 48, 880, 77] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+  IMAGE  [674, 68, 690, 84] ui\re_akara_01.dxt uv=[0.13, 0.898, 0.146, 0.914]
+  IMAGE  [674, 48, 690, 77] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+  IMAGE  [680, 56, 874, 77] ui\re_akara_01.dxt uv=[0.343, 0.76, 0.572, 0.805]
+  IMAGE  [864, 331, 880, 338] ui\re_akara_01.dxt uv=[0.316, 0.99, 0.332, 0.997]
+  IMAGE  [864, 316, 880, 331] ui\re_akara_01.dxt uv=[0.148, 0.898, 0.164, 0.905]
+  IMAGE  [690, 331, 864, 338] ui\re_akara_01.dxt uv=[0.153, 0.99, 0.156, 0.997]
+  IMAGE  [674, 316, 690, 331] ui\re_akara_01.dxt uv=[0.13, 0.898, 0.146, 0.905]
+  IMAGE  [674, 331, 690, 338] ui\re_akara_01.dxt uv=[0.141, 0.99, 0.156, 0.997]
+  IMAGE  [680, 317, 874, 332] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+  IMAGE  [674, 309, 690, 316] ui\re_akara_01.dxt uv=[0.141, 0.976, 0.156, 0.982]
+  IMAGE  [690, 309, 864, 316] ui\re_akara_01.dxt uv=[0.153, 0.976, 0.156, 0.982]
+  IMAGE  [864, 309, 880, 316] ui\re_akara_01.dxt uv=[0.316, 0.976, 0.332, 0.982]
+  IMAGE  [678, 313, 876, 333] ui\re_akara_01.dxt uv=[0.041, 0.756, 0.859, 0.809]
+  IMAGE  [678, 88, 876, 108] ui\re_akara_01.dxt uv=[0.041, 0.756, 0.859, 0.809]
+  IMAGE  [674, 100, 690, 110] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+  IMAGE  [864, 100, 880, 110] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+  IMAGE  [690, 84, 864, 100] ui\re_akara_01.dxt uv=[0.144, 0.878, 0.146, 0.894]
+  IMAGE  [864, 84, 880, 100] ui\re_akara_01.dxt uv=[0.148, 0.878, 0.164, 0.894]
+  IMAGE  [674, 84, 690, 100] ui\re_akara_01.dxt uv=[0.13, 0.878, 0.146, 0.894]
+  BASE Hunt4 [674, 260, 880, 310] 
+    IMAGE  [680, 260, 874, 310] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    IMAGE  [674, 260, 690, 310] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+    IMAGE  [864, 260, 880, 310] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    BUTTON  [692, 262, 862, 308] 
+      IMAGE  [692, 262, 862, 308] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+      IMAGE  [692, 262, 862, 308] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 262, 862, 308] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 262, 862, 308] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+    STRING text_hunt_name [738, 268, 855, 284]  "Hunt"
+    STRING text_hunt_count [738, 286, 855, 302]  "Smirdon"
+    IMAGE icon [698, 268, 732, 302] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE Hunt3 [674, 210, 880, 260] 
+    IMAGE  [680, 210, 874, 260] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    IMAGE  [674, 210, 690, 260] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+    IMAGE  [864, 210, 880, 260] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    BUTTON  [692, 212, 862, 258] 
+      IMAGE  [692, 212, 862, 258] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+      IMAGE  [692, 212, 862, 258] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 212, 862, 258] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 212, 862, 258] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+    STRING text_hunt_name [738, 218, 855, 234]  "Hunt"
+    STRING text_hunt_count [738, 236, 855, 252]  "Smirdon"
+    IMAGE icon [698, 218, 732, 252] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  BASE Hunt2 [674, 160, 880, 210] 
+    IMAGE  [680, 160, 874, 210] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    BUTTON  [692, 162, 862, 208] 
+      IMAGE  [692, 162, 862, 208] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+      IMAGE  [692, 162, 862, 208] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 162, 862, 208] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 162, 862, 208] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+    IMAGE icon [698, 168, 732, 202] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING text_hunt_count [738, 186, 855, 202]  "Smirdon"
+    STRING text_hunt_name [738, 168, 855, 184]  "Hunt"
+    IMAGE  [864, 160, 880, 210] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    IMAGE  [674, 160, 690, 210] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+  BASE Hunt1 [674, 110, 880, 160] 
+    IMAGE  [680, 110, 874, 160] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    IMAGE  [674, 110, 690, 160] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+    IMAGE  [864, 110, 880, 160] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    BUTTON  [692, 112, 862, 158] 
+      IMAGE  [692, 112, 862, 158] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+      IMAGE  [692, 112, 862, 158] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 112, 862, 158] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 112, 862, 158] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+    STRING text_hunt_name [738, 118, 855, 134]  "Hunt"
+    STRING text_hunt_count [738, 136, 855, 152]  "Smirdon"
+    IMAGE icon [698, 118, 732, 152] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+  STRING  [680, 90, 874, 106]  "Quest"
+  STRING  [680, 316, 874, 331]  "Reward"
+  IMAGE  [864, 32, 880, 61] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+  IMAGE  [672, 23, 881, 60] ui\re_skill04.dxt uv=[0.48, 0.67, 0.833, 0.755]
+  STRING text_quest_name [685, 33, 851, 50]  "Quest Name"
+  STRING text_zone [679, 58, 875, 75]  "Quest Zone Name"
+  BASE Reward1 [674, 338, 880, 388] 
+    IMAGE  [680, 338, 874, 388] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    BUTTON btn_return [692, 340, 862, 386] 
+      IMAGE  [692, 340, 862, 386] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+      IMAGE  [692, 340, 862, 386] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 340, 862, 386] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 340, 862, 386] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+    IMAGE icon [698, 346, 732, 380] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING str_count [738, 364, 855, 380]  "1000"
+    STRING str_name [738, 346, 855, 362]  "Hunt"
+    IMAGE  [864, 338, 880, 388] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    IMAGE  [674, 338, 690, 388] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+    IMAGE  [864, 378, 880, 394] ui\re_akara_01.dxt uv=[0.148, 0.898, 0.164, 0.914]
+    IMAGE  [690, 378, 864, 394] ui\re_akara_01.dxt uv=[0.142, 0.898, 0.146, 0.914]
+    IMAGE  [674, 378, 690, 394] ui\re_akara_01.dxt uv=[0.13, 0.898, 0.146, 0.914]
+  BASE Reward2 [674, 388, 880, 438] 
+    IMAGE  [680, 388, 874, 438] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    BUTTON btn_return [692, 390, 862, 436] 
+      IMAGE  [692, 390, 862, 436] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+      IMAGE  [692, 390, 862, 436] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 390, 862, 436] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 390, 862, 436] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+    IMAGE  [674, 388, 690, 438] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+    IMAGE  [864, 388, 880, 438] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    STRING str_name [738, 396, 855, 412]  "Hunt"
+    STRING str_count [738, 414, 855, 430]  "1000"
+    IMAGE icon [698, 396, 732, 430] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    IMAGE  [674, 428, 690, 444] ui\re_akara_01.dxt uv=[0.13, 0.898, 0.146, 0.914]
+    IMAGE  [690, 428, 864, 444] ui\re_akara_01.dxt uv=[0.142, 0.898, 0.146, 0.914]
+    IMAGE  [864, 428, 880, 444] ui\re_akara_01.dxt uv=[0.148, 0.898, 0.164, 0.914]
+  BASE Reward3 [674, 438, 880, 488] 
+    IMAGE  [680, 438, 874, 488] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    BUTTON btn_return [692, 440, 862, 486] 
+      IMAGE  [692, 440, 862, 486] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+      IMAGE  [692, 440, 862, 486] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 440, 862, 486] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 440, 862, 486] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+    IMAGE icon [698, 446, 732, 480] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    STRING str_count [738, 464, 855, 480]  "1000"
+    STRING str_name [738, 446, 855, 462]  "Hunt"
+    IMAGE  [864, 438, 880, 488] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    IMAGE  [674, 438, 690, 488] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+    IMAGE  [864, 478, 880, 494] ui\re_akara_01.dxt uv=[0.148, 0.898, 0.164, 0.914]
+    IMAGE  [674, 478, 690, 494] ui\re_akara_01.dxt uv=[0.13, 0.898, 0.146, 0.914]
+    IMAGE  [690, 478, 864, 494] ui\re_akara_01.dxt uv=[0.142, 0.898, 0.146, 0.914]
+  BASE Reward4 [674, 488, 880, 541] 
+    IMAGE  [680, 488, 874, 541] ui\re_quest_npc_menu01.dxt uv=[0.006, 0.518, 0.691, 0.561]
+    BUTTON btn_return [692, 490, 862, 536] 
+      IMAGE  [692, 490, 862, 536] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.002, 0.334, 0.092]
+      IMAGE  [692, 490, 862, 536] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.186, 0.336, 0.275]
+      IMAGE  [692, 490, 862, 536] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.094, 0.336, 0.184]
+      IMAGE  [692, 490, 862, 536] ui\re_quest_npc_menu02.dxt uv=[0.002, 0.277, 0.336, 0.367]
+    IMAGE  [674, 488, 690, 541] ui\re_akara_01.dxt uv=[0.13, 0.891, 0.146, 0.894]
+    IMAGE  [864, 488, 880, 541] ui\re_akara_01.dxt uv=[0.148, 0.891, 0.164, 0.894]
+    STRING str_name [738, 496, 855, 512]  "Hunt"
+    STRING str_count [738, 514, 855, 530]  "1000"
+    IMAGE icon [698, 496, 732, 530] ui\itemicon_noimage.dxt uv=[0.0, 0.0, 0.703, 0.703]
+    IMAGE  [864, 531, 880, 547] ui\re_akara_01.dxt uv=[0.148, 0.898, 0.164, 0.914]
+    IMAGE  [690, 531, 864, 547] ui\re_akara_01.dxt uv=[0.142, 0.898, 0.146, 0.914]
+    IMAGE  [674, 531, 690, 547] ui\re_akara_01.dxt uv=[0.13, 0.898, 0.146, 0.914]
+  BUTTON btn_close [850, 32, 868, 50] 
+    IMAGE  [850, 32, 868, 50] ui\re_quest_npc_menu01.dxt uv=[0.879, 0.666, 0.914, 0.701]
+    IMAGE  [850, 32, 868, 50] ui\re_quest_npc_menu01.dxt uv=[0.879, 0.748, 0.914, 0.783]
+    IMAGE  [850, 32, 868, 50] ui\re_quest_npc_menu01.dxt uv=[0.879, 0.707, 0.914, 0.742]
+    IMAGE  [850, 32, 868, 50] ui\re_quest_npc_menu01.dxt uv=[0.879, 0.789, 0.914, 0.824]
+BUTTON btn_cancel [625, 24, 657, 56] 
+  IMAGE  [625, 24, 657, 56] ui\re_skill04.dxt uv=[0.957, 0.012, 0.988, 0.043]
+  IMAGE  [625, 24, 657, 56] ui\re_skill04.dxt uv=[0.957, 0.132, 0.988, 0.163]
+  IMAGE  [625, 24, 657, 56] ui\re_skill04.dxt uv=[0.957, 0.051, 0.988, 0.082]
+  IMAGE  [625, 24, 657, 56] ui\re_skill04.dxt uv=[0.957, 0.091, 0.988, 0.122]
+STRING  [241, 29, 491, 58]  "Daily Quest"

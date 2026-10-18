@@ -78,6 +78,9 @@ const DEFAULT_MELEE_RANGE: f32 = 15.0;
 /// GM weapon item ID — bypasses delay checks.
 const GM_WEAPON_ID: u32 = 389158000;
 
+/// GM test damage override for normal R-attacks.
+const GM_FIXED_DAMAGE: i16 = 30000;
+
 /// Minimum weapon power for bare-hand attacks.
 const MIN_WEAPON_POWER: u16 = 3;
 
@@ -173,7 +176,7 @@ fn is_bow_weapon(kind: i32) -> bool {
 
 /// Get the weapon range in game units for server-side distance validation.
 /// falls back to left-hand. Returns `pTable.m_sRange / 10.0`.
-fn get_weapon_range(world: &WorldState, sid: SessionId) -> f32 {
+pub(crate) fn get_weapon_range(world: &WorldState, sid: SessionId) -> f32 {
     // Single session lock for both weapon slot item IDs (2 DashMap reads → 1)
     let (rh_id, lh_id) = world
         .with_session(sid, |h| {
@@ -190,6 +193,13 @@ fn get_weapon_range(world: &WorldState, sid: SessionId) -> f32 {
             (rh, lh)
         })
         .unwrap_or((0, 0));
+    weapon_range_of_items(world, rh_id, lh_id)
+}
+
+/// Range (game units) of the weapon held in the given right/left-hand item
+/// ids: right hand first, then left hand. Also used for runtime bots, whose
+/// weapons live in their visual equipment rather than a session inventory.
+pub(crate) fn weapon_range_of_items(world: &WorldState, rh_id: u32, lh_id: u32) -> f32 {
     // Item table lookups (separate DashMap, no session contention)
     if rh_id != 0 {
         if let Some(w) = world.get_item(rh_id) {
@@ -696,9 +706,7 @@ fn calculate_r_damage_with_class_bonus(
 
             damage.max(1) as i16
         }
-        _ => {
-            0
-        }
+        _ => 0,
     }
 }
 
@@ -922,7 +930,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 
     // ── Target validation ──────────────────────────────────────────────
-    let target_is_player = tid < crate::npc::NPC_BAND;
+    // Runtime bots use the user-visibility protocol, but are stored in the
+    // NPC combat map. Resolve them explicitly instead of relying only on an
+    // ID band, so normal R-attacks follow the bot damage path.
+    let target_is_player = tid < crate::npc::NPC_BAND && world.get_bot(tid).is_none();
 
     if target_is_player {
         let target_sid = tid as SessionId;
@@ -930,7 +941,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if target_sid == sid {
             return Ok(());
         }
-        handle_player_attack(&world, sid, &pos, target_sid, b_type, unknown);
+        handle_player_attack(&world, sid, &pos, target_sid, b_type, unknown).await;
     } else {
         // NPC/Monster target
         handle_npc_attack(world.clone(), sid, pos, tid, b_type, unknown).await;
@@ -943,7 +954,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 /// Validates target state, computes damage using the real C++ formula,
 /// applies HP change, triggers death if HP reaches 0, and broadcasts
 /// the result.
-fn handle_player_attack(
+async fn handle_player_attack(
     world: &WorldState,
     attacker_sid: SessionId,
     attacker_pos: &Position,
@@ -1179,10 +1190,11 @@ fn handle_player_attack(
     }
 
     if damage > 0 && is_mage(attacker.class) {
-        damage = (damage as f64 * world.get_plus_damage_from_item_ids(
-            attacker_snap.left_hand_item_id,
-            attacker_snap.right_hand_item_id,
-        )) as i16;
+        damage = (damage as f64
+            * world.get_plus_damage_from_item_ids(
+                attacker_snap.left_hand_item_id,
+                attacker_snap.right_hand_item_id,
+            )) as i16;
     }
 
     // ── R-attack damage multiplier for level>30 non-priests ──────────
@@ -1211,12 +1223,16 @@ fn handle_player_attack(
     // Reduces damage based on target's weapon-type-specific armor resistances (PvP only).
     if damage > 0 {
         let right_kind = if attacker_snap.right_hand_item_id != 0 {
-            world.get_item(attacker_snap.right_hand_item_id).and_then(|w| w.kind)
+            world
+                .get_item(attacker_snap.right_hand_item_id)
+                .and_then(|w| w.kind)
         } else {
             None
         };
         let left_kind = if attacker_snap.left_hand_item_id != 0 {
-            world.get_item(attacker_snap.left_hand_item_id).and_then(|w| w.kind)
+            world
+                .get_item(attacker_snap.left_hand_item_id)
+                .and_then(|w| w.kind)
         } else {
             None
         };
@@ -1248,6 +1264,9 @@ fn handle_player_attack(
 
     // ── MAX_DAMAGE cap ─────────────────────────────────────────────────
     damage = damage.min(crate::attack_constants::MAX_DAMAGE as i16);
+    if attacker.authority == 0 {
+        damage = GM_FIXED_DAMAGE;
+    }
 
     // ── Apply damage ───────────────────────────────────────────────────
     if damage <= 0 {
@@ -1325,7 +1344,9 @@ fn handle_player_attack(
                 }
                 // Convert absorbed damage to MP
                 world.update_character_stats(target_sid, |ch| {
-                    ch.mp = (ch.mp as i32).saturating_add(absorbed as i32).min(ch.max_mp as i32) as i16;
+                    ch.mp = (ch.mp as i32)
+                        .saturating_add(absorbed as i32)
+                        .min(ch.max_mp as i32) as i16;
                 });
                 // Decrement absorb count for pct==15 skills
                 if absorb_pct == 15 {
@@ -1337,6 +1358,9 @@ fn handle_player_attack(
         }
     }
 
+    damage = world
+        .manes_survival_manager
+        .reduce_incoming_damage(target_sid, damage);
     let new_hp = (target.hp - damage).max(0);
     world.update_character_hp(target_sid, new_hp);
 
@@ -1519,6 +1543,15 @@ fn handle_player_attack(
         // ── PvP gold change ─────────────────────────────────────────────
         dead::gold_change_on_death(world, attacker_sid, target_sid);
 
+        // ── Collection Race (PK zone player kill) ───────────────────────
+        super::collection_race::credit_pk_zone_player_kill(
+            world,
+            attacker_sid,
+            target_sid,
+            attacker_pos.zone_id,
+        )
+        .await;
+
         // ── PvP death notice ────────────────────────────────────────────
         // Broadcast kill notice to zone so all players see "[X] killed [Y]".
         dead::send_death_notice(world, attacker_sid, target_sid);
@@ -1578,6 +1611,8 @@ fn handle_player_attack(
             h.achieve_summary.user_death_count =
                 h.achieve_summary.user_death_count.saturating_add(1);
         });
+        crate::handler::achieve::on_enemy_user_killed(world, attacker_sid, attacker_pos.zone_id);
+        crate::handler::achieve::on_player_died(world, target_sid);
 
         // v2525: Send updated PvP kill counter to attacker's HUD (0xA5)
         if let Some(count) =
@@ -1665,7 +1700,7 @@ async fn handle_npc_attack(
         // weapon damage, stat bonuses, and buffs.
         let total_hit = attacker_snap.equipped_stats.total_hit;
         let temp_ap = total_hit as i32 * attacker_snap.attack_amount;
-        let bot_ac = (bot.sta_stat as i32 * 3) + (bot.level as i32 * 2);
+        let bot_ac = crate::systems::bot_ai::bot_defense_ac(&world, &bot);
         let temp_hit_b = if bot_ac + 240 > 0 {
             (temp_ap * 2) / (bot_ac + 240)
         } else {
@@ -1740,7 +1775,11 @@ async fn handle_npc_attack(
         }
 
         // Cap at MAX_DAMAGE
-        let damage = damage.min(crate::attack_constants::MAX_DAMAGE as i16);
+        let damage = if is_gm {
+            GM_FIXED_DAMAGE
+        } else {
+            damage.min(crate::attack_constants::MAX_DAMAGE as i16)
+        };
 
         if damage <= 0 {
             broadcast_attack_result(&world, attacker_sid, b_type, ATTACK_FAIL, npc_id, unknown);
@@ -1756,20 +1795,51 @@ async fn handle_npc_attack(
 
         // Send WIZ_TARGET_HP to attacker
         // C++ sends ORIGINAL damage (before passives) to attacker for display.
-        let mut target_hp_pkt = Packet::new(Opcode::WizTargetHp as u8);
-        target_hp_pkt.write_u32(npc_id);
-        target_hp_pkt.write_u8(0); // echo
-        target_hp_pkt.write_u32(bot.max_hp as u32);
-        target_hp_pkt.write_u32(new_hp as u32);
-        target_hp_pkt.write_u32(-(damage as i32) as u32); // negative = damage dealt
-        target_hp_pkt.write_u32(0);
-        target_hp_pkt.write_u8(0);
+        let target_hp_pkt = super::target_hp::build_target_hp_packet(
+            npc_id,
+            0,
+            bot.max_hp as u32,
+            new_hp as u32,
+            -(damage as i32),
+            -(damage as i32),
+        );
         world.send_to_session_owned(attacker_sid, target_hp_pkt);
 
         let b_result = if new_hp <= 0 {
             // Bot died — trigger full death processing
             let now_ms = crate::systems::bot_ai::tick_ms();
             crate::systems::bot_ai::bot_on_death(&world, npc_id, now_ms);
+
+            // PK zone bot kills count toward Collection Race same as a real
+            // player kill would: bots never reach the regular NPC-death path
+            // below (where CR tracking normally hooks in), so they need their
+            // own call here with the reserved sentinel proto_id.
+            if matches!(
+                bot.zone_id,
+                ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
+            ) {
+                let cr = world.collection_race_event().clone();
+                if let Err(e) = super::collection_race::handle_kill(
+                    &world,
+                    attacker_sid,
+                    super::collection_race::CR_PK_BOT_KILL_PROTO_ID,
+                    &cr,
+                )
+                .await
+                {
+                    tracing::warn!("CR handle_kill error (PK bot kill): {}", e);
+                }
+
+                // Same reasoning: bots never reach the regular PvP-death path
+                // where pvp_loyalty_on_death normally hooks in, so party NP
+                // for an opposing-nation bot kill needs its own call too.
+                crate::systems::loyalty::pvp_loyalty_on_bot_kill(
+                    &world,
+                    attacker_sid,
+                    bot.nation,
+                );
+            }
+
             ATTACK_TARGET_DEAD
         } else {
             ATTACK_SUCCESS
@@ -1799,6 +1869,23 @@ async fn handle_npc_attack(
         None => return,
     };
 
+    // Fire & Ice: a nation can only hurt the other nation's golems.
+    if !super::golem_war::can_attack(&world, attacker_sid, npc_id) {
+        return;
+    }
+
+    // Town, quest and event NPCs are never combat targets. Previously only
+    // a small set of infrastructure NPC types was filtered, allowing regular
+    // NPCs with zero combat HP (including Event Manager) to be "killed".
+    if !npc.is_monster
+        && !matches!(
+            tmpl.npc_type,
+            NPC_DESTROYED_ARTIFACT | NPC_OBJECT_FLAG | NPC_GATE
+        )
+    {
+        return;
+    }
+
     // ── NPC type pre-blocking ─────────────────────────────────────
     {
         let npc_type = tmpl.npc_type;
@@ -1826,7 +1913,18 @@ async fn handle_npc_attack(
                 }
             }
 
-            if npc_type == NPC_PVP_MONUMENT || npc_type == NPC_CLAN_WAR_MONUMENT {
+            if npc_type == NPC_PVP_MONUMENT {
+                let attacker_nation = world
+                    .get_character_info(attacker_sid)
+                    .map(|ch| ch.nation)
+                    .unwrap_or(0);
+                // Model-swap monuments (ArdReam/Ronark Land/Ronark Land Base) keep the
+                // same proto_id after capture — only the template's visual pid changes —
+                // so ownership has to be read from the tracked capture state, not proto_id.
+                if world.get_pvp_monument_nation(npc.zone_id) == attacker_nation {
+                    return;
+                }
+            } else if npc_type == NPC_CLAN_WAR_MONUMENT {
                 let attacker_nation = world
                     .get_character_info(attacker_sid)
                     .map(|ch| ch.nation)
@@ -1854,8 +1952,10 @@ async fn handle_npc_attack(
             // Destroyed artifacts require active CSW war + attacker must be in a clan
             // + attacker's clan must NOT be the castle owner
             if npc_type == NPC_DESTROYED_ARTIFACT {
-                let csw = world.csw_event().blocking_read();
-                let siege = world.siege_war().blocking_read();
+                // This handler is async; blocking_read panics on the Tokio worker
+                // exactly when the artifact reaches its death path.
+                let csw = world.csw_event().read().await;
+                let siege = world.siege_war().read().await;
                 let attacker_clan = world
                     .get_character_info(attacker_sid)
                     .map(|ch| ch.knights_id)
@@ -1873,8 +1973,8 @@ async fn handle_npc_attack(
 
         // CSW doors (proto_id 561/562/563 with NPC_GATE type) follow same rules as artifacts
         if npc_type == NPC_GATE && matches!(npc.proto_id, 561..=563) {
-            let csw = world.csw_event().blocking_read();
-            let siege = world.siege_war().blocking_read();
+            let csw = world.csw_event().read().await;
+            let siege = world.siege_war().read().await;
             let attacker_clan = world
                 .get_character_info(attacker_sid)
                 .map(|ch| ch.knights_id)
@@ -1899,6 +1999,28 @@ async fn handle_npc_attack(
     // ── Deva Bird attack check (Juraid Mountain) ─────────────────
     // Deva Bird (proto 8106) can only be attacked if all 3 bridges for the
     // attacker's nation are built in the player's event room.
+    // Juraid nation monuments are enemy-only objectives. The monument SID,
+    // not its generic monster group, is authoritative for ownership.
+    if npc.zone_id == ZONE_JURAID_MOUNTAIN
+        && crate::systems::juraid::is_juraid_monument(npc.proto_id)
+    {
+        let attacker_nation = world
+            .get_character_info(attacker_sid)
+            .map(|ch| ch.nation)
+            .unwrap_or(0);
+        if attacker_nation == 0
+            || attacker_nation == crate::systems::juraid::monument_nation(npc.proto_id)
+        {
+            tracing::debug!(
+                attacker_sid,
+                attacker_nation,
+                monument_sid = npc.proto_id,
+                "Blocked attack against own Juraid monument"
+            );
+            return;
+        }
+    }
+
     {
         const DEVA_BIRD_SSID: u16 = 8106;
 
@@ -2003,7 +2125,7 @@ async fn handle_npc_attack(
 
     // Apply monster defense multiplier to NPC AC
     // War buff: nation NPCs get AC × 1.2 during war (ChangeAbility).
-    let raw_npc_ac = world.get_npc_war_ac(&tmpl);
+    let raw_npc_ac = world.apply_npc_buff_ac(npc_id, world.get_npc_war_ac(&tmpl));
     let npc_ac = (raw_npc_ac as f64 * world.get_mon_def_multiplier()) as i32;
 
     let temp_hit_b = if npc_ac + 240 > 0 {
@@ -2045,10 +2167,11 @@ async fn handle_npc_attack(
     };
 
     if damage > 0 && is_mage(attacker.class) {
-        damage = (damage as f64 * world.get_plus_damage_from_item_ids(
-            npc_attacker_snap.left_hand_item_id,
-            npc_attacker_snap.right_hand_item_id,
-        )) as i16;
+        damage = (damage as f64
+            * world.get_plus_damage_from_item_ids(
+                npc_attacker_snap.left_hand_item_id,
+                npc_attacker_snap.right_hand_item_id,
+            )) as i16;
     }
 
     // ── R-attack damage multiplier for level>30 non-priests ──────────
@@ -2064,7 +2187,8 @@ async fn handle_npc_attack(
     // ── Elemental weapon damage bonuses (GetMagicDamage) ─────────────
     // Uses NPC template elemental resistances instead of player session values.
     if damage > 0 {
-        damage = apply_elemental_weapon_damage_npc(&npc_attacker_snap.equipped_stats, &tmpl, damage);
+        damage =
+            apply_elemental_weapon_damage_npc(&npc_attacker_snap.equipped_stats, &tmpl, damage);
     }
 
     if damage > 0 {
@@ -2090,8 +2214,35 @@ async fn handle_npc_attack(
     // ── Zone damage overrides ──────────────────────────────────────
     let damage = apply_zone_damage_override(attacker_pos.zone_id, damage);
 
+    // Manes uses an isolated level 1-30 combat curve. Normal character
+    // equipment/stats must not let a level-1 participant one-shot the outer
+    // ring. Scale the existing hit from 15% at level 1 to 87.5% at level 30.
+    let damage =
+        if crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&attacker_pos.zone_id) {
+            let level = world
+                .manes_survival_manager
+                .progress(attacker_sid)
+                .map(|state| state.level)
+                .unwrap_or(1);
+            let scale_tenths = i32::from(crate::systems::manes_survival::attack_scale_per_mille(
+                level,
+            ));
+            let scaled = ((damage as i32 * scale_tenths) / 1_000).max(1);
+            let bonus = world
+                .manes_survival_manager
+                .combat_bonuses(attacker_sid)
+                .attack_pct as i32;
+            (scaled * (100 + bonus) / 100).clamp(1, i16::MAX as i32) as i16
+        } else {
+            damage
+        };
+
     // Cap damage at MAX_DAMAGE — matches player attack path
-    let damage = damage.min(crate::attack_constants::MAX_DAMAGE as i16);
+    let damage = if is_gm {
+        GM_FIXED_DAMAGE
+    } else {
+        damage.min(crate::attack_constants::MAX_DAMAGE as i16)
+    };
 
     if damage <= 0 {
         broadcast_attack_result(&world, attacker_sid, b_type, ATTACK_FAIL, npc_id, unknown);
@@ -2104,16 +2255,33 @@ async fn handle_npc_attack(
     world.record_npc_damage(npc_id, attacker_sid, damage as i32);
 
     // ── Attacker weapon durability loss ──────────────────────────────
-    world.item_wore_out(attacker_sid, WORE_TYPE_ATTACK, damage as i32);
+    // Manes equips a client-side temporary SurvivalSetting loadout while the
+    // real inventory stays intact. A normal WIZ_DURATION update addresses the
+    // real item slot and is invalid for that temporary loadout.
+    let is_manes_survival_zone =
+        crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&npc.zone_id);
+    if !is_manes_survival_zone {
+        world.item_wore_out(attacker_sid, WORE_TYPE_ATTACK, damage as i32);
+    }
 
     // Notify NPC AI about damage (reactive aggro — C++ ChangeTarget)
-    if new_hp > 0 {
-        world.notify_npc_damaged(npc_id, attacker_sid);
-    }
+    // A transformed player is still a valid attacker. Always notify the NPC
+    // after a non-lethal hit so passive/tender mobs acquire a deterministic
+    // return target; the old conditional left them standing intermittently
+    // when the transformation damage path reported zero/late HP state.
+    world.notify_npc_damaged(npc_id, attacker_sid);
 
     let b_result = if new_hp <= 0 {
         // NPC died
-        handle_npc_death(&world, attacker_sid, npc_id, &npc, &tmpl).await;
+        handle_npc_death(
+            &world,
+            attacker_sid,
+            npc_id,
+            &npc,
+            &tmpl,
+            is_manes_survival_zone,
+        )
+        .await;
 
         ATTACK_TARGET_DEAD
     } else {
@@ -2133,6 +2301,23 @@ async fn handle_npc_attack(
         damage as i32,
     );
 
+    if tmpl.s_sid == crate::systems::manes_survival::DARK_DRAGON_SID as u16 {
+        world.manes_survival_manager.broadcast_dark_dragon_status(
+            &world,
+            npc.zone_id,
+            crate::systems::manes_survival::DARK_DRAGON_UI_NAME,
+            tmpl.max_hp,
+            new_hp.max(0) as u32,
+        );
+    }
+
+    if new_hp <= 0 {
+        if is_manes_survival_zone {
+            broadcast_npc_death(&world, attacker_sid, npc_id);
+        }
+        flush_manes_progress(&world, attacker_sid);
+    }
+
     tracing::debug!(
         "[sid={}] Attack on NPC {}: damage={}, new_hp={}/{}, result={}",
         attacker_sid,
@@ -2149,14 +2334,186 @@ async fn handle_npc_attack(
 /// generate loot, and set AI state to Dead.
 /// This is the SINGLE point of NPC death handling — called from both physical
 /// attack and magic damage paths to ensure consistent behavior.
-pub(crate) async fn handle_npc_death(
+pub(crate) fn flush_manes_progress(world: &WorldState, sid: SessionId) {
+    let Some(progress) = world.manes_survival_manager.progress(sid) else {
+        return;
+    };
+    // Ordinary kills change only Survival EXP/score. Re-sending
+    // WIZ_LEVEL_CHANGE for every kill makes the client tear down and rebuild
+    // its temporary HP/MP bars, which is observed as the bars jumping between
+    // unrelated values. Full vitals are emitted only on an actual level-up.
+    if progress.leveled_up {
+        sync_manes_vitals_and_level(world, sid, progress, true);
+    } else {
+        world.send_to_session_owned(
+            sid,
+            crate::handler::survival::build_event_exp_update(progress.exp),
+        );
+    }
+    world.send_to_session_owned(
+        sid,
+        crate::handler::survival::build_event_score_update(u32::from(
+            crate::systems::manes_survival::score_for_level(progress.level),
+        )),
+    );
+    if progress.leveled_up {
+        // A window left open from an earlier level only gets its skill list replaced.
+        let open_window = if world.manes_survival_manager.has_pending_offer(sid) {
+            world.manes_survival_manager.refresh_offer_skills(sid)
+        } else {
+            None
+        };
+        if let Some(offer) = open_window {
+            world.send_to_session_owned(
+                sid,
+                crate::handler::survival::build_skill_list_refresh(&offer.skills),
+            );
+        } else {
+            let offer = world.manes_survival_manager.create_offer(sid);
+            world.send_to_session_owned(
+                sid,
+                crate::handler::survival::build_skill_selection_open(
+                    &offer.skills,
+                    &offer.potions,
+                ),
+            );
+        }
+        tracing::info!(
+            sid,
+            survival_level = progress.level,
+            "Manes skill-selection UIF skill lists sent"
+        );
+    }
+}
+
+/// Keep the authoritative Manes combat stats and the client HUD in lockstep.
+///
+/// The reference client uses `HP = level * 1000 + 60`,
+/// `MP = level * 200` and `score = (level - 1) * 20`. The temporary level and
+/// vitals are sent through WIZ_LEVEL_CHANGE while the ALT request receives the
+/// score from the Survival handler. This deliberately avoids another D0 event-start packet:
+/// reinitialising SurvivalSetting clears the acquired-skill shortcut bar.
+pub(crate) fn sync_manes_vitals_and_level(
     world: &WorldState,
-    killer_sid: SessionId,
-    npc_id: NpcId,
-    npc: &crate::npc::NpcInstance,
-    tmpl: &crate::npc::NpcTemplate,
+    sid: SessionId,
+    progress: crate::systems::manes_survival::ManesProgress,
+    refill_vitals: bool,
 ) {
-    // ── Broadcast NPC death ────────────────────────────────────────
+    // Passive MANES_MAGIC HP rows are part of the client Survival contract.
+    // Applying them only client-side makes selection appear to lower/raise the
+    // bar at random when the next authoritative server packet arrives.
+    let hp_bonus = world
+        .manes_survival_manager
+        .combat_bonuses(sid)
+        .hp
+        .clamp(0, i16::MAX);
+    let (max_hp, max_mp) =
+        crate::systems::manes_survival::vitals_for_level(progress.level, hp_bonus);
+
+    // Callers explicitly identify a real level transition. Skill selection and
+    // ordinary HUD refreshes preserve spent HP/MP even if another stat
+    // recalculation happened between packets.
+    let Some(before_sync) = world.get_character_info(sid) else {
+        return;
+    };
+    let current_hp = if refill_vitals {
+        max_hp
+    } else {
+        // Preserve missing HP when a passive increases max HP. This prevents a
+        // bonus selection from visually damaging or healing the participant.
+        let missing_hp = (before_sync.max_hp - before_sync.hp).max(0);
+        (max_hp - missing_hp).clamp(0, max_hp)
+    };
+    let current_mp = if refill_vitals {
+        max_mp
+    } else {
+        before_sync.mp.clamp(0, max_mp)
+    };
+
+    world.update_character_stats(sid, |character| {
+        character.max_hp = max_hp;
+        character.hp = current_hp;
+        character.max_mp = max_mp;
+        character.mp = current_mp;
+    });
+
+    let Some(character) = world.get_character_info(sid) else {
+        return;
+    };
+    let equipped = world.get_equipped_stats(sid);
+
+    let mut level_packet = Packet::new(Opcode::WizLevelChange as u8);
+    level_packet.write_u32(sid as u32);
+    level_packet.write_u8(progress.level);
+    level_packet.write_i16(character.free_points as i16);
+    level_packet.write_u8(character.skill_points[0]);
+    level_packet.write_i64(i64::from(progress.max_exp));
+    level_packet.write_i64(i64::from(progress.exp));
+    level_packet.write_i16(max_hp);
+    level_packet.write_i16(current_hp);
+    level_packet.write_i16(max_mp);
+    level_packet.write_i16(current_mp);
+    level_packet.write_u32(equipped.max_weight);
+    level_packet.write_u32(equipped.item_weight);
+    world.send_to_session_owned(sid, level_packet);
+
+    world.send_to_session_owned(
+        sid,
+        crate::systems::regen::build_hp_change_packet(max_hp, current_hp),
+    );
+    world.send_to_session_owned(
+        sid,
+        crate::systems::regen::build_mp_change_packet(max_mp, current_mp),
+    );
+    // WIZ_LEVEL_CHANGE does not carry attack power. Refresh the verified
+    // WIZ_ITEM_MOVE stat contract as well so the ALT/character stat display
+    // advances with the same level scale used by server-side damage.
+    world.send_item_move_refresh(sid);
+
+    tracing::info!(
+        sid,
+        survival_level = progress.level,
+        survival_exp = progress.exp,
+        survival_max_exp = progress.max_exp,
+        survival_score = crate::systems::manes_survival::score_for_level(progress.level),
+        max_hp,
+        current_hp,
+        max_mp,
+        current_mp,
+        refill_vitals,
+        "Manes Survival vitals and HUD synchronized"
+    );
+}
+
+pub(crate) fn is_manes_survival_npc(npc: &crate::npc::NpcInstance) -> bool {
+    crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&npc.zone_id)
+}
+
+pub(crate) fn scale_manes_magic_damage(
+    world: &WorldState,
+    caster_sid: SessionId,
+    npc: &crate::npc::NpcInstance,
+    damage: i16,
+) -> i16 {
+    if damage <= 0 || !is_manes_survival_npc(npc) {
+        return damage;
+    }
+
+    let level = world
+        .manes_survival_manager
+        .progress(caster_sid)
+        .map(|state| state.level)
+        .unwrap_or(1);
+    let scale_tenths = 150_i32 + level.saturating_sub(1) as i32 * 25;
+    let scaled = ((damage as i32 * scale_tenths) / 1_000).max(1);
+    let bonus = world
+        .manes_survival_manager
+        .combat_bonuses(caster_sid)
+        .attack_pct as i32;
+    (scaled * (100 + bonus) / 100).clamp(1, i16::MAX as i32) as i16
+}
+
+pub(crate) fn broadcast_npc_death(world: &WorldState, killer_sid: SessionId, npc_id: NpcId) {
     let mut death_pkt = Packet::new(Opcode::WizDead as u8);
     death_pkt.write_u32(npc_id);
 
@@ -2170,6 +2527,24 @@ pub(crate) async fn handle_npc_death(
             None,
             event_room,
         );
+    }
+}
+
+pub(crate) async fn handle_npc_death(
+    world: &WorldState,
+    killer_sid: SessionId,
+    npc_id: NpcId,
+    npc: &crate::npc::NpcInstance,
+    tmpl: &crate::npc::NpcTemplate,
+    defer_death_broadcast: bool,
+) {
+    // Fire & Ice: a killed golem is converted to the killer's nation.
+    super::golem_war::on_npc_death(world, killer_sid, npc);
+
+    // Manes must receive the combat result and HP=0 before WIZ_DEAD. Its
+    // physical/magic callers emit this packet after those two packets.
+    if !defer_death_broadcast {
+        broadcast_npc_death(world, killer_sid, npc_id);
     }
 
     // FerihaLog: KillingNpcInsertLog
@@ -2196,6 +2571,7 @@ pub(crate) async fn handle_npc_death(
     world.update_session(killer_sid, |h| {
         h.dr_mh_total_kill += 1;
     });
+    crate::handler::achieve::on_monster_killed(world, killer_sid, tmpl.s_sid as u16, npc.zone_id);
 
     // ── Achievement: MonsterDefeatCount++ ────────────────────────────
     // Called via AchieveMonsterCountAdd() on each NPC death.
@@ -2204,19 +2580,60 @@ pub(crate) async fn handle_npc_death(
             h.achieve_summary.monster_defeat_count.saturating_add(1);
     });
 
-    // v2525: Send updated kill counter to client HUD (0xA5)
-    if let Some(count) = world.with_session(killer_sid, |h| h.achieve_summary.monster_defeat_count)
-    {
-        let ach_pkt = crate::handler::achievement2::build_achievement2(count as i32);
-        world.send_to_session_owned(killer_sid, ach_pkt);
+    // v2525: Send updated kill counter to client HUD (0xA5).
+    // The Manes Survival client contract does not consume this generic
+    // achievement packet during its kill sequence. Sending it before the
+    // WIZ_MAGIC_PROCESS result makes the v2615 client terminate on the first
+    // lethal event skill. Keep the counter server-side, but suppress only its
+    // HUD packet inside zones 57-60 while the event is active.
+    let is_manes_survival_kill = world.manes_survival_manager.is_active()
+        && crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&npc.zone_id);
+    if !is_manes_survival_kill {
+        if let Some(count) =
+            world.with_session(killer_sid, |h| h.achieve_summary.monster_defeat_count)
+        {
+            let ach_pkt = crate::handler::achievement2::build_achievement2(count as i32);
+            world.send_to_session_owned(killer_sid, ach_pkt);
+        }
     }
 
     // ── Award XP + Loyalty (NP) — damage-weighted distribution ──
     // Iterates m_DamagedUserList and distributes XP/NP proportionally to
     // each damager's contribution. Party members' damage is consolidated
     // into one representative entry so the whole party gets proportional XP.
-    let base_exp = tmpl.exp as i64;
-    let base_loyalty = tmpl.loyalty.min(i32::MAX as u32) as i32;
+    // Manes uses its own level/EXP state initialised through WIZ_SURVIVAL.
+    // Sending the normal character WIZ_EXP_CHANGE (0x1A) here crashes the
+    // v2615 client immediately after the first event monster dies and would
+    // also mutate the persistent character level, which this event forbids.
+    // Compute Manes progress here, but do not send D0 packets from the death
+    // handler. Physical/magic result packets must reach the client first.
+    if is_manes_survival_kill {
+        if let Some(progress) = world
+            .manes_survival_manager
+            .award_monster_exp(killer_sid, tmpl.s_sid)
+        {
+            tracing::info!(
+                sid = killer_sid,
+                npc_sid = tmpl.s_sid,
+                survival_level = progress.level,
+                survival_exp = progress.exp,
+                survival_max_exp = progress.max_exp,
+                leveled_up = progress.leveled_up,
+                "Manes Survival progress updated"
+            );
+        }
+    }
+
+    let base_exp = if is_manes_survival_kill {
+        0
+    } else {
+        super::level::monster_exp_rate(world, tmpl.exp as i64)
+    };
+    let base_loyalty = if is_manes_survival_kill {
+        0
+    } else {
+        tmpl.loyalty.min(i32::MAX as u32) as i32
+    };
     let npc_x = npc.x;
     let npc_z = npc.z;
 
@@ -2285,19 +2702,21 @@ pub(crate) async fn handle_npc_death(
                     let mut eligible: Vec<(SessionId, u8)> = Vec::with_capacity(8);
                     for &member_sid in &party.active_members() {
                         // Single DashMap read: alive + in-range + level (3 reads → 1)
-                        let member_level = world.with_session(member_sid, |h| {
-                            let ch = h.character.as_ref()?;
-                            if ch.res_hp_type == crate::world::USER_DEAD || ch.hp <= 0 {
-                                return None;
-                            }
-                            let dx = h.position.x - npc_x;
-                            let dz = h.position.z - npc_z;
-                            if dx * dx + dz * dz <= RANGE_50M {
-                                Some(ch.level)
-                            } else {
-                                None
-                            }
-                        }).flatten();
+                        let member_level = world
+                            .with_session(member_sid, |h| {
+                                let ch = h.character.as_ref()?;
+                                if ch.res_hp_type == crate::world::USER_DEAD || ch.hp <= 0 {
+                                    return None;
+                                }
+                                let dx = h.position.x - npc_x;
+                                let dz = h.position.z - npc_z;
+                                if dx * dx + dz * dz <= RANGE_50M {
+                                    Some(ch.level)
+                                } else {
+                                    None
+                                }
+                            })
+                            .flatten();
                         if let Some(level) = member_level {
                             eligible.push((member_sid, level));
                         }
@@ -2455,15 +2874,29 @@ pub(crate) async fn handle_npc_death(
         s.state = NpcState::Dead;
         s.target_id = None;
     });
+    if is_manes_survival_kill
+        && world
+            .manes_survival_manager
+            .request_final_boss_finish(tmpl.s_sid)
+    {
+        tracing::info!(
+            sid = killer_sid,
+            npc_sid = tmpl.s_sid,
+            "Manes Survival Dark Dragon killed; automatic finish requested"
+        );
+    }
+
+    let (killer_nation, killer_name, killer_clan_id) = world
+        .get_character_info(killer_sid)
+        .map_or((0u8, String::new(), 0u16), |ch| {
+            (ch.nation, ch.name.clone(), ch.knights_id)
+        });
+
+    process_war_warder_gatekeeper_death(world, npc.zone_id, npc.special_type, killer_nation);
 
     // ── Monument death processing (C++ CNpc::OnDeathProcess) ─────────
     // Only applies to non-monster NPCs with monument types.
     if !tmpl.is_monster {
-        let (killer_nation, killer_name, killer_clan_id) = world
-            .get_character_info(killer_sid)
-            .map_or((0u8, String::new(), 0u16), |ch| {
-                (ch.nation, ch.name.clone(), ch.knights_id)
-            });
         super::monument::monument_death_dispatch(
             world,
             npc,
@@ -2473,6 +2906,66 @@ pub(crate) async fn handle_npc_death(
             killer_clan_id,
         )
         .await;
+    }
+
+    fn process_war_warder_gatekeeper_death(
+        world: &WorldState,
+        zone_id: u16,
+        special_type: i16,
+        killer_nation: u8,
+    ) {
+        // NpcDefines.h: war objectives are spawn special types, not NPC model types.
+        let (owner_nation, label, is_gatekeeper) = match special_type {
+            90 | 91 => (NATION_KARUS, "Karus warder", false),
+            92 | 93 => (NATION_ELMORAD, "El Morad warder", false),
+            98 => (NATION_KARUS, "Karus gatekeeper", true),
+            99 => (NATION_ELMORAD, "El Morad gatekeeper", true),
+            _ => return,
+        };
+
+        if !(NATION_KARUS..=NATION_ELMORAD).contains(&killer_nation)
+            || killer_nation == owner_nation
+        {
+            return;
+        }
+
+        let state = world.get_battle_state();
+        if !state.is_nation_battle() || state.victory != 0 || zone_id != state.battle_zone_id() {
+            return;
+        }
+
+        world.increment_war_npc_kill(owner_nation);
+
+        let killer_label = if killer_nation == NATION_KARUS {
+            "Karus"
+        } else {
+            "El Morad"
+        };
+        crate::systems::war::broadcast_war_announcement(
+            world,
+            &format!("{label} has been killed by {killer_label}!"),
+            None,
+        );
+        let notice = super::chat::build_chat_packet(
+            7,
+            1,
+            0xFFFF,
+            "",
+            &format!("{label} has been killed by {killer_label}!"),
+            0,
+            0,
+            0,
+        );
+        world.broadcast_to_all(std::sync::Arc::new(notice), None);
+
+        if is_gatekeeper {
+            // Do not move players here. The existing Victory Gate/object-event flow
+            // handles invasion warps; this only opens the winner state it depends on.
+            world
+                .update_battle_state(|s| crate::systems::war::battle_zone_result(s, killer_nation));
+            let msg = crate::systems::war::build_winner_string(killer_nation);
+            crate::systems::war::broadcast_war_announcement(world, &msg, None);
+        }
     }
 
     // ── Monster Stone boss kill (C++ CNpc::MonsterStoneKillProcess) ────
@@ -2503,14 +2996,22 @@ pub(crate) async fn handle_npc_death(
     // DD rewards (coins, jewels, tokens) and decrement the room's kill
     // counter. When counter reaches 0, advance to next stage or finish.
     if npc.zone_id == ZONE_DUNGEON_DEFENCE && npc.event_room > 0 && npc.is_monster {
-        dd_monster_kill(world, killer_sid, npc.event_room, npc.proto_id);
+        dd_monster_kill(world, killer_sid, npc.event_room, npc.proto_id).await;
     }
 
     // ── Juraid Mountain monster kill (C++ Npc.cpp:903-907) ──────────────
     // When a monster dies in zone 87 during an active Juraid event, track
     // the kill for the player's nation room.
     if npc.zone_id == ZONE_JURAID_MOUNTAIN && npc.is_monster && npc.event_room > 0 {
-        super::dead::track_juraid_monster_kill(world, killer_sid);
+        super::dead::track_juraid_monster_kill(
+            world,
+            killer_sid,
+            npc.proto_id,
+            npc.event_room,
+            npc.summon_type,
+            npc.x,
+            npc.z,
+        );
     }
 
     // ── Forgotten Temple monster death (C++ CNpc::ForgettenTempleMonsterDead) ──
@@ -2558,6 +3059,15 @@ pub(crate) async fn handle_npc_death(
         let utc_state = world.under_the_castle_state();
         let result = super::under_castle::on_monster_death(npc.proto_id, tmpl.npc_type as u16);
 
+        tracing::info!(
+            npc_id,
+            proto_id = npc.proto_id,
+            movie_id = result.movie_id,
+            gate_index = ?result.gate_index,
+            reward_room = result.reward_room,
+            "Under The Castle: monster death processed"
+        );
+
         // Remove from tracked monster list
         super::under_castle::remove_from_monster_list(utc_state, npc_id);
 
@@ -2571,13 +3081,19 @@ pub(crate) async fn handle_npc_death(
             );
         }
 
-        // Open gate if applicable — send_gate_flag updates NPC state + broadcasts
+        // C++ CNpc::UnderTheCastleProcess calls pNpc->Dead(pUser) for each
+        // stage gate. A gate flag leaves the collision object in the region;
+        // remove every physical door piece instead.
         if let Some(gate_idx) = result.gate_index {
-            let gate_npc_id = super::under_castle::get_gate_id(utc_state, gate_idx);
-            if gate_npc_id > 0 {
-                world.send_gate_flag(gate_npc_id, 1);
-                tracing::info!(gate_idx, gate_npc_id, "Under The Castle: gate opened");
+            let gate_npc_ids = super::under_castle::get_gate_ids(utc_state, gate_idx);
+            for gate_npc_id in &gate_npc_ids {
+                world.kill_npc(*gate_npc_id);
             }
+            tracing::info!(
+                gate_idx,
+                gate_npc_ids = ?gate_npc_ids,
+                "Under The Castle: gate door pieces removed"
+            );
         }
 
         if result.reward_room > 0 {
@@ -2655,19 +3171,51 @@ pub(crate) async fn handle_npc_death(
             let summon_list = world.chaos_stone_summon_list();
             let monster_ids =
                 super::chaos_stone::death_respawn_monsters(&cs_infos, &summon_list, &stages, idx);
+            tracing::info!(
+                zone_id = npc.zone_id,
+                chaos_index = idx,
+                summon_list_total = summon_list.len(),
+                monster_ids = ?monster_ids,
+                "Chaos Stone: resolved summon monster ids"
+            );
             drop(cs_spawns);
             drop(stages);
             drop(summon_list);
 
             // Spawn each monster and register runtime IDs for boss tracking
             // C++ NpcThread.cpp:790-825 — ChaosStoneSummon stores GetID() in sBoosID[]
+            // Scatter the summoned bosses around the stone instead of stacking
+            // them all on the exact same tile.
+            const SUMMON_SCATTER_RADIUS: f32 = 15.0;
             let mut spawned_ids: Vec<u32> = Vec::new();
             for &mid in &monster_ids {
                 if mid > 0 {
-                    let ids = world.spawn_event_npc(mid as u16, true, npc.zone_id, npc.x, npc.z, 1);
+                    let (ox, oz) = {
+                        let mut rng = rand::thread_rng();
+                        let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                        let dist = rng.gen_range(0.0..SUMMON_SCATTER_RADIUS);
+                        (angle.cos() * dist, angle.sin() * dist)
+                    };
+                    let ids = world.spawn_event_npc(
+                        mid as u16,
+                        true,
+                        npc.zone_id,
+                        npc.x + ox,
+                        npc.z + oz,
+                        1,
+                    );
+                    if ids.is_empty() {
+                        tracing::warn!(zone_id = npc.zone_id, monster_id = mid, "Chaos Stone: boss spawn_event_npc returned no ids");
+                    }
                     spawned_ids.extend(ids);
                 }
             }
+            tracing::info!(
+                zone_id = npc.zone_id,
+                chaos_index = idx,
+                spawned_ids = ?spawned_ids,
+                "Chaos Stone: boss spawn result"
+            );
             super::chaos_stone::register_spawned_bosses(&cs_infos, idx, &spawned_ids);
             drop(cs_infos);
         } else {
@@ -2740,7 +3288,8 @@ pub(crate) async fn handle_npc_death(
 
             // Give EXP (C++ pUser->ExpChange("New Years Event", m_iExp, true))
             if tmpl.exp > 0 {
-                super::level::exp_change_with_bonus(world, sid, tmpl.exp as i64, true).await;
+                let exp = super::level::monster_exp_rate(world, tmpl.exp as i64);
+                super::level::exp_change_with_bonus(world, sid, exp, true).await;
             }
 
             // Give etrafa items from server settings.
@@ -3097,6 +3646,7 @@ async fn draki_tower_monster_kill(world: &WorldState, killer_sid: SessionId, eve
             // Persist progress + rift rank (C++ DrakiTowerSavedUserInfo + achievement)
             draki_tower_save_progress(world, killer_sid, now).await;
             draki_tower_update_rank(world, killer_sid, elapsed_seconds).await;
+            crate::handler::achieve::on_war_event_result(world, killer_sid, 21);
 
             tracing::info!(
                 "Draki Tower COMPLETE! room={}, elapsed={}s",
@@ -3121,13 +3671,19 @@ fn collect_draki_spawn_data(
     use crate::handler::draki_tower;
 
     let monsters = world.draki_monster_list();
+    let stages = world.draki_tower_stages();
+    let stage_is_monster = stages
+        .iter()
+        .find(|stage| stage.id == stage_id)
+        .map(|stage| stage.draki_tower_npc_state == 0)
+        .unwrap_or(true);
     let spawn_list: Vec<(u16, bool, f32, f32)> =
         draki_tower::get_monsters_for_stage(&monsters, stage_id)
             .into_iter()
             .map(|m| {
                 (
                     m.monster_id as u16,
-                    m.is_monster,
+                    stage_is_monster,
                     m.pos_x as f32,
                     m.pos_z as f32,
                 )
@@ -3301,7 +3857,7 @@ async fn draki_tower_update_rank(world: &WorldState, sid: SessionId, elapsed_sec
 /// 3. Give items to killer and party members.
 /// 4. Decrement the room's kill counter atomically.
 /// 5. When kill counter reaches 0, advance stage or trigger finish.
-fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, proto_id: u16) {
+async fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, proto_id: u16) {
     use crate::handler::dungeon_defence;
 
     // ── 1. Reward calculation ──────────────────────────────────────────
@@ -3324,6 +3880,15 @@ fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, p
             return;
         }
     };
+
+    tracing::info!(room = event_room, proto_id, stage = current_stage, "DD kill reward to {killer_sid}");
+    world.send_to_session_owned(
+        killer_sid,
+        crate::systems::timed_notice::build_notice_packet(
+            8,
+            &format!("+{} Full Moon Rift Jewel, +{} Monster Coin", reward.rift_jewel_count, reward.killer_coin_count),
+        ),
+    );
 
     // ── 2. Distribute rewards ──────────────────────────────────────────
     // C++ DungeonDefenceProcess lines 583-637
@@ -3376,12 +3941,26 @@ fn dd_monster_kill(world: &WorldState, killer_sid: SessionId, event_room: u16, p
         }
     }
 
+    // Bosses give their EXP to everybody fighting around them.
+    if reward.lunar_token {
+        if let (Some(tmpl), Some(pos)) = (world.get_npc_template(proto_id, true), world.get_position(killer_sid)) {
+            let exp = super::level::monster_exp_rate(world, tmpl.exp as i64);
+            for sid in world.collect_sessions_by(|h| h.event_room == event_room && h.position.zone_id == ZONE_DUNGEON_DEFENCE) {
+                let Some(p) = world.get_position(sid) else { continue };
+                let (dx, dz) = (p.x - pos.x, p.z - pos.z);
+                if (dx * dx + dz * dz).sqrt() <= 40.0 && !world.is_player_dead(sid) {
+                    super::level::exp_change(world, sid, exp).await;
+                }
+            }
+        }
+    }
+
     // ── 3. Decrement kill counter and advance ──────────────────────────
     dd_decrement_and_advance(world, event_room);
 }
 
 /// Decrement DD room kill counter and advance stage when all monsters are dead.
-fn dd_decrement_and_advance(world: &WorldState, event_room: u16) {
+pub(crate) fn dd_decrement_and_advance(world: &WorldState, event_room: u16) {
     use crate::handler::dungeon_defence;
 
     let room = match world.dd_rooms().iter().find(|r| {
@@ -3622,7 +4201,7 @@ fn award_npc_loyalty_solo(world: &WorldState, sid: SessionId, base_loyalty: i32,
 }
 
 /// Send WIZ_TARGET_HP for an NPC target (HP bar update).
-/// Packet format: `[u32 npc_id][u8 0][u32 max_hp][u32 current_hp][u32 0][u32 0][u8 0]`
+/// Packet format: `[u32 npc_id][u8 0][u32 max_hp][u32 current_hp][u32 source][i32 change][u8 reserved=0]`
 fn send_npc_target_hp_update(
     world: &WorldState,
     attacker_sid: SessionId,
@@ -3631,14 +4210,14 @@ fn send_npc_target_hp_update(
     current_hp: i32,
     damage: i32,
 ) {
-    let mut response = Packet::new(Opcode::WizTargetHp as u8);
-    response.write_u32(npc_id);
-    response.write_u8(0);
-    response.write_u32(max_hp.max(0) as u32);
-    response.write_u32(current_hp.max(0) as u32);
-    response.write_u32((-damage) as u32); // C++ sends negative amount (damage dealt = negative)
-    response.write_u32(0);
-    response.write_u8(0);
+    let response = super::target_hp::build_target_hp_packet(
+        npc_id,
+        0,
+        max_hp.max(0) as u32,
+        current_hp.max(0) as u32,
+        -damage,
+        -damage,
+    );
 
     world.send_to_session_owned(attacker_sid, response);
 }
@@ -3691,16 +4270,14 @@ fn send_target_hp_update(
         None => return,
     };
 
-    let mut response = Packet::new(Opcode::WizTargetHp as u8);
-    response.write_u32(target_sid as u32);
-    response.write_u8(0); // echo flag
-    response.write_u32(ch.max_hp as u32);
-    response.write_u32(ch.hp.max(0) as u32);
-    // C++ sends negative amount for damage dealt, positive for heal.
-    // Client uses sign: negative = "X damage dealt", positive = "X HP received"
-    response.write_u32((-damage) as u32);
-    response.write_u32(0); // reserved
-    response.write_u8(0); // reserved
+    let response = super::target_hp::build_target_hp_packet(
+        target_sid as u32,
+        0,
+        ch.max_hp as u32,
+        ch.hp.max(0) as u32,
+        -damage,
+        -damage,
+    );
 
     // Send to the attacker
     world.send_to_session_owned(attacker_sid, response);
@@ -3887,6 +4464,15 @@ fn apply_npc_type_damage_override(
     npc: &crate::npc::NpcInstance,
     damage: i16,
 ) -> i16 {
+    // Ultima's Dungeon: a seal only takes its fixed basic-attack hit; during the boss's
+    // lethal window warriors hit 1.5x.
+    if let Some(hit) = world.ultima_seal_hit(npc.nid) {
+        return hit.clamp(1, i16::MAX as i32) as i16;
+    }
+    if damage > 0 && world.ultima_is_lethal(npc.nid) && is_warrior(attacker.class) {
+        return (damage as i32 * 3 / 2).min(i16::MAX as i32) as i16;
+    }
+
     // Weapon kind for pickaxe: C++ GameDefine.h:1234 — WEAPON_PICKAXE = 61
     const WEAPON_PICKAXE: i32 = 61;
     // Punishment stick item ID: C++ GameDefine.h:1622 — `GetNum() == 900356000`
@@ -4279,8 +4865,12 @@ fn apply_elemental_weapon_damage_pvp(
     target_pct_poison_r: u8,
     base_damage: i16,
 ) -> i16 {
-    let (pct_fire, pct_cold, pct_lightning, pct_poison) =
-        (target_pct_fire_r, target_pct_cold_r, target_pct_lightning_r, target_pct_poison_r);
+    let (pct_fire, pct_cold, pct_lightning, pct_poison) = (
+        target_pct_fire_r,
+        target_pct_cold_r,
+        target_pct_lightning_r,
+        target_pct_poison_r,
+    );
 
     let resist_bonus = target_stats.resistance_bonus as i32;
     let mut elemental_bonus: i32 = 0;
@@ -6964,6 +7554,7 @@ mod tests {
             gold: 0,
             loyalty: 0,
             loyalty_monthly: 0,
+            loyalty_daily: 0,
             in_game: true,
             presence: BotPresence::Standing,
             ai_state: BotAiState::Pk,
@@ -6987,6 +7578,8 @@ mod tests {
             merchant_state: -1,
             premium_merchant: false,
             merchant_chat: String::new(),
+            merchant_items: Default::default(),
+            merchant_looker: None,
             reb_level: 0,
             cover_title: 0,
             rival_id: -1,

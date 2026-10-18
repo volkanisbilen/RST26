@@ -66,7 +66,11 @@ mod tests {
     #[test]
     fn test_build_notification_empty_payload() {
         let pkt = build_notification();
-        assert_eq!(pkt.data.len(), 0, "0x63 has no payload — client reads nothing");
+        assert_eq!(
+            pkt.data.len(),
+            0,
+            "0x63 has no payload — client reads nothing"
+        );
     }
 
     #[test]

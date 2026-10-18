@@ -1,7 +1,7 @@
 local NPC = 14438;
 
 if (EVENT == 3000) then
-	NpcMsg(UID, 815, NPC);
+	SelectMsg(UID, 2, -1, 807, NPC, 67, 3011, 68, -1);
 end
 
 if (EVENT == 3010) then
@@ -23,7 +23,7 @@ end
 
 if (EVENT == 3013) then
 JURADTIME = CheckJuraidMountainTime(UID);
-if (JURADTIME == true) then
+	if (JURADTIME == true or JURADTIME == 1) then
 	JoinEvent(UID);
 	SaveEvent(UID, 695);
 else
@@ -39,4 +39,3 @@ end
 if (EVENT == 3005) then
 	SaveEvent(UID, 695);
 end
-

@@ -29,7 +29,7 @@ if (EVENT == 103) then
 end
 
 if (EVENT == 102) then
-	CycleSpawn(UID);;
+	CycleSpawn(UID);
 	RobItem(UID, 910052000, 1);
 	SelectMsg(UID, 2, -1, 4411, NPC, 10, -1);
 end

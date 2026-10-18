@@ -82,6 +82,16 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let mut reader = PacketReader::new(&pkt.data);
     let opcode = reader.read_u8().unwrap_or(0);
 
+    // The window was opened from the clan window button: it shows the clan warehouse.
+    // A normal warehouse open (NPC) switches back to the personal warehouse.
+    if session.clan_wh_native() {
+        if opcode == WAREHOUSE_OPEN {
+            session.set_clan_wh_native(false);
+        } else {
+            return super::clan_warehouse::handle_native(session, pkt).await;
+        }
+    }
+
     // Genie state check — must happen AFTER reading opcode so error packet includes it.
     if world.with_session(sid, |h| h.genie_active).unwrap_or(false) {
         return session
@@ -156,6 +166,56 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             Ok(())
         }
     }
+}
+
+/// Put `count` of an item into the player's warehouse (Chaotic Generator "Auto Bank").
+/// Loads the warehouse from the DB when it was not opened yet and saves the touched slot.
+pub(crate) async fn bank_item(session: &mut ClientSession, item_id: u32, count: u16) -> bool {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    if !world.is_warehouse_loaded(sid) {
+        let Some(account_id) = session.account_id().map(|a| a.to_string()) else {
+            return false;
+        };
+        let repo = CharacterRepository::new(session.pool());
+        let (Ok(db_items), Ok(inn_coins)) = (
+            repo.load_warehouse_items(&account_id).await,
+            repo.load_warehouse_coins(&account_id).await,
+        ) else {
+            return false;
+        };
+        let mut warehouse = vec![UserItemSlot::default(); WAREHOUSE_MAX];
+        for row in &db_items {
+            let idx = row.slot_index as usize;
+            if idx < WAREHOUSE_MAX {
+                warehouse[idx] = UserItemSlot {
+                    item_id: row.item_id as u32,
+                    durability: row.durability,
+                    count: row.count as u16,
+                    flag: row.flag as u8,
+                    original_flag: row.original_flag as u8,
+                    serial_num: row.serial_num as u64,
+                    expire_time: row.expire_time as u32,
+                };
+            }
+        }
+        world.set_warehouse(sid, warehouse, inn_coins as u32);
+    }
+    let before = world.get_warehouse(sid);
+    if !world.give_warehouse_item(sid, item_id, count, 0) {
+        return false;
+    }
+    let after = world.get_warehouse(sid);
+    for (i, slot) in after.iter().enumerate() {
+        let changed = before
+            .get(i)
+            .map(|b| b.item_id != slot.item_id || b.count != slot.count)
+            .unwrap_or(true);
+        if changed {
+            save_warehouse_slot_async(session, i);
+        }
+    }
+    true
 }
 
 /// Handle WAREHOUSE_OPEN (sub-opcode 1).
@@ -413,6 +473,7 @@ async fn handle_warehouse_input(
 
         let ok = build_warehouse_result(WAREHOUSE_INPUT, 1);
         session.send_packet(&ok).await?;
+        crate::handler::item_move::send_inventory_snapshot(session).await?;
     } else {
         let err = build_warehouse_result(WAREHOUSE_INPUT, 0);
         session.send_packet(&err).await?;
@@ -575,6 +636,7 @@ async fn handle_warehouse_output(
 
         let ok = build_warehouse_result(WAREHOUSE_OUTPUT, 1);
         session.send_packet(&ok).await?;
+        crate::handler::item_move::send_inventory_snapshot(session).await?;
     } else {
         let err = build_warehouse_result(WAREHOUSE_OUTPUT, 0);
         session.send_packet(&err).await?;
@@ -622,6 +684,21 @@ async fn handle_warehouse_move(
     if success {
         save_warehouse_slot_async(session, src_idx);
         save_warehouse_slot_async(session, dst_idx);
+        // GM inventory diagnostics are intentionally emitted only after a
+        // successful move, so an invalid client request cannot create noise.
+        if world
+            .get_character_info(sid)
+            .is_some_and(|character| character.authority == 0 || character.authority == 2)
+        {
+            super::client_event::send_gm_debug_chat(
+                &world,
+                sid,
+                &format!(
+                    "[GM] Bank item moved: item_id={} slot {} -> {}",
+                    item_id, src_idx, dst_idx
+                ),
+            );
+        }
         let ok = build_warehouse_result(WAREHOUSE_MOVE, 1);
         session.send_packet(&ok).await?;
     } else {
@@ -670,6 +747,19 @@ async fn handle_warehouse_invenmove(
     if success {
         save_inventory_slot_async(session, src_idx);
         save_inventory_slot_async(session, dst_idx);
+        if world
+            .get_character_info(sid)
+            .is_some_and(|character| character.authority == 0 || character.authority == 2)
+        {
+            super::client_event::send_gm_debug_chat(
+                &world,
+                sid,
+                &format!(
+                    "[GM] Inventory item moved: item_id={} slot {} -> {}",
+                    item_id, src_pos, dst_pos
+                ),
+            );
+        }
         let ok = build_warehouse_result(WAREHOUSE_INVENMOVE, 1);
         session.send_packet(&ok).await?;
     } else {
@@ -947,5 +1037,19 @@ mod tests {
     fn test_warehouse_result_money_required() {
         let pkt = build_warehouse_result(WAREHOUSE_INPUT, 2);
         assert_eq!(pkt.data[1], 2); // RequiredMoney
+    }
+}
+
+/// GM-only chat line after a successful storage move (bank, vault, clan bank).
+pub(super) fn gm_move_note(world: &crate::world::WorldState, sid: crate::zone::SessionId, label: &str, item_id: u32, src: usize, dst: usize) {
+    if world
+        .get_character_info(sid)
+        .is_some_and(|c| c.authority == 0 || c.authority == 2)
+    {
+        super::client_event::send_gm_debug_chat(
+            world,
+            sid,
+            &format!("[GM] {label} item moved: item_id={item_id} slot {src} -> {dst}"),
+        );
     }
 }

@@ -57,16 +57,18 @@ impl<'a> KnightsRepository<'a> {
         name: &str,
         chief: &str,
         flag: i16,
+        points: i32,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO knights (id_num, flag, nation, id_name, chief, members)
-             VALUES ($1, $2, $3, $4, $5, 1)",
+            "INSERT INTO knights (id_num, flag, nation, id_name, chief, members, points, s_cape)
+             VALUES ($1, $2, $3, $4, $5, 1, $6, CASE WHEN $2 >= 2 THEN 0 ELSE -1 END)",
         )
         .bind(id_num)
         .bind(flag)
         .bind(nation)
         .bind(name)
         .bind(chief)
+        .bind(points)
         .execute(self.pool)
         .await?;
         Ok(())
@@ -282,10 +284,18 @@ impl<'a> KnightsRepository<'a> {
     pub async fn next_clan_id(&self, nation: u8) -> Result<Option<i16>, sqlx::Error> {
         let (min_id, max_id): (i16, i16) = if nation == 2 {
             // El Morad
-            (15001, 32000)
+            //
+            // The reference server reserves the nation auto-clan ID (15001).
+            // Real player-created clans must start after it; otherwise v2615
+            // treats the clan as a system/auto clan and the cape UI/catalogue
+            // does not behave as a normal promoted clan.
+            (15002, 32000)
         } else {
             // Karus
-            (1, 14999)
+            //
+            // ID 1 is the Karus auto-clan in the reference server. Do not hand
+            // it out to player-created clans.
+            (2, 14999)
         };
 
         let row: Option<(i16,)> = sqlx::query_as(
@@ -482,7 +492,7 @@ impl<'a> KnightsRepository<'a> {
         Ok(())
     }
 
-    /// Update a clan's flag and cape after demotion.
+    /// Update a clan's type flag and normal cape after promotion/demotion.
     ///
     pub async fn update_flag_cape(
         &self,
@@ -490,7 +500,7 @@ impl<'a> KnightsRepository<'a> {
         flag: i16,
         cape: i16,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE knights SET flag = $1, cape = $2 WHERE id_num = $3")
+        sqlx::query("UPDATE knights SET flag = $1, s_cape = $2 WHERE id_num = $3")
             .bind(flag)
             .bind(cape)
             .bind(id_num)

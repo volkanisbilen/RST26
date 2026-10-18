@@ -81,7 +81,7 @@ end
 if (EVENT == 1105) then
 	MonsterSub = ExistMonsterQuestSub(UID);
 	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 559, 20087, NPC, 22, 1106, 23, -1);
+		SelectMsg(UID, 5, 559, 20087, NPC, 22, 1106, 23, -1);
 	else
 		SelectMsg(UID, 2, 559, 20087, NPC, 18, 1106);
 	end
@@ -117,7 +117,7 @@ end
 if (EVENT == 1205) then
 	MonsterSub = ExistMonsterQuestSub(UID);
 	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 560, 20089, NPC, 22, 1206, 23, -1);
+		SelectMsg(UID, 5, 560, 20089, NPC, 22, 1206, 23, -1);
 	else
 		SelectMsg(UID, 2, 560, 20089, NPC, 18, 1206);
 	end

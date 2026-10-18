@@ -109,6 +109,24 @@ impl<'a> SiegeRepository<'a> {
         Ok(())
     }
 
+    /// Persist the winning clan without overwriting the scheduled war date/time.
+    pub async fn update_master_knights(
+        &self,
+        castle_index: i16,
+        master_knights: i16,
+    ) -> Result<(), sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE knights_siege_warfare SET s_master_knights = $1 WHERE s_castle_index = $2",
+        )
+        .bind(master_knights)
+        .bind(castle_index)
+        .execute(self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
+    }
     /// Update challenge clan list (up to 10 slots).
     ///
     pub async fn update_challenge_list(

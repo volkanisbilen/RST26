@@ -44,6 +44,19 @@ pub async fn exp_change(world: &WorldState, sid: SessionId, i_exp: i64) {
     exp_change_inner(world, sid, i_exp, false).await;
 }
 
+/// Scale a monster template's base EXP by the admin-configurable `server_settings.exp_rate`
+/// (percent, 100 = unchanged). Applied at every site that reads `npc_template.exp` directly,
+/// not inside `exp_change`/`exp_change_with_bonus` -- those are also used for quest rewards
+/// and other non-kill XP, which this rate must not touch.
+pub fn monster_exp_rate(world: &WorldState, raw_exp: i64) -> i64 {
+    let rate = world
+        .get_server_settings()
+        .map(|s| s.exp_rate)
+        .unwrap_or(100)
+        .max(0) as i64;
+    raw_exp * rate / 100
+}
+
 /// Apply an experience point change with explicit bonus-reward flag.
 /// When `is_bonus_reward` is true, the server-side XP multipliers (event XP,
 /// premium bonuses, etc.) are skipped — the XP is applied as-is.
@@ -321,8 +334,23 @@ fn get_clan_leader_online_bonus(world: &WorldState, _sid: SessionId, ch: &Charac
 /// Supports both single-level increments (normal level-up) and multi-level
 /// jumps (GM commands like `/levelup 83`).
 pub fn level_change(world: &WorldState, sid: SessionId, level: u8, is_level_up: bool) {
+    if is_level_up {
+        // the character's level is stored a few lines below: show the new one on Discord
+        let (name, zone) = (
+            world.get_character_info(sid).map(|c| c.name),
+            world.get_position(sid).map(|p| p.zone_id),
+        );
+        if let (Some(name), Some(zone)) = (name, zone) {
+            world.send_to_session_owned(sid, super::discord_presence::build_packet(&name, level, zone));
+        }
+    }
     if level < 1 || (level as u16) > MAX_LEVEL {
         return;
+    }
+
+    if is_level_up && super::daily_quest::auto_start_all(world, sid) {
+        super::daily_quest::send_list(world, sid);
+        super::daily_quest::send_progress(world, sid);
     }
 
     // Update max_exp for the new level
@@ -388,6 +416,16 @@ pub fn level_change(world: &WorldState, sid: SessionId, level: u8, is_level_up: 
         world.update_character_stats(sid, |ch| {
             ch.max_exp = new_max_exp;
         });
+    }
+
+    if is_level_up {
+        tracing::warn!(
+            sid,
+            level,
+            free = world.get_character_info(sid).map(|c| c.free_points).unwrap_or(0),
+            "level up: stat points after the level change"
+        );
+        audit_points(world, sid);
     }
 
     // Recalculate equipment stats + max HP/MP (includes item + buff bonuses)
@@ -592,6 +630,39 @@ pub fn save_level_exp_async(session: &crate::session::ClientSession) {
             tracing::error!(char_id, "failed to save level/exp: {}", e);
         }
     });
+}
+
+/// Give back stat / skill points a character is missing for its level (points that never arrived, e.g.
+/// after a GM level change or an interrupted level up). Total = free + allocated; nothing is ever taken away.
+/// Runs at game start and after each level up. Returns true when something was added.
+pub fn audit_points(world: &WorldState, sid: SessionId) -> bool {
+    let Some(ch) = world.get_character_info(sid) else {
+        return false;
+    };
+    if ch.level < 1 || (ch.level as u16) > MAX_LEVEL {
+        return false;
+    }
+    let stat_expected = expected_stat_total(ch.level) as i32;
+    let stat_have = ch.free_points as i32 + get_stat_total(&ch) as i32;
+    let skill_expected = expected_skill_total(ch.level) as i32;
+    let skill_have = ch.skill_points[0] as i32 + get_total_skill_points(&ch) as i32;
+    let stat_add = (stat_expected - stat_have).clamp(0, i16::MAX as i32);
+    let skill_add = (skill_expected - skill_have).clamp(0, 255);
+    if stat_add == 0 && skill_add == 0 {
+        return false;
+    }
+    world.update_character_stats(sid, |c| {
+        c.free_points = c.free_points.saturating_add(stat_add as u16);
+        c.skill_points[0] = c.skill_points[0].saturating_add(skill_add as u8);
+    });
+    tracing::warn!(
+        sid,
+        level = ch.level,
+        stat_add,
+        skill_add,
+        "points audit: the character was missing stat / skill points for its level"
+    );
+    true
 }
 
 /// Calculate the expected total stat points for a given level.

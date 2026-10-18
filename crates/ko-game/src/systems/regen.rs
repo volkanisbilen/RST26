@@ -10,7 +10,6 @@
 //!   - HP: `level * (1 + level/30) + 3`
 //!   - MP: `((maxMp * 5) / ((level - 1) + 30)) + 3`
 //!   - Mages under 30% MP get 120% MP regen
-//! - **Sitting (GM, authority == 0)**: instant full heal
 //! - **Dead**: no regen
 
 use std::sync::Arc;
@@ -64,7 +63,10 @@ fn is_mage_class(class: u16) -> bool {
 /// ```
 /// Returns 120 for mages below 30% MP, 100 otherwise.
 fn mp_percent(class: u16, mp: i16, max_mp: i16) -> i32 {
-    if is_mage_class(class) && max_mp > 0 && mp < (30 * max_mp / 100) {
+    // Character MP fields are i16. 2615 characters can legitimately have
+    // enough MP for `30 * max_mp` to overflow i16 in debug builds, killing
+    // the entire background regeneration task. Promote before arithmetic.
+    if is_mage_class(class) && max_mp > 0 && (mp as i32) < (30 * max_mp as i32 / 100) {
         120
     } else {
         100
@@ -119,30 +121,21 @@ fn process_session_regen(world: &WorldState, rd: &RegenData) {
             }
         }
         USER_SITDOWN => {
-            // GM sitting: instant full heal
-            if rd.authority == 0 {
-                if rd.hp < rd.max_hp {
-                    hp_change = rd.max_hp as i32;
-                }
-                if rd.mp < rd.max_mp {
-                    mp_change = rd.max_mp as i32;
-                }
-            } else {
-                // Normal player sitting: HP + MP regen
-                if rd.hp < rd.max_hp {
-                    hp_change = (level * (1.0 + level / 30.0)) as i32 + 3;
-                }
-                //   if (GetZoneID() == ZONE_PRISON && GetLevel() > 1)
-                //       MSpChange(+(m_MaxMp * 5 / 100));
-                //   else normal formula
-                if rd.mp < rd.max_mp {
-                    if rd.zone_id == ZONE_PRISON && rd.level > 1 {
-                        mp_change = (rd.max_mp as i32) * 5 / 100;
-                    } else {
-                        let divisor = (rd.level as i32 - 1).max(0) + 30;
-                        let base = ((rd.max_mp as i32) * 5 / divisor) + 3;
-                        mp_change = base * mp_pct / 100;
-                    }
+            // Sitting players, including GMs, use the normal gradual regen
+            // formula. Authority must not change combat-resource timing.
+            if rd.hp < rd.max_hp {
+                hp_change = (level * (1.0 + level / 30.0)) as i32 + 3;
+            }
+            //   if (GetZoneID() == ZONE_PRISON && GetLevel() > 1)
+            //       MSpChange(+(m_MaxMp * 5 / 100));
+            //   else normal formula
+            if rd.mp < rd.max_mp {
+                if rd.zone_id == ZONE_PRISON && rd.level > 1 {
+                    mp_change = (rd.max_mp as i32) * 5 / 100;
+                } else {
+                    let divisor = (rd.level as i32 - 1).max(0) + 30;
+                    let base = ((rd.max_mp as i32) * 5 / divisor) + 3;
+                    mp_change = base * mp_pct / 100;
                 }
             }
         }
@@ -153,11 +146,7 @@ fn process_session_regen(world: &WorldState, rd: &RegenData) {
 
     // Apply HP change (undead: regen becomes damage)
     if hp_change > 0 {
-        let effective = if rd.is_undead {
-            -hp_change
-        } else {
-            hp_change
-        };
+        let effective = if rd.is_undead { -hp_change } else { hp_change };
         let new_hp = if effective > 0 {
             (rd.hp as i32 + effective).min(rd.max_hp as i32) as i16
         } else {
@@ -439,6 +428,12 @@ mod tests {
         assert_eq!(mp_percent(110, 150, 500), 100);
         // Mage at 29% (149/500) -> below 30%, so 120%
         assert_eq!(mp_percent(110, 149, 500), 120);
+    }
+
+    #[test]
+    fn test_mp_percent_high_mp_does_not_overflow() {
+        assert_eq!(mp_percent(110, 800, 3_000), 120);
+        assert_eq!(mp_percent(110, 900, 3_000), 100);
     }
 
     #[test]
