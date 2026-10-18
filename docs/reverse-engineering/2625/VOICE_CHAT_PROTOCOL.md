@@ -211,3 +211,23 @@ Implemented in `crates/ko-game`:
   (likely volume + pan, or mic/speaker mute flags — not disambiguated)
   remain unconfirmed; not required for the minimum room-join flow
   implemented here.
+
+## CORRECTIONS (decompile-verified, supersede anything above that disagrees)
+
+Real flow (`sub_EC4800`, `sub_EC7AF0`, `sub_EC9590`, `sub_704DA0`, `sub_EC66A0`, `sub_EC69A0`, `sub_703750`):
+
+1. Reconnect/open: C2S `B5 05`. Server: S2C `B5 02 [u16 room][u64 token][u8]`, then
+   S2C `B5 05 [SByte host][u32 port][SByte][SByte][u32 a][u32 b]`. The client
+   `connect()`s to `host:port` (host via `inet_addr`/`gethostbyname`; a non-IP name such
+   as a character name fails -> "Failed"). `a`/`b` are echoed in the relay login.
+2. Relay framing (both ways, plaintext): `AA 55 | u16 len LE | payload | 55 AA`.
+3. Client -> relay: `01 [SByte name][u32 a][u32 b]` login; then (once ack'd and room/token
+   known) `04 02 [u16 room][u64 token][u16 0x0100]` join; `05 [u16 len][opus]` voice;
+   `06 [u16 mic][u16 spk]` state; `07` keepalive; `04 01 00 01` create-room request.
+   If no room yet the client sends game `B5 06` (re-request room -> answer with S2C 02).
+4. Relay -> client: `01 [u16 1][u16 member_id]` login ack (status != 1 -> failure);
+   `04 02 [u8 1][u16 id][SByte name]` member joined (own id -> client acks `B5 02` on the
+   game socket); `04 03 [u16 1][u16 id][SByte name]` left; `05 [u16 sender_id][u16 len][opus]`
+   voice; `06 [u16 id][u16 mic][u16 spk]` state. Member ids are per-room u16 chosen by the relay.
+5. Client has no separate voice DLL (Opus is statically linked) and reads no INI for the
+   relay address: it comes only from S2C `B5 05`.
