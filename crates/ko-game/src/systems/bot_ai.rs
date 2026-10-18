@@ -430,6 +430,52 @@ fn get_priest_skill(level: u8) -> u32 {
     }
 }
 
+/// Every Karus-base id `get_warrior_skill` can return -- used to validate a GM bot loadout
+/// override's attack-skill picks against the class they were configured for (see
+/// `attack_pool_for_bot`), so an admin can't accidentally fire a priest heal as a warrior swing.
+const WARRIOR_ATTACK_POOL: [u32; 11] = [
+    101001, 105505, 105525, 105545, 105555, 105557, 106560, 106570, 106575, 106580, 106782,
+];
+/// Every Karus-base id `get_rogue_skill` (dagger) can return.
+const ROGUE_DAGGER_ATTACK_POOL: [u32; 8] =
+    [101001, 108005, 108620, 108635, 108640, 108655, 108670, 108685];
+/// Every Karus-base id `get_rogue_arrow_skill` (bow/crossbow) can return.
+const ROGUE_ARROW_ATTACK_POOL: [u32; 8] =
+    [107003, 107500, 107525, 107540, 107552, 108552, 108570, 108585];
+/// Every Karus-base id `get_mage_base_skill` can return, pre-subclass-offset (Flame). Glacier
+/// (+100) / Lightning (+200) variants are intentionally not expanded here -- an admin override
+/// names the exact final skill id to cast, picking a subclass id directly if that's the intent.
+const MAGE_ATTACK_POOL: [u32; 29] = [
+    109001, 109002, 109005, 109007, 109503, 109509, 109515, 109518, 109527, 109533, 109535,
+    109539, 109542, 109543, 109545, 109551, 109556, 109557, 110542, 110543, 110545, 110551,
+    110556, 110557, 110560, 110570, 110571, 110572, 110575,
+];
+/// Every Karus-base id `get_priest_skill` can return.
+const PRIEST_ATTACK_POOL: [u32; 8] = [101001, 111511, 111520, 111542, 111551, 112520, 112802, 112815];
+
+/// The class-appropriate attack-skill pool for `bot`, used to validate a loadout override's
+/// skill list before it's allowed to replace `select_bot_skill_with_weapon`'s pick (see
+/// `select_bot_attack_skill`). Rogues get both dagger and arrow ids: the equipped weapon an
+/// override itself supplies can change which one actually applies.
+fn attack_pool_for_bot(bot: &BotInstance, world: &WorldState) -> &'static [u32] {
+    if bot.is_warrior() {
+        &WARRIOR_ATTACK_POOL
+    } else if bot.is_rogue() {
+        let weapon_kind = detect_rogue_weapon_kind(bot, Some(world));
+        if weapon_kind == WEAPON_KIND_BOW || weapon_kind == WEAPON_KIND_CROSSBOW {
+            &ROGUE_ARROW_ATTACK_POOL
+        } else {
+            &ROGUE_DAGGER_ATTACK_POOL
+        }
+    } else if bot.is_mage() {
+        &MAGE_ATTACK_POOL
+    } else if bot.is_priest() {
+        &PRIEST_ATTACK_POOL
+    } else {
+        &WARRIOR_ATTACK_POOL
+    }
+}
+
 /// Select a skill ID for a bot based on its class, level, nation, and weapon.
 /// The C++ code:
 /// 1. Selects a base skill ID (Karus) by level bracket
@@ -658,14 +704,37 @@ fn select_bot_attack_skill(
     target_sid: SessionId,
     now_ms: u64,
 ) -> u32 {
-    let skill_id = select_bot_skill_with_weapon(bot, Some(world));
+    // A loadout override only takes effect for the skills it names that are actually in this
+    // bot's own attack pool -- an override list set up for the priest heal/buff pools must not
+    // leak into what the priest fires as an attack, and vice versa.
+    let override_skills = bot_loadout_override(bot.class, bot.level)
+        .map(|o| o.skills)
+        .unwrap_or_default();
+    let allowed: Vec<u32> = if override_skills.is_empty() {
+        Vec::new()
+    } else {
+        let pool = attack_pool_for_bot(bot, world);
+        override_skills
+            .into_iter()
+            .filter(|skill| pool.contains(skill))
+            .collect()
+    };
+    let mut rng = rand::thread_rng();
+    let pick = |rng: &mut rand::rngs::ThreadRng| -> u32 {
+        if allowed.is_empty() {
+            select_bot_skill_with_weapon(bot, Some(world))
+        } else {
+            nation_skill(bot, allowed[rng.gen_range(0..allowed.len())])
+        }
+    };
+    let skill_id = pick(&mut rng);
     if bot_skill_hard_cc_ms(world, skill_id).is_none()
         || !is_target_hard_locked(world, target_sid, now_ms)
     {
         return skill_id;
     }
     for _ in 0..8 {
-        let retry = select_bot_skill_with_weapon(bot, Some(world));
+        let retry = pick(&mut rng);
         if bot_skill_hard_cc_ms(world, retry).is_none() {
             return retry;
         }
@@ -1577,6 +1646,11 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
     let in_range = |skill_id: u32, target: &SupportTarget| {
         in_skill_range(world, bot, skill_id, target.sid, target.x, target.z)
     };
+    // Non-empty: restricts which level-eligible heal/buff/curse this bracket may still cast.
+    // Empty (no override, or an override with none of these ids): today's unrestricted pick.
+    let allow = bot_loadout_override(bot.class, bot.level)
+        .map(|o| o.skills)
+        .unwrap_or_default();
 
     for target in targets.iter().filter(|t| !t.is_bot) {
         let skill_id = if bot.level >= PRIEST_CURE_DISEASE_MIN_LEVEL
@@ -1603,7 +1677,7 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
         }
     }
 
-    if let Some(heal) = skill_for_level(&PRIEST_HEAL_SKILLS, bot.level).map(|s| nation_skill(bot, s)) {
+    if let Some(heal) = restrict_skill_for_level(&PRIEST_HEAL_SKILLS, bot.level, &allow).map(|s| nation_skill(bot, s)) {
         let mut wounded: Vec<&SupportTarget> = targets
             .iter()
             .filter(|t| t.sid as u32 != bot.id && t.max_hp > 0)
@@ -1624,7 +1698,7 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
     }
 
     for table in [&PRIEST_AC_BUFFS[..], &PRIEST_HP_BUFFS[..]] {
-        let Some(buff) = skill_for_level(table, bot.level).map(|s| nation_skill(bot, s)) else {
+        let Some(buff) = restrict_skill_for_level(table, bot.level, &allow).map(|s| nation_skill(bot, s)) else {
             continue;
         };
         if !support_skill_ready(bot, buff, now_ms) {
@@ -1637,7 +1711,7 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
         }
     }
 
-    let Some(curse) = skill_for_level(&PRIEST_CURSES, bot.level).map(|s| nation_skill(bot, s)) else {
+    let Some(curse) = restrict_skill_for_level(&PRIEST_CURSES, bot.level, &allow).map(|s| nation_skill(bot, s)) else {
         return false;
     };
     if !support_skill_ready(bot, curse, now_ms) {
@@ -1657,11 +1731,15 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
 /// Rogue: keep Swift and Strength of Wolf up on the party. Returns whether a
 /// cast fired (see tick_priest_support's doc comment for why this matters).
 fn tick_rogue_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) -> bool {
+    let allow = bot_loadout_override(bot.class, bot.level)
+        .map(|o| o.skills)
+        .unwrap_or_default();
+    let permits = |base_skill: u32| allow.is_empty() || allow.contains(&base_skill);
     let mut buffs = Vec::with_capacity(2);
-    if bot.level >= ROGUE_SWIFT_MIN_LEVEL {
+    if bot.level >= ROGUE_SWIFT_MIN_LEVEL && permits(ROGUE_SKILL_SWIFT) {
         buffs.push(nation_skill(bot, ROGUE_SKILL_SWIFT));
     }
-    if bot.level >= ROGUE_WOLF_MIN_LEVEL {
+    if bot.level >= ROGUE_WOLF_MIN_LEVEL && permits(ROGUE_SKILL_WOLF) {
         buffs.push(nation_skill(bot, ROGUE_SKILL_WOLF));
     }
     for skill_id in buffs {
@@ -5182,13 +5260,17 @@ fn gm_bot_stats(class: u16, level: u8) -> (u8, u8, u8, u8, u8) {
     let total_points = 300.0 + 3.0 * (level_f - 1.0) + 2.0 * (level_f - 60.0).max(0.0);
 
     let stat = |w: f64| ((w / total_weight) * total_points).round().clamp(1.0, 255.0) as u8;
-    (
+    let computed = (
         stat(weights[0]),
         stat(weights[1]),
         stat(weights[2]),
         stat(weights[3]),
         stat(weights[4]),
-    )
+    );
+    match bot_loadout_override(class, level) {
+        Some(over) => apply_stat_overrides(computed, &over),
+        None => computed,
+    }
 }
 
 fn bot_class_group(class: u16) -> u8 {
@@ -5592,6 +5674,161 @@ fn is_two_handed_slot(slot: i32) -> bool {
     matches!(slot, GEAR_ITEM_SLOT_2H_RIGHT | GEAR_ITEM_SLOT_2H_LEFT)
 }
 
+// ── GM bot loadout overrides (admin panel manual gear/stat/skill corrections) ──────────────
+//
+// The procedural generators above (`pick_bot_gear`, `gm_bot_stats`, the skill-pool functions)
+// occasionally pick a visually broken item or put a piece in the wrong slot; the admin panel's
+// "Bot Donanımı" page lets a GM pin exact values per (class, level bracket) instead. Every field
+// here is optional and additive: `None`/empty always falls back to the untouched procedural
+// result, so a server with no overrides configured behaves exactly as before this existed.
+
+/// One bracket's manual corrections for one GM class (see `GM_CLASSES`/`gm_loadout_group`).
+#[derive(Clone, Default)]
+pub struct BotLoadoutOverride {
+    /// str/sta/dex/int/cha, each independently optional.
+    pub stats: [Option<u8>; 5],
+    /// One entry per equipped `equip_visual` slot, in `BOT_VISUAL_SLOT_ORDER[0..8]` order:
+    /// BREAST, LEG, HEAD, GLOVE, FOOT, SHOULDER, RIGHTHAND, LEFTHAND. `(item_id, durability)`.
+    pub items: [Option<(u32, i16)>; 8],
+    /// Karus-base `magic_num` ids this bracket/class should draw from; nation offset is applied
+    /// the same way the rest of this file applies it (`nation_skill`). Empty = no restriction.
+    pub skills: Vec<u32>,
+}
+
+static BOT_LOADOUT_OVERRIDES: OnceLock<parking_lot::RwLock<HashMap<(u16, u8), BotLoadoutOverride>>> =
+    OnceLock::new();
+
+fn bot_loadout_overrides() -> &'static parking_lot::RwLock<HashMap<(u16, u8), BotLoadoutOverride>> {
+    BOT_LOADOUT_OVERRIDES.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+}
+
+/// Map any real/promoted class code to its loadout-override group -- the same 5 groups the
+/// admin panel edits (1=warrior, 2=rogue, 3=mage, 4=priest, 13=kurian/porutu). Mirrors
+/// `gm_bot_stats`'s own `base_class` match arms so the two can never disagree about which group
+/// a promoted tier (e.g. class 107, a novice rogue) belongs to.
+fn gm_loadout_group(class: u16) -> u16 {
+    match class % 100 {
+        1 | 5 | 6 => 1,
+        2 | 7 | 8 => 2,
+        3 | 9 | 10 => 3,
+        4 | 11 | 12 => 4,
+        13..=15 => 13,
+        _ => 1,
+    }
+}
+
+/// Largest configured bracket (59/69/83) at or below `level`; `None` below level 59 -- the
+/// brackets are an end-game manual-correction tool, not a leveling curve, so a leveling bot
+/// below the lowest one is always fully procedural.
+fn bot_loadout_bracket(level: u8) -> Option<u8> {
+    [83u8, 69, 59].into_iter().find(|&bracket| level >= bracket)
+}
+
+/// The admin-configured override for `(class, level)`'s bracket, if any is cached.
+fn bot_loadout_override(class: u16, level: u8) -> Option<BotLoadoutOverride> {
+    let bracket = bot_loadout_bracket(level)?;
+    bot_loadout_overrides()
+        .read()
+        .get(&(gm_loadout_group(class), bracket))
+        .cloned()
+}
+
+/// Apply `over`'s stat overrides on top of the procedurally computed stats -- a `None` field
+/// keeps the computed value untouched.
+fn apply_stat_overrides(computed: (u8, u8, u8, u8, u8), over: &BotLoadoutOverride) -> (u8, u8, u8, u8, u8) {
+    (
+        over.stats[0].unwrap_or(computed.0),
+        over.stats[1].unwrap_or(computed.1),
+        over.stats[2].unwrap_or(computed.2),
+        over.stats[3].unwrap_or(computed.3),
+        over.stats[4].unwrap_or(computed.4),
+    )
+}
+
+/// The `BOT_VISUAL_SLOT_ORDER[0..8]` index of the equipped `equip_visual` slot that the real
+/// inventory slot constant `inv_slot` (BREAST=4, SHOULDER=5, RIGHTHAND=6, LEFTHAND=8, LEG=10,
+/// GLOVE=12, FOOT=13, HEAD=1 -- `inventory_constants.rs`) corresponds to.
+fn inv_slot_to_vis_idx(inv_slot: usize) -> Option<usize> {
+    BOT_VISUAL_SLOT_ORDER[..8].iter().position(|&slot| slot == inv_slot)
+}
+
+/// Best level-eligible skill in `table`, further restricted to `allow` when it's non-empty:
+/// empty `allow` (no override, or one that names none of this table's ids) means no
+/// restriction -- today's unmodified `skill_for_level` fallback. Non-empty `allow` yields
+/// nothing when none of the level-eligible entries are in it, rather than falling back,
+/// letting an admin override explicitly disable a heal/buff/curse line for a bracket.
+fn restrict_skill_for_level(table: &[(u8, u32)], level: u8, allow: &[u32]) -> Option<u32> {
+    if allow.is_empty() {
+        return skill_for_level(table, level);
+    }
+    table
+        .iter()
+        .find(|(min_level, skill)| level >= *min_level && allow.contains(skill))
+        .map(|(_, skill)| *skill)
+}
+
+/// Reload the GM bot loadout override cache from `bot_loadout_override` /
+/// `bot_loadout_override_item` (admin panel). Read everything before touching the cache so a
+/// DB error never clears a working override set. Returns the number of cached `(class,
+/// bracket)` entries. Mirrors the `reload_monster_drop_tables` live-reload pattern.
+pub async fn reload_bot_loadout_overrides(pool: &ko_db::DbPool) -> anyhow::Result<usize> {
+    use sqlx::Row;
+
+    let stat_rows = sqlx::query(
+        "SELECT gm_class, level_bracket, str_stat, sta_stat, dex_stat, int_stat, cha_stat, skills FROM bot_loadout_override",
+    )
+    .fetch_all(pool)
+    .await?;
+    let item_rows = sqlx::query(
+        "SELECT gm_class, level_bracket, slot, item_id, durability FROM bot_loadout_override_item",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut map: HashMap<(u16, u8), BotLoadoutOverride> = HashMap::new();
+    for row in &stat_rows {
+        let gm_class: i16 = row.try_get("gm_class")?;
+        let level_bracket: i16 = row.try_get("level_bracket")?;
+        let skills_json: serde_json::Value = row.try_get("skills")?;
+        let skills: Vec<u32> = skills_json
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_u64()).map(|v| v as u32).collect())
+            .unwrap_or_default();
+        let stat = |col: &str| -> Option<u8> {
+            row.try_get::<Option<i16>, _>(col)
+                .ok()
+                .flatten()
+                .map(|v| v.clamp(0, 255) as u8)
+        };
+        map.insert(
+            (gm_class as u16, level_bracket as u8),
+            BotLoadoutOverride {
+                stats: [stat("str_stat"), stat("sta_stat"), stat("dex_stat"), stat("int_stat"), stat("cha_stat")],
+                items: [None; 8],
+                skills,
+            },
+        );
+    }
+    for row in &item_rows {
+        let gm_class: i16 = row.try_get("gm_class")?;
+        let level_bracket: i16 = row.try_get("level_bracket")?;
+        let slot: i16 = row.try_get("slot")?;
+        let Some(vis_idx) = inv_slot_to_vis_idx(slot as usize) else {
+            continue;
+        };
+        let item_id: i64 = row.try_get("item_id")?;
+        let durability: i16 = row.try_get("durability")?;
+        map.entry((gm_class as u16, level_bracket as u8))
+            .or_default()
+            .items[vis_idx] = Some((item_id as u32, durability));
+    }
+
+    let count = map.len();
+    *bot_loadout_overrides().write() = map;
+    tracing::info!(count, "bot loadout overrides reloaded");
+    Ok(count)
+}
+
 /// Generate level- and class-appropriate visual equipment for a GM-spawned bot.
 /// Only the 8 equipped visual slots are filled; cosplay slots stay empty.
 /// Every slot is best-effort: a slot with no eligible item stays empty.
@@ -5604,6 +5841,7 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
     let mut rng = rand::thread_rng();
     let base_class = class % 100;
     let is_kurian = matches!(base_class, 13..=15);
+    let override_ = bot_loadout_override(class, level).unwrap_or_default();
 
     let armor_kinds: &[i32] = if is_kurian {
         &[ARMOR_KIND_KURIAN, ARMOR_KIND_WARRIOR]
@@ -5617,6 +5855,10 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
         }
     };
     for (vis_idx, item_slot) in VISUAL_ARMOR_ITEM_SLOTS.iter().enumerate() {
+        if let Some((item_id, durability)) = override_.items[vis_idx] {
+            equipment[vis_idx] = (item_id, durability, 0);
+            continue;
+        }
         let Some(item_slot) = *item_slot else {
             continue;
         };
@@ -5717,6 +5959,16 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
                     equipment[VISUAL_LEFTHAND_IDX] = shield;
                 }
             }
+        }
+    }
+
+    // Hand-slot overrides win over whatever the weapon/shield logic above picked. Overriding
+    // only one hand can leave a mismatched auto-picked shield/off-hand next to it (the original,
+    // non-overridden weapon's handedness drove that decision) -- override both hands together
+    // to avoid that.
+    for vis_idx in [VISUAL_RIGHTHAND_IDX, VISUAL_LEFTHAND_IDX] {
+        if let Some((item_id, durability)) = override_.items[vis_idx] {
+            equipment[vis_idx] = (item_id, durability, 0);
         }
     }
 
@@ -8372,6 +8624,106 @@ mod tests {
         let (str_hi, sta_hi, _, _, _) = gm_bot_stats(101, 83);
         assert!(str_hi > str_lo, "level 83 warrior STR must exceed level 10");
         assert!(sta_hi > sta_lo, "level 83 warrior STA must exceed level 10");
+    }
+
+    // ── GM bot loadout override resolution (admin panel manual corrections) ────────────────
+
+    #[test]
+    fn test_bot_loadout_bracket_resolution() {
+        // Below the lowest bracket: fully automatic, no bracket applies.
+        assert_eq!(bot_loadout_bracket(1), None);
+        assert_eq!(bot_loadout_bracket(58), None);
+        // At or just above a bracket: that bracket.
+        assert_eq!(bot_loadout_bracket(59), Some(59));
+        assert_eq!(bot_loadout_bracket(65), Some(59), "level 65 falls back to the 59 bracket");
+        assert_eq!(bot_loadout_bracket(69), Some(69));
+        assert_eq!(bot_loadout_bracket(75), Some(69), "level 75 falls back to the 69 bracket");
+        assert_eq!(bot_loadout_bracket(83), Some(83));
+    }
+
+    #[test]
+    fn test_gm_loadout_group_matches_gm_classes() {
+        // Every real/promoted class tier must resolve back to one of the 5 GM_CLASSES groups
+        // the admin panel edits, and promotion (novice/master tier) must not change the group.
+        assert_eq!(gm_loadout_group(101), 1); // warrior base
+        assert_eq!(gm_loadout_group(105), 1); // warrior novice
+        assert_eq!(gm_loadout_group(106), 1); // warrior master
+        assert_eq!(gm_loadout_group(102), 2); // rogue base
+        assert_eq!(gm_loadout_group(107), 2); // rogue novice
+        assert_eq!(gm_loadout_group(103), 3); // mage base
+        assert_eq!(gm_loadout_group(104), 4); // priest base
+        assert_eq!(gm_loadout_group(113), 13); // kurian
+        assert_eq!(gm_loadout_group(214), 13); // porutu (elmorad kurian tier), nation offset ignored
+    }
+
+    #[test]
+    fn test_apply_stat_overrides_none_falls_back() {
+        let computed = (10, 20, 30, 40, 50);
+        let over = BotLoadoutOverride::default();
+        assert_eq!(apply_stat_overrides(computed, &over), computed);
+    }
+
+    #[test]
+    fn test_apply_stat_overrides_partial() {
+        let computed = (10, 20, 30, 40, 50);
+        let mut over = BotLoadoutOverride::default();
+        over.stats[0] = Some(99); // str only
+        over.stats[3] = Some(1); // int only
+        assert_eq!(apply_stat_overrides(computed, &over), (99, 20, 30, 1, 50));
+    }
+
+    #[test]
+    fn test_inv_slot_to_vis_idx_matches_bot_visual_slot_order() {
+        // BREAST=4, LEG=10, HEAD=1, GLOVE=12, FOOT=13, SHOULDER=5, RIGHTHAND=6, LEFTHAND=8
+        // (inventory_constants.rs), in equip_visual's own vis_idx order.
+        assert_eq!(inv_slot_to_vis_idx(4), Some(0)); // BREAST
+        assert_eq!(inv_slot_to_vis_idx(10), Some(1)); // LEG
+        assert_eq!(inv_slot_to_vis_idx(1), Some(2)); // HEAD
+        assert_eq!(inv_slot_to_vis_idx(12), Some(3)); // GLOVE
+        assert_eq!(inv_slot_to_vis_idx(13), Some(4)); // FOOT
+        assert_eq!(inv_slot_to_vis_idx(5), Some(5)); // SHOULDER
+        assert_eq!(inv_slot_to_vis_idx(6), Some(6)); // RIGHTHAND
+        assert_eq!(inv_slot_to_vis_idx(8), Some(7)); // LEFTHAND
+        assert_eq!(inv_slot_to_vis_idx(9), None, "WAIST is not an equip_visual gear slot");
+        assert_eq!(inv_slot_to_vis_idx(0), None, "RIGHTEAR is not an equip_visual gear slot");
+    }
+
+    #[test]
+    fn test_restrict_skill_for_level_empty_allow_is_unrestricted_fallback() {
+        // Empty allow-list must behave exactly like the unmodified skill_for_level.
+        assert_eq!(
+            restrict_skill_for_level(&PRIEST_CURSES, 60, &[]),
+            skill_for_level(&PRIEST_CURSES, 60)
+        );
+        assert_eq!(
+            restrict_skill_for_level(&PRIEST_HEAL_SKILLS, 10, &[]),
+            skill_for_level(&PRIEST_HEAL_SKILLS, 10)
+        );
+    }
+
+    #[test]
+    fn test_restrict_skill_for_level_non_empty_allow_filters() {
+        // PRIEST_CURSES = [(60,112760),(45,112745),(24,112724),(3,112703)]; at level 60 the
+        // unrestricted pick is 112760, but restricting to just 112724 must yield that instead.
+        assert_eq!(
+            restrict_skill_for_level(&PRIEST_CURSES, 60, &[112724]),
+            Some(112724)
+        );
+        // Restricting to an id this bot isn't level-eligible for yet (112760 needs level 60)
+        // yields nothing at level 45, rather than silently falling back to the unrestricted pick.
+        assert_eq!(restrict_skill_for_level(&PRIEST_CURSES, 45, &[112760]), None);
+        // Restricting to an id absent from the table entirely also yields nothing.
+        assert_eq!(restrict_skill_for_level(&PRIEST_CURSES, 60, &[999999]), None);
+    }
+
+    #[test]
+    fn test_gm_bot_stats_and_generate_bot_equipment_unaffected_by_empty_override_cache() {
+        // With no override registered for (class, bracket), both functions must produce exactly
+        // what they did before loadout overrides existed -- the no-override invariant this
+        // whole feature promises.
+        assert!(bot_loadout_override(101, 83).is_none());
+        let (str_s, sta_s, dex_s, int_s, cha_s) = gm_bot_stats(101, 83);
+        assert_eq!((str_s, sta_s, dex_s, int_s, cha_s), (255, 177, 60, 50, 50));
     }
 
     #[test]

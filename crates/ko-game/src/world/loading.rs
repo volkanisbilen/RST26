@@ -149,6 +149,9 @@ impl WorldState {
 
         // ─── Bot System Loading ─────────────────────────────────────────────────
         self.load_bot_tables(pool).await;
+        if let Err(e) = crate::systems::bot_ai::reload_bot_loadout_overrides(pool).await {
+            tracing::warn!(error = %e, "bot_loadout_override tables not found or error; GM PK bots use fully automatic gear/stats/skills until a migration adds them");
+        }
 
         // ─── User Rankings (LoadUserRankings) ──────────────────────────────────
         self.reload_user_rankings(pool).await;

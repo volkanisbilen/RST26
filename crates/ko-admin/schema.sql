@@ -161,3 +161,32 @@ SELECT * FROM (VALUES
  ('manes','rank',4,0,978026000,20,'4. ve sonrası: Manes Orb')
 ) AS v(event_key,cond,rank_from,rank_to,item_id,item_count,note)
 WHERE NOT EXISTS (SELECT 1 FROM event_reward_rule WHERE event_key='manes')
+-- ;;
+-- GM PK-bot manual loadout corrections ("Bot Donanımı" page); see
+-- migrations/20261018000003_bot_loadout_override.sql for the full column documentation.
+CREATE TABLE IF NOT EXISTS bot_loadout_override (
+    gm_class      SMALLINT NOT NULL,
+    level_bracket SMALLINT NOT NULL,
+    str_stat      SMALLINT,
+    sta_stat      SMALLINT,
+    dex_stat      SMALLINT,
+    int_stat      SMALLINT,
+    cha_stat      SMALLINT,
+    skills        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (gm_class, level_bracket),
+    CONSTRAINT bot_loadout_override_class_chk CHECK (gm_class IN (1, 2, 3, 4, 13)),
+    CONSTRAINT bot_loadout_override_bracket_chk CHECK (level_bracket IN (59, 69, 83))
+)
+-- ;;
+CREATE TABLE IF NOT EXISTS bot_loadout_override_item (
+    gm_class      SMALLINT NOT NULL,
+    level_bracket SMALLINT NOT NULL,
+    slot          SMALLINT NOT NULL,
+    item_id       BIGINT NOT NULL,
+    durability    SMALLINT NOT NULL DEFAULT 100,
+    PRIMARY KEY (gm_class, level_bracket, slot),
+    CONSTRAINT bot_loadout_override_item_class_chk CHECK (gm_class IN (1, 2, 3, 4, 13)),
+    CONSTRAINT bot_loadout_override_item_bracket_chk CHECK (level_bracket IN (59, 69, 83)),
+    CONSTRAINT bot_loadout_override_item_slot_chk CHECK (slot IN (1, 4, 5, 6, 8, 10, 12, 13))
+)
