@@ -591,7 +591,11 @@ fn bot_attack_range_for_skill(
         }
     };
     if range <= 0.0 {
-        BOT_SEARCH_RANGE
+        // BOT_SEARCH_RANGE (32) is how far a bot can detect targets, not an
+        // attack distance -- falling back to it here let melee-ish skills
+        // with no resolvable range (missing/zero table data) fire from
+        // nearly anywhere. BOT_ATTACK_RANGE (7) is the sane melee default.
+        BOT_ATTACK_RANGE
     } else {
         range
     }
@@ -846,8 +850,12 @@ pub fn tick_bots(world: &WorldState) {
                 {
                     tick_pk_party_ai(world, &bot, now_ms);
                 }
-                tick_bot_support(world, &bot, now_ms);
-                tick_fighting(world, &bot, now_ms);
+                // A support cast (heal/buff/cure/curse) locks the bot in
+                // place for this tick, mirroring the real cast-time movement
+                // lock -- otherwise it visibly casts while still walking.
+                if !tick_bot_support(world, &bot, now_ms) {
+                    tick_fighting(world, &bot, now_ms);
+                }
             }
             BotAiState::Move => {
                 // Move AI: walk to destination, then go idle.
@@ -1559,7 +1567,13 @@ fn cast_enemy_curse(world: &WorldState, bot: &BotInstance, enemy_sid: SessionId,
 }
 
 /// Priest priority: cure > heal (< 70% HP) > AC/HP buffs > curse an enemy.
-fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) {
+/// Returns whether a cast actually fired, so the caller can skip this tick's
+/// movement -- a real player's client locks movement during a skill's cast
+/// phase and the server enforces that (see magic_process.rs's cast_failed
+/// state machine); bots have no such phase to interrupt, so the tick that
+/// commits a cast must not also move the bot, or it visibly casts while
+/// walking.
+fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) -> bool {
     let in_range = |skill_id: u32, target: &SupportTarget| {
         in_skill_range(world, bot, skill_id, target.sid, target.x, target.z)
     };
@@ -1585,7 +1599,7 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
         {
             crate::handler::magic_process::cure_player(world, target.sid);
             broadcast_support_effect(world, bot, skill_id, target.sid, [0, 1, 0, 0, 0, 0, 0]);
-            return;
+            return true;
         }
     }
 
@@ -1603,7 +1617,7 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
         if support_skill_ready(bot, heal, now_ms) {
             for target in wounded {
                 if in_range(heal, target) && cast_support_heal(world, bot, target, heal, now_ms) {
-                    return;
+                    return true;
                 }
             }
         }
@@ -1618,29 +1632,31 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
         }
         for target in targets {
             if in_range(buff, target) && cast_support_buff(world, bot, target, buff, now_ms) {
-                return;
+                return true;
             }
         }
     }
 
     let Some(curse) = skill_for_level(&PRIEST_CURSES, bot.level).map(|s| nation_skill(bot, s)) else {
-        return;
+        return false;
     };
     if !support_skill_ready(bot, curse, now_ms) {
-        return;
+        return false;
     }
     // Bots keep no debuff state, so only real players are worth cursing.
     if let Some((enemy, ex, _, ez)) = find_nearest_enemy(bot, world) {
         if (enemy as u32) < crate::npc::NPC_BAND
             && in_skill_range(world, bot, curse, enemy, ex, ez)
         {
-            cast_enemy_curse(world, bot, enemy, curse, now_ms);
+            return cast_enemy_curse(world, bot, enemy, curse, now_ms);
         }
     }
+    false
 }
 
-/// Rogue: keep Swift and Strength of Wolf up on the party.
-fn tick_rogue_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) {
+/// Rogue: keep Swift and Strength of Wolf up on the party. Returns whether a
+/// cast fired (see tick_priest_support's doc comment for why this matters).
+fn tick_rogue_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) -> bool {
     let mut buffs = Vec::with_capacity(2);
     if bot.level >= ROGUE_SWIFT_MIN_LEVEL {
         buffs.push(nation_skill(bot, ROGUE_SKILL_SWIFT));
@@ -1656,24 +1672,27 @@ fn tick_rogue_support(world: &WorldState, bot: &BotInstance, targets: &[SupportT
             if in_skill_range(world, bot, skill_id, target.sid, target.x, target.z)
                 && cast_support_buff(world, bot, target, skill_id, now_ms)
             {
-                return;
+                return true;
             }
         }
     }
+    false
 }
 
 /// Autonomous support casting for priest and rogue bots, at most one cast
-/// per call and gated by each skill's own cast/recast time.
-fn tick_bot_support(world: &WorldState, bot: &BotInstance, now_ms: u64) {
+/// per call and gated by each skill's own cast/recast time. Returns whether
+/// a cast fired this tick -- the caller must not also move the bot when it
+/// did (see tick_priest_support's doc comment).
+fn tick_bot_support(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     if !(bot.is_priest() || bot.is_rogue()) || now_ms < bot.skill_cooldown[1] {
-        return;
+        return false;
     }
     let targets = collect_support_targets(world, bot);
-    if bot.is_priest() {
-        tick_priest_support(world, bot, &targets, now_ms);
+    let cast = if bot.is_priest() {
+        tick_priest_support(world, bot, &targets, now_ms)
     } else {
-        tick_rogue_support(world, bot, &targets, now_ms);
-    }
+        tick_rogue_support(world, bot, &targets, now_ms)
+    };
     // A cast moves the gate forward itself; with nothing to do, rescan once a
     // second instead of every AI tick (the curse step scans the whole zone).
     world.update_bot(bot.id, |b| {
@@ -1681,6 +1700,7 @@ fn tick_bot_support(world: &WorldState, bot: &BotInstance, now_ms: u64) {
             b.skill_cooldown[1] = now_ms + BOT_SUPPORT_IDLE_RESCAN_MS;
         }
     });
+    cast
 }
 
 fn warp_party_member_to_bot(world: &WorldState, target_sid: SessionId, mage: &BotInstance) -> bool {
@@ -5352,7 +5372,7 @@ fn build_bot_gear_catalog(world: &WorldState, world_key: usize, item_count: usiz
     }
     // Specific items confirmed to have a broken/oversized visual model in the
     // client -- excluded outright rather than guessed at by a general rule.
-    const BOT_GEAR_DENYLIST: [i32; 1] = [136810000];
+    const BOT_GEAR_DENYLIST: [i32; 2] = [136810000, 136810789];
 
     let mut families: HashMap<i32, Acc> = HashMap::new();
     for item in rows {

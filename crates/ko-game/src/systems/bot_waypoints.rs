@@ -691,9 +691,11 @@ pub const fn bowl_waypoint_count() -> u8 {
 /// on `freezone_c.smd` (`find_bot_path` reports no route at all between
 /// them — see `ronark_land_base_orbit_is_reachable_from_spawn`). Bots there
 /// instead loop on a small ring around their own spawn point; a radius of
-/// 30 was confirmed reachable in all directions from both nation spawns.
-/// Centers must match `get_bot_respawn_position(ZONE_RONARK_LAND_BASE, _)`.
-const RONARK_BASE_ORBIT_RADIUS: f32 = 30.0;
+/// 100 was empirically confirmed fully reachable (24/24 probe points) from
+/// both nation spawns against the real map data -- reachability starts
+/// degrading past ~130 (probed up to 250). Centers must match
+/// `get_bot_respawn_position(ZONE_RONARK_LAND_BASE, _)`.
+const RONARK_BASE_ORBIT_RADIUS: f32 = 100.0;
 const RONARK_BASE_ORBIT_POINTS: usize = 12;
 const RONARK_BASE_KARUS_CENTER: (f32, f32) = (515.0, 104.0);
 const RONARK_BASE_ELMO_CENTER: (f32, f32) = (513.0, 916.0);
