@@ -87,6 +87,7 @@ pub async fn handle(session: &mut ClientSession, packet: Packet) -> anyhow::Resu
         }
         RANK_TYPE_ZONE_BORDER_DEFENSE_WAR => handle_bdw(session).await,
         RANK_TYPE_CHAOS_DUNGEON => handle_chaos_dungeon(session).await,
+        RANK_TYPE_LADDER => handle_ladder(session).await,
         _ => {
             warn!(
                 "[{}] WIZ_RANK: unhandled rank_type {}",
@@ -353,6 +354,177 @@ fn build_pk_ranking_packet(
     result.write_u16(my_loyalty_premium);
 
     result
+}
+
+/// Rank type 5 — the 2625 client's default ranking-window request.
+///
+/// The client (`UIRadder`, `sub_D31C00` @ 0x00D31C00) sends `[0x80][5]` when the
+/// rank hotkey is pressed outside the special-event zones (`sub_D31C60` sends
+/// type 1 for the PK-zone variant). The reply is parsed by `sub_D30B20`
+/// @ 0x00D30B20, which fills the very same list slots as the type-1 parser
+/// (`sub_D30160`) but with a different framing, see [`build_ladder_rank_packet`].
+const RANK_TYPE_LADDER: u8 = 5;
+
+/// One row of the type-5 ranking lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LadderEntry {
+    name: String,
+    /// 1 = Karus, 2 = El Morad. The client only keeps list-A rows whose nation
+    /// byte is 1 and list-B rows whose nation byte is 2.
+    nation: u8,
+    knights_id: u16,
+    mark_version: u16,
+    knights_name: String,
+    /// Shown as the main figure of the row (daily loyalty).
+    score: u32,
+    /// Shown as `(+bonus)` next to the score when non-zero (premium bonus).
+    bonus: u32,
+}
+
+/// Client limit: `sub_D30B20` skips the whole list when a count byte is > 10.
+const LADDER_MAX_ROWS: usize = 10;
+
+/// Build the type-5 ranking response.
+///
+/// Wire layout, taken from the client parser `sub_D30B20` (0x00D30B20):
+/// ```text
+/// [u8 rank_type = 5]
+/// [u8 count_a (<=10)] count_a x row     // Karus list (row nation must be 1)
+/// [u8 count_b (<=10)] count_b x row     // El Morad list (row nation must be 2)
+/// [u32 my_rank] [u8 flag] [u32 my_score] [u32 my_bonus]
+/// row = [u16 len][name] [u8 nation] [u16 knights_id] [u16 mark_version]
+///       [u16 len][knights_name] [u32 score] [u32 bonus]
+/// ```
+fn build_ladder_rank_packet(
+    lists: &[Vec<LadderEntry>; 2],
+    my_rank: u32,
+    my_score: u32,
+    my_bonus: u32,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizRank as u8);
+    pkt.write_u8(RANK_TYPE_LADDER);
+    for (idx, list) in lists.iter().enumerate() {
+        let rows: Vec<&LadderEntry> = list
+            .iter()
+            .filter(|e| e.nation as usize == idx + 1)
+            .take(LADDER_MAX_ROWS)
+            .collect();
+        pkt.write_u8(rows.len() as u8);
+        for e in rows {
+            pkt.write_string(&e.name);
+            pkt.write_u8(e.nation);
+            pkt.write_u16(e.knights_id);
+            pkt.write_u16(e.mark_version);
+            pkt.write_string(&e.knights_name);
+            pkt.write_u32(e.score);
+            pkt.write_u32(e.bonus);
+        }
+    }
+    pkt.write_u32(my_rank);
+    pkt.write_u8(0); // stored by the client at panel+0xB3C; no known meaning, 0 is neutral
+    pkt.write_u32(my_score);
+    pkt.write_u32(my_bonus);
+    pkt
+}
+
+/// Handle the default ranking window request (rank type 5).
+///
+/// The server has no dedicated "ladder" data source, so the rows come from the
+/// same live daily-loyalty ranking the PK-zone window uses (requester's zone,
+/// players plus runtime bots). Outside PK zones that list is empty, which the
+/// client renders as an empty table together with the requester's own figures
+/// -- instead of the previous behaviour where the request was dropped and the
+/// window could never be opened.
+async fn handle_ladder(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world();
+    let sid = session.session_id();
+
+    let (nation, zone_id, my_daily, my_bonus) = match world.with_session(sid, |h| {
+        h.character.as_ref().map(|c| {
+            (
+                c.nation,
+                h.position.zone_id,
+                h.pk_loyalty_daily,
+                h.pk_loyalty_premium_bonus,
+            )
+        })
+    }) {
+        Some(Some(v)) => v,
+        _ => return Ok(()),
+    };
+
+    let mut lists: [Vec<LadderEntry>; 2] = [Vec::new(), Vec::new()];
+    for nation_idx in 0..2u8 {
+        // Sorted by score like the PK window.
+        let mut rows: Vec<LadderEntry> = Vec::new();
+        for rank in world.pk_zone_get_sorted(nation_idx as usize, zone_id) {
+            let Some(Some((name, entry_nation, knights_id))) =
+                world.with_session(rank.session_id, |h| {
+                    h.character
+                        .as_ref()
+                        .map(|c| (c.name.clone(), c.nation, c.knights_id))
+                })
+            else {
+                continue;
+            };
+            let (clan_id, mark, clan_name) = match world.get_knights(knights_id) {
+                Some(ki) if knights_id != 0 && knights_id != 0xFFFF => {
+                    (ki.id, ki.mark_version, ki.name.clone())
+                }
+                _ => (0, 0, String::new()),
+            };
+            rows.push(LadderEntry {
+                name,
+                nation: entry_nation,
+                knights_id: clan_id,
+                mark_version: mark,
+                knights_name: clan_name,
+                score: rank.loyalty_daily,
+                bonus: rank.loyalty_premium_bonus.min(999) as u32,
+            });
+        }
+        for bot in world
+            .get_bots_in_zone_live(zone_id)
+            .into_iter()
+            .filter(|bot| bot.nation == nation_idx + 1)
+        {
+            let (clan_id, mark, clan_name) = match world.get_knights(bot.knights_id) {
+                Some(ki) if bot.knights_id != 0 && bot.knights_id != 0xFFFF => {
+                    (ki.id, ki.mark_version, ki.name.clone())
+                }
+                _ => (0, 0, String::new()),
+            };
+            rows.push(LadderEntry {
+                name: bot.name,
+                nation: bot.nation,
+                knights_id: clan_id,
+                mark_version: mark,
+                knights_name: clan_name,
+                score: bot.loyalty_daily,
+                bonus: 0,
+            });
+        }
+        rows.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.name.cmp(&b.name)));
+        lists[nation_idx as usize] = rows;
+    }
+
+    // Requester's own position inside their nation's (uncapped) list.
+    let my_rank = if (1..=2).contains(&nation) {
+        let idx = (nation - 1) as usize;
+        world
+            .with_session(sid, |h| h.character.as_ref().map(|c| c.name.clone()))
+            .flatten()
+            .and_then(|me| lists[idx].iter().position(|e| e.name == me))
+            .map(|p| p as u32 + 1)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let pkt = build_ladder_rank_packet(&lists, my_rank, my_daily, my_bonus as u32);
+    session.send_packet(&pkt).await?;
+    debug!("[{}] WIZ_RANK LADDER: zone={}", session.addr(), zone_id);
+    Ok(())
 }
 
 /// Handle Border Defence War ranking request (RANK_TYPE_ZONE_BORDER_DEFENSE_WAR = 2).
@@ -1014,5 +1186,118 @@ mod tests {
         let (exp, prem) = bdw_user_point_exp(80, 0);
         assert_eq!(exp, 0);
         assert_eq!(prem, 0);
+    }
+
+    // ── Rank type 5 (default ranking window, client sub_D30B20 @ 0x00D30B20) ──
+
+    /// Mirror of the client parser: returns (list A rows, list B rows, trailer).
+    /// Mimics the bounds rule `count <= 10` and the per-list nation filter.
+    #[allow(clippy::type_complexity)]
+    fn parse_ladder(pkt: &Packet) -> (Vec<LadderEntry>, Vec<LadderEntry>, (u32, u8, u32, u32)) {
+        let mut r = ko_protocol::PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(RANK_TYPE_LADDER));
+        let mut lists = [Vec::new(), Vec::new()];
+        for (idx, list) in lists.iter_mut().enumerate() {
+            let count = r.read_u8().unwrap();
+            assert!(count <= 10, "client skips the whole packet when count > 10");
+            for _ in 0..count {
+                let name = r.read_string().unwrap();
+                let nation = r.read_u8().unwrap();
+                let knights_id = r.read_u16().unwrap();
+                let mark_version = r.read_u16().unwrap();
+                let knights_name = r.read_string().unwrap();
+                let score = r.read_u32().unwrap();
+                let bonus = r.read_u32().unwrap();
+                // Client stores a row only when its nation byte matches the list.
+                if nation as usize == idx + 1 {
+                    list.push(LadderEntry {
+                        name,
+                        nation,
+                        knights_id,
+                        mark_version,
+                        knights_name,
+                        score,
+                        bonus,
+                    });
+                }
+            }
+        }
+        let trailer = (
+            r.read_u32().unwrap(),
+            r.read_u8().unwrap(),
+            r.read_u32().unwrap(),
+            r.read_u32().unwrap(),
+        );
+        assert_eq!(r.remaining(), 0, "no trailing bytes the client would not read");
+        let [a, b] = lists;
+        (a, b, trailer)
+    }
+
+    fn ladder_row(name: &str, nation: u8, score: u32) -> LadderEntry {
+        LadderEntry {
+            name: name.to_string(),
+            nation,
+            knights_id: 7,
+            mark_version: 3,
+            knights_name: "Clan".to_string(),
+            score,
+            bonus: 5,
+        }
+    }
+
+    #[test]
+    fn test_ladder_rank_type_is_five() {
+        assert_eq!(RANK_TYPE_LADDER, 5);
+    }
+
+    #[test]
+    fn test_ladder_packet_empty_lists() {
+        let pkt = build_ladder_rank_packet(&[Vec::new(), Vec::new()], 0, 123, 4);
+        assert_eq!(pkt.opcode, Opcode::WizRank as u8);
+        // type + 2 counts + u32 + u8 + u32 + u32
+        assert_eq!(pkt.data.len(), 1 + 1 + 1 + 4 + 1 + 4 + 4);
+        let (a, b, t) = parse_ladder(&pkt);
+        assert!(a.is_empty() && b.is_empty());
+        assert_eq!(t, (0, 0, 123, 4));
+    }
+
+    #[test]
+    fn test_ladder_packet_roundtrip_both_nations() {
+        let lists = [
+            vec![ladder_row("Karus1", 1, 900), ladder_row("Karus2", 1, 100)],
+            vec![ladder_row("Elmo1", 2, 500)],
+        ];
+        let pkt = build_ladder_rank_packet(&lists, 2, 100, 5);
+        let (a, b, t) = parse_ladder(&pkt);
+        assert_eq!(a, lists[0]);
+        assert_eq!(b, lists[1]);
+        assert_eq!(t, (2, 0, 100, 5));
+    }
+
+    #[test]
+    fn test_ladder_packet_caps_rows_at_ten() {
+        let karus: Vec<LadderEntry> = (0..25)
+            .map(|i| ladder_row(&format!("K{i}"), 1, 1000 - i))
+            .collect();
+        let pkt = build_ladder_rank_packet(&[karus.clone(), Vec::new()], 0, 0, 0);
+        let (a, _, _) = parse_ladder(&pkt);
+        assert_eq!(a.len(), 10);
+        assert_eq!(a[0], karus[0]);
+        assert_eq!(a[9], karus[9]);
+    }
+
+    #[test]
+    fn test_ladder_packet_drops_rows_with_wrong_nation() {
+        // The client would silently discard a row whose nation byte does not
+        // match its list; the builder must not emit such rows at all (they
+        // would only waste one of the 10 slots).
+        let lists = [
+            vec![ladder_row("Wrong", 2, 10), ladder_row("Right", 1, 5)],
+            Vec::new(),
+        ];
+        let pkt = build_ladder_rank_packet(&lists, 0, 0, 0);
+        let (a, _, _) = parse_ladder(&pkt);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].name, "Right");
     }
 }
