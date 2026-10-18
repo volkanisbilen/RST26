@@ -110,6 +110,13 @@ impl WorldState {
                 None => continue,
             };
 
+            // Items whose template durability is 1 (or less) are non-degradable
+            // by design; wearing them by 2-5 per hit/death would break them on
+            // the first event and turn them red.
+            if wore_type != WORE_TYPE_REPAIR_ALL && item_template.duration.unwrap_or(0) <= 1 {
+                continue;
+            }
+
             // Skip if item is already broken (durability <= 0) and not repairing
             if item_slot.durability <= 0 && wore_type != WORE_TYPE_REPAIR_ALL {
                 continue;

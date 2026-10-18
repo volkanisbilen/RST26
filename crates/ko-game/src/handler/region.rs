@@ -140,10 +140,13 @@ pub(crate) fn broadcast_user_appearance_update(world: &WorldState, sid: SessionI
 /// Visual broadcast slot order — inventory slot indices for the 17 equipment visual slots.
 /// Order: BREAST(4), LEG(10), HEAD(1), GLOVE(12), FOOT(13), SHOULDER(5),
 ///   RIGHTHAND(6), LEFTHAND(8), CWING(42), CHELMET(43), CLEFT(44), CRIGHT(45),
-///   CTOP(46), CTATTOO(49), CFAIRY(48), CEMBLEM(47), CTALISMAN(50)
+///   CTOP(46), CEMBLEM(47), CFAIRY(48), CTATTOO(49), CTALISMAN(50)
+/// Cosplay entries must stay sequential 42..=50: the client maps the 9 wire
+/// entries to its cosplay indices 0-5,7,8,9 and only reads effects (wings,
+/// emblem, fairy, talisman) from 0,5,7,9.
 const VISUAL_SLOT_ORDER: [usize; 17] = [
     4, 10, 1, 12, 13, 5, 6, 8, // equipped slots (0-13)
-    42, 43, 44, 45, 46, 49, 48, 47, 50, // cosplay slots (42-50)
+    42, 43, 44, 45, 46, 47, 48, 49, 50, // cosplay slots (42-50)
 ];
 
 /// Extract (item_id, durability, flag) for all 17 visual slots from inventory.
@@ -1209,6 +1212,8 @@ mod tests {
         assert_eq!(VISUAL_SLOT_ORDER[7], 8); // LEFTHAND
                                              // Next 9 are cosplay slots
         assert_eq!(VISUAL_SLOT_ORDER[8], 42); // CWING
+        assert_eq!(VISUAL_SLOT_ORDER[13], 47); // CEMBLEM
+        assert_eq!(VISUAL_SLOT_ORDER[15], 49); // CTATTOO
     }
 
     #[test]

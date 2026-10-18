@@ -4491,7 +4491,7 @@ fn bot_regene(world: &WorldState, bot_id: BotId, now_ms: u64) {
 /// bytes where each item = `nItemID(u32) + sDurability(u16) + sCount(u16)`.
 /// The visual broadcast order matches `VISUAL_SLOT_ORDER`:
 /// `[BREAST(4), LEG(10), HEAD(1), GLOVE(12), FOOT(13), SHOULDER(5), RIGHTHAND(6), LEFTHAND(8),
-///  CWING(42), CHELMET(43), CLEFT(44), CRIGHT(45), CTOP(46), CTATTOO(49), CFAIRY(48), CEMBLEM(47), CTALISMAN(50)]`
+///  CWING(42), CHELMET(43), CLEFT(44), CRIGHT(45), CTOP(46), CEMBLEM(47), CFAIRY(48), CTATTOO(49), CTALISMAN(50)]`
 fn parse_bot_equipment(str_item: Option<&[u8]>) -> [(u32, i16, u8); 17] {
     const VISUAL_SLOT_ORDER: [usize; 17] = BOT_VISUAL_SLOT_ORDER;
     const ITEM_SIZE: usize = 8; // nItemID(4) + sDurability(2) + sCount(2)
@@ -5978,14 +5978,14 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
     // not stat gear, so there's nothing to randomize per class/level.
     // equip_visual indices 8-16 are the 9 cosplay slots (see
     // BOT_VISUAL_SLOT_ORDER below): CWING, CHELMET, CLEFT, CRIGHT, CTOP,
-    // CTATTOO, CFAIRY, CEMBLEM, CTALISMAN.
+    // CEMBLEM, CFAIRY, CTATTOO, CTALISMAN.
     equipment[8] = (810510903, 7200, 0); // CWING: Alencia Wings
     equipment[9] = (508065592, 7200, 0); // CHELMET: Transparent Minerva Armor: Helmet
     equipment[10] = (514573474, 7200, 0); // CLEFT: Pathos' Glove
     equipment[11] = (505573465, 7200, 0); // CRIGHT: Pathos' Glove
     equipment[12] = (508066592, 7200, 0); // CTOP: Transparent Minerva Armor
-    equipment[13] = (810930952, 1, 0); // CTATTOO: Solar Tattoo
-    equipment[15] = (931677910, 7200, 0); // CEMBLEM: [JstKO EMBLEM]
+    equipment[13] = (931677910, 7200, 0); // CEMBLEM: [JstKO EMBLEM]
+    equipment[15] = (810930952, 1, 0); // CTATTOO: Solar Tattoo
 
     equipment
 }
@@ -5993,7 +5993,7 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
 /// Inventory index of each `equip_visual` entry (8 equipped + 9 cosplay).
 const BOT_VISUAL_SLOT_ORDER: [usize; 17] = [
     4, 10, 1, 12, 13, 5, 6, 8, // equipped slots
-    42, 43, 44, 45, 46, 49, 48, 47, 50, // cosplay slots
+    42, 43, 44, 45, 46, 47, 48, 49, 50, // cosplay slots
 ];
 
 /// Aggregate a bot's worn item bonuses with the exact routine used for real

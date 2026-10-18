@@ -152,9 +152,9 @@ mod tests {
     #[test]
     fn test_build_response_equip_slots_round_trip() {
         let mut equip = [(0u32, 0i16, 0u8); 17];
-        // Slot 2 is HEAD in VISUAL_SLOT_ORDER; slot 15 is CEMBLEM.
+        // Slot 2 is HEAD in VISUAL_SLOT_ORDER; slot 13 is CEMBLEM.
         equip[2] = (123456, 1000, 0);
-        equip[15] = (931677910, -1, 1);
+        equip[13] = (931677910, -1, 1);
 
         let pkt = build_response(7, "X", 1, 1, 0, 1, &equip);
         let mut r = PacketReader::new(&pkt.data);
