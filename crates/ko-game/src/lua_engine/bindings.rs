@@ -11,11 +11,55 @@ use crate::handler::quest;
 use crate::handler::select_msg;
 use crate::handler::tag_change;
 use crate::world::types::{ZONE_DELOS, ZONE_PRISON};
-use crate::world::{WorldState, ITEM_GOLD};
+use crate::world::{WorldState, ITEMCOUNT_MAX, ITEM_GOLD};
 use crate::zone::SessionId;
 use ko_protocol::{Opcode, Packet};
 
 const MAX_MESSAGE_EVENT: usize = 12;
+
+/// Per-execution state of one quest script run.
+///
+/// `LuaEngine::execute` creates a fresh VM (and a fresh `QuestRunState`) for
+/// every run. When a reward could not be delivered for a reason the player can
+/// fix (full bag, gold cap), `GiveItem` / `RunQuestExchange` flag it here and
+/// `SaveEvent` then refuses to mark the quest as completed in the same run.
+///
+/// The shipped quest scripts call `RunQuestExchange(...)` and `SaveEvent(...)`
+/// back to back without looking at the result (2100+ of 2167 call sites), so
+/// before this guard a full bag completed the quest, consumed nothing and gave
+/// nothing - the player lost the reward for good.
+#[derive(Default)]
+pub struct QuestRunState {
+    reward_blocked: std::sync::atomic::AtomicBool,
+}
+
+/// Remember that the reward of this script run could not be delivered.
+fn block_quest_completion(lua: &Lua) {
+    if let Some(state) = lua.app_data_ref::<QuestRunState>() {
+        state
+            .reward_blocked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// True when an earlier call of this script run failed to deliver its reward.
+fn quest_completion_blocked(lua: &Lua) -> bool {
+    lua.app_data_ref::<QuestRunState>()
+        .map(|state| {
+            state
+                .reward_blocked
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
+        .unwrap_or(false)
+}
+
+/// Tell the client the bag is full (`WIZ_QUEST` sub-opcode 13, error 3).
+fn send_no_slot_error(w: &WorldState, sid: SessionId) {
+    let mut err_pkt = Packet::new(Opcode::WizQuest as u8);
+    err_pkt.write_u8(13);
+    err_pkt.write_u8(3); // error code 3 = not enough slots
+    w.send_to_session_owned(sid, err_pkt);
+}
 
 fn get_world(lua: &Lua) -> LuaResult<Arc<WorldState>> {
     lua.app_data_ref::<Arc<WorldState>>()
@@ -690,6 +734,20 @@ fn lua_save_event(lua: &Lua, (uid, quest_helper_id): (i32, u16)) -> LuaResult<()
     let qid = helper.s_event_data_index as u16;
     let status = helper.b_event_status as u8;
 
+    // Never complete a quest whose reward was refused earlier in this run
+    // (bag full / gold cap): the player keeps the quest and its turn-in items
+    // and can simply try again after making room.
+    if status == 2 && quest_completion_blocked(lua) {
+        tracing::warn!(
+            sid,
+            quest_helper_id,
+            quest_id = qid,
+            "SaveEvent: completion of quest {} refused - its reward could not be delivered              (inventory full); quest stays open",
+            qid
+        );
+        return Ok(());
+    }
+
     // Get kill counts before update (needed for DB persist)
     let kill_counts_before = w
         .with_session(sid, |h| {
@@ -816,8 +874,41 @@ fn lua_check_exist_item(lua: &Lua, (uid, item_id, count): (i32, u32, u32)) -> Lu
     Ok(lua_howmuch_item(lua, (uid, item_id))? >= count)
 }
 
+/// Why a single-item grant could not be delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GiveItemFailure {
+    /// The item id is not a deliverable inventory item (unknown id or one of
+    /// the virtual `countable == 2` ids such as gold/exp). Fix the script/data.
+    InvalidItem,
+    /// The bag has no room. The player can fix this by freeing a slot.
+    NoSlot,
+}
+
+/// Classify why `give_item` would fail for this item (called after it failed).
+fn classify_give_item_failure(w: &WorldState, item_id: u32) -> GiveItemFailure {
+    match w.get_item(item_id) {
+        Some(item) if item.countable.unwrap_or(0) != 2 => GiveItemFailure::NoSlot,
+        _ => GiveItemFailure::InvalidItem,
+    }
+}
+
+/// Convert a Lua number to `u32` without silently wrapping (a 10-digit item id
+/// such as `8104340970` used to wrap around to an unrelated id).
+fn lua_val_to_u32_exact(val: &LuaValue) -> Option<u32> {
+    match val {
+        LuaValue::Integer(v) => u32::try_from(*v).ok(),
+        LuaValue::Number(v) if v.fract() == 0.0 && *v >= 0.0 && *v <= u32::MAX as f64 => {
+            Some(*v as u32)
+        }
+        _ => None,
+    }
+}
+
 /// Give an item to a player from a quest script.
 /// Returns `true` to Lua on success, `false` on failure (inventory full, invalid item, etc.).
+///
+/// A failure caused by a full bag also tells the player (`WIZ_QUEST` 13/3) and
+/// stops the same script run from completing the quest in `SaveEvent`.
 fn lua_give_item(lua: &Lua, args: LuaMultiValue) -> LuaResult<bool> {
     let w = get_world(lua)?;
     let vals: Vec<LuaValue> = args.into_vec();
@@ -827,9 +918,24 @@ fn lua_give_item(lua: &Lua, args: LuaMultiValue) -> LuaResult<bool> {
         return Ok(false);
     }
     let uid = lua_val_to_i32(&vals[0])?;
-    let item_id = lua_val_to_u32(&vals[1])?;
+    let item_id = match lua_val_to_u32_exact(&vals[1]) {
+        Some(id) => id,
+        None => {
+            tracing::warn!(
+                sid = uid,
+                "GiveItem: item id {:?} is not a valid 32-bit item number - nothing given",
+                vals[1]
+            );
+            return Ok(false);
+        }
+    };
     let count = if vals.len() >= 3 {
-        lua_val_to_u16(&vals[2]).unwrap_or(1).max(1)
+        // Clamp instead of wrapping: 70000 used to become 4464.
+        match &vals[2] {
+            LuaValue::Integer(v) => (*v).clamp(1, ITEMCOUNT_MAX as i64) as u16,
+            LuaValue::Number(v) => (*v as i64).clamp(1, ITEMCOUNT_MAX as i64) as u16,
+            _ => 1,
+        }
     } else {
         1
     };
@@ -838,31 +944,43 @@ fn lua_give_item(lua: &Lua, args: LuaMultiValue) -> LuaResult<bool> {
     } else {
         0
     };
+    let sid = uid as SessionId;
     let success = if expiry_days > 0 {
-        w.give_item_with_expiry(uid as SessionId, item_id, count, expiry_days)
+        w.give_item_with_expiry(sid, item_id, count, expiry_days)
     } else {
-        w.give_item(uid as SessionId, item_id, count)
+        w.give_item(sid, item_id, count)
     };
     if !success {
-        tracing::warn!(
-            "GiveItem: delivery FAILED for item_id={} count={} (sid={}) — inventory full or item invalid",
-            item_id,
-            count,
-            uid
-        );
-        let mut err_pkt = ko_protocol::Packet::new(ko_protocol::Opcode::WizQuest as u8);
-        err_pkt.write_u8(13);
-        err_pkt.write_u8(3); // error code 3 = not enough slots
-        w.send_to_session_owned(uid as SessionId, err_pkt);
+        match classify_give_item_failure(&w, item_id) {
+            GiveItemFailure::NoSlot => {
+                tracing::warn!(
+                    sid,
+                    item_id,
+                    count,
+                    "GiveItem: delivery FAILED - inventory full"
+                );
+                send_no_slot_error(&w, sid);
+                block_quest_completion(lua);
+            }
+            GiveItemFailure::InvalidItem => {
+                tracing::warn!(
+                    sid,
+                    item_id,
+                    count,
+                    "GiveItem: delivery FAILED - item id is not in the item table (or is a virtual id)"
+                );
+            }
+        }
+        return Ok(false);
     }
 
-    // FerihaLog: GiveItemInsertLog (quest reward)
+    // FerihaLog: GiveItemInsertLog (quest reward) - only for items that were really given.
     if let Some(pool) = w.db_pool() {
         let acc = w
-            .with_session(uid as SessionId, |h| h.account_id.clone())
+            .with_session(sid, |h| h.account_id.clone())
             .unwrap_or_default();
-        let ch_name = w.get_session_name(uid as SessionId).unwrap_or_default();
-        let pos = w.get_position(uid as SessionId);
+        let ch_name = w.get_session_name(sid).unwrap_or_default();
+        let pos = w.get_position(sid);
         crate::handler::audit_log::log_give_item(
             pool,
             &acc,
@@ -876,11 +994,14 @@ fn lua_give_item(lua: &Lua, args: LuaMultiValue) -> LuaResult<bool> {
         );
     }
 
-    Ok(success)
+    Ok(true)
 }
 
-fn lua_rob_item(lua: &Lua, (uid, item_id, count): (i32, u32, u16)) -> LuaResult<()> {
-    get_world(lua)?.rob_item(uid as SessionId, item_id, count);
+/// `RobItem(UID, item_id [, count])` - count is optional and defaults to 1 like the
+/// C++ `LUA_ARG_OPTIONAL`; with a required count, 2-argument calls (councilor,
+/// Pot/FoodBox/Well scripts ...) raised a conversion error and aborted the script.
+fn lua_rob_item(lua: &Lua, (uid, item_id, count): (i32, u32, Option<u16>)) -> LuaResult<()> {
+    get_world(lua)?.rob_item(uid as SessionId, item_id, count.unwrap_or(1));
     Ok(())
 }
 
@@ -2516,6 +2637,10 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         }
     }
 
+    // Index (inside `exchange_list`) of the reward the player picked from the
+    // item_exchange_exp table, if any.
+    let mut selected_reward_idx: Option<usize> = None;
+
     // C++ CheckExchangeExp contract: an exchange with selectable rewards must
     // never finish without a valid client selection. Previously Rust silently
     // gave only the base rewards and Lua then marked the quest completed.
@@ -2565,6 +2690,7 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
             ];
             let (exp_item_id, exp_count) = exp_outputs[idx];
             if exp_item_id != 0 && exp_count != 0 {
+                selected_reward_idx = Some(exchange_list.len());
                 exchange_list.push((exp_item_id as u32, exp_count as u32));
                 tracing::info!(
                     sid,
@@ -2587,71 +2713,94 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         exchange_list.len()
     );
 
-    // ── Pre-validate: check output items exist in DB and slots available ──
-    // Count how many inventory slots are needed for non-virtual output items.
-    let mut slots_needed: u8 = 0;
-    for &(item_id, _count) in &exchange_list {
-        if item_id == ITEM_GOLD
-            || item_id == ITEM_EXP
-            || item_id == ITEM_COUNT
-            || item_id == ITEM_LADDERPOINT
-            || item_id == ITEM_SKILL
-        {
-            continue;
+    // ── Pre-validate the outputs and the bag BEFORE touching anything ──
+    //
+    // * Virtual ids (gold/exp/NP/skill) never need a slot.
+    // * An output that is not in the item table is skipped with a warning, like
+    //   the C++ server does (`GiveItem` fails silently for it) - the rest of
+    //   the reward (gold, exp, other items) is still paid. The one exception is
+    //   the reward the player explicitly picked: that one must never vanish
+    //   silently, so the exchange is refused and they can pick another.
+    // * Real items are deliverable only if the bag can hold ALL of them at the
+    //   same time (several outputs used to be checked one by one against the
+    //   same free slot) after the origin items have been taken out.
+    let mut deliverable: Vec<(u32, u32)> = Vec::with_capacity(exchange_list.len());
+    for (idx, &(item_id, count)) in exchange_list.iter().enumerate() {
+        let is_virtual = matches!(
+            item_id,
+            ITEM_GOLD | ITEM_EXP | ITEM_COUNT | ITEM_LADDERPOINT | ITEM_SKILL
+        );
+        if !is_virtual {
+            match w.get_item(item_id) {
+                None => {
+                    if Some(idx) == selected_reward_idx {
+                        tracing::warn!(
+                            sid,
+                            exchange_id,
+                            item_id,
+                            "RunQuestExchange: FAIL - the selected reward item is not in the items table"
+                        );
+                        block_quest_completion(lua);
+                        return Ok(false);
+                    }
+                    tracing::warn!(
+                        sid,
+                        exchange_id,
+                        item_id,
+                        "RunQuestExchange: output item_id not in items table - skipped (C++ parity)"
+                    );
+                    continue;
+                }
+                // Other countable == 2 ids are virtual markers (job change,
+                // random box, cash ...) that cannot live in a slot.
+                Some(item) if item.countable.unwrap_or(0) == 2 => {
+                    tracing::warn!(
+                        sid,
+                        exchange_id,
+                        item_id,
+                        "RunQuestExchange: virtual output id has no handler - skipped"
+                    );
+                    continue;
+                }
+                Some(_) => {}
+            }
         }
-        // Never complete a quest while silently dropping its selected reward.
-        if w.get_item(item_id).is_none() {
-            tracing::warn!(
-                sid,
-                exchange_id,
+        deliverable.push((item_id, count));
+    }
+
+    let removals: Vec<(u32, u16)> = origins
+        .iter()
+        .filter(|&&(item_id, count)| item_id > 0 && count > 0)
+        .map(|&(item_id, count)| (item_id as u32, count.min(u16::MAX as i32) as u16))
+        .filter(|&(item_id, _)| {
+            !is_special_origin_skip(item_id)
+                && item_id != ITEM_GOLD
+                && item_id != ITEM_COUNT
+                && item_id != ITEM_LADDERPOINT
+        })
+        .collect();
+    let additions: Vec<(u32, u16)> = deliverable
+        .iter()
+        .filter(|&&(item_id, _)| {
+            !matches!(
                 item_id,
-                "RunQuestExchange: FAIL — output item_id not in items table"
-            );
-            return Ok(false);
-        }
-        // Check if item can stack into existing slot
-        if w.find_slot_for_item(sid, item_id, 1).is_none() {
-            slots_needed += 1;
-        }
-    }
-
-    // Count origin items that will be removed (freeing slots)
-    let mut slots_freed: u8 = 0;
-    for &(item_id, _count) in &origins {
-        if item_id == 0 {
-            continue;
-        }
-        let id_u = item_id as u32;
-        if is_special_origin_skip(id_u)
-            || id_u == ITEM_GOLD
-            || id_u == ITEM_COUNT
-            || id_u == ITEM_LADDERPOINT
-        {
-            continue;
-        }
-        slots_freed += 1;
-    }
-
-    // If we need more slots than we'll free, check free inventory space
-    if slots_needed > slots_freed {
-        let extra_needed = slots_needed - slots_freed;
-        let free = w.count_free_inventory_slots(sid);
-        if free < extra_needed as u32 {
-            tracing::warn!(
-                sid,
-                exchange_id,
-                slots_needed,
-                slots_freed,
-                free,
-                "RunQuestExchange: FAIL — not enough inventory slots"
-            );
-            // C++ sends WIZ_QUEST sub-opcode 13 with error code 3 (no slots)
-            let mut err_pkt = Packet::new(Opcode::WizQuest as u8);
-            err_pkt.write_u8(13);
-            err_pkt.write_u8(3); // error code 3 = not enough slots
-            w.send_to_session_owned(sid, err_pkt);
-            return Ok(false);
-        }
+                ITEM_GOLD | ITEM_EXP | ITEM_COUNT | ITEM_LADDERPOINT | ITEM_SKILL
+            )
+        })
+        .map(|&(item_id, count)| (item_id, count.min(u16::MAX as u32) as u16))
+        .collect();
+    if !w.can_hold_after_exchange(sid, &removals, &additions) {
+        tracing::warn!(
+            sid,
+            exchange_id,
+            outputs = additions.len(),
+            free_slots = w.count_free_inventory_slots(sid),
+            "RunQuestExchange: FAIL - not enough inventory slots (nothing was taken)"
+        );
+        // C++ sends WIZ_QUEST sub-opcode 13 with error code 3 (no slots)
+        send_no_slot_error(&w, sid);
+        block_quest_completion(lua);
+        return Ok(false);
     }
 
     // ── Remove origin items (after validation passes) ──
@@ -2677,23 +2826,24 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
             });
         } else if id_u == ITEM_LADDERPOINT {
             // Skip ladder point removal (C++ does continue)
-        } else if !w.rob_item(sid, id_u, count as u16) {
+        } else if !w.rob_item(sid, id_u, count.min(u16::MAX as i32) as u16) {
             return Ok(false);
         }
     }
 
     // ── Give all items in exchange list ──
-    for &(item_id, count) in &exchange_list {
+    for &(item_id, count) in &deliverable {
         tracing::info!(sid, item_id, count, "RunQuestExchange: give_exchange_item");
         if !give_exchange_item_checked(&w, sid, item_id, count) {
-            tracing::warn!(
+            // The plan above said it fits, so this is not expected; keep going so
+            // the remaining rewards are still paid instead of aborting half-way.
+            tracing::error!(
                 sid,
                 exchange_id,
                 item_id,
                 count,
-                "RunQuestExchange: FAIL — give_exchange_item failed"
+                "RunQuestExchange: give_exchange_item failed after a successful plan"
             );
-            return Ok(false);
         }
     }
 
@@ -2701,9 +2851,9 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
     let mut show_pkt = Packet::new(Opcode::WizQuest as u8);
     show_pkt.write_u8(10); // sub-opcode for ShowGiveItem
     for i in 0..8 {
-        if i < exchange_list.len() {
-            show_pkt.write_u32(exchange_list[i].0);
-            show_pkt.write_u32(exchange_list[i].1);
+        if i < deliverable.len() {
+            show_pkt.write_u32(deliverable[i].0);
+            show_pkt.write_u32(deliverable[i].1);
         } else {
             show_pkt.write_u32(0);
             show_pkt.write_u32(0);
@@ -6044,8 +6194,19 @@ mod tests {
     /// Create a WorldState with a registered session + character + inventory,
     /// wire it as Lua app_data, and return (Lua, WorldState-Arc).
     fn setup_lua_world() -> (Lua, Arc<WorldState>) {
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        (lua, world)
+    }
+
+    /// Same as [`setup_lua_world`] but also returns the receiver of the packets
+    /// the server sends to the test player (session 1).
+    fn setup_lua_world_with_rx() -> (
+        Lua,
+        Arc<WorldState>,
+        mpsc::UnboundedReceiver<Arc<Packet>>,
+    ) {
         let world = Arc::new(WorldState::new());
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         let sid: SessionId = 1;
         world.register_session(sid, tx);
 
@@ -6118,9 +6279,10 @@ mod tests {
 
         let lua = Lua::new();
         lua.set_app_data(Arc::clone(&world));
+        lua.set_app_data(QuestRunState::default());
         register_all(&lua).unwrap();
 
-        (lua, world)
+        (lua, world, rx)
     }
 
     /// Insert a test item definition into WorldState.items.
@@ -9577,5 +9739,436 @@ mod tests {
             csw.deathmatch_players.is_empty(),
             "reset should clear registrations"
         );
+    }
+
+    // ── Quest reward delivery: full bag, stacks, completion guard ─────────
+
+    /// Build an exchange row from (item, count) pairs.
+    fn quest_exchange_row(
+        n_index: i32,
+        origins: &[(i32, i32)],
+        outputs: &[(i32, i32)],
+    ) -> ItemExchangeRow {
+        let o = |i: usize| origins.get(i).copied().unwrap_or((0, 0));
+        let e = |i: usize| outputs.get(i).copied().unwrap_or((0, 0));
+        ItemExchangeRow {
+            n_index,
+            random_flag: 0,
+            origin_item_num1: o(0).0,
+            origin_item_count1: o(0).1,
+            origin_item_num2: o(1).0,
+            origin_item_count2: o(1).1,
+            origin_item_num3: o(2).0,
+            origin_item_count3: o(2).1,
+            origin_item_num4: o(3).0,
+            origin_item_count4: o(3).1,
+            origin_item_num5: o(4).0,
+            origin_item_count5: o(4).1,
+            exchange_item_num1: e(0).0,
+            exchange_item_count1: e(0).1,
+            exchange_item_num2: e(1).0,
+            exchange_item_count2: e(1).1,
+            exchange_item_num3: e(2).0,
+            exchange_item_count3: e(2).1,
+            exchange_item_num4: e(3).0,
+            exchange_item_count4: e(3).1,
+            exchange_item_num5: e(4).0,
+            exchange_item_count5: e(4).1,
+            exchange_item_time1: 0,
+            exchange_item_time2: 0,
+            exchange_item_time3: 0,
+            exchange_item_time4: 0,
+            exchange_item_time5: 0,
+        }
+    }
+
+    /// Fill every bag slot with a distinct non-stackable junk item and return
+    /// the bag index of the first slot.
+    fn fill_bag_with_junk(world: &WorldState) {
+        let mut inv = world.get_inventory(1);
+        for (n, slot) in inv
+            .iter_mut()
+            .enumerate()
+            .skip(WorldState::SLOT_MAX)
+            .take(WorldState::HAVE_MAX)
+        {
+            insert_test_item(world, 700_000_000 + n as u32, false);
+            slot.item_id = 700_000_000 + n as u32;
+            slot.count = 1;
+            slot.durability = 100;
+        }
+        world.set_inventory(1, inv);
+    }
+
+    fn drain_packets(rx: &mut mpsc::UnboundedReceiver<Arc<Packet>>) -> Vec<Arc<Packet>> {
+        let mut out = Vec::new();
+        while let Ok(p) = rx.try_recv() {
+            out.push(p);
+        }
+        out
+    }
+
+    fn has_no_slot_error(packets: &[Arc<Packet>]) -> bool {
+        packets
+            .iter()
+            .any(|p| p.opcode == Opcode::WizQuest as u8 && p.data == vec![13, 3])
+    }
+
+    fn count_in_bag(world: &WorldState, item_id: u32) -> u32 {
+        world
+            .get_inventory(1)
+            .iter()
+            .filter(|s| s.item_id == item_id)
+            .map(|s| s.count as u32)
+            .sum()
+    }
+
+    #[test]
+    fn test_run_quest_exchange_full_bag_fails_gracefully() {
+        let (lua, world, mut rx) = setup_lua_world_with_rx();
+        let origin = 389_010_000u32;
+        let reward_a = 389_020_000u32;
+        let reward_b = 389_030_000u32;
+        insert_test_item(&world, origin, false);
+        insert_test_item(&world, reward_a, false);
+        insert_test_item(&world, reward_b, false);
+        fill_bag_with_junk(&world);
+        // The turn-in item lives in the first bag slot: handing it in frees ONE
+        // slot, but the reward needs TWO.
+        let mut inv = world.get_inventory(1);
+        inv[WorldState::SLOT_MAX].item_id = origin;
+        world.set_inventory(1, inv);
+        world.insert_item_exchange(
+            9001,
+            quest_exchange_row(
+                9001,
+                &[(origin as i32, 1)],
+                &[
+                    (reward_a as i32, 1),
+                    (reward_b as i32, 1),
+                    (ITEM_GOLD as i32, 500),
+                ],
+            ),
+        );
+        let gold_before = world.get_character_info(1).unwrap().gold;
+        drain_packets(&mut rx);
+
+        let ok: bool = lua.load("return RunQuestExchange(1, 9001)").eval().unwrap();
+
+        assert!(!ok, "a bag that cannot hold the reward must refuse the exchange");
+        assert_eq!(count_in_bag(&world, origin), 1, "turn-in item must NOT be taken");
+        assert_eq!(count_in_bag(&world, reward_a), 0);
+        assert_eq!(count_in_bag(&world, reward_b), 0);
+        assert_eq!(
+            world.get_character_info(1).unwrap().gold,
+            gold_before,
+            "no partial reward (gold) when the items do not fit"
+        );
+        assert!(
+            has_no_slot_error(&drain_packets(&mut rx)),
+            "the player must be told the bag is full (WIZ_QUEST 13/3)"
+        );
+    }
+
+    #[test]
+    fn test_run_quest_exchange_origin_frees_the_slot_it_needs() {
+        // One free slot is gained by handing in the turn-in item, so a single
+        // reward item fits even though the bag is otherwise full.
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        let origin = 389_010_000u32;
+        let reward = 389_020_000u32;
+        insert_test_item(&world, origin, false);
+        insert_test_item(&world, reward, false);
+        fill_bag_with_junk(&world);
+        let mut inv = world.get_inventory(1);
+        inv[WorldState::SLOT_MAX].item_id = origin;
+        world.set_inventory(1, inv);
+        world.insert_item_exchange(
+            9002,
+            quest_exchange_row(9002, &[(origin as i32, 1)], &[(reward as i32, 1)]),
+        );
+
+        let ok: bool = lua.load("return RunQuestExchange(1, 9002)").eval().unwrap();
+
+        assert!(ok);
+        assert_eq!(count_in_bag(&world, origin), 0);
+        assert_eq!(count_in_bag(&world, reward), 1);
+    }
+
+    #[test]
+    fn test_run_quest_exchange_two_rewards_one_free_slot_is_refused() {
+        // Both rewards are "new item" outputs competing for the SAME single free
+        // slot. Checking each one on its own used to pass and the second item was
+        // lost after the turn-in had already been consumed.
+        let (lua, world, mut rx) = setup_lua_world_with_rx();
+        let origin = 389_010_000u32;
+        let reward_a = 389_020_000u32;
+        let reward_b = 389_030_000u32;
+        for id in [origin, reward_a, reward_b] {
+            insert_test_item(&world, id, false);
+        }
+        fill_bag_with_junk(&world);
+        // exactly ONE empty slot, no turn-in item that could free another one
+        let mut inv = world.get_inventory(1);
+        inv[WorldState::SLOT_MAX + 1] = UserItemSlot::default();
+        world.set_inventory(1, inv);
+        world.insert_item_exchange(
+            9003,
+            quest_exchange_row(9003, &[], &[(reward_a as i32, 1), (reward_b as i32, 1)]),
+        );
+        drain_packets(&mut rx);
+
+        let ok: bool = lua.load("return RunQuestExchange(1, 9003)").eval().unwrap();
+
+        assert!(!ok, "2 new items cannot fit into 1 free slot");
+        assert_eq!(count_in_bag(&world, reward_a), 0);
+        assert_eq!(count_in_bag(&world, reward_b), 0);
+        assert!(has_no_slot_error(&drain_packets(&mut rx)));
+    }
+
+    #[test]
+    fn test_run_quest_exchange_skips_unknown_reward_item_but_pays_the_rest() {
+        // C++ parity: a reward id that is not in the item table is skipped, the
+        // remaining rewards (here gold) are still paid.
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        world.insert_item_exchange(
+            9004,
+            quest_exchange_row(
+                9004,
+                &[],
+                &[(999_999_999, 1), (ITEM_GOLD as i32, 700)],
+            ),
+        );
+        let before = world.get_character_info(1).unwrap().gold;
+
+        let ok: bool = lua.load("return RunQuestExchange(1, 9004)").eval().unwrap();
+
+        assert!(ok);
+        assert_eq!(world.get_character_info(1).unwrap().gold, before + 700);
+    }
+
+    #[test]
+    fn test_run_quest_exchange_takes_turn_in_items_from_several_stacks() {
+        // 3 + 2 pieces of a non-stackable turn-in item in two slots: the check
+        // (HowmuchItem adds the slots up) passes, the removal must too.
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        let origin = 389_010_000u32;
+        insert_test_item(&world, origin, false);
+        let mut inv = world.get_inventory(1);
+        for k in 0..5 {
+            let s = &mut inv[WorldState::SLOT_MAX + k];
+            s.item_id = origin;
+            s.count = 1;
+            s.durability = 10;
+        }
+        world.set_inventory(1, inv);
+        world.insert_item_exchange(
+            9005,
+            quest_exchange_row(9005, &[(origin as i32, 5)], &[(ITEM_GOLD as i32, 100)]),
+        );
+        let before = world.get_character_info(1).unwrap().gold;
+
+        let ok: bool = lua.load("return RunQuestExchange(1, 9005)").eval().unwrap();
+
+        assert!(ok, "5 turn-in pieces spread over 5 slots must be accepted");
+        assert_eq!(count_in_bag(&world, origin), 0);
+        assert_eq!(world.get_character_info(1).unwrap().gold, before + 100);
+    }
+
+    #[test]
+    fn test_rob_item_all_or_nothing_across_stacks() {
+        let (_lua, world, _rx) = setup_lua_world_with_rx();
+        let item = 389_010_000u32;
+        insert_test_item(&world, item, true);
+        let mut inv = world.get_inventory(1);
+        inv[WorldState::SLOT_MAX].item_id = item;
+        inv[WorldState::SLOT_MAX].count = 3;
+        inv[WorldState::SLOT_MAX + 1].item_id = item;
+        inv[WorldState::SLOT_MAX + 1].count = 2;
+        world.set_inventory(1, inv);
+
+        assert!(!world.rob_item(1, item, 6), "only 5 owned");
+        assert_eq!(count_in_bag(&world, item), 5, "a failed removal changes nothing");
+        assert!(world.rob_item(1, item, 4));
+        assert_eq!(count_in_bag(&world, item), 1);
+    }
+
+    #[test]
+    fn test_give_item_full_bag_returns_false_and_tells_the_player() {
+        let (lua, world, mut rx) = setup_lua_world_with_rx();
+        let reward = 389_020_000u32;
+        insert_test_item(&world, reward, false);
+        fill_bag_with_junk(&world);
+        drain_packets(&mut rx);
+
+        let ok: bool = lua
+            .load(format!("return GiveItem(1, {reward}, 1)"))
+            .eval()
+            .unwrap();
+
+        assert!(!ok);
+        assert_eq!(count_in_bag(&world, reward), 0);
+        assert!(has_no_slot_error(&drain_packets(&mut rx)));
+    }
+
+    #[test]
+    fn test_give_item_unknown_or_oversized_id_is_not_a_bag_full_error() {
+        let (lua, world, mut rx) = setup_lua_world_with_rx();
+        drain_packets(&mut rx);
+
+        // not in the item table
+        let ok: bool = lua.load("return GiveItem(1, 123456789, 1)").eval().unwrap();
+        assert!(!ok);
+        // 10-digit id from a typo (8104340970): must not wrap into some other item
+        insert_test_item(&world, (8_104_340_970u64 & 0xFFFF_FFFF) as u32, true);
+        let ok: bool = lua.load("return GiveItem(1, 8104340970, 1)").eval().unwrap();
+        assert!(!ok, "ids above u32::MAX must be rejected, not wrapped");
+        assert_eq!(
+            count_in_bag(&world, (8_104_340_970u64 & 0xFFFF_FFFF) as u32),
+            0
+        );
+        assert!(
+            !has_no_slot_error(&drain_packets(&mut rx)),
+            "a bad item id must not tell the player their bag is full"
+        );
+    }
+
+    #[test]
+    fn test_give_item_count_is_clamped_not_wrapped() {
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        let reward = 389_020_000u32;
+        insert_test_item(&world, reward, true);
+
+        // 70000 used to wrap (as u16) to 4464.
+        let ok: bool = lua
+            .load(format!("return GiveItem(1, {reward}, 70000)"))
+            .eval()
+            .unwrap();
+
+        assert!(ok);
+        assert_eq!(count_in_bag(&world, reward), ITEMCOUNT_MAX as u32);
+    }
+
+    fn quest_helper_row(n_index: i32, quest: i16, status: i16) -> ko_db::models::QuestHelperRow {
+        ko_db::models::QuestHelperRow {
+            n_index,
+            b_message_type: 2,
+            b_level: 1,
+            n_exp: 0,
+            b_class: 5,
+            b_nation: 3,
+            b_quest_type: 1,
+            b_zone: 21,
+            s_npc_id: 18005,
+            s_event_data_index: quest,
+            b_event_status: status,
+            n_event_trigger_index: 100,
+            n_event_complete_index: 0,
+            n_exchange_index: 0,
+            n_event_talk_index: 0,
+            str_lua_filename: "x.lua".into(),
+            s_quest_menu: -1,
+            s_npc_main: 0,
+            s_quest_solo: 0,
+        }
+    }
+
+    #[test]
+    fn test_save_event_complete_refused_when_reward_did_not_fit() {
+        // The shipped scripts do `RunQuestExchange(...)` and `SaveEvent(...)` back
+        // to back. With a full bag the quest must stay open instead of being
+        // completed without its reward.
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        let reward = 389_020_000u32;
+        insert_test_item(&world, reward, false);
+        fill_bag_with_junk(&world);
+        world.insert_item_exchange(9010, quest_exchange_row(9010, &[], &[(reward as i32, 1)]));
+        world.insert_test_quest_helper(quest_helper_row(7001, 700, 2)); // "complete quest 700"
+        world.update_session(1, |h| {
+            h.quests.entry(700).or_default().quest_state = 1;
+        });
+
+        lua.load("RunQuestExchange(1, 9010); SaveEvent(1, 7001)")
+            .exec()
+            .unwrap();
+
+        let state = world
+            .with_session(1, |h| h.quests.get(&700).map(|q| q.quest_state))
+            .unwrap();
+        assert_eq!(state, Some(1), "quest must stay 'ongoing' while the reward is refused");
+        assert_eq!(count_in_bag(&world, reward), 0);
+    }
+
+    #[test]
+    fn test_save_event_complete_works_after_a_delivered_reward() {
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        let reward = 389_020_000u32;
+        insert_test_item(&world, reward, false);
+        world.insert_item_exchange(9011, quest_exchange_row(9011, &[], &[(reward as i32, 1)]));
+        world.insert_test_quest_helper(quest_helper_row(7002, 701, 2));
+        world.update_session(1, |h| {
+            h.quests.entry(701).or_default().quest_state = 1;
+        });
+
+        lua.load("RunQuestExchange(1, 9011); SaveEvent(1, 7002)")
+            .exec()
+            .unwrap();
+
+        let state = world
+            .with_session(1, |h| h.quests.get(&701).map(|q| q.quest_state))
+            .unwrap();
+        assert_eq!(state, Some(2));
+        assert_eq!(count_in_bag(&world, reward), 1);
+    }
+
+    #[test]
+    fn test_save_event_complete_still_runs_for_data_errors() {
+        // A missing exchange row is a DATA error, not something the player can fix:
+        // the quest still completes (otherwise it could never be finished).
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        world.insert_test_quest_helper(quest_helper_row(7003, 702, 2));
+        world.update_session(1, |h| {
+            h.quests.entry(702).or_default().quest_state = 1;
+        });
+
+        lua.load("RunQuestExchange(1, 987654); SaveEvent(1, 7003)")
+            .exec()
+            .unwrap();
+
+        let state = world
+            .with_session(1, |h| h.quests.get(&702).map(|q| q.quest_state))
+            .unwrap();
+        assert_eq!(state, Some(2));
+    }
+
+    #[test]
+    fn test_can_hold_after_exchange_counts_stack_room() {
+        let (_lua, world, _rx) = setup_lua_world_with_rx();
+        let stackable = 389_010_000u32;
+        let single = 389_020_000u32;
+        insert_test_item(&world, stackable, true);
+        insert_test_item(&world, single, false);
+        fill_bag_with_junk(&world);
+        let mut inv = world.get_inventory(1);
+        inv[WorldState::SLOT_MAX].item_id = stackable;
+        inv[WorldState::SLOT_MAX].count = 10;
+        world.set_inventory(1, inv);
+
+        // stacking onto the existing pile needs no free slot
+        assert!(world.can_hold_after_exchange(1, &[], &[(stackable, 5)]));
+        // a different item has nowhere to go
+        assert!(!world.can_hold_after_exchange(1, &[], &[(single, 1)]));
+        // ... unless the pile is handed in first (frees its slot)
+        assert!(world.can_hold_after_exchange(1, &[(stackable, 10)], &[(single, 1)]));
+    }
+
+    #[test]
+    fn test_rob_item_count_is_optional() {
+        let (lua, world, _rx) = setup_lua_world_with_rx();
+        let item = 389_010_000u32;
+        insert_test_item(&world, item, true);
+        world.give_item(1, item, 3);
+        lua.load(format!("RobItem(1, {item})")).exec().unwrap();
+        assert_eq!(count_in_bag(&world, item), 2);
     }
 }

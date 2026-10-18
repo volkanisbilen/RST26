@@ -115,6 +115,8 @@ impl LuaEngine {
 
         // Store world reference as app data so binding functions can access it
         lua.set_app_data(Arc::clone(world));
+        // Fresh per-run reward bookkeeping (see bindings::QuestRunState).
+        lua.set_app_data(bindings::QuestRunState::default());
 
         // Register all binding functions
         if let Err(e) = bindings::register_all(&lua) {

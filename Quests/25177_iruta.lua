@@ -348,7 +348,7 @@ if (EVENT == 4001) then -- Solar Tattoo 1 Günlük
 end
 
 if (EVENT == 4002) then -- Solar Tattoo 3 Günlük
-	TATTO = HowmuchItem(UID, 810922000);
+	TATTO = HowmuchItem(UID, 978129000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -356,13 +356,13 @@ if (EVENT == 4002) then -- Solar Tattoo 3 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(UID, 810922000,1);
+		RobItem(UID, 978129000,1);
 		GiveItem(UID, 810431970,1,3);
     	end
     end
 end
 if (EVENT == 4003) then -- Solar Tattoo 7 Günlük
-	TATTO = HowmuchItem(UID, 810923000);
+	TATTO = HowmuchItem(UID, 978130000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -370,7 +370,7 @@ if (EVENT == 4003) then -- Solar Tattoo 7 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(UID, 810923000,1);
+		RobItem(UID, 978130000,1);
 		GiveItem(UID, 810431970,1,7);
     	end
     end
@@ -422,13 +422,13 @@ if (EVENT == 5001) then -- Nimbus Tattoo 1 Günlük
        
 	    else
 		RobItem(UID, 931705000,1);
-		GiveItem(UID, 8104340970,1,1);
+		GiveItem(UID, 810434973,1,1);
     	end
     end
 end
 
 if (EVENT == 5002) then -- Nimbus Tattoo 3 Günlük
-	TATTO = HowmuchItem(UID, 931755000);
+	TATTO = HowmuchItem(UID, 978127000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -436,13 +436,13 @@ if (EVENT == 5002) then -- Nimbus Tattoo 3 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(931755000);
-		GiveItem(UID, 8104340970,1,3);
+		RobItem(UID, 978127000, 1);
+		GiveItem(UID, 810434973,1,3);
     	end
     end
 end
 if (EVENT == 5003) then -- Nimbus Tattoo 7 Günlük
-	TATTO = HowmuchItem(UID, 931765000);
+	TATTO = HowmuchItem(UID, 978128000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -450,14 +450,14 @@ if (EVENT == 5003) then -- Nimbus Tattoo 7 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(UID, 931765000,1);
-		GiveItem(UID, 8104340970,1,7);
+		RobItem(UID, 978128000,1);
+		GiveItem(UID, 810434973,1,7);
     	end
     end
 end
 
 if (EVENT == 5004) then -- Nimbus Tattoo 15 Günlük
-	TATTO = HowmuchItem(UID, 931775000);
+	TATTO = HowmuchItem(UID, 814029000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -465,8 +465,8 @@ if (EVENT == 5004) then -- Nimbus Tattoo 15 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(UID, 931775000,1);
-		GiveItem(UID, 8104340970,1,15);
+		RobItem(UID, 814029000,1);
+		GiveItem(UID, 810434973,1,15);
     	end
     end
 end
@@ -481,7 +481,7 @@ if (EVENT == 5005) then -- Nimbus Tattoo 30 Günlük
        
 	    else
 		RobItem(UID, 810929000,1);
-		GiveItem(UID, 8104340970,1,30);
+		GiveItem(UID, 810434973,1,30);
     	end
     end
 end
@@ -515,7 +515,7 @@ if (EVENT == 6002) then -- Stellar Tattoo 3 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(931766000);
+		RobItem(UID, 931766000, 1);
 		GiveItem(UID, 810433972,1,3);
     	end
     end
@@ -572,7 +572,7 @@ if (EVENT == 2005) then  --War Tattoo
 end
 
 if (EVENT == 7011) then -- War Tattoo 1 Günlük
-	TATTO = HowmuchItem(UID, 814613000);
+	TATTO = HowmuchItem(UID, 978104000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -580,14 +580,14 @@ if (EVENT == 7011) then -- War Tattoo 1 Günlük
      if SlotCheck == false then
 
 	    else
-		RobItem(UID, 814613000,1);
+		RobItem(UID, 978104000,1);
 		GiveItem(UID, 814664796,1,1);
     	end
     end
 end
 
 if (EVENT == 7012) then -- War Tattoo 3 Günlük
-	TATTO = HowmuchItem(UID, 814623000);
+	TATTO = HowmuchItem(UID, 978105000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -595,13 +595,13 @@ if (EVENT == 7012) then -- War Tattoo 3 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(814623000);
+		RobItem(UID, 978105000, 1);
 		GiveItem(UID, 814664796,1,3);
     	end
     end
 end
 if (EVENT == 7003) then -- War Tattoo 7 Günlük
-	TATTO = HowmuchItem(UID, 814633000);
+	TATTO = HowmuchItem(UID, 978106000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -609,14 +609,14 @@ if (EVENT == 7003) then -- War Tattoo 7 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(UID, 814633000,1);
+		RobItem(UID, 978106000,1);
 		GiveItem(UID, 814664796,1,7);
     	end
     end
 end
 
 if (EVENT == 7004) then -- War Tattoo 15 Günlük
-	TATTO = HowmuchItem(UID, 814643000);
+	TATTO = HowmuchItem(UID, 978107000);
 	if (TATTO < 1) then
 		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
 	else
@@ -624,7 +624,7 @@ if (EVENT == 7004) then -- War Tattoo 15 Günlük
      if SlotCheck == false then
        
 	    else
-		RobItem(UID, 814643000,1);
+		RobItem(UID, 978107000,1);
 		GiveItem(UID, 814664796,1,15);
     	end
     end
