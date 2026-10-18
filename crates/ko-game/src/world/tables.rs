@@ -994,6 +994,21 @@ impl WorldState {
     pub fn get_special_sewing_recipes(&self, npc_id: i32) -> Option<Vec<ItemSpecialSewingRow>> {
         self.special_sewing.get(&npc_id).map(|r| r.clone())
     }
+    /// Client `mixtable` row index (1-based) for a server sewing recipe.
+    ///
+    /// The 2625 client picks the Shozin result message from its local
+    /// `mixtable` using this index. Negative keys (`-npc_id`) hold the
+    /// per-NPC fallback row. Returns 0 when unknown (the client then shows
+    /// no NPC message but still updates its inventory).
+    pub fn special_sewing_client_index(&self, n_index: i32, npc_id: i32) -> u16 {
+        if let Some(v) = self.special_sewing_client_idx.get(&n_index) {
+            return *v;
+        }
+        self.special_sewing_client_idx
+            .get(&(-npc_id))
+            .map(|v| *v)
+            .unwrap_or(0)
+    }
     /// Get all item smash entries within a given index range (e.g., 2000000..3000000).
     ///
     pub fn get_item_smash_in_range(&self, range_start: i32, range_end: i32) -> Vec<ItemSmashRow> {

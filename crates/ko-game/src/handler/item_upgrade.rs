@@ -1502,6 +1502,11 @@ async fn shozin_exchange(
         }
     }
 
+    // The shadow piece must sit in its own slot, never double as a material.
+    if has_shadow && mat_slots.contains(&shadow_piece_slot) {
+        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+    }
+
     // Read nDownFlag (unused in our logic, but must be consumed)
     let _down_flag = reader.read_u8().unwrap_or(0);
 
@@ -1579,11 +1584,15 @@ async fn shozin_exchange(
     }
 
     // ── Find matching recipes ──
-    // Determine NPC DB ID for filtering
-    let npc_db_id: i32 = if npc_tmpl.npc_type == NPC_JEWELY {
-        31402
-    } else {
-        19073 // NPC_CRAFTSMAN
+    // The recipe set is selected by the NPC's *template* id (Shozin = 19073,
+    // jeweler = 31402). Shozin is NPC type 174 in this database, so selecting
+    // by NPC type alone (the old behaviour) sent every Shozin craft to the
+    // jeweler's 126 recipes and made the 2,300+ Shozin recipes unreachable.
+    let npc_db_id = match sewing_recipe_set_id(npc_inst.proto_id as i32, npc_tmpl.npc_type, |id| {
+        world.get_special_sewing_recipes(id).is_some()
+    }) {
+        Some(id) => id,
+        None => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
     };
 
     let all_recipes = match world.get_special_sewing_recipes(npc_db_id) {
@@ -1591,40 +1600,37 @@ async fn shozin_exchange(
         None => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
     };
 
-    // Filter recipes that match our materials exactly
-    let mut matching_recipes = Vec::new();
-    for recipe in &all_recipes {
-        let table_size = recipe.material_count() as usize;
-        if table_size != material_count {
-            continue;
-        }
+    // Offered materials as (item_id, count) pairs.
+    let offered: Vec<(u32, u16)> = mat_item_ids
+        .iter()
+        .copied()
+        .zip(mat_item_counts.iter().copied())
+        .collect();
 
-        // Match each material against recipe slots
-        let mut match_count = 0u8;
-        for i in 0..material_count {
-            if mat_item_ids[i] != 0 {
-                for x in 0..ITEMS_SPECIAL_EXCHANGE_GROUP {
-                    if recipe.req_item_id_at(x) != 0
-                        && mat_item_ids[i] == recipe.req_item_id_at(x) as u32
-                        && mat_item_counts[i] == recipe.req_item_count_at(x) as u16
-                    {
-                        match_count += 1;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if material_count as u8 == match_count {
-            matching_recipes.push(recipe.clone());
-        }
-    }
+    // Filter recipes whose material list equals the offered list exactly
+    // (multiset equality, so one offered stack can never stand in for two
+    // different required materials).
+    let matching_recipes: Vec<_> = all_recipes
+        .iter()
+        .filter(|r| sewing_materials_match(r, &offered))
+        .cloned()
+        .collect();
 
     if matching_recipes.is_empty() {
         return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
     }
 
-    // Random selection from matching recipes
+    // Class-specific result sets (e.g. Krowaz armor: one material list, five
+    // class variants) must hand out the crafter's own class variant.
+    let player_class = world.get_character_info(sid).map(|c| c.class).unwrap_or(0);
+    let matching_recipes = filter_recipes_by_class(matching_recipes, player_class, |give_id| {
+        world
+            .get_item(give_id as u32)
+            .and_then(|p| p.class)
+            .unwrap_or(0)
+    });
+
+    // Random selection from the remaining matches
     let recipe_idx = if matching_recipes.len() == 1 {
         0
     } else {
@@ -1637,8 +1643,11 @@ async fn shozin_exchange(
         return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
     }
 
+    // Client `mixtable` row for the result message (0 = unknown).
+    let client_mix_idx = world.special_sewing_client_index(recipe.n_index, npc_db_id);
+
     // ── Success/Failure roll ──
-    let mut upgrade_rate = recipe.success_rate as u32;
+    let mut upgrade_rate = recipe.success_rate.max(0) as u32;
     if has_shadow {
         if recipe.is_shadow_success {
             upgrade_rate = 10000;
@@ -1650,42 +1659,36 @@ async fn shozin_exchange(
         upgrade_rate = 10000;
     }
 
-    let rand_val = rand_range(0, 10001);
+    // Success iff roll < rate, roll uniform in [0, 10000): rate 10000 always
+    // succeeds, rate 0 never does.
+    let rand_val = rand_range(0, 10000);
     let result_code;
     let mut give_item_slot: u8 = 0;
     let give_item_id = recipe.give_item_id as u32;
     let give_count = recipe.give_item_count.clamp(0, u16::MAX as i32) as u16;
 
-    if upgrade_rate < rand_val {
-        // ── FAILURE ──
-        // Remove all materials
-        for i in 0..material_count {
-            let actual_idx = SLOT_MAX + mat_slots[i] as usize;
-            let count = mat_item_counts[i];
-            world.update_inventory(sid, |inv| {
-                if actual_idx < inv.len() && inv[actual_idx].item_id != 0 {
-                    if inv[actual_idx].count > count {
-                        inv[actual_idx].count -= count;
-                    } else {
-                        inv[actual_idx] = Default::default();
-                    }
-                    true
-                } else {
-                    false
-                }
-            });
-        }
-        // Remove shadow piece on failure
-        if has_shadow {
-            let shadow_idx = SLOT_MAX + shadow_piece_slot as usize;
-            world.update_inventory(sid, |inv| {
-                if shadow_idx < inv.len() {
-                    inv[shadow_idx] = Default::default();
-                    true
-                } else {
-                    false
-                }
-            });
+    // Materials to consume: (absolute inventory index, item id, count).
+    let consume: Vec<(usize, u32, u16)> = (0..material_count)
+        .map(|i| {
+            (
+                SLOT_MAX + mat_slots[i] as usize,
+                mat_item_ids[i],
+                mat_item_counts[i],
+            )
+        })
+        .collect();
+    let shadow_consume = if has_shadow {
+        Some((SLOT_MAX + shadow_piece_slot as usize, ITEM_SHADOW_PIECE))
+    } else {
+        None
+    };
+
+    if rand_val >= upgrade_rate {
+        // ── FAILURE ── materials (and the shadow piece) are consumed.
+        if !world.update_inventory(sid, |inv| {
+            consume_sewing_items(inv, &consume, shadow_consume)
+        }) {
+            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
         }
         result_code = CraftingErrorCode::Failed;
     } else {
@@ -1693,6 +1696,12 @@ async fn shozin_exchange(
         let give_proto = match world.get_item(give_item_id) {
             Some(p) => p,
             None => {
+                warn!(
+                    "[{}] Shozin recipe {} gives unknown item {}",
+                    session.addr(),
+                    recipe.n_index,
+                    give_item_id
+                );
                 return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
             }
         };
@@ -1714,46 +1723,53 @@ async fn shozin_exchange(
             give_count
         };
 
-        // Give item
-        if !world.give_item(sid, give_item_id, final_count) {
+        // Re-verify the materials *before* granting anything, so a stale
+        // client view can never produce a free item.
+        let materials_ok = sewing_items_present(&world.get_inventory(sid), &consume, shadow_consume);
+        if !materials_ok {
             return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
         }
 
-        // Find which slot got the item (for the response packet)
-        if let Some(slot_idx) = world.find_slot_for_item(sid, give_item_id, 0) {
-            if slot_idx >= SLOT_MAX {
-                give_item_slot = (slot_idx - SLOT_MAX) as u8;
-            }
-        }
+        // Slot the result will land in (give_item picks the same slot). It must
+        // be computed BEFORE the grant: afterwards, for non-stackable items,
+        // "first free slot" is a different, empty slot.
+        let target_slot = match world.find_slot_for_item(sid, give_item_id, final_count) {
+            Some(s) if s >= SLOT_MAX => s,
+            _ => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
+        };
 
-        // Remove materials
-        for i in 0..material_count {
-            let actual_idx = SLOT_MAX + mat_slots[i] as usize;
-            let count = mat_item_counts[i];
-            world.update_inventory(sid, |inv| {
-                if actual_idx < inv.len() && inv[actual_idx].item_id != 0 {
-                    if inv[actual_idx].count > count {
-                        inv[actual_idx].count -= count;
-                    } else {
-                        inv[actual_idx] = Default::default();
-                    }
-                    true
-                } else {
-                    false
-                }
-            });
+        // Give item (sends the inventory update to the client)
+        if !world.give_item(sid, give_item_id, final_count) {
+            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
         }
-        // Remove shadow piece
-        if has_shadow {
-            let shadow_idx = SLOT_MAX + shadow_piece_slot as usize;
+        give_item_slot = (target_slot - SLOT_MAX) as u8;
+
+        // Consume materials + shadow piece atomically (single inventory lock).
+        let consumed = world.update_inventory(sid, |inv| {
+            consume_sewing_items(inv, &consume, shadow_consume)
+        });
+        if !consumed {
+            // Only reachable through a concurrent inventory change; take the
+            // grant back so no item is duplicated.
+            warn!(
+                "[{}] Shozin: materials vanished mid-craft (recipe {}), reverting grant",
+                session.addr(),
+                recipe.n_index
+            );
             world.update_inventory(sid, |inv| {
-                if shadow_idx < inv.len() {
-                    inv[shadow_idx] = Default::default();
-                    true
-                } else {
-                    false
+                if let Some(slot) = inv.get_mut(target_slot) {
+                    if slot.item_id == give_item_id {
+                        slot.count = slot.count.saturating_sub(final_count);
+                        if slot.count == 0 {
+                            *slot = Default::default();
+                        }
+                        return true;
+                    }
                 }
+                false
             });
+            world.set_user_ability(sid);
+            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
         }
 
         result_code = CraftingErrorCode::Success;
@@ -1765,16 +1781,12 @@ async fn shozin_exchange(
     }
 
     // ── Send response ──
-    // C++ response: [u8 SPECIAL_PART_SEWING] [u8 resultOpCode] [u32 npcID]
-    // On success: + [u32 itemNumber] [u8 slot]
-    let mut pkt = Packet::new(Opcode::WizItemUpgrade as u8);
-    pkt.write_u8(SPECIAL_PART_SEWING);
-    pkt.write_u8(result_code as u8);
-    pkt.write_u32(npc_id_raw);
-    if result_code == CraftingErrorCode::Success {
-        pkt.write_u32(give_item_id);
-        pkt.write_u8(give_item_slot);
-    }
+    let pkt = build_sewing_result_packet(
+        result_code,
+        client_mix_idx,
+        give_item_id,
+        give_item_slot,
+    );
     session.send_packet(&pkt).await?;
 
     // NPC effect broadcast (C++ ShowNpcEffect 31033/31034)
@@ -1797,6 +1809,190 @@ async fn shozin_exchange(
     }
 
     Ok(())
+}
+
+// ── Shozin pure helpers (unit-tested) ─────────────────────────────────
+
+/// Choose the `item_special_sewing.npc_id` recipe set for a crafting NPC.
+///
+/// The NPC's own template id wins (Shozin 19073 / jeweler 31402); the legacy
+/// craftsman type (135) falls back to the Shozin set. Any other NPC has no
+/// recipes.
+fn sewing_recipe_set_id(
+    proto_id: i32,
+    npc_type: u8,
+    has_recipes: impl Fn(i32) -> bool,
+) -> Option<i32> {
+    if has_recipes(proto_id) {
+        return Some(proto_id);
+    }
+    if npc_type == NPC_CRAFTSMAN && has_recipes(19073) {
+        return Some(19073);
+    }
+    None
+}
+
+/// True when the offered `(item_id, count)` list equals the recipe's material
+/// list as a multiset (same items, same counts, same number of stacks).
+fn sewing_materials_match(
+    recipe: &ko_db::models::item_tables::ItemSpecialSewingRow,
+    offered: &[(u32, u16)],
+) -> bool {
+    let mut required: Vec<(u32, u16)> = Vec::with_capacity(ITEMS_SPECIAL_EXCHANGE_GROUP);
+    for x in 0..ITEMS_SPECIAL_EXCHANGE_GROUP {
+        let id = recipe.req_item_id_at(x);
+        if id > 0 {
+            required.push((id as u32, recipe.req_item_count_at(x).clamp(0, u16::MAX as i32) as u16));
+        }
+    }
+    if required.len() != offered.len() {
+        return false;
+    }
+    for &(id, count) in offered {
+        if id == 0 {
+            return false;
+        }
+        match required.iter().position(|&r| r == (id, count)) {
+            Some(pos) => {
+                required.swap_remove(pos);
+            }
+            None => return false,
+        }
+    }
+    true
+}
+
+/// Class "family" used to pick the crafter's own variant of a class-specific
+/// recipe set: 1 warrior line, 2 rogue, 3 mage, 4 priest, 5 Kurian.
+fn class_family(class: i32) -> Option<u8> {
+    match class.rem_euclid(100) {
+        1 | 5 | 6 => Some(1),
+        2 | 7 | 8 => Some(2),
+        3 | 9 | 10 => Some(3),
+        4 | 11 | 12 => Some(4),
+        13..=15 => Some(5),
+        _ => None,
+    }
+}
+
+/// When the matching recipes hand out items of several different class
+/// families (Krowaz armor: Warrior/Rogue/Mage/Priest/Kurian from a single
+/// material list), keep only the crafter's family. Sets whose results share a
+/// family (or are unrestricted) are returned unchanged, as is the full set when
+/// no result fits the crafter.
+fn filter_recipes_by_class(
+    candidates: Vec<ko_db::models::item_tables::ItemSpecialSewingRow>,
+    player_class: u16,
+    item_class_of: impl Fn(i32) -> i32,
+) -> Vec<ko_db::models::item_tables::ItemSpecialSewingRow> {
+    let mut families: Vec<u8> = candidates
+        .iter()
+        .filter_map(|r| class_family(item_class_of(r.give_item_id)))
+        .collect();
+    families.sort_unstable();
+    families.dedup();
+    if families.len() < 2 {
+        return candidates;
+    }
+    let Some(mine) = class_family(player_class as i32) else {
+        return candidates;
+    };
+    let filtered: Vec<_> = candidates
+        .iter()
+        .filter(|r| class_family(item_class_of(r.give_item_id)) == Some(mine))
+        .cloned()
+        .collect();
+    if filtered.is_empty() {
+        candidates
+    } else {
+        filtered
+    }
+}
+
+/// Read-only check that every consumed slot still holds the expected item and
+/// enough of it.
+fn sewing_items_present(
+    inv: &[crate::world::UserItemSlot],
+    consume: &[(usize, u32, u16)],
+    shadow: Option<(usize, u32)>,
+) -> bool {
+    for &(idx, item_id, count) in consume {
+        match inv.get(idx) {
+            Some(s) if s.item_id == item_id && s.count >= count && count > 0 => {}
+            _ => return false,
+        }
+    }
+    if let Some((idx, item_id)) = shadow {
+        match inv.get(idx) {
+            Some(s) if s.item_id == item_id && s.count >= 1 => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Verify-then-deduct all consumed items inside one inventory lock. Returns
+/// false (and changes nothing) when any slot no longer matches. The shadow
+/// piece is consumed one at a time, so a stack of them is not wiped.
+fn consume_sewing_items(
+    inv: &mut [crate::world::UserItemSlot],
+    consume: &[(usize, u32, u16)],
+    shadow: Option<(usize, u32)>,
+) -> bool {
+    if !sewing_items_present(inv, consume, shadow) {
+        return false;
+    }
+    for &(idx, _item_id, count) in consume {
+        let slot = &mut inv[idx];
+        if slot.count > count {
+            slot.count -= count;
+        } else {
+            *slot = Default::default();
+        }
+    }
+    if let Some((idx, _)) = shadow {
+        let slot = &mut inv[idx];
+        if slot.count > 1 {
+            slot.count -= 1;
+        } else {
+            *slot = Default::default();
+        }
+    }
+    true
+}
+
+/// Build the WIZ_ITEM_UPGRADE / SPECIAL_PART_SEWING result.
+///
+/// Verified against the 2625 client (`sub_A6ED30`, CUICombinateItem):
+/// ```text
+/// code 1 (success): [11] [1] [u16 mixtable row] [u32 item id] [u8 inventory slot]
+/// code 2 (failed):  [11] [2] [u16 mixtable row]
+/// code 0 (error):   [11] [0]
+/// ```
+/// The `u16` is the 1-based row of the client's `mixtable` whose NPC message
+/// is shown; the old layout (`u32 npcID` after the code) was misread by the
+/// client as a mixtable row plus a shifted slot byte.
+fn build_sewing_result_packet(
+    code: CraftingErrorCode,
+    client_mix_idx: u16,
+    give_item_id: u32,
+    give_item_slot: u8,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizItemUpgrade as u8);
+    pkt.write_u8(SPECIAL_PART_SEWING);
+    pkt.write_u8(code as u8);
+    match code {
+        CraftingErrorCode::Success => {
+            pkt.write_u16(client_mix_idx);
+            pkt.write_u32(give_item_id);
+            pkt.write_u8(give_item_slot);
+        }
+        CraftingErrorCode::Failed => {
+            pkt.write_u16(client_mix_idx);
+        }
+        CraftingErrorCode::WrongMaterial => {}
+    }
+    pkt
 }
 
 /// Handle the Item Disassemble (Old Man Exchange / Item Smash) sub-opcode.
@@ -5306,5 +5502,220 @@ mod tests {
         assert_eq!(ScrollType::HighToRebirth as i8, 15);
         // Largest gap: Class(5) to Accessories(8) = 3
         assert_eq!(ScrollType::Accessories as i8 - ScrollType::Class as i8, 3);
+    }
+
+    // ── Shozin / special part sewing ──────────────────────────────────
+
+    fn sewing_row(
+        n_index: i32,
+        mats: &[(i32, i32)],
+        give: i32,
+    ) -> ko_db::models::item_tables::ItemSpecialSewingRow {
+        let m = |i: usize| mats.get(i).copied().unwrap_or((0, 0));
+        ko_db::models::item_tables::ItemSpecialSewingRow {
+            n_index,
+            description: None,
+            req_item_id_1: m(0).0,
+            req_item_count_1: m(0).1,
+            req_item_id_2: m(1).0,
+            req_item_count_2: m(1).1,
+            req_item_id_3: m(2).0,
+            req_item_count_3: m(2).1,
+            req_item_id_4: m(3).0,
+            req_item_count_4: m(3).1,
+            req_item_id_5: m(4).0,
+            req_item_count_5: m(4).1,
+            req_item_id_6: m(5).0,
+            req_item_count_6: m(5).1,
+            req_item_id_7: m(6).0,
+            req_item_count_7: m(6).1,
+            req_item_id_8: m(7).0,
+            req_item_count_8: m(7).1,
+            req_item_id_9: m(8).0,
+            req_item_count_9: m(8).1,
+            req_item_id_10: m(9).0,
+            req_item_count_10: m(9).1,
+            give_item_id: give,
+            give_item_count: 1,
+            success_rate: 3450,
+            npc_id: 19073,
+            is_notice: true,
+            is_shadow_success: true,
+        }
+    }
+
+    #[test]
+    fn sewing_recipe_set_uses_npc_template_id() {
+        // Shozin is NPC type 174 in the live database (same as the jeweler);
+        // it must still use its own 19073 recipe set, not the jeweler's.
+        let has = |id: i32| id == 19073 || id == 31402;
+        assert_eq!(sewing_recipe_set_id(19073, NPC_JEWELY, has), Some(19073));
+        assert_eq!(sewing_recipe_set_id(31402, NPC_JEWELY, has), Some(31402));
+        // Legacy craftsman type falls back to the Shozin set.
+        assert_eq!(sewing_recipe_set_id(16088, NPC_CRAFTSMAN, has), Some(19073));
+        // Any other NPC has no recipes (e.g. a boatman, type 174).
+        assert_eq!(sewing_recipe_set_id(29447, NPC_JEWELY, has), None);
+    }
+
+    #[test]
+    fn sewing_materials_match_is_exact_multiset() {
+        let recipe = sewing_row(1, &[(10, 10), (20, 50), (30, 80), (40, 10)], 99);
+        let ok = [(40u32, 10u16), (10, 10), (30, 80), (20, 50)];
+        assert!(sewing_materials_match(&recipe, &ok));
+        // Order does not matter, count does.
+        assert!(!sewing_materials_match(
+            &recipe,
+            &[(10, 10), (20, 50), (30, 80), (40, 9)]
+        ));
+        // Regression: one required stack offered twice in place of another
+        // used to pass because each offered stack only needed *a* recipe slot.
+        assert!(!sewing_materials_match(
+            &recipe,
+            &[(10, 10), (10, 10), (20, 50), (30, 80)]
+        ));
+        // Missing / extra stacks.
+        assert!(!sewing_materials_match(&recipe, &[(10, 10), (20, 50), (30, 80)]));
+        assert!(!sewing_materials_match(
+            &recipe,
+            &[(10, 10), (20, 50), (30, 80), (40, 10), (50, 1)]
+        ));
+        assert!(!sewing_materials_match(&recipe, &[]));
+    }
+
+    #[test]
+    fn sewing_materials_match_allows_repeated_identical_stacks() {
+        // Jewelry exchange: three old rings in three separate slots.
+        let recipe = sewing_row(2, &[(7, 1), (7, 1), (7, 1), (8, 5)], 99);
+        assert!(sewing_materials_match(&recipe, &[(7, 1), (8, 5), (7, 1), (7, 1)]));
+        assert!(!sewing_materials_match(&recipe, &[(7, 1), (8, 5), (7, 1), (8, 5)]));
+    }
+
+    #[test]
+    fn class_family_mapping() {
+        assert_eq!(class_family(106), Some(1)); // mastered warrior
+        assert_eq!(class_family(8), Some(2)); // rogue
+        assert_eq!(class_family(210), Some(3)); // mage (nation 2)
+        assert_eq!(class_family(12), Some(4));
+        assert_eq!(class_family(115), Some(5)); // mastered Kurian
+        assert_eq!(class_family(0), None);
+    }
+
+    #[test]
+    fn krowaz_armor_variant_follows_crafter_class() {
+        // Five recipes share one material list (Krowaz armor), one per class.
+        let mats = [(389271000, 4), (389245000, 8)];
+        let rows = vec![
+            sewing_row(60, &mats, 208001001), // warrior (item class 6)
+            sewing_row(40, &mats, 248001001), // rogue (8)
+            sewing_row(45, &mats, 268001001), // mage (10)
+            sewing_row(50, &mats, 288001001), // priest (12)
+            sewing_row(55, &mats, 529511001), // kurian (15)
+        ];
+        let class_of = |id: i32| match id {
+            208001001 => 6,
+            248001001 => 8,
+            268001001 => 10,
+            288001001 => 12,
+            529511001 => 15,
+            _ => 0,
+        };
+        for (player, want) in [
+            (105u16, 208001001), // novice warrior
+            (106, 208001001),
+            (108, 248001001),
+            (110, 268001001),
+            (212, 288001001),
+            (113, 529511001),
+            (115, 529511001),
+        ] {
+            let out = filter_recipes_by_class(rows.clone(), player, class_of);
+            assert_eq!(out.len(), 1, "class {player}");
+            assert_eq!(out[0].give_item_id, want, "class {player}");
+        }
+        // Unknown class keeps the full set rather than failing.
+        assert_eq!(filter_recipes_by_class(rows.clone(), 0, class_of).len(), 5);
+    }
+
+    #[test]
+    fn same_class_random_variants_are_not_filtered() {
+        // Krowaz weapon variants: items of one class -> still random.
+        let mats = [(389227000, 10)];
+        let rows = vec![
+            sewing_row(1, &mats, 128410901),
+            sewing_row(2, &mats, 128420902),
+            sewing_row(3, &mats, 128430903),
+        ];
+        let out = filter_recipes_by_class(rows, 105, |_| 2);
+        assert_eq!(out.len(), 3);
+    }
+
+    fn sewing_slot(item_id: u32, count: u16) -> crate::world::UserItemSlot {
+        crate::world::UserItemSlot {
+            item_id,
+            count,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn consume_sewing_items_is_all_or_nothing() {
+        let mut inv = vec![sewing_slot(0, 0); 8];
+        inv[2] = sewing_slot(10, 12);
+        inv[3] = sewing_slot(20, 5);
+        inv[5] = sewing_slot(700_009_000, 3);
+
+        // Second material is short -> nothing changes.
+        let before: Vec<_> = inv.iter().map(|s| (s.item_id, s.count)).collect();
+        assert!(!consume_sewing_items(&mut inv, &[(2, 10, 10), (3, 20, 6)], None));
+        let after: Vec<_> = inv.iter().map(|s| (s.item_id, s.count)).collect();
+        assert_eq!(before, after);
+
+        // Wrong item in slot -> nothing changes.
+        assert!(!consume_sewing_items(&mut inv, &[(2, 11, 1)], None));
+
+        // Success: partial stack decremented, full stack cleared, shadow piece
+        // consumed one at a time.
+        assert!(consume_sewing_items(
+            &mut inv,
+            &[(2, 10, 10), (3, 20, 5)],
+            Some((5, 700_009_000))
+        ));
+        assert_eq!((inv[2].item_id, inv[2].count), (10, 2));
+        assert_eq!(inv[3].item_id, 0);
+        assert_eq!((inv[5].item_id, inv[5].count), (700_009_000, 2));
+    }
+
+    #[test]
+    fn consume_sewing_items_rejects_missing_shadow_piece() {
+        let mut inv = vec![sewing_slot(0, 0); 4];
+        inv[1] = sewing_slot(10, 1);
+        assert!(!consume_sewing_items(&mut inv, &[(1, 10, 1)], Some((2, 700_009_000))));
+        assert_eq!(inv[1].count, 1);
+    }
+
+    #[test]
+    fn sewing_result_packet_matches_2625_client_layout() {
+        // Success: [11][1][u16 mix row][u32 item][u8 slot]
+        let pkt = build_sewing_result_packet(CraftingErrorCode::Success, 11, 208001001, 7);
+        assert_eq!(pkt.opcode, Opcode::WizItemUpgrade as u8);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(SPECIAL_PART_SEWING));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(11));
+        assert_eq!(r.read_u32(), Some(208001001));
+        assert_eq!(r.read_u8(), Some(7));
+        assert_eq!(r.remaining(), 0);
+
+        // Failure: [11][2][u16 mix row]
+        let pkt = build_sewing_result_packet(CraftingErrorCode::Failed, 5, 0, 0);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(SPECIAL_PART_SEWING));
+        assert_eq!(r.read_u8(), Some(2));
+        assert_eq!(r.read_u16(), Some(5));
+        assert_eq!(r.remaining(), 0);
+
+        // Error: [11][0]
+        let pkt = build_sewing_result_packet(CraftingErrorCode::WrongMaterial, 5, 1, 1);
+        assert_eq!(pkt.data.len(), 2);
     }
 }

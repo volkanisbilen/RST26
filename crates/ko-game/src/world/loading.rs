@@ -684,6 +684,23 @@ impl WorldState {
             }
             Err(e) => tracing::warn!("item_special_sewing not found or error: {e}, skipping"),
         }
+        // Optional: server recipe -> client mixtable row index (Shozin result
+        // messages). Absent before migration 20261018160000; never fatal.
+        match item_tables_repo.load_special_sewing_client_map().await {
+            Ok(rows) => {
+                let count = rows.len();
+                for (n_index, mix_index) in rows {
+                    if mix_index > 0 {
+                        self.special_sewing_client_idx
+                            .insert(n_index, mix_index as u16);
+                    }
+                }
+                tracing::info!(count, "item_special_sewing_client_map loaded");
+            }
+            Err(e) => tracing::warn!(
+                "item_special_sewing_client_map not found or error: {e}, skipping"
+            ),
+        }
         match item_tables_repo.load_all_item_smash().await {
             Ok(rows) => {
                 for r in &rows {
