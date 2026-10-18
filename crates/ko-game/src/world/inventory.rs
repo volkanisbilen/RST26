@@ -1266,6 +1266,90 @@ impl WorldState {
             })
             .unwrap_or(false)
     }
+    /// Number of pieces of `item_id` in the bag area (`SLOT_MAX..SLOT_MAX + HAVE_MAX`).
+    /// Equipment slots are deliberately ignored: consumption helpers only touch the bag.
+    pub fn bag_item_count(&self, sid: SessionId, item_id: u32) -> u32 {
+        self.sessions
+            .get(&sid)
+            .map(|h| {
+                h.inventory
+                    .iter()
+                    .skip(Self::SLOT_MAX)
+                    .take(Self::HAVE_MAX)
+                    .filter(|slot| slot.item_id == item_id)
+                    .map(|slot| slot.count as u32)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Ticket Exchange pre-check: could `reward_item` (one piece) be delivered **after** one
+    /// piece of `ticket_item` has been taken out of the bag by [`take_one_item`](Self::take_one_item)?
+    ///
+    /// Unlike [`check_weight`](Self::check_weight) this accounts for the ticket's own weight and
+    /// for the bag slot the ticket frees, so a player with a completely full bag can still swap a
+    /// single-piece ticket for its reward in place. Evaluated under one session lock.
+    pub fn ticket_exchange_has_room(
+        &self,
+        sid: SessionId,
+        ticket_item: u32,
+        reward_item: u32,
+    ) -> bool {
+        let reward = match self.get_item(reward_item) {
+            Some(i) => i,
+            None => return false,
+        };
+        // `give_item*` refuses countable == 2 items.
+        if reward.countable.unwrap_or(0) == 2 {
+            return false;
+        }
+        let reward_countable = reward.countable.unwrap_or(0) > 0;
+        let reward_weight = reward.weight.unwrap_or(0).max(0) as u32;
+        let ticket_weight = self
+            .get_item(ticket_item)
+            .map(|i| i.weight.unwrap_or(0).max(0) as u32)
+            .unwrap_or(0);
+
+        self.sessions
+            .get(&sid)
+            .map(|h| {
+                let weight_ok = h
+                    .equipped_stats
+                    .item_weight
+                    .saturating_sub(ticket_weight)
+                    .saturating_add(reward_weight)
+                    <= h.equipped_stats.max_weight;
+                if !weight_ok {
+                    return false;
+                }
+                let mut free_slot = false;
+                let mut stack_room = false;
+                let mut ticket_slot_freed: Option<bool> = None;
+                for slot in h
+                    .inventory
+                    .iter()
+                    .skip(Self::SLOT_MAX)
+                    .take(Self::HAVE_MAX)
+                {
+                    if slot.item_id == 0 {
+                        free_slot = true;
+                    } else if reward_countable
+                        && slot.item_id == reward_item
+                        && slot.count < ITEMCOUNT_MAX
+                    {
+                        stack_room = true;
+                    }
+                    // take_one_item() consumes from the first slot that holds the ticket.
+                    if ticket_slot_freed.is_none() && slot.item_id == ticket_item && slot.count > 0
+                    {
+                        ticket_slot_freed = Some(slot.count == 1);
+                    }
+                }
+                free_slot || stack_room || ticket_slot_freed == Some(true)
+            })
+            .unwrap_or(false)
+    }
+
     /// Give an item to a player's inventory.
     ///
     /// Sends `WIZ_ITEM_COUNT_CHANGE` (0x3D) to the client on success.
@@ -1357,6 +1441,20 @@ impl WorldState {
         count: u16,
         expiry_days: u32,
     ) -> bool {
+        self.give_item_with_expiry_secs(sid, item_id, count, expiry_days.saturating_mul(86400))
+    }
+
+    /// Same as [`give_item_with_expiry`](Self::give_item_with_expiry) but the lifetime is given in
+    /// seconds, so hour-granular durations (TICKET_EXCHANGE.tbl has 1h/2h/4h rows) are exact.
+    ///
+    /// When `expiry_secs > 0`, sets `nExpirationTime = UNIXTIME + expiry_secs`.
+    pub fn give_item_with_expiry_secs(
+        &self,
+        sid: SessionId,
+        item_id: u32,
+        count: u16,
+        expiry_secs: u32,
+    ) -> bool {
         let item = match self.get_item(item_id) {
             Some(i) => i,
             None => return false,
@@ -1371,12 +1469,12 @@ impl WorldState {
             None => return false,
         };
 
-        let expire_time = if expiry_days > 0 {
+        let expire_time = if expiry_secs > 0 {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as u32;
-            now + (86400 * expiry_days)
+            now.saturating_add(expiry_secs)
         } else {
             0
         };
@@ -5612,6 +5710,113 @@ mod tests {
 
         let ok = world.give_item_with_expiry(1, 999999999, 1, 7);
         assert!(!ok, "give_item_with_expiry should fail for unknown item");
+    }
+
+    #[test]
+    fn test_give_item_with_expiry_secs_is_exact() {
+        let item_id = 389010000u32;
+        let (world, _rx) = setup_warehouse_world(item_id, 0, 5000);
+
+        // TICKET_EXCHANGE.tbl has 1 hour / 4 hour rows: they must not be rounded up to a day.
+        assert!(world.give_item_with_expiry_secs(1, item_id, 1, 3600));
+        let slot = world.get_inventory_slot(1, WorldState::SLOT_MAX).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!(
+            (slot.expire_time as i64 - (now + 3600)).abs() < 3,
+            "expire_time {} should be ~now+3600",
+            slot.expire_time
+        );
+
+        // 0 seconds = permanent; the days wrapper still multiplies by 86400.
+        assert!(world.give_item_with_expiry_secs(1, item_id, 1, 0));
+        let slot = world.get_inventory_slot(1, WorldState::SLOT_MAX + 1).unwrap();
+        assert_eq!(slot.expire_time, 0);
+        assert!(world.give_item_with_expiry(1, item_id, 1, 2));
+        let slot = world.get_inventory_slot(1, WorldState::SLOT_MAX + 2).unwrap();
+        assert!((slot.expire_time as i64 - (now + 2 * 86400)).abs() < 3);
+    }
+
+    #[test]
+    fn test_bag_item_count_ignores_equipment_slots() {
+        let item_id = 389010000u32;
+        let (world, _rx) = setup_warehouse_world(item_id, 1, 5000);
+        world.update_inventory(1, |inv| {
+            inv[3].item_id = 555; // equipment area
+            inv[3].count = 1;
+            inv[WorldState::SLOT_MAX].item_id = 555;
+            inv[WorldState::SLOT_MAX].count = 2;
+            inv[WorldState::SLOT_MAX + 5].item_id = 555;
+            inv[WorldState::SLOT_MAX + 5].count = 3;
+            true
+        });
+        assert_eq!(world.bag_item_count(1, 555), 5);
+        assert_eq!(world.bag_item_count(1, 556), 0);
+        assert_eq!(world.bag_item_count(99, 555), 0);
+    }
+
+    /// Fill the whole bag with filler items (item id 777) and put `tickets` pieces of item 555
+    /// into the first bag slot.
+    fn fill_bag_with_ticket(world: &WorldState, tickets: u16) {
+        world.update_inventory(1, |inv| {
+            for i in WorldState::SLOT_MAX..(WorldState::SLOT_MAX + WorldState::HAVE_MAX) {
+                inv[i].item_id = 777;
+                inv[i].count = 1;
+            }
+            inv[WorldState::SLOT_MAX].item_id = 555;
+            inv[WorldState::SLOT_MAX].count = tickets;
+            true
+        });
+    }
+
+    #[test]
+    fn test_ticket_exchange_has_room_uses_slot_freed_by_ticket() {
+        let reward = 389010000u32;
+        let (world, _rx) = setup_warehouse_world(reward, 0, 5000);
+        world.update_session(1, |h| {
+            h.equipped_stats.item_weight = 0;
+            h.equipped_stats.max_weight = 5000;
+        });
+
+        // Empty bag: room.
+        assert!(world.ticket_exchange_has_room(1, 555, reward));
+
+        // Bag completely full, single-piece ticket: its slot is freed by the exchange.
+        fill_bag_with_ticket(&world, 1);
+        assert!(world.ticket_exchange_has_room(1, 555, reward));
+
+        // Two pieces: the slot stays occupied, no room for a non-stackable reward.
+        fill_bag_with_ticket(&world, 2);
+        assert!(!world.ticket_exchange_has_room(1, 555, reward));
+
+        // No ticket at all in a full bag: no room either.
+        world.update_inventory(1, |inv| {
+            inv[WorldState::SLOT_MAX].item_id = 777;
+            inv[WorldState::SLOT_MAX].count = 1;
+            true
+        });
+        assert!(!world.ticket_exchange_has_room(1, 555, reward));
+
+        // Unknown reward item is never deliverable.
+        assert!(!world.ticket_exchange_has_room(1, 555, 123_456_789));
+    }
+
+    #[test]
+    fn test_ticket_exchange_has_room_counts_weight_after_ticket_removal() {
+        let reward = 389010000u32; // weight 10 in the test fixture
+        let (world, _rx) = setup_warehouse_world(reward, 0, 5000);
+        // Ticket item 555 is unknown to the item table => weight 0; the reward adds 10.
+        world.update_session(1, |h| {
+            h.equipped_stats.item_weight = 95;
+            h.equipped_stats.max_weight = 100;
+        });
+        assert!(!world.ticket_exchange_has_room(1, 555, reward));
+        world.update_session(1, |h| {
+            h.equipped_stats.item_weight = 90;
+        });
+        assert!(world.ticket_exchange_has_room(1, 555, reward));
     }
 
     #[test]
