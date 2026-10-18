@@ -2,6 +2,7 @@
 //! All sessions share a single `WorldState` via `Arc`. Handlers access it
 //! through `session.world()` to broadcast packets or query nearby players.
 
+pub mod box_breaker;
 pub mod combat;
 pub mod inventory;
 mod loading;

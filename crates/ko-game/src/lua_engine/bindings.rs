@@ -642,6 +642,16 @@ pub fn register_all(lua: &Lua) -> LuaResult<()> {
         lua.create_function(lua_open_shopping_mall)?,
     )?;
 
+    // Box Breaker NPC (Quests/31514_BoxBreaker.lua) - see world/box_breaker.rs
+    g.set(
+        "GetBreakableBoxes",
+        lua.create_function(lua_get_breakable_boxes)?,
+    )?;
+    g.set("BoxPick", lua.create_function(lua_box_pick)?)?;
+    g.set("BoxBreak", lua.create_function(lua_box_break)?)?;
+    g.set("BoxBreakAll", lua.create_function(lua_box_break_all)?)?;
+    g.set("SendChatLine", lua.create_function(lua_send_chat_line)?)?;
+
     Ok(())
 }
 
@@ -6026,6 +6036,99 @@ fn lua_open_shopping_mall(lua: &Lua, (uid, sub_type): (i32, i32)) -> LuaResult<(
     w.send_to_session_owned(sid, pkt);
 
     tracing::debug!(sid, sub_type, "OpenShoppingMall: sent mall open");
+    Ok(())
+}
+
+// -- Box Breaker NPC bindings (world/box_breaker.rs) ----------------------
+
+/// `GetBreakableBoxes(uid)` -> array of `{id=, count=, name=}`: every breakable box type
+/// (item.effect2 = 251 with a Chaotic Generator reward pool) in the player's bag, sorted by
+/// item id. Rented / sealed / duplicate-flagged stacks are not counted.
+fn lua_get_breakable_boxes(lua: &Lua, uid: i32) -> LuaResult<LuaTable> {
+    let w = get_world(lua)?;
+    let list = lua.create_table()?;
+    for (i, b) in w.breakable_boxes(uid as SessionId).iter().enumerate() {
+        let entry = lua.create_table()?;
+        entry.set("id", b.item_id)?;
+        entry.set("count", b.count)?;
+        entry.set("name", b.name.as_str())?;
+        list.set(i + 1, entry)?;
+    }
+    Ok(list)
+}
+
+/// `BoxPick(uid, item_id)` -> usable count. Remembers `item_id` as the box type of the next
+/// `BoxBreak`; returns 0 (and forgets any pick) when it is not a breakable box or none is owned.
+fn lua_box_pick(lua: &Lua, (uid, item_id): (i32, i64)) -> LuaResult<u32> {
+    let w = get_world(lua)?;
+    let item_id = u32::try_from(item_id).unwrap_or(0);
+    Ok(w.box_breaker_pick(uid as SessionId, item_id))
+}
+
+fn box_outcome_table(
+    lua: &Lua,
+    w: &WorldState,
+    outcome: &crate::world::box_breaker::BreakOutcome,
+) -> LuaResult<LuaTable> {
+    let t = lua.create_table()?;
+    t.set("broken", outcome.broken)?;
+    t.set("stop", outcome.stop.code())?;
+    let rewards = lua.create_table()?;
+    for (i, (id, count)) in outcome.rewards.iter().enumerate() {
+        let entry = lua.create_table()?;
+        entry.set("id", *id)?;
+        entry.set("count", *count)?;
+        entry.set("name", w.box_display_name(*id))?;
+        rewards.set(i + 1, entry)?;
+    }
+    t.set("rewards", rewards)?;
+    Ok(t)
+}
+
+/// `BoxBreak(uid, count)` -> `{broken=, stop=, rewards={{id=,count=,name=}...}}`.
+/// Breaks `count` boxes of the type picked with `BoxPick` (`count` 0 = all of that type, at most
+/// 200 per call; a negative count breaks nothing). The reward is drawn with the Chaotic
+/// Generator's weights, no gold is charged.
+fn lua_box_break(lua: &Lua, (uid, count): (i32, i64)) -> LuaResult<LuaTable> {
+    use crate::world::box_breaker::{BreakOutcome, BreakStop};
+    let w = get_world(lua)?;
+    let sid = uid as SessionId;
+    let outcome = if count < 0 {
+        BreakOutcome {
+            stop: BreakStop::NotBreakable,
+            ..Default::default()
+        }
+    } else {
+        let picked = w.box_breaker_picked(sid);
+        if picked == 0 {
+            BreakOutcome {
+                stop: BreakStop::NoBox,
+                ..Default::default()
+            }
+        } else {
+            w.box_breaker_break(sid, picked, count.min(u32::MAX as i64) as u32)
+        }
+    };
+    box_outcome_table(lua, &w, &outcome)
+}
+
+/// `BoxBreakAll(uid)` -> same table as `BoxBreak`: breaks every breakable box type in the bag
+/// (at most 200 boxes per call, lowest item id first).
+fn lua_box_break_all(lua: &Lua, uid: i32) -> LuaResult<LuaTable> {
+    let w = get_world(lua)?;
+    let outcome = w.box_breaker_break_all(uid as SessionId, 0);
+    box_outcome_table(lua, &w, &outcome)
+}
+
+/// `SendChatLine(uid, text)` - one line of text in the player's chat window (notice colour).
+/// Text is cut to 250 characters.
+fn lua_send_chat_line(lua: &Lua, (uid, text): (i32, String)) -> LuaResult<()> {
+    let w = get_world(lua)?;
+    let text: String = text.chars().take(250).collect();
+    w.send_to_session_owned(
+        uid as SessionId,
+        crate::systems::timed_notice::build_notice_packet(8, &text),
+    );
     Ok(())
 }
 
