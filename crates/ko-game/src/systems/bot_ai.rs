@@ -4222,6 +4222,10 @@ fn tick_bot_self_heal(world: &WorldState, bot: &BotInstance, now_ms: u64) {
 /// ## Packet format (S->C): WIZ_DEAD
 /// `[u32 dead_unit_id]`
 pub fn bot_on_death(world: &WorldState, bot_id: BotId, now_ms: u64) {
+    // Event bots (Chaos/BDW rooms) have their own death/respawn/reward-free path.
+    if crate::systems::event_bots::handle_bot_death(world, bot_id, now_ms) {
+        return;
+    }
     let bot = match world.get_bot(bot_id) {
         Some(b) => b,
         None => return,
@@ -11444,16 +11448,19 @@ pub(crate) fn event_bot_swing(world: &WorldState, bot_id: BotId, target_id: u32)
     pkt.write_u32(bot.id);
     pkt.write_u32(target_id);
     pkt.write_u8(0);
-    broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &pkt);
+    // event rooms only show their own bots (0 = ordinary bot, unchanged behaviour)
+    let room = world.event_bots.event_room_of(bot_id);
+    world.broadcast_to_region_sync(bot.zone_id, bot.region_x, bot.region_z, Arc::new(pkt), None, room);
 }
 
 /// Event helper: put a bot next to (x, z) and tell the clients around it.
 pub(crate) fn event_bot_place(world: &WorldState, bot_id: BotId, x: f32, z: f32) {
     let Some(old) = world.get_bot(bot_id) else { return };
+    let room = world.event_bots.event_room_of(bot_id);
     let (rx, rz) = (crate::zone::calc_region(x), crate::zone::calc_region(z));
     if rx != old.region_x || rz != old.region_z {
         let out_pkt = build_bot_inout_packet(&old, world, 2); // INOUT_OUT
-        broadcast_to_bot_region(world, old.zone_id, old.region_x, old.region_z, &out_pkt);
+        world.broadcast_to_region_sync(old.zone_id, old.region_x, old.region_z, Arc::new(out_pkt), None, room);
     }
     world.update_bot(bot_id, |b| {
         b.x = x;
@@ -11463,7 +11470,7 @@ pub(crate) fn event_bot_place(world: &WorldState, bot_id: BotId, x: f32, z: f32)
     });
     if let Some(b) = world.get_bot(bot_id) {
         let in_pkt = build_bot_inout_packet(&b, world, 1); // INOUT_IN
-        broadcast_to_bot_region(world, b.zone_id, rx, rz, &in_pkt);
+        world.broadcast_to_region_sync(b.zone_id, rx, rz, Arc::new(in_pkt), None, room);
     }
 }
 

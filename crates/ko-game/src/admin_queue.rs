@@ -188,6 +188,14 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
             .map(|n| format!("{n} bot loadout override bracket(s) loaded"))
             .map_err(|e| e.to_string()),
         "info_panel_reload" => crate::handler::info_panel::reload_and_sync(world, pool).await,
+        "event_bots_reload" => crate::systems::event_bots::reload_config(pool, world)
+            .await
+            .map(|n| format!("{n} event bot setting(s) loaded"))
+            .map_err(|e| e.to_string()),
+        "event_bots_clear" => {
+            let removed = crate::systems::event_bots::cleanup_all(world);
+            Ok(format!("Removed {removed} event bot(s)"))
+        }
         other => {
             warn!(command = other, "unknown admin command");
             Err(format!("unknown command {other}"))

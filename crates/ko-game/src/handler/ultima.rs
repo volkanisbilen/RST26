@@ -402,7 +402,18 @@ fn start_rooms(world: &WorldState, st: &mut State, now: u64) {
     }
 
     // a GM in the list lets the event start with any number of players (testing)
-    let bots_waiting = std::mem::take(&mut st.pending_bots);
+    let mut bots_waiting = std::mem::take(&mut st.pending_bots);
+    // admin-configured helper bots (default OFF; never without at least one human)
+    let configured_bots = if valid.is_empty() {
+        0
+    } else {
+        crate::systems::event_bots::auxiliary_bot_count(
+            world,
+            crate::systems::event_bots::EventBotKind::Ultima,
+            valid.len().min(MAX_ROOM),
+        )
+    };
+    bots_waiting += configured_bots;
     if valid.is_empty() || (valid.len() + bots_waiting < MIN_PLAYERS && !any_gm) {
         for (sid, _) in &valid {
             notice(world, *sid, "Ultima's Dungeon was cancelled: not enough players registered.");
@@ -498,11 +509,19 @@ fn start_rooms(world: &WorldState, st: &mut State, now: u64) {
                         y: 0.0,
                         z: z + rng.gen_range(-4.0..4.0),
                         class: (i % 4) as u16 + 1,
-                        level: 83,
+                        level: if configured_bots > 0 {
+                            crate::systems::event_bots::auxiliary_bot_level(
+                                world,
+                                crate::systems::event_bots::EventBotKind::Ultima,
+                            )
+                        } else {
+                            83
+                        },
                         nation,
                         ai_state: crate::world::BotAiState::Afk,
                     },
                 );
+                world.event_bots.register_aux_bot(id, room.event_room);
                 room.bots.push(id);
             }
         }
@@ -955,6 +974,7 @@ pub fn gm_spawn_bots(world: &WorldState, gm_sid: SessionId, count: usize, class:
                 ai_state: crate::world::BotAiState::Afk,
             },
         );
+        world.event_bots.register_aux_bot(id, room.event_room);
         room.bots.push(id);
         spawned += 1;
     }

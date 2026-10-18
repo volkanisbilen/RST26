@@ -155,7 +155,7 @@ function itemSlot(it,opts={}){
 const NAV=[
   ['Genel',[['dashboard','Genel Bakış','home'],['players','Hesaplar & Oyuncular','users'],['clans','Klanlar','clan']]],
   ['Oyun İçeriği',[['items','Item Veritabanı','box'],['drops','Drop Editörü','sword'],['groups','Grup Yöneticisi','layers'],['maps','Harita Editörü','map'],['quest','Quest Stüdyosu','scroll'],['chaotic','Chaotic Generator','box'],['start','Başlangıç Ayarları','pin']]],
-  ['Etkinlikler',[['events','Etkinlik Merkezi','cal'],['race','Collection Race','flag'],['bots','PK Bot Dalgası','users'],['botloadout','Bot Donanımı','sword'],['fieldbots','Saha Botları','users'],['infopanel','Bilgi Paneli','list'],['letters','Mektup / Ödül','mail']]],
+  ['Etkinlikler',[['events','Etkinlik Merkezi','cal'],['race','Collection Race','flag'],['bots','PK Bot Dalgası','users'],['botloadout','Bot Donanımı','sword'],['fieldbots','Saha Botları','users'],['eventbots','Etkinlik Botları','users'],['infopanel','Bilgi Paneli','list'],['letters','Mektup / Ödül','mail']]],
   ['Etkinlik Ödülleri',[['rw_bdw','Border Defence War','flag'],['rw_chaos','Chaos Expansion','flag'],['rw_juraid','Juraid Mountain','flag'],['rw_ft','Forgotten Temple','flag'],['rw_ultima','Ultima','flag'],['rw_golem','Fire & Ice','flag'],['rw_manes','Manes Survival','flag'],['rw_cind','Cinderella','flag'],['rw_other','Diğer Etkinlikler','flag'],['rw_zone','Bölge Ödülleri','map'],['rw_dq','Günlük Görevler','scroll'],['rw_login','Günlük Giriş','gift'],['rw_manner','Manner Store','gift'],['rw_wheels','Çark / Lottery','gift'],['rewards','Tüm Tablolar','list']]],
   ['Power Up Store',[['rw_pus','Ürünler & Kategoriler','box'],['pus','KC / TL Kodları','gift']]],
   ['Sistem',[['system','Sistem & Yöneticiler','cog'],['audit','Denetim Kaydı','list']]],

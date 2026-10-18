@@ -7148,6 +7148,11 @@ async fn apply_skill_damage_to_npc(
             return;
         }
 
+        // Event bots: same room / enemy nation / combat-open gate as the melee path.
+        if crate::systems::event_bots::deny_player_attack(world, caster_sid, npc_id) {
+            return;
+        }
+
         let damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
 
         // Apply damage — clamp to [0, max_hp]
@@ -7174,7 +7179,8 @@ async fn apply_skill_damage_to_npc(
             bot.region_z,
             Arc::new(target_hp_pkt),
             None,
-            0,
+            // event bots are only visible inside their own event room
+            world.event_bots.event_room_of(npc_id),
         );
 
         // Handle death
