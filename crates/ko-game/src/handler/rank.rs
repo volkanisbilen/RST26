@@ -134,6 +134,8 @@ async fn handle_pk_zone(session: &mut ClientSession) -> anyhow::Result<()> {
         my_loyalty_daily,
         my_loyalty_premium,
         &rankings,
+        zone_id,
+        true,
         false, // PK zone: write each entry's own nation
     );
     session.send_packet(&result).await?;
@@ -179,6 +181,8 @@ async fn handle_special_event_zone(session: &mut ClientSession) -> anyhow::Resul
         my_loyalty_daily,
         my_loyalty_premium,
         &rankings,
+        zone_id,
+        false,
         true, // Special event: write requester's nation (C++ parity)
     );
     session.send_packet(&result).await?;
@@ -204,6 +208,8 @@ fn build_pk_ranking_packet(
     my_loyalty_daily: u32,
     my_loyalty_premium: u16,
     rankings: &[Vec<PkZoneRanking>; 2],
+    zone_id: u16,
+    include_runtime_bots: bool,
     use_requester_nation: bool,
 ) -> Packet {
     let world = session.world();
@@ -212,19 +218,77 @@ fn build_pk_ranking_packet(
 
     let mut my_rank: u16 = 0;
     let mut my_rank_found = false;
+    let mut nation_totals = [0usize; 2];
 
     for nation_idx in 0..2u8 {
         let sorted = &rankings[nation_idx as usize];
+        let mut display_entries: Vec<(
+            Option<crate::zone::SessionId>,
+            String,
+            u8,
+            u16,
+            u32,
+            u16,
+            i8,
+        )> = Vec::new();
+
+        for entry in sorted {
+            let entry_data = world.with_session(entry.session_id, |h| {
+                h.character
+                    .as_ref()
+                    .map(|c| (c.name.clone(), c.nation, c.knights_id))
+            });
+            if let Some(Some((name, entry_nation, knights_id))) = entry_data {
+                display_entries.push((
+                    Some(entry.session_id),
+                    name,
+                    entry_nation,
+                    knights_id,
+                    entry.loyalty_daily,
+                    entry.loyalty_premium_bonus.min(999),
+                    world.get_loyalty_symbol_rank(entry.session_id),
+                ));
+            }
+        }
+
+        if include_runtime_bots {
+            for bot in world
+                .get_bots_in_zone_live(zone_id)
+                .into_iter()
+                .filter(|bot| bot.nation == nation_idx + 1)
+            {
+                let symbol_rank = match (bot.personal_rank, bot.knights_rank) {
+                    (0, 0) => -1,
+                    (p, 0) => p as i8,
+                    (0, k) => k as i8,
+                    (p, k) => p.min(k) as i8,
+                };
+                display_entries.push((
+                    None,
+                    bot.name,
+                    bot.nation,
+                    bot.knights_id,
+                    bot.loyalty_daily,
+                    0,
+                    symbol_rank,
+                ));
+            }
+        }
+
+        display_entries.sort_by(|a, b| b.4.cmp(&a.4).then_with(|| a.1.cmp(&b.1)));
+        nation_totals[nation_idx as usize] = display_entries.len();
 
         let count_offset = result.wpos();
         result.write_u16(0);
 
         let mut count: u16 = 0;
 
-        for entry in sorted.iter() {
+        for (entry_sid, name, entry_nation, knights_id, loyalty, premium, symbol_rank) in
+            display_entries
+        {
             if !my_rank_found && (nation_idx + 1) == nation {
                 my_rank += 1;
-                if entry.session_id == sid {
+                if entry_sid == Some(sid) {
                     my_rank_found = true;
                 }
             }
@@ -235,17 +299,6 @@ fn build_pk_ranking_packet(
                 }
                 continue;
             }
-
-            let entry_data = world.with_session(entry.session_id, |h| {
-                h.character
-                    .as_ref()
-                    .map(|c| (c.name.clone(), c.nation, c.knights_id))
-            });
-
-            let (name, entry_nation, knights_id) = match entry_data {
-                Some(Some(v)) => v,
-                _ => continue,
-            };
 
             result.write_string(&name);
             // C++ PK zone writes entry's own nation; special event writes requester's.
@@ -274,16 +327,8 @@ fn build_pk_ranking_packet(
                 }
             }
 
-            result.write_u32(entry.loyalty_daily);
-
-            let premium = if entry.loyalty_premium_bonus > 999 {
-                999
-            } else {
-                entry.loyalty_premium_bonus
-            };
+            result.write_u32(loyalty);
             result.write_u16(premium);
-
-            let symbol_rank = world.get_loyalty_symbol_rank(entry.session_id);
             result.write_i8(symbol_rank);
 
             count += 1;
@@ -294,7 +339,7 @@ fn build_pk_ranking_packet(
 
     // If player is ranked > 10 and total > 9, multiply total by CzRank.
     if my_rank > 10 {
-        let my_nation_total = rankings[(nation.saturating_sub(1)) as usize].len() as u16;
+        let my_nation_total = nation_totals[(nation.saturating_sub(1)) as usize] as u16;
         if my_nation_total > 9 {
             let cz_rank = world.rank_bug.read().cz_rank as u16;
             if cz_rank > 0 {

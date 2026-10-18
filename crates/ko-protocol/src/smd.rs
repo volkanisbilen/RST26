@@ -27,6 +27,9 @@ pub struct SmdFile {
     /// Event tile grid — `map_size × map_size` entries.
     /// 0 = walkable, nonzero = blocked or event trigger.
     pub event_grid: Vec<i16>,
+    /// Terrain heights and conservative bot navigation mask, in x-major order.
+    pub heights: Vec<f32>,
+    pub bot_blocked: Vec<bool>,
     /// Warp gates loaded from the file.
     pub warps: Vec<WarpInfo>,
     /// NPC/monster spawn points.
@@ -72,7 +75,9 @@ const CELL_MAIN_SIZE: i32 = CELL_MAIN_DEVIDE * CELL_SUB_SIZE; // 16
 const WARP_INFO_SIZE: usize = 320;
 
 /// Size of the packed `_OBJECT_EVENT` struct read from the file.
-const OBJECT_EVENT_SIZE: usize = 24;
+const OBJECT_EVENT_SIZE_LEGACY: usize = 24;
+/// Packed object-event size used by the Manes map exporter.
+const OBJECT_EVENT_SIZE_HEADERED: usize = 19;
 
 impl SmdFile {
     /// Load an SMD file from disk.
@@ -87,7 +92,37 @@ impl SmdFile {
 
     /// Parse SMD from a reader.
     pub fn parse<R: Read + Seek>(reader: &mut R) -> io::Result<Self> {
-        // 1. LoadTerrain: map_size (i32) + unit_dist (f32) + heights (skip)
+        // 1. LoadTerrain. Most server SMDs start directly with map_size/unit_dist.
+        // The 2615 Manes exporter prepends two length-prefixed strings plus a
+        // 10-byte exporter header. Detect that format without changing legacy maps.
+        let start = reader.stream_position()?;
+        let first = read_i32(reader)?;
+        let candidate_unit_dist = read_f32(reader)?;
+        let headered = !(first > 0
+            && first <= 10000
+            && candidate_unit_dist.is_finite()
+            && candidate_unit_dist > 0.0
+            && candidate_unit_dist <= 100.0);
+        if headered {
+            if first <= 0 || first > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid SMD header",
+                ));
+            }
+            reader.seek(SeekFrom::Start(start + 4 + first as u64))?;
+            let author_len = read_i32(reader)?;
+            if author_len < 0 || author_len > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid SMD author header",
+                ));
+            }
+            reader.seek(SeekFrom::Current(author_len as i64 + 10))?;
+        } else {
+            reader.seek(SeekFrom::Start(start))?;
+        }
+
         let map_size = read_i32(reader)?;
         let unit_dist = read_f32(reader)?;
 
@@ -98,9 +133,22 @@ impl SmdFile {
             ));
         }
 
-        // Skip height array: f32[map_size * map_size]
-        let height_bytes = (map_size as i64) * (map_size as i64) * 4;
-        reader.seek(SeekFrom::Current(height_bytes))?;
+        if !unit_dist.is_finite() || unit_dist <= 0.0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid terrain unit"));
+        }
+        let heights = (0..map_size as usize * map_size as usize)
+            .map(|_| read_f32(reader)).collect::<io::Result<Vec<_>>>()?;
+        let mut bot_blocked = vec![true; heights.len()];
+        for x in 0..map_size - 1 {
+            for z in 0..map_size - 1 {
+                let i = (x * map_size + z) as usize;
+                let h = [heights[i], heights[i + 1], heights[i + map_size as usize], heights[i + map_size as usize + 1]];
+                // Both terrain triangles must have a gradient <= 45 degrees.
+                let slope1 = (h[2] - h[0]).hypot(h[1] - h[0]) / unit_dist;
+                let slope2 = (h[3] - h[1]).hypot(h[3] - h[2]) / unit_dist;
+                bot_blocked[i] = h.iter().any(|v| !v.is_finite()) || slope1 > 1.0 || slope2 > 1.0;
+            }
+        }
 
         let pos_after_terrain = reader.stream_position()?;
         tracing::debug!(
@@ -111,7 +159,7 @@ impl SmdFile {
         );
 
         // 2. LoadCollisionData (CN3ShapeMgr)
-        let (map_width, map_height) = Self::skip_collision_data(reader)?;
+        let (map_width, map_height) = Self::skip_collision_data(reader, map_size, unit_dist, &heights, &mut bot_blocked)?;
         let pos_after_collision = reader.stream_position()?;
         tracing::debug!(
             map_width,
@@ -140,7 +188,12 @@ impl SmdFile {
                 "negative object event count",
             ));
         }
-        let skip = object_event_count as i64 * OBJECT_EVENT_SIZE as i64;
+        let object_event_size = if headered {
+            OBJECT_EVENT_SIZE_HEADERED
+        } else {
+            OBJECT_EVENT_SIZE_LEGACY
+        };
+        let skip = object_event_count as i64 * object_event_size as i64;
         reader.seek(SeekFrom::Current(skip))?;
 
         let pos_after_objects = reader.stream_position()?;
@@ -161,8 +214,19 @@ impl SmdFile {
         let nonzero = event_grid.iter().filter(|&&v| v != 0).count();
         tracing::debug!(grid_len, nonzero, pos_after_tiles, "tile event grid read");
 
-        // 5. LoadRegeneEvent
-        let regene_count = read_i32(reader)?;
+        // Some headered map exports end immediately after the event grid.
+        // Their NPC placement is intentionally supplied by npc_spawn instead.
+        let regene_count = match read_i32(reader) {
+            Ok(count) => count,
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => 0,
+            Err(e) => return Err(e),
+        };
+        if regene_count < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "negative regene event count",
+            ));
+        }
         let mut regene_events = Vec::with_capacity(regene_count.max(0) as usize);
         for i in 0..regene_count {
             let pos_x = read_f32(reader)?;
@@ -189,6 +253,8 @@ impl SmdFile {
             map_width,
             map_height,
             event_grid,
+            heights,
+            bot_blocked,
             warps,
             regene_events,
         })
@@ -232,7 +298,7 @@ impl SmdFile {
 
     /// Skip collision data (CN3ShapeMgr::LoadCollisionData), extracting map dimensions.
     ///
-    fn skip_collision_data<R: Read + Seek>(reader: &mut R) -> io::Result<(f32, f32)> {
+    fn skip_collision_data<R: Read + Seek>(reader: &mut R, size: i32, unit: f32, heights: &[f32], blocked: &mut [bool]) -> io::Result<(f32, f32)> {
         let map_width = read_f32(reader)?;
         let map_length = read_f32(reader)?;
 
@@ -245,8 +311,55 @@ impl SmdFile {
             ));
         }
         // Each face = 3 vertices, each vertex = 3 floats (12 bytes)
-        let vertex_bytes = face_count as i64 * 3 * 12;
-        reader.seek(SeekFrom::Current(vertex_bytes))?;
+        for _ in 0..face_count {
+            let mut v = [[0.0f32; 3]; 3];
+            for vertex in &mut v {
+                for coordinate in vertex { *coordinate = read_f32(reader)?; }
+            }
+            // Some exported SMDs (e.g. the "freezone" event maps) contain a handful of
+            // degenerate/garbage collision faces. The original client tolerates this
+            // silently; aborting the whole map load over one bad face took down the
+            // entire zone (no warps, no NPCs, nothing). Skip just this face instead.
+            // `is_finite()` alone misses garbage that happens to decode to a huge but
+            // finite float (e.g. ~1e29): freezone_a.smd has one, and its absurd bounding
+            // box rasterized as "blocked" across virtually the whole grid, leaving PK
+            // bots in Ardream with nowhere walkable to step to. Any vertex far outside
+            // plausible map coordinates is the same kind of garbage.
+            const VERTEX_SANITY_LIMIT: f32 = 100_000.0;
+            if v.iter().flatten().any(|c| !c.is_finite() || c.abs() > VERTEX_SANITY_LIMIT) {
+                continue;
+            }
+            let a = [v[1][0]-v[0][0], v[1][1]-v[0][1], v[1][2]-v[0][2]];
+            let b = [v[2][0]-v[0][0], v[2][1]-v[0][1], v[2][2]-v[0][2]];
+            let n = [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+            // Floors/bridges do not form walls; retain steep collision faces.
+            if n[1].abs() >= n[0].hypot(n[2]) { continue; }
+            let min = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::INFINITY, f32::min);
+            let max = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::NEG_INFINITY, f32::max);
+            for x in ((min(0) / unit).floor() as i32).max(0)..=((max(0) / unit).floor() as i32).min(size-2) {
+                for z in ((min(2) / unit).floor() as i32).max(0)..=((max(2) / unit).floor() as i32).min(size-2) {
+                    // Separating-axis test: do not block the empty corners of a
+                    // long diagonal wall's bounding rectangle.
+                    let center = [(x as f32 + 0.5) * unit, (z as f32 + 0.5) * unit];
+                    let half = unit * 0.5 + 0.2;
+                    let separated = (0..3).any(|edge| {
+                        let next = (edge + 1) % 3;
+                        let axis = [v[next][2] - v[edge][2], v[edge][0] - v[next][0]];
+                        let lo = v.iter().map(|p| p[0]*axis[0] + p[2]*axis[1]).fold(f32::INFINITY, f32::min);
+                        let hi = v.iter().map(|p| p[0]*axis[0] + p[2]*axis[1]).fold(f32::NEG_INFINITY, f32::max);
+                        let c = center[0]*axis[0] + center[1]*axis[1];
+                        let r = half * (axis[0].abs() + axis[1].abs());
+                        hi < c-r || lo > c+r
+                    });
+                    if separated { continue; }
+                    let i = (x * size + z) as usize;
+                    let h = [heights[i], heights[i+1], heights[i+size as usize], heights[i+size as usize+1]];
+                    let low = h.iter().copied().fold(f32::INFINITY, f32::min);
+                    let high = h.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    if max(1) > low + 0.4 && min(1) < high + 2.0 { blocked[i] = true; }
+                }
+            }
+        }
 
         // Cell grid: iterate over map_width/16 × map_length/16 cells
         let cells_x = (map_width / CELL_MAIN_SIZE as f32).ceil() as i32;
@@ -395,6 +508,8 @@ mod tests {
     #[test]
     fn test_is_valid_position() {
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size: 1025,
             unit_dist: 4.0,
             map_width: 4096.0,
@@ -422,6 +537,8 @@ mod tests {
         grid[0] = 1;
 
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size,
             unit_dist: 4.0,
             map_width: 36.0,
@@ -445,6 +562,8 @@ mod tests {
         grid[2 * 5 + 3] = 1; // blocked tile at (2, 3)
 
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size,
             unit_dist: 4.0,
             map_width: 16.0,
@@ -466,6 +585,8 @@ mod tests {
         grid[2 * 10 + 3] = 99; // grid (2, 3)
 
         let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
             map_size,
             unit_dist: 4.0,
             map_width: 36.0,
@@ -531,6 +652,66 @@ mod tests {
         assert_eq!(warps[0].dest_z, 200.0);
         assert_eq!(warps[0].radius, 10.0);
         assert_eq!(warps[0].nation, -1);
+    }
+
+    /// Regression test for the Ardream (`freezone_a.smd`) bot-navigation bug:
+    /// a collision face with vertices decoding to huge-but-finite floats
+    /// (~1e29, nowhere near any real map) rasterized as "blocked" across the
+    /// whole grid because the old degenerate-face filter only checked
+    /// `is_finite()`. Build a minimal synthetic SMD with one such face over
+    /// otherwise flat, unblocked terrain and confirm it no longer blocks the
+    /// whole grid once its coordinates exceed the sanity bound.
+    #[test]
+    fn test_garbage_coordinate_collision_face_does_not_block_whole_grid() {
+        let size: i32 = 5;
+        let unit: f32 = 4.0;
+        let map_width = (size - 1) as f32 * unit;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&size.to_le_bytes());
+        data.extend_from_slice(&unit.to_le_bytes());
+        for _ in 0..(size * size) {
+            data.extend_from_slice(&0.0f32.to_le_bytes()); // flat terrain
+        }
+        data.extend_from_slice(&map_width.to_le_bytes());
+        data.extend_from_slice(&map_width.to_le_bytes());
+
+        // One garbage face: vertices span from deeply negative to deeply
+        // positive on both X and Z, which is exactly what makes the old
+        // bounding-box rasterization loop cover the entire grid (the min
+        // bound clamps up to 0, the max bound clamps down to size-2).
+        data.extend_from_slice(&1i32.to_le_bytes());
+        let verts: [[f32; 3]; 3] = [
+            [-200_000.0, 0.0, -200_000.0],
+            [200_000.0, 100.0, 0.0],
+            [0.0, 50.0, 200_000.0],
+        ];
+        for vertex in &verts {
+            for coordinate in vertex {
+                data.extend_from_slice(&coordinate.to_le_bytes());
+            }
+        }
+
+        // Cell grid: (map_width/16).ceil() per axis; all cells empty.
+        let cells = ((map_width / 16.0).ceil() as u32).max(1);
+        for _ in 0..(cells * cells) {
+            data.extend_from_slice(&0u32.to_le_bytes()); // exists = 0
+        }
+
+        data.extend_from_slice(&0i32.to_le_bytes()); // object_event_count = 0
+        for _ in 0..(size * size) {
+            data.extend_from_slice(&1i16.to_le_bytes()); // event grid, all "walkable"
+        }
+        // No regene events / warps — EOF is treated as zero of each.
+
+        let mut cursor = io::Cursor::new(&data);
+        let smd = SmdFile::parse(&mut cursor).expect("parse synthetic SMD");
+
+        let blocked = smd.bot_blocked.iter().filter(|&&b| b).count();
+        assert!(
+            blocked < smd.bot_blocked.len(),
+            "a single garbage-coordinate collision face should not block the entire grid"
+        );
     }
 
     /// Integration test: parse a real SMD file (moradon_0826.smd).

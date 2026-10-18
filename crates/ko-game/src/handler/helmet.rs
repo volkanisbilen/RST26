@@ -41,7 +41,9 @@ pub fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     let result = build_helmet_packet(hide_helmet, hide_cospre, sid);
 
     // Broadcast to region (3x3 grid)
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     world.broadcast_to_3x3(
         pos.zone_id,
         pos.region_x,

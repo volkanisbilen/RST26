@@ -114,8 +114,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     };
 
     // Determine respawn location
-    let (dest_zone, mut dest_x, mut dest_z) =
-        determine_respawn_location(&char_info, pos.zone_id, &world);
+    // A dead Manes participant stays in the event and returns to their nation's entry line.
+    let manes_point = world
+        .manes_survival_manager
+        .respawn_point(&world, sid, pos.zone_id);
+    let (dest_zone, mut dest_x, mut dest_z) = match manes_point {
+        Some((x, z)) => (pos.zone_id, x, z),
+        None => determine_respawn_location(&char_info, pos.zone_id, &world),
+    };
 
     // Reset state: set to standing, restore HP/MP
     world.update_res_hp_type(sid, crate::world::USER_STANDING);
@@ -132,7 +138,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     //   if (GetZoneID() == ZONE_UNDER_CASTLE) MSpChange(GetMaxMana());
     // Only ZONE_UNDER_CASTLE gets full MP restore on respawn
-    if dest_zone == ZONE_UNDER_CASTLE {
+    if dest_zone == ZONE_UNDER_CASTLE || manes_point.is_some() {
         world.update_character_mp(sid, char_info.max_mp);
     }
 
@@ -438,7 +444,8 @@ pub(crate) fn activate_blink_with_duration(
             };
             let state_pkt =
                 build_state_change_broadcast(sid as u32, STATE_CHANGE_ABNORMAL, normal_type);
-            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room))
+            {
                 world.broadcast_to_3x3(
                     pos.zone_id,
                     pos.region_x,
@@ -570,11 +577,39 @@ fn determine_respawn_location(
         }
     }
 
+    // ── 2b. Delos: CSW master-clan members respawn in the castellan area ──
+    //   C++ GetStartPosition (User.cpp:4351): x = 505 + rand(0..range_x), z = 840 + rand(0..range_z)
+    if current_zone == ZONE_DELOS {
+        let master = world.get_csw_master_knights();
+        if master != 0 && char_info.knights_id != 0 && char_info.knights_id == master {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let (range_x, range_z) = world
+                .get_start_position(current_zone)
+                .map(|s| (s.range_x.max(0), s.range_z.max(0)))
+                .unwrap_or((5, 5));
+            return (
+                current_zone,
+                505.0 + rng.gen_range(0..=range_x) as f32,
+                840.0 + rng.gen_range(0..=range_z) as f32,
+            );
+        }
+    }
+
     // ── 3. Chaos Dungeon / Bowl event → random spawn point ───────────
     //   if (GetZoneID() == ZONE_CHAOS_DUNGEON || (tBowlEventZone == GetZoneID() && isBowlEventActive))
     //     GetStartPositionRandom(sx, sz);
-    if let Some((rx, rz)) = world.get_start_position_random(current_zone) {
-        return (current_zone, rx, rz);
+    // Previously missing the isBowlEventActive/tBowlEventZone gate entirely --
+    // any zone with a start_position_random row (Ronark Land included) always
+    // took this branch, so players/bots respawned at the bowl center there
+    // even with no bowl event running, instead of falling through to their
+    // proper nation spawn in step 5.
+    let in_bowl_event =
+        world.is_bowl_event_active() && world.get_bowl_event_zone() as u16 == current_zone;
+    if current_zone == ZONE_CHAOS_DUNGEON || in_bowl_event {
+        if let Some((rx, rz)) = world.get_start_position_random(current_zone) {
+            return (current_zone, rx, rz);
+        }
     }
 
     // ── 4. Juraid Mountain — stage-specific respawn coords ───────────

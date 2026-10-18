@@ -82,7 +82,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 vis_pkt.write_u8(5);
                 vis_pkt.write_u32(1);
                 let arc_vis_pkt = Arc::new(vis_pkt);
-                if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+                if let Some((pos, event_room)) =
+                    world.with_session(sid, |h| (h.position, h.event_room))
+                {
                     world.broadcast_to_3x3(
                         pos.zone_id,
                         pos.region_x,
@@ -105,6 +107,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                     let ac = clan
                         .as_ref()
                         .and_then(|ki| crate::handler::region::resolve_alliance_cape(ki, &world));
+                    let is_king = ch
+                        .as_ref()
+                        .is_some_and(|c| world.is_king(c.nation, &c.name));
                     let inout_pkt = build_user_inout_with_clan(
                         INOUT_IN,
                         sid,
@@ -112,6 +117,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                         &pos,
                         clan.as_ref(),
                         ac,
+                        is_king,
                         0,
                         1, // visible
                         &bs,
@@ -272,6 +278,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             let ac = clan
                 .as_ref()
                 .and_then(|ki| crate::handler::region::resolve_alliance_cape(ki, &world));
+            let is_king = ch
+                .as_ref()
+                .is_some_and(|c| world.is_king(c.nation, &c.name));
             let inout_pkt = build_user_inout_with_clan(
                 inout_type,
                 sid,
@@ -279,6 +288,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 &pos,
                 clan.as_ref(),
                 ac,
+                is_king,
                 0, // GM visibility toggle — no invisibility type
                 gm_abnormal,
                 &bs,

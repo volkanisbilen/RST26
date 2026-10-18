@@ -1,0 +1,29 @@
+AKARA ALTAR (2625 native CUISpecialAuction, re_specialauction.uif) - protocol reversed from the client
+=====================================================================================================
+Opcode 0xC3 both ways (CGameProcMain case 0xC3 -> [Main+0x648]->recv 0xDD4AF0; sends 0xDCC410 / 0xDCC460 / 0xDCC4F0).
+NPC: Cyber 31774 "Akara's Altar" (model 30001 Goddess Akara Statue), Moradon 831,668, Lua 31774_Akara.lua,
+     SelectMsg(UID, 58, -1, -1, NPC) opens the window. Menu texts in Quest_Menu_us.tbl: 45202 [Akara Altar],
+     45162 How to Use, 45163 Basic Info, 45164 Bidding and Claim, 45165 Time.
+
+Client item table: Data\SpecialAuction_us.tbl (140 rows) / special_auction_us.tbl (126 rows) - which one is loaded: TODO
+  row = list index (round * 14 + day 0..13); 8 slots x [i32 item][u32 count][u64 start price][u32 bid step][u32 ?]
+  The client shows a list row only if the item the server sends matches its table slot.
+
+C->S
+  C3 01                    open / main list            (tab 0)
+  C3 04                    my bids / claim list        (tab 2)
+  C3 07                    history                     (tab 3)
+  C3 03 [u32 list][u8 slot][u8 b4][u32 item][u16 count][u32 bid][u8 bC]     bid (19 bytes)
+  C3 06 [u32 list][u8 slot][u8 b4][u32 item][u16 count]                    claim (14 bytes)
+        (fields = the entry object: +3C list, +34 slot, +04 ?, +00 item, +38 count, +08 bid, +0C ?)
+
+S->C (first byte after C3 = sub)
+  01 main list:
+     [u16 status]  0 -> error text 0xAABB | 2 -> text 0xAABA | 3 -> text 0xAABC | 1 -> list:
+     [u32 round] (client keeps round-1) [u32 ?] [u8 ?] [u32 seconds left] [u8 day 0..13]
+     [u16 n] n * ([u8 slot][u32 item][u64 price (current highest bid, or start price)][str8 highest bidder])
+     (same layout Cyber ACS 2383 sent: u16 status 1, u32 0x14, u32 1, u8 1, u32 secs, u8 list, u16 8, entries)
+  04 my bids:
+     [u16 status] 1 -> [u8 n] n * ([u32 list][u8 slot][u8 b4][u32 item][u16 count][u32 my bid][u8 bC]
+                                   [u64 price][u8 state 1/2/3/4])   (state 3 = won / claimable ?)
+  02, 03, 05, 06, 07: TODO (handler 0xDD4AF0..0xDD78C0; 7 = history: u16 n + 14-case switch per entry)

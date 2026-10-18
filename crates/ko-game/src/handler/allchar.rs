@@ -259,11 +259,7 @@ async fn handle_slot_reorder(
             )
             .await?;
 
-        tracing::info!(
-            "[{}] Slot reorder: {:?}",
-            session.addr(),
-            ranks
-        );
+        tracing::info!("[{}] Slot reorder: {:?}", session.addr(), ranks);
     }
 
     // Refresh the character list after reorder.
@@ -303,9 +299,10 @@ fn write_character_slot(
         }
     }
 
-    // 54 trailing zero bytes.
-    for _ in 0..TRAILING_ZEROS {
-        pkt.write_u8(0);
+    // 54 trailing bytes. TEMPORARY DIAGNOSTIC: byte i = 100 + i, so the second number the character select shows
+    // ("level/x") tells which byte the client reads as the rebirth level; then that byte is set for real.
+    for i in 0..TRAILING_ZEROS {
+        pkt.write_u8(100 + i as u8);
     }
 }
 
@@ -363,26 +360,36 @@ mod tests {
     fn test_slot_roundtrip() {
         let mut pkt = Packet::new(0x0C);
         pkt.write_string("TestHero");
-        pkt.write_u8(1);              // race
-        pkt.write_u16(101);           // class
-        pkt.write_i16(60);            // level
-        pkt.write_u8(3);              // face
-        pkt.write_u32(0x00FF8800);    // hair
-        pkt.write_i16(21);            // zone
-        // 8 visible equip slots + 54 trailing
-        for _ in 0..8 { pkt.write_u32(0); pkt.write_u16(0); }
-        for _ in 0..TRAILING_ZEROS { pkt.write_u8(0); }
+        pkt.write_u8(1); // race
+        pkt.write_u16(101); // class
+        pkt.write_i16(60); // level
+        pkt.write_u8(3); // face
+        pkt.write_u32(0x00FF8800); // hair
+        pkt.write_i16(21); // zone
+                           // 8 visible equip slots + 54 trailing
+        for _ in 0..8 {
+            pkt.write_u32(0);
+            pkt.write_u16(0);
+        }
+        for _ in 0..TRAILING_ZEROS {
+            pkt.write_u8(0);
+        }
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_string(), Some("TestHero".to_string()));
         assert_eq!(r.read_u8(), Some(1));
         assert_eq!(r.read_u16(), Some(101));
         assert_eq!(r.read_i16(), Some(60));
-        assert_eq!(r.read_u8(), Some(3));     // face
+        assert_eq!(r.read_u8(), Some(3)); // face
         assert_eq!(r.read_u32(), Some(0x00FF8800));
         assert_eq!(r.read_i16(), Some(21));
-        for _ in 0..8 { assert_eq!(r.read_u32(), Some(0)); assert_eq!(r.read_u16(), Some(0)); }
-        for _ in 0..TRAILING_ZEROS { assert_eq!(r.read_u8(), Some(0)); }
+        for _ in 0..8 {
+            assert_eq!(r.read_u32(), Some(0));
+            assert_eq!(r.read_u16(), Some(0));
+        }
+        for _ in 0..TRAILING_ZEROS {
+            assert_eq!(r.read_u8(), Some(0));
+        }
         assert_eq!(r.read_u8(), None);
     }
 

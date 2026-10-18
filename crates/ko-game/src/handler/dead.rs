@@ -25,7 +25,8 @@ use std::sync::Arc;
 
 use crate::session::{ClientSession, SessionState};
 use crate::systems::bdw;
-use crate::systems::event_room::TempleEventType;
+use crate::systems::event_room::{self, TempleEventType};
+use crate::systems::juraid;
 use crate::world::types::{
     ZONE_BATTLE6, ZONE_CAITHAROS_ARENA, ZONE_CHAOS_DUNGEON, ZONE_DELOS_CASTELLAN,
     ZONE_DESPERATION_ABYSS, ZONE_DRAGON_CAVE, ZONE_DRAKI_TOWER, ZONE_DUNGEON_DEFENCE,
@@ -142,6 +143,15 @@ pub fn broadcast_death(world: &WorldState, dead_sid: SessionId) {
         world.send_to_session_owned(dead_sid, cancel_pkt);
     }
 
+    // Restore persistent scroll buffs (AC/Attack/HP-MP/etc, skill_id > 500000)
+    // the same way a zone change does — clear_all_buffs above wiped every
+    // buff including these, but it deliberately doesn't touch saved_magic_map
+    // ("without removing saved magic", same as zone_change.rs), so whatever's
+    // still in there just needs to be reapplied with its remaining duration.
+    // Without this, dying wasted the rest of a premium scroll's duration even
+    // though surviving a zone change already didn't.
+    world.recast_saved_magic(dead_sid);
+
     // Armour slots (HEAD, BREAST, LEG, GLOVE, FOOT) lose rand(2..=5) durability.
     world.item_wore_out(dead_sid, super::durability::WORE_TYPE_DEFENCE, 0);
 
@@ -177,7 +187,10 @@ pub fn broadcast_death(world: &WorldState, dead_sid: SessionId) {
                 }
                 // ── FT / Delos Castellan / Dungeon Defence death ─────
                 //   KickOutZoneUser(true, ZONE_MORADON);
-                ZONE_FORGOTTEN_TEMPLE | ZONE_DELOS_CASTELLAN | ZONE_DUNGEON_DEFENCE => {
+                ZONE_DUNGEON_DEFENCE => {
+                    super::dungeon_defence::on_player_death(world, dead_sid);
+                }
+                ZONE_FORGOTTEN_TEMPLE | ZONE_DELOS_CASTELLAN => {
                     let nation = world
                         .get_character_info(dead_sid)
                         .map(|c| c.nation)
@@ -390,6 +403,11 @@ pub async fn apply_npc_death_xp_loss(
         None => return,
     };
 
+    // Manes Survival runs on its own temporary level: a death never costs real EXP.
+    if crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&pos.zone_id) {
+        return;
+    }
+
     // C++ checks ONLY m_bExpLost — war_zone flag is independent (Unit.cpp:2162,2174).
     let should_lose_exp = world.get_zone(pos.zone_id).is_some_and(|zone| {
         zone.zone_info
@@ -439,6 +457,10 @@ fn is_no_gold_loss_zone(zone_id: u16) -> bool {
             | ZONE_CAITHAROS_ARENA
             | ZONE_ISILOON_ARENA
             | ZONE_FELANKOR_ARENA
+            | 57
+            | 58
+            | 59
+            | 60
     )
 }
 
@@ -810,14 +832,46 @@ fn bdw_flag_carrier_death(world: &WorldState, dead_sid: SessionId) {
     }
 }
 
-/// Broadcast a PvP death notice to all players in the zone.
-/// Sends WIZ_EXT_HOOK (0xE9) with sub-opcode DeathNotice (0xD7) to every player
-/// in the same zone. The `killtype` field varies per recipient:
-/// - 1: the recipient IS the killer or victim (direct participants)
-/// - 2: the recipient is in the killer's party
-/// - 3: bystander (everyone else)
-/// Packet format (SByte mode):
-/// `[u8 WIZ_EXT_HOOK(0xE9)] [u8 0xD7] [u8 killtype] [string killer_name] [string victim_name] [u16 x] [u16 z]`
+/// Build the exact JstKO v2615 kill narration payload used by KA_KillUpdate.
+///
+/// Wire recovered from the v2615 client's packet dispatcher, case `0xC8`:
+/// `[WIZ_KILLASSIST=0xC8][kill=1][type=1][u32 killer_id]`
+/// `[DByte killer_name][u8 killer_nation][u16 stage]`.
+pub fn build_kill_narration_packet(
+    killer_id: u32,
+    killer_name: &str,
+    killer_nation: u8,
+    stage: u16,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizKillAssist as u8);
+    pkt.write_u8(1); // kaopcode::kill
+    pkt.write_u8(1);
+    pkt.write_u32(killer_id);
+    pkt.write_string(killer_name);
+    pkt.write_u8(killer_nation);
+    pkt.write_u16(stage.max(1));
+    pkt
+}
+
+/// Build KA_KillUpdate's every-10-kills total/party announcement payload.
+/// Wire: `[0xC8][kill=1][type=3][u32 killer_id][DByte name][nation][u16 total]`.
+pub fn build_kill_total_packet(
+    killer_id: u32,
+    killer_name: &str,
+    killer_nation: u8,
+    total_kills: u16,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizKillAssist as u8);
+    pkt.write_u8(1); // kaopcode::kill
+    pkt.write_u8(3);
+    pkt.write_u32(killer_id);
+    pkt.write_string(killer_name);
+    pkt.write_u8(killer_nation);
+    pkt.write_u16(total_kills);
+    pkt
+}
+
+/// Broadcast the native death notice and update the killer's narration UI.
 pub fn send_death_notice(world: &WorldState, killer_sid: SessionId, victim_sid: SessionId) {
     let killer_name = match world.get_session_name(killer_sid) {
         Some(n) => n,
@@ -878,11 +932,30 @@ pub fn pvp_loyalty_on_death(world: &WorldState, killer_sid: SessionId, victim_si
         .get_zone(killer_zone)
         .and_then(|z| z.zone_info.as_ref().map(|zi| zi.abilities.give_loyalty))
         .unwrap_or(false);
-    if !zone_gives_loy {
+    // Winning nations can continue the post-war raid in the defeated nation's
+    // capital. Those home-zone records normally disable NP, so honor the live
+    // invasion flags as an explicit PvP-loyalty exception.
+    let killer_nation = world
+        .get_character_info(killer_sid)
+        .map(|ch| ch.nation)
+        .unwrap_or(0);
+    let battle = world.get_battle_state();
+    let active_raid = (killer_zone == crate::world::types::ZONE_KARUS
+        && killer_nation == 2
+        && battle.karus_open_flag)
+        || (killer_zone == crate::world::types::ZONE_ELMORAD
+            && killer_nation == 1
+            && battle.elmorad_open_flag);
+    if !zone_gives_loy && !active_raid {
         return;
     }
 
     let rates = LoyaltyRates::default();
+    let loyalty_before = world
+        .get_character_info(killer_sid)
+        .map(|c| c.loyalty)
+        .unwrap_or(0);
+
     let in_party = world.is_in_party(killer_sid);
     if in_party {
         let party_id = world.get_party_id(killer_sid);
@@ -894,6 +967,29 @@ pub fn pvp_loyalty_on_death(world: &WorldState, killer_sid: SessionId, victim_si
         }
     } else {
         loyalty::loyalty_change(world, killer_sid, victim_sid, 0, &rates);
+    }
+
+    // ArdReam / Ronark Land Base / Ronark Land: +15% NP for whichever nation
+    // currently holds that zone's monument, on top of whatever NP the kill
+    // above already granted.
+    if matches!(
+        killer_zone,
+        crate::world::types::ZONE_ARDREAM
+            | crate::world::types::ZONE_RONARK_LAND_BASE
+            | crate::world::types::ZONE_RONARK_LAND
+    ) && world.get_pvp_monument_nation(killer_zone) == killer_nation
+    {
+        let loyalty_after = world
+            .get_character_info(killer_sid)
+            .map(|c| c.loyalty)
+            .unwrap_or(0);
+        let gained = loyalty_after.saturating_sub(loyalty_before) as i64;
+        if gained > 0 {
+            let bonus = ((gained as f64) * 0.15).round() as i32;
+            if bonus > 0 {
+                loyalty::send_loyalty_change(world, killer_sid, bonus, true, false, false);
+            }
+        }
     }
 }
 
@@ -927,7 +1023,29 @@ pub fn rob_chaos_skill_items(world: &WorldState, sid: SessionId) {
 /// nation in the appropriate Juraid room.
 /// This is a public helper that other handlers can call. The actual wiring in
 /// attack.rs::handle_npc_death should call this when the NPC dies in zone 87.
-pub fn track_juraid_monster_kill(world: &WorldState, killer_sid: SessionId) {
+pub fn track_juraid_monster_kill(
+    world: &WorldState,
+    killer_sid: SessionId,
+    killed_npc_sid: u16,
+    killed_event_room: u16,
+    killed_summon_type: u8,
+    killed_x: f32,
+    killed_z: f32,
+) {
+    // Match the C++ CNpc::HandleJuraidKill gate: only Juraid-spawned
+    // entities participate in the event. Ordinary zone monsters (including
+    // GM-spawned monsters with summon_type=0) must not alter Juraid scores or
+    // bridge progression.
+    if !matches!(
+        killed_summon_type,
+        juraid::SUMMON_JURAID_MAIN
+            | juraid::SUMMON_JURAID_CHILD
+            | juraid::SUMMON_JURAID_DEVA
+            | juraid::SUMMON_JURAID_MONUMENT
+    ) {
+        return;
+    }
+
     // Check if Juraid is active
     let is_juraid_active = world
         .event_room_manager
@@ -958,29 +1076,224 @@ pub fn track_juraid_monster_kill(world: &WorldState, killer_sid: SessionId) {
             .is_some_and(|room| room.get_user(&killer_name).is_some());
 
         if found {
-            // We need to update both the EventRoom scores and the JuraidRoomState
-            if let Some(mut room) = world
-                .event_room_manager
-                .get_room_mut(TempleEventType::JuraidMountain, room_id)
-            {
-                // Update EventRoom scores directly
-                if killer_nation == 1 {
-                    room.karus_score += 1;
-                } else {
-                    room.elmorad_score += 1;
+            let (k_score, e_score, score_changed) = {
+                let Some(mut room) = world
+                    .event_room_manager
+                    .get_room_mut(TempleEventType::JuraidMountain, room_id)
+                else {
+                    return;
+                };
+                if room.finish_packet_sent {
+                    return;
                 }
-                tracing::info!(
-                    "Juraid kill: player '{}' (nation={}) killed monster in room {}, scores: K={} E={}",
-                    killer_name,
-                    killer_nation,
+                let mut score_changed = false;
+                if juraid::is_juraid_monument(killed_npc_sid) {
+                    let monument_nation = juraid::monument_nation(killed_npc_sid);
+                    // Only the opposing nation may destroy a monument. Per
+                    // the Juraid design document, a point is granted only to
+                    // the tied/trailing team.
+                    let can_score = juraid::can_monument_score(
+                        killer_nation,
+                        killed_npc_sid,
+                        room.karus_score,
+                        room.elmorad_score,
+                    );
+                    if can_score {
+                        score_changed = true;
+                        if killer_nation == 1 {
+                            room.karus_score += 1;
+                        } else if killer_nation == 2 {
+                            room.elmorad_score += 1;
+                        }
+                    }
+                    tracing::info!(
+                        room_id,
+                        killer_nation,
+                        monument_nation,
+                        can_score,
+                        "Juraid Monument killed"
+                    );
+                    if monument_nation != 0 {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        world.set_juraid_monument_respawn(
+                            room_id,
+                            monument_nation,
+                            now.saturating_add(juraid::MONUMENT_RESPAWN_SECS),
+                        );
+                    }
+                } else if juraid::is_deva_bird(killed_npc_sid) {
+                    room.winner_nation = killer_nation;
+                }
+                (room.karus_score, room.elmorad_score, score_changed)
+            };
+
+            // Wave monsters advance bridge progress but never alter the score.
+            // Refresh the scoreboard only when an eligible monument grants +1.
+            if score_changed {
+                let arc_screen = Arc::new(event_room::build_temple_screen_packet(k_score, e_score));
+                if let Some(room) = world
+                    .event_room_manager
+                    .get_room(TempleEventType::JuraidMountain, room_id)
+                {
+                    for u in room.karus_users.values().filter(|u| !u.logged_out) {
+                        world.send_to_session_arc(u.session_id, Arc::clone(&arc_screen));
+                    }
+                    for u in room.elmorad_users.values().filter(|u| !u.logged_out) {
+                        world.send_to_session_arc(u.session_id, Arc::clone(&arc_screen));
+                    }
+                }
+            }
+
+            if !juraid::is_juraid_monument(killed_npc_sid) {
+                spawn_juraid_child_monsters(
+                    world,
                     room_id,
-                    room.karus_score,
-                    room.elmorad_score,
+                    killed_npc_sid,
+                    killed_event_room,
+                    killed_summon_type,
+                    killed_x,
+                    killed_z,
                 );
             }
+
+            // Match CNpc::HandleJuraidKill exactly: main and released child
+            // monsters are counted separately for each nation. A nation opens
+            // only its own bridge at 4/20, 8/40 and 12/60.
+            let mut bridge_state = world.get_juraid_bridge_state(room_id).unwrap_or_default();
+            match (killer_nation, killed_summon_type) {
+                (1, juraid::SUMMON_JURAID_MAIN) => {
+                    bridge_state.karus_main_kills = bridge_state.karus_main_kills.saturating_add(1)
+                }
+                (1, juraid::SUMMON_JURAID_CHILD) => {
+                    bridge_state.karus_sub_kills = bridge_state.karus_sub_kills.saturating_add(1)
+                }
+                (2, juraid::SUMMON_JURAID_MAIN) => {
+                    bridge_state.elmorad_main_kills =
+                        bridge_state.elmorad_main_kills.saturating_add(1)
+                }
+                (2, juraid::SUMMON_JURAID_CHILD) => {
+                    bridge_state.elmorad_sub_kills =
+                        bridge_state.elmorad_sub_kills.saturating_add(1)
+                }
+                _ => {}
+            }
+            let (main_kills, sub_kills) = if killer_nation == 1 {
+                (bridge_state.karus_main_kills, bridge_state.karus_sub_kills)
+            } else {
+                (
+                    bridge_state.elmorad_main_kills,
+                    bridge_state.elmorad_sub_kills,
+                )
+            };
+            for bridge_idx in 0..juraid::NUM_BRIDGES {
+                if main_kills >= juraid::ROOM_MAIN_KILL_THRESHOLDS[bridge_idx]
+                    && sub_kills >= juraid::ROOM_BRIDGE_KILL_THRESHOLDS[bridge_idx] as u16
+                    && bridge_state.open_bridge(bridge_idx, killer_nation)
+                {
+                    world.broadcast_juraid_bridge_open_for_nation(
+                        bridge_idx,
+                        room_id as u16,
+                        killer_nation,
+                    );
+                    tracing::info!(
+                        room_id,
+                        bridge_idx,
+                        killer_nation,
+                        main_kills,
+                        sub_kills,
+                        "Juraid bridge opened by verified main/sub thresholds"
+                    );
+                }
+            }
+            world.set_juraid_bridge_state(room_id, bridge_state);
+
+            // Deva Bird death should enter the reward phase, leaving the existing
+            // 20-second finish counter for chest interaction before teleport.
+            if juraid::is_deva_bird(killed_npc_sid) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let finish_secs = crate::systems::event_room::EventRoomManager::vroom_index(
+                    TempleEventType::JuraidMountain,
+                )
+                .and_then(|idx| world.event_room_manager.get_vroom_opt(idx))
+                .map(|opts| ((opts.sign + opts.play).max(0) as u64) * 60)
+                .unwrap_or(0);
+                world.event_room_manager.update_temple_event(|s| {
+                    s.manual_close = false;
+                    s.start_time = now.saturating_sub(finish_secs);
+                    s.closed_time = now;
+                });
+                tracing::info!(
+                    "Juraid Deva Bird killed by '{}'; reward countdown requested",
+                    killer_name,
+                );
+            }
+
+            tracing::info!(
+                "Juraid kill: player '{}' (nation={}) killed entity in room {}, monument scores: K={} E={}",
+                killer_name,
+                killer_nation,
+                room_id,
+                k_score,
+                e_score,
+            );
             return;
         }
     }
+}
+
+fn spawn_juraid_child_monsters(
+    world: &WorldState,
+    room_id: u8,
+    killed_npc_sid: u16,
+    killed_event_room: u16,
+    killed_summon_type: u8,
+    killed_x: f32,
+    killed_z: f32,
+) {
+    if juraid::is_deva_bird(killed_npc_sid)
+        || juraid::is_bridge(killed_npc_sid)
+        || juraid::is_juraid_monument(killed_npc_sid)
+    {
+        return;
+    }
+
+    let is_runtime_main = killed_summon_type == juraid::SUMMON_JURAID_MAIN;
+    let is_legacy_main =
+        killed_summon_type == 0 && juraid::is_main_monster(world, room_id, killed_npc_sid);
+    if !is_runtime_main && !is_legacy_main {
+        return;
+    }
+
+    // C++ CNpc::HandleJuraidKill releases five creatures chosen from this
+    // fixed set; it does not choose another entry from MONSTER_JURAID_RESPAWN.
+    let selector =
+        (usize::from(killed_npc_sid) + killed_x.to_bits() as usize + killed_z.to_bits() as usize)
+            % juraid::JURAID_CHILD_SIDS.len();
+    let child_sid = juraid::JURAID_CHILD_SIDS[selector];
+
+    let spawned = world.spawn_event_npc_ex(
+        child_sid,
+        true,
+        juraid::ZONE_JURAID,
+        killed_x,
+        killed_z,
+        juraid::ROOM_CHILD_MONSTER_COUNT,
+        killed_event_room,
+        juraid::SUMMON_JURAID_CHILD,
+    );
+    tracing::info!(
+        room_id,
+        killed_npc_sid,
+        child_sid,
+        spawned = spawned.len(),
+        "Juraid main monster released child monsters"
+    );
 }
 
 /// Track a Juraid PvP kill — updates room kill count and broadcasts scoreboard.
@@ -1131,6 +1444,36 @@ mod tests {
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u32(), Some(42));
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn test_kill_narration_matches_ka_kill_update_wire() {
+        let pkt = build_kill_narration_packet(10_001, "Wolfcstein", 1, 40);
+        assert_eq!(pkt.opcode, Opcode::WizKillAssist as u8);
+
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(1)); // kaopcode::kill
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u32(), Some(10_001));
+        assert_eq!(r.read_string().as_deref(), Some("Wolfcstein"));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(40)); // Legendary cap
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn test_kill_total_matches_ka_kill_update_wire() {
+        let pkt = build_kill_total_packet(77, "JOLLY_JOKER", 2, 40);
+        assert_eq!(pkt.opcode, Opcode::WizKillAssist as u8);
+
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u8(), Some(3));
+        assert_eq!(r.read_u32(), Some(77));
+        assert_eq!(r.read_string().as_deref(), Some("JOLLY_JOKER"));
+        assert_eq!(r.read_u8(), Some(2));
+        assert_eq!(r.read_u16(), Some(40));
         assert_eq!(r.remaining(), 0);
     }
 

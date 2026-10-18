@@ -78,6 +78,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     // Must be active
     if event.status != 1 {
+        warn!(
+            "[{}] ObjectEvent: index {} inactive (status={}) in zone {}",
+            session.addr(),
+            object_index,
+            event.status,
+            pos.zone_id
+        );
         send_fail(session, event.obj_type as u8).await?;
         return Ok(());
     }
@@ -87,6 +94,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let dz = pos.z - event.pos_z;
     let dist = (dx * dx + dz * dz).sqrt();
     if dist >= MAX_OBJECT_RANGE {
+        warn!(
+            "[{}] ObjectEvent: index {} out of range (dist={:.1}, max={}) in zone {}",
+            session.addr(),
+            object_index,
+            dist,
+            MAX_OBJECT_RANGE,
+            pos.zone_id
+        );
         send_fail(session, event.obj_type as u8).await?;
         return Ok(());
     }
@@ -154,6 +169,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 .map(|ch| ch.nation)
                 .unwrap_or(0);
             if event.belong != 0 && event.belong != nation as i16 {
+                warn!(
+                    "[{}] ObjectEvent: WARP_GATE index {} belong={} nation={} mismatch in zone {}",
+                    session.addr(),
+                    object_index,
+                    event.belong,
+                    nation,
+                    pos.zone_id
+                );
                 send_fail(session, event.obj_type as u8).await?;
                 return Ok(());
             }
@@ -162,6 +185,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             //   `(GetZoneID() != GetNation() && GetZoneID() <= Nation::ELMORAD)`
             // Zone 1 = Karus, Zone 2 = Elmorad — if player is in opposing nation's zone, deny.
             if pos.zone_id <= 2 && pos.zone_id != nation as u16 {
+                warn!(
+                    "[{}] ObjectEvent: WARP_GATE index {} opposing-nation zone={} nation={}",
+                    session.addr(),
+                    object_index,
+                    pos.zone_id,
+                    nation
+                );
                 send_fail(session, event.obj_type as u8).await?;
                 return Ok(());
             }
@@ -169,6 +199,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // Send warp list using the control_npc as the warp group
             let sent = warp_list::send_warp_list(session, event.control_npc as i32).await?;
             if !sent {
+                warn!(
+                    "[{}] ObjectEvent: WARP_GATE index {} control_npc={} send_warp_list returned no list (zone={})",
+                    session.addr(),
+                    object_index,
+                    event.control_npc,
+                    pos.zone_id
+                );
                 send_fail(session, event.obj_type as u8).await?;
             } else {
                 world.set_check_warp_zone_change(sid, true);
@@ -182,6 +219,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
         Some(ObjectType::Anvil) => {
             // Anvil: open upgrade UI
+            world.update_session(sid, |h| {
+                h.event_nid = nid as i16;
+                h.event_sid = event.s_index;
+            });
+
             let mut result = Packet::new(Opcode::WizItemUpgrade as u8);
             result.write_u8(1); // ITEM_UPGRADE_REQ opcode
             result.write_u16(nid);

@@ -1,0 +1,5 @@
+-- =============================================
+-- RİMA GUARD  //  www.RimaGUARD.com 
+-- Knight Online Pvp v24xx Server Files & AntiCheat System
+-- =============================================
+local NPC = 25009;

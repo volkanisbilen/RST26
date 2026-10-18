@@ -29,6 +29,12 @@ pub const MAGIC_CANCEL_TRANSFORMATION: u8 = 7;
 /// Extend type 4 buff duration.
 pub const MAGIC_TYPE4_EXTEND: u8 = 8;
 
+/// Opens the client-side transformation selection list for a disguise item.
+pub const MAGIC_TRANSFORM_LIST: u8 = 9;
+
+/// Transformation-specific failure response.
+pub const MAGIC_FAIL_TRANSFORMATION: u8 = 10;
+
 /// Second cancel opcode — identical behavior to MAGIC_CANCEL.
 pub const MAGIC_CANCEL2: u8 = 13;
 

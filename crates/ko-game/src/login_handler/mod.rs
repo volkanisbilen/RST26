@@ -57,7 +57,7 @@ pub async fn dispatch(session: &mut LoginSession, packet: Packet) -> anyhow::Res
 
             let mut response = Packet::new(LoginOpcode::LsOtp as u8); // 0xFA
             response.write_i16(1); // sub-opcode 0x01 (primary key delivery)
-            response.write_u8(0);  // key_len = 0 (no encryption key)
+            response.write_u8(0); // key_len = 0 (no encryption key)
             session.send_packet(&response).await
         }
         Some(LoginOpcode::LsVersionReq) => version::handle(session, packet).await,

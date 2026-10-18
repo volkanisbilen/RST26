@@ -51,9 +51,14 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
         return Ok(());
     }
 
-    let (char_info, current_zone) = match world.with_session(sid, |h| {
-        h.character.as_ref().map(|c| (c.clone(), h.position.zone_id))
-    }).flatten() {
+    let (char_info, current_zone) = match world
+        .with_session(sid, |h| {
+            h.character
+                .as_ref()
+                .map(|c| (c.clone(), h.position.zone_id))
+        })
+        .flatten()
+    {
         Some(v) => v,
         None => return Ok(()),
     };

@@ -1,7 +1,26 @@
 local NPC = 25177;
 
 if (EVENT == 100) then  -- ,50546,2000 Silindi. 50520,944,
-	SelectMsg(UID, 3, -1, 11804, NPC,45234,938,45235,940,45236,942);  --,50577,7000
+	SelectMsg(UID, 3, -1, 11804, NPC,45234,938,45235,940,45236,942,8354,946);  --,50577,7000
+end
+
+------------------------------------------------------------------------------------------------------------------------------
+-- EXPERIENCE SEALED JAR EXCHANGE
+
+if (EVENT == 946) then
+	SelectMsg(UID, 3, -1, 11804, NPC,60001,947,60002,948);
+end
+
+if (EVENT == 947) then -- Experience Sealed Jar [50,000,000]
+	if (RunQuestExchange(UID, 990001) == false) then
+		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
+	end
+end
+
+if (EVENT == 948) then -- Experience Sealed Jar [100,000,000]
+	if (RunQuestExchange(UID, 990002) == false) then
+		SelectMsg(UID, 2, -1, 91002, NPC, 27, -1);
+	end
 end
 
 ------------------------------------------------------------------------------------------------------------------------------

@@ -208,7 +208,8 @@ mod tests {
         pkt.write_u32(1); // bundle_id
         pkt.write_u8(1); // success
         for _ in 0..NPC_HAVE_ITEM_LIST {
-            pkt.write_u32(0); pkt.write_u16(0);
+            pkt.write_u32(0);
+            pkt.write_u16(0);
         }
         assert_eq!(pkt.data.len(), 77); // 4+1+12*6 (v2600)
     }
@@ -244,10 +245,13 @@ mod tests {
         let mut pkt = Packet::new(Opcode::WizBundleOpenReq as u8);
         pkt.write_u32(777);
         pkt.write_u8(1);
-        pkt.write_u32(300001); pkt.write_u16(5);
-        pkt.write_u32(300002); pkt.write_u16(1);
+        pkt.write_u32(300001);
+        pkt.write_u16(5);
+        pkt.write_u32(300002);
+        pkt.write_u16(1);
         for _ in 2..NPC_HAVE_ITEM_LIST {
-            pkt.write_u32(0); pkt.write_u16(0);
+            pkt.write_u32(0);
+            pkt.write_u16(0);
         }
 
         let mut r = PacketReader::new(&pkt.data);

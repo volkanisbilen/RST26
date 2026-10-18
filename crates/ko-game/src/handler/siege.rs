@@ -581,129 +581,86 @@ pub async fn delos_castellan_zone_out(world: &Arc<WorldState>) {
 /// Check if the player is a CSW winner member and teleport them to the castellan zone.
 /// If the player's clan is the castle owner or in alliance with the owner,
 /// they are teleported to `ZONE_DELOS_CASTELLAN` at the fixed spawn point (458, 113).
-/// Returns `false` always (matching C++ behavior where the function always returns false).
+/// Returns true for an eligible owner/alliance member after starting the zone transition.
 pub async fn csw_winner_members_check(session: &mut ClientSession) -> anyhow::Result<bool> {
     let world = session.world().clone();
-    let sw = world.siege_war().read().await;
-    let master_knights = sw.master_knights;
-    drop(sw);
-
-    if master_knights == 0 {
-        return Ok(false);
-    }
-
-    if world.get_knights(master_knights).is_none() {
+    let master_knights = world.siege_war().read().await.master_knights;
+    if master_knights == 0 || world.get_knights(master_knights).is_none() {
         return Ok(false);
     }
 
     let clan_id = get_clan_id(session);
-    if clan_id == 0 {
+    if clan_id == 0 || world.get_knights(clan_id).is_none() {
         return Ok(false);
     }
 
-    if world.get_knights(clan_id).is_none() {
+    if !is_csw_winner_clan(&world, clan_id, master_knights) {
         return Ok(false);
     }
 
-    if is_csw_winner_clan(&world, clan_id, master_knights) {
-        // Teleport to castellan zone
-        let nation = world
-            .with_session(session.session_id(), |h| {
-                h.character.as_ref().map(|c| c.nation)
-            })
-            .flatten()
-            .unwrap_or(0);
-
-        let pkt = build_zone_change_packet(
-            ZONE_DELOS_CASTELLAN,
-            CASTELLAN_SPAWN_X,
-            CASTELLAN_SPAWN_Z,
-            nation,
-        );
-        world.update_position(
-            session.session_id(),
-            ZONE_DELOS_CASTELLAN,
-            CASTELLAN_SPAWN_X,
-            0.0,
-            CASTELLAN_SPAWN_Z,
-        );
-        session.send_packet(&pkt).await?;
-    }
-
-    // C++ always returns false
-    Ok(false)
+    crate::handler::zone_change::server_teleport_to_zone(
+        &world,
+        session.session_id(),
+        ZONE_DELOS_CASTELLAN,
+        CASTELLAN_SPAWN_X,
+        CASTELLAN_SPAWN_Z,
+    );
+    Ok(true)
 }
-
 /// Process monument capture (NPC monument destroyed by a player).
 /// When the monument NPC is killed:
 /// 1. The killer's clan becomes the new castle owner.
 /// 2. The DB siege record is updated.
 /// 3. All players in Delos are notified (monument killed notice + flag update).
-/// `killer_clan_id` must be non-zero and belong to a valid clan with grade <= 3.
+/// `killer_clan_id` must be non-zero and belong to a valid clan.
 /// `pool` is the database connection pool for persisting the change.
-pub async fn monument_capture(world: &Arc<WorldState>, killer_clan_id: u16, pool: &ko_db::DbPool) {
-    if killer_clan_id == 0 {
-        return;
+pub async fn monument_capture(world: &WorldState, killer_clan_id: u16, pool: &ko_db::DbPool) -> bool {
+    if killer_clan_id == 0 || world.get_knights(killer_clan_id).is_none() {
+        tracing::error!(killer_clan_id, "CSW capture rejected: invalid clan");
+        return false;
     }
 
-    // Validate the killer's clan exists and has sufficient grade
-    let clan = match world.get_knights(killer_clan_id) {
-        Some(k) => k,
-        None => return,
-    };
-    if clan.grade > 3 {
-        return;
-    }
-
-    // Check CSW is active and in war phase
     {
         let csw = world.csw_event().read().await;
         if !csw.is_war_active() {
-            return;
+            tracing::warn!(killer_clan_id, "CSW capture rejected: war phase is not active");
+            return false;
         }
     }
 
-    // Update master knights
-    let (castle_index, siege_type) = {
-        let mut sw = world.siege_war().write().await;
-        sw.master_knights = killer_clan_id;
-        (sw.castle_index, sw.siege_type)
-    };
+    let castle_index = world.siege_war().read().await.castle_index;
 
-    // Fire-and-forget DB update
-    let pool = pool.clone();
-    tokio::spawn(async move {
-        let repo = ko_db::repositories::siege::SiegeRepository::new(&pool);
-        if let Err(e) = repo
-            .update_siege(
-                castle_index as i16,
-                killer_clan_id as i16,
-                siege_type as i16,
-                0,
-                0,
-                0,
-            )
-            .await
-        {
-            tracing::error!("failed to update siege after monument capture: {e}");
-        }
-    });
+    // Persist ownership without overwriting the scheduled war date/time. A
+    // missing castle row is an error, not a phantom successful capture.
+    let repo = ko_db::repositories::siege::SiegeRepository::new(pool);
+    if let Err(error) = repo
+        .update_master_knights(castle_index as i16, killer_clan_id as i16)
+        .await
+    {
+        tracing::error!(
+            killer_clan_id,
+            castle_index,
+            error = %error,
+            "failed to persist CSW owner to knights_siege_warfare"
+        );
+        return false;
+    }
+    world.siege_war().write().await.master_knights = killer_clan_id;
+    tracing::info!(killer_clan_id, castle_index, "CSW owner persisted to knights_siege_warfare");
 
-    // Send flag update to all players in Delos
     let arc_flag = Arc::new(build_castle_flag_packet(world, killer_clan_id));
-    let sessions = world.sessions_in_zone(ZONE_DELOS);
-    for sid in sessions {
+    for sid in world.sessions_in_zone(ZONE_DELOS) {
         world.send_to_session_arc(sid, Arc::clone(&arc_flag));
     }
 
-    debug!(
+    tracing::info!(
         "CSW monument captured by clan_id={}, new castle owner set",
         killer_clan_id
     );
+    true
 }
-
 /// Build a WIZ_ZONE_CHANGE teleport packet.
-fn build_zone_change_packet(zone_id: u16, x: f32, z: f32, nation: u8) -> Packet {
+pub(crate) fn build_zone_change_packet(zone_id: u16, x: f32, z: f32, nation: u8) -> Packet {
     let mut pkt = Packet::new(Opcode::WizZoneChange as u8);
     pkt.write_u8(3); // ZONE_CHANGE_TELEPORT
     pkt.write_u16(zone_id);
@@ -1160,7 +1117,7 @@ mod tests {
     // ── monument_capture tests ─────────────────────────────────────────
 
     #[test]
-    fn monument_capture_requires_grade_le_3() {
+    fn monument_capture_does_not_require_clan_grade() {
         let world = make_test_world();
         // Grade 4 should be rejected
         world.insert_knights(make_clan(80, 0, 4));

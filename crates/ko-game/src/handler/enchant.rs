@@ -768,7 +768,10 @@ async fn send_item_full_init(session: &mut ClientSession) -> anyhow::Result<()> 
 }
 
 /// Item enchant — select display category.
-async fn handle_item_category_select(session: &mut ClientSession, category: u8) -> anyhow::Result<()> {
+async fn handle_item_category_select(
+    session: &mut ClientSession,
+    category: u8,
+) -> anyhow::Result<()> {
     let sid = session.session_id();
 
     let mut updated = false;

@@ -625,7 +625,10 @@ mod tests {
         assert!(result.is_some());
 
         let (new_levels, new_rem) = world.get_perk_levels(sid).unwrap();
-        assert_eq!(new_levels, [0i16; 13], "all levels should be zero after reset");
+        assert_eq!(
+            new_levels, [0i16; 13],
+            "all levels should be zero after reset"
+        );
         assert_eq!(new_rem, 6, "refunded points = 3 + 2 + 1");
     }
 
