@@ -23,7 +23,8 @@
 # in order, so instead of one small incremental zip, EVERY zip from --first to the new version is
 # (re)written with the SAME full file set (latest d3d9.dll, XIGNCODE xldr, every Data tbl, plus
 # any other file that ever appeared in the existing zips in the range and still exists in the
-# client) and a Server.ini whose [Version] Files= equals that zip's own version number. The
+# client) and a Server.ini whose [Version] Files= is the LATEST version in EVERY zip (the d3d9.dll also
+# enforces it at game start from patch_version.h, see gen_manifest.py for the release order). The
 # launcher extracts Server.ini last, so a player on any old version who downloads ANY of the zips
 # ends up fully current and then simply continues through the later (identical) zips.
 # Launcher.upd / launcher2.exe (12 MB self-update builds) are NOT repeated in every zip unless you
@@ -223,7 +224,7 @@ def consolidate():
                 zf.write(full, rel)
             info = zipfile.ZipInfo('Server.ini', date_time=(2026, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
-            zf.writestr(info, server_ini_for(v))      # LAST entry: the launcher extracts in order
+            zf.writestr(info, server_ini_for(new_version))   # LATEST version in every zip (not the zip's own number)      # LAST entry: the launcher extracts in order
         print('wrote %d.zip  %.2f MB  sha256 %s' % (v, os.path.getsize(zip_path) / 1e6, sha256_of(zip_path)))
     state['version'] = new_version
     state['files'] = {rel: sha256_of(full) for rel, full in collect()}
