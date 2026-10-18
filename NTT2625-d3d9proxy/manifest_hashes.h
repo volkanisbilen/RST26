@@ -252,7 +252,7 @@ static const ManifestEntry MANIFEST[] = {
     { "Data\\SystemMsg_us.tbl", "e76ec52fedaac4f70c6cbd6e393d424082aa6faeb7c1c400e152e54d56141552" },
     { "Data\\TABLE_EMOTICON_us.tbl", "17a76fb6754a25fb42f8174c6b3567d7e8d4fe4c00d68a48108458bf32c6f73c" },
     { "Data\\Texts_us.tbl", "1cf46c4cf75c67129111b718ebb89196f1e589522d75c03fd51985b9ba84f8f2" },
-    { "Data\\TICKET_EXCHANGE.tbl", "2f80ac8b9ecf0798be18390adc75096f429da19dcdaa44b562713a64c9b80430" },
+    { "Data\\TICKET_EXCHANGE.tbl", "c2b5d7f56fd40716d79aab233b1ca4971c4697d9f67c1eb3717877f1cb3c334b" },
     { "Data\\Tiptable_us.tbl", "5643303e19dbe7edfd2e068cccfa8ee6181cea628bbb55ff9d7df9a8bd0787ce" },
     { "Data\\UI_Help_us.tbl", "78e64c4907b392c80566886b90719dff2acb0a00bc60a039d1b80facc4e89dfa" },
     { "Data\\UIs_us.tbl", "f944578eaa13e3f5ac581ec46137518382d14365f6e5f96e81b0983d34c83476" },

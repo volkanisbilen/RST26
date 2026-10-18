@@ -11,6 +11,7 @@
 //!   orphans <Item_Org> <Skill_Magic_Main>  list items whose effect1 magic (c24) has no Main row
 //!   kratos <Data dir> <out dir>         build the Kratos skill-bar fix (Item_Org_us, Skill_Magic_Main_us, Skill_Magic_4)
 //!   skillfix <Data dir> <out dir>       skill audit: correct Skill_Magic_Main_us/tk rows (Kurian passive class codes, Rise MP)
+//!   tickets <Data dir> <out dir>        add the Emblem Exchange Voucher rows to TICKET_EXCHANGE.tbl (migration 20261018220000)
 //!   piece <Data dir> <out dir> <rewards.txt>  build the Chaotic Generator boxes fix (piece_Exchange_us)
 
 use anyhow::{bail, Context, Result};
@@ -240,9 +241,10 @@ fn main() -> Result<()> {
             }
         }
         Some("skillfix") => skillfix(Path::new(&a[2]), Path::new(&a[3]))?,
+        Some("tickets") => tickets(Path::new(&a[2]), Path::new(&a[3]))?,
         Some("piece") => piece(Path::new(&a[2]), Path::new(&a[3]), Path::new(&a[4]))?,
         Some("kratos") => kratos(Path::new(&a[2]), Path::new(&a[3]), a.get(4).map(String::as_str).unwrap_or("us"))?,
-        _ => bail!("usage: tbl_rawedit roundtrip|show|orphans|kratos|piece ..."),
+        _ => bail!("usage: tbl_rawedit roundtrip|show|orphans|kratos|tickets|piece ..."),
     }
     Ok(())
 }
@@ -438,6 +440,44 @@ fn piece(src: &Path, out: &Path, rewards: &Path) -> Result<()> {
         }
     }
     save(&t, &out.join("piece_Exchange_us.tbl"))?;
+    println!("rows now {}", t.rows.len());
+    Ok(())
+}
+
+/// Emblem Exchange Voucher (1/3/7/15/30 day) -> item 1113329037; reward lifetime in HOURS = voucher days * 24.
+/// Mirrors migrations/20261018220000_emblem_voucher_exchange.sql. Idempotent: existing rows are rewritten in place.
+fn tickets(src: &Path, out: &Path) -> Result<()> {
+    const REWARD: i128 = 1113329037;
+    const VOUCHERS: [(i128, i128); 5] = [(811084000, 24), (811085000, 72), (811086000, 168), (811087000, 360), (811088000, 720)];
+    fs::create_dir_all(out)?;
+    let (mut t, _, _) = load(&src.join("TICKET_EXCHANGE.tbl"))?;
+    if t.types.len() != 62 {
+        bail!("unexpected column count {}", t.types.len());
+    }
+    let mut template = t.rows[0].clone();
+    for c in template.iter_mut().skip(1) {
+        set_int(c, 0)?;
+    }
+    for (id, hours) in VOUCHERS {
+        let i = match find_row(&t, id) {
+            Some(i) => i,
+            None => {
+                let mut row = template.clone();
+                set_int(&mut row[0], id)?;
+                t.rows.push(row); // the shipped table is not key-sorted, so append
+                t.rows.len() - 1
+            }
+        };
+        let row = &mut t.rows[i];
+        for c in row.iter_mut().skip(1) {
+            set_int(c, 0)?;
+        }
+        set_int(&mut row[1], hours)?;
+        set_int(&mut row[2], 0)?; // selector 0 = everyone
+        set_int(&mut row[3], REWARD)?;
+        println!("ticket {id} -> {REWARD} for {hours}h");
+    }
+    save(&t, &out.join("TICKET_EXCHANGE.tbl"))?;
     println!("rows now {}", t.rows.len());
     Ok(())
 }
