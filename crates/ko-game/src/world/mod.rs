@@ -298,6 +298,9 @@ pub struct WorldState {
     /// Grouped by NPC ID for efficient lookup during crafting.
     ///
     special_sewing: DashMap<i32, Vec<ItemSpecialSewingRow>>,
+    /// Server sewing recipe (`n_index`) -> client `mixtable` row index.
+    /// Negative keys (`-npc_id`) hold the per-NPC fallback row.
+    special_sewing_client_idx: DashMap<i32, u16>,
 
     /// Item smash (old man exchange) entries: n_index â†’ smash row.
     ///
@@ -1008,6 +1011,7 @@ impl WorldState {
             rental_index_counter: std::sync::atomic::AtomicI32::new(0),
             item_sell_table: DashMap::new(),
             special_sewing: DashMap::new(),
+            special_sewing_client_idx: DashMap::new(),
             item_smash: DashMap::new(),
             premium_item_types: DashMap::new(),
             premium_item_exp: parking_lot::RwLock::new(Vec::new()),
@@ -1253,6 +1257,7 @@ impl WorldState {
             rental_index_counter: std::sync::atomic::AtomicI32::new(0),
             item_sell_table: DashMap::new(),
             special_sewing: DashMap::new(),
+            special_sewing_client_idx: DashMap::new(),
             item_smash: DashMap::new(),
             premium_item_types: DashMap::new(),
             premium_item_exp: parking_lot::RwLock::new(Vec::new()),

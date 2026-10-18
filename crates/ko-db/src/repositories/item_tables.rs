@@ -277,6 +277,19 @@ impl<'a> ItemTablesRepository<'a> {
         .await
     }
 
+    /// Load the server-recipe -> client `mixtable` row map (optional table).
+    ///
+    /// Returns `(n_index, mix_index)` pairs. Negative `n_index` values hold the
+    /// per-NPC fallback row (`-npc_id`). The table is created by migration
+    /// `20261018160000`; callers must treat an error as "no map available".
+    pub async fn load_special_sewing_client_map(&self) -> Result<Vec<(i32, i16)>, sqlx::Error> {
+        sqlx::query_as::<_, (i32, i16)>(
+            "SELECT n_index, mix_index FROM item_special_sewing_client_map",
+        )
+        .fetch_all(self.pool)
+        .await
+    }
+
     /// Load all item smash entries (bulk load at startup).
     ///
     /// Returns all item_smash entries (205 rows).
