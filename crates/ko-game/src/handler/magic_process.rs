@@ -5336,7 +5336,7 @@ fn send_type4_debuff_inflict_status(
 
 /// True when `target_sid` already has a Type4 buff of the same type (or the
 /// conflicting SPEED/SPEED2 pair), so the cast must be refused.
-fn type4_buff_already_active(
+pub(crate) fn type4_buff_already_active(
     world: &WorldState,
     target_sid: SessionId,
     type4_data: &ko_db::models::MagicType4Row,
@@ -6046,38 +6046,54 @@ fn check_type2_npc_range(
         Some(p) => p,
         None => return false,
     };
-    let npc = match world.get_npc_instance(npc_id) {
-        Some(n) => n,
-        None => return false,
+    // Runtime bots share the NPC id band but live in `world.bots`, not the
+    // NPC instance map.
+    let (target_zone, target_x, target_z) = match world.get_npc_instance(npc_id) {
+        Some(n) => (n.zone_id, n.x, n.z),
+        None => match world.get_bot(npc_id) {
+            Some(b) => (b.zone_id, b.x, b.z),
+            None => return false,
+        },
     };
 
-    if caster_pos.zone_id != npc.zone_id {
+    if caster_pos.zone_id != target_zone {
         return false;
     }
 
-    let need_arrow = type2_data.need_arrow.unwrap_or(0);
-    let add_range = type2_data.add_range.unwrap_or(100).max(0) as f32;
-    let base = if need_arrow > 0 {
-        super::attack::get_weapon_range(world, caster_sid)
-    } else {
-        skill.range.unwrap_or(0) as f32
-    };
-    let effective_range = add_range * base / 100.0;
+    let effective_range =
+        type2_skill_range(type2_data, skill, super::attack::get_weapon_range(world, caster_sid));
     if effective_range <= 0.0 {
         return true;
     }
 
-    let dx = caster_pos.x - npc.x;
-    let dz = caster_pos.z - npc.z;
+    let dx = caster_pos.x - target_x;
+    let dz = caster_pos.z - target_z;
     let dist_sq = dx * dx + dz * dz;
 
     dist_sq <= effective_range * effective_range
 }
 
+/// Effective Type2 (archery) range for a caster whose equipped bow range is
+/// `weapon_range` (0 = unlimited). Shared by player casts and runtime bots.
+pub(crate) fn type2_skill_range(
+    type2_data: &MagicType2Row,
+    skill: &MagicRow,
+    weapon_range: f32,
+) -> f32 {
+    let need_arrow = type2_data.need_arrow.unwrap_or(0);
+    let add_range = type2_data.add_range.unwrap_or(100).max(0) as f32;
+    let base = if need_arrow > 0 {
+        weapon_range
+    } else {
+        skill.range.unwrap_or(0) as f32
+    };
+    add_range * base / 100.0
+}
+
 /// Resolve the effective skill range (0 = unlimited) per C++ MagicInstance.cpp:241-273.
 /// `target_sid` is only consulted for the PID-6200 drain-skill override; pass 0 for NPC
 /// targets (that override is session-only and never applies to them).
-fn resolve_skill_range(
+pub(crate) fn resolve_skill_range(
     world: &WorldState,
     caster_sid: SessionId,
     skill: &MagicRow,
@@ -7064,6 +7080,27 @@ async fn apply_skill_damage_to_npc(
         if new_hp <= 0 {
             let now_ms = crate::systems::bot_ai::tick_ms();
             crate::systems::bot_ai::bot_on_death(world, npc_id, now_ms);
+
+            // Same PK-zone-kill-counts-for-CR hook as the melee bot-death path
+            // in attack.rs — skill kills on bots were missing it entirely.
+            if matches!(
+                bot.zone_id,
+                crate::world::types::ZONE_RONARK_LAND
+                    | crate::world::types::ZONE_ARDREAM
+                    | crate::world::types::ZONE_RONARK_LAND_BASE
+            ) {
+                let cr = world.collection_race_event().clone();
+                if let Err(e) = super::collection_race::handle_kill(
+                    world,
+                    caster_sid,
+                    super::collection_race::CR_PK_BOT_KILL_PROTO_ID,
+                    &cr,
+                )
+                .await
+                {
+                    tracing::warn!("CR handle_kill error (PK bot skill kill): {}", e);
+                }
+            }
         }
 
         tracing::debug!(
@@ -8022,7 +8059,7 @@ fn execute_type6(
 // ── Type 7: Summon / CC ─────────────────────────────────────────────────
 
 /// Map the v2615 Skill_Magic_6 `user_skill_use` enum to runtime state.
-fn transformation_type_from_user_skill_use(user_skill_use: i32) -> Option<u8> {
+pub(crate) fn transformation_type_from_user_skill_use(user_skill_use: i32) -> Option<u8> {
     Some(match user_skill_use {
         1 => TRANSFORMATION_MONSTER,
         // NPC, Special (event/snowman), and MamaPag.

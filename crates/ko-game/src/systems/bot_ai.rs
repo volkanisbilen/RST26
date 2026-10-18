@@ -543,35 +543,133 @@ fn detect_rogue_weapon_kind(bot: &BotInstance, world: Option<&WorldState>) -> i3
     first_weapon_kind.unwrap_or(WEAPON_KIND_DAGGER)
 }
 
-fn bot_attack_range_for_skill(world: &WorldState, bot: &BotInstance, skill_id: u32) -> f32 {
-    let table_range = world
-        .get_magic(skill_id as i32)
-        .and_then(|m| m.range)
-        .unwrap_or(0) as f32;
-
-    let fallback = if bot.is_rogue() {
-        let kind = detect_rogue_weapon_kind(bot, Some(world));
-        if kind == WEAPON_KIND_BOW || kind == WEAPON_KIND_CROSSBOW {
-            28.0
-        } else {
-            BOT_ATTACK_RANGE
+/// Distance from which a bot may use `skill_id` on `target_sid`, resolved by
+/// the same functions that bound a real player's cast of that skill:
+/// - archery (Type2): `type2_skill_range` with the bot's own bow range;
+/// - everything else: `resolve_skill_range`, capped at the skill's table
+///   range. The server function adds C++ effecting-phase tolerance (`+9`,
+///   `x2` for cast-time skills); a player's client will not start the cast
+///   beyond the table range, so a player never actually fires from there.
+/// An unlimited result (0) falls back to the bot's target search radius.
+fn bot_attack_range_for_skill(
+    world: &WorldState,
+    bot: &BotInstance,
+    skill_id: u32,
+    target_sid: SessionId,
+) -> f32 {
+    let Some(skill) = world.get_magic(skill_id as i32) else {
+        return BOT_ATTACK_RANGE;
+    };
+    let is_archery = skill.type1 == Some(2) || skill.type2 == Some(2);
+    let range = match world.get_magic_type2(skill.magic_num).filter(|_| is_archery) {
+        Some(type2) => {
+            let (rh_id, _, _) = bot.equip_visual[VISUAL_RIGHTHAND_IDX];
+            let (lh_id, _, _) = bot.equip_visual[VISUAL_LEFTHAND_IDX];
+            let weapon_range = crate::handler::attack::weapon_range_of_items(world, rh_id, lh_id);
+            crate::handler::magic_process::type2_skill_range(&type2, &skill, weapon_range)
         }
-    } else if bot.is_mage() || bot.is_priest() {
-        25.0
-    } else {
-        BOT_ATTACK_RANGE
+        None => {
+            // resolve_skill_range only reads the target id for a session-only
+            // override; NPC-band ids (bots) are passed as 0 like NPC targets.
+            let target_for_range = if (target_sid as u32) < crate::npc::NPC_BAND {
+                target_sid
+            } else {
+                0
+            };
+            let server_range = crate::handler::magic_process::resolve_skill_range(
+                world,
+                bot.id as SessionId,
+                &skill,
+                target_for_range,
+            ) as f32;
+            let table_range = skill.range.unwrap_or(0).max(0) as f32;
+            if server_range > 0.0 && table_range > 0.0 {
+                server_range.min(table_range)
+            } else {
+                server_range
+            }
+        }
     };
-
-    let range = if table_range > 0.0 {
-        table_range
+    if range <= 0.0 {
+        BOT_SEARCH_RANGE
     } else {
-        fallback
+        range
+    }
+}
+
+/// Buff types that stop the target from acting or moving.
+const HARD_CC_BUFF_TYPES: [i32; 2] = [
+    crate::buff_constants::BUFF_TYPE_FREEZE,
+    crate::buff_constants::BUFF_TYPE_STUN,
+];
+
+/// Bot attacks broadcast the skill but never store an `ActiveBuff` on the
+/// victim, so hard CC landed by bots is tracked here (target id -> expiry ms)
+/// to keep several bots from chain-locking one player.
+static BOT_HARD_CC_UNTIL: OnceLock<parking_lot::Mutex<HashMap<SessionId, u64>>> = OnceLock::new();
+
+fn bot_hard_cc_map() -> &'static parking_lot::Mutex<HashMap<SessionId, u64>> {
+    BOT_HARD_CC_UNTIL.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+/// Duration in ms of the hard-CC component of `skill_id`, if it has one.
+fn bot_skill_hard_cc_ms(world: &WorldState, skill_id: u32) -> Option<u64> {
+    let type4 = world.get_magic_type4(skill_id as i32)?;
+    HARD_CC_BUFF_TYPES
+        .contains(&type4.buff_type.unwrap_or(0))
+        .then(|| type4.duration.unwrap_or(0).max(0) as u64 * 1000)
+}
+
+fn is_target_hard_locked(world: &WorldState, target_sid: SessionId, now_ms: u64) -> bool {
+    if HARD_CC_BUFF_TYPES
+        .iter()
+        .any(|buff_type| world.has_buff(target_sid, *buff_type))
+    {
+        return true;
+    }
+    bot_hard_cc_map()
+        .lock()
+        .get(&target_sid)
+        .is_some_and(|until| *until > now_ms)
+}
+
+fn note_bot_hard_cc(world: &WorldState, skill_id: u32, target_sid: SessionId, now_ms: u64) {
+    let Some(duration_ms) = bot_skill_hard_cc_ms(world, skill_id) else {
+        return;
     };
+    let mut map = bot_hard_cc_map().lock();
+    if map.len() > 1024 {
+        map.retain(|_, until| *until > now_ms);
+    }
+    let until = map.entry(target_sid).or_insert(0);
+    *until = (*until).max(now_ms + duration_ms);
+}
 
-    if bot.is_warrior() || (bot.is_rogue() && range <= BOT_ATTACK_RANGE + 1.0) {
-        range.clamp(3.0, BOT_ATTACK_RANGE)
+/// Normal class skill selection, except that a hard-CC skill is never thrown
+/// at a target that is already frozen/stunned (by anyone): the selection is
+/// re-rolled, and if the pool keeps producing CC the basic attack is used.
+fn select_bot_attack_skill(
+    world: &WorldState,
+    bot: &BotInstance,
+    target_sid: SessionId,
+    now_ms: u64,
+) -> u32 {
+    let skill_id = select_bot_skill_with_weapon(bot, Some(world));
+    if bot_skill_hard_cc_ms(world, skill_id).is_none()
+        || !is_target_hard_locked(world, target_sid, now_ms)
+    {
+        return skill_id;
+    }
+    for _ in 0..8 {
+        let retry = select_bot_skill_with_weapon(bot, Some(world));
+        if bot_skill_hard_cc_ms(world, retry).is_none() {
+            return retry;
+        }
+    }
+    if bot.nation == NATION_ELMORAD {
+        201_001
     } else {
-        range.clamp(6.0, 28.0)
+        101_001
     }
 }
 
@@ -642,6 +740,12 @@ pub fn tick_ms() -> u64 {
 /// Spawns a tokio task that ticks all active bots every `BOT_AI_TICK_MS`.
 /// Call this once during server startup, after world tables are loaded.
 pub fn start_bot_ai_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()> {
+    // Indexing the item table takes seconds; do it off the game threads now
+    // rather than inside the first `+pkbots` command.
+    let warm_world = Arc::clone(&world);
+    tokio::task::spawn_blocking(move || {
+        bot_gear_catalog(&warm_world);
+    });
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(BOT_AI_TICK_MS));
         loop {
@@ -742,6 +846,7 @@ pub fn tick_bots(world: &WorldState) {
                 {
                     tick_pk_party_ai(world, &bot, now_ms);
                 }
+                tick_bot_support(world, &bot, now_ms);
                 tick_fighting(world, &bot, now_ms);
             }
             BotAiState::Move => {
@@ -1058,10 +1163,13 @@ pub fn handle_party_chat_command(
 
     let mut requests: Vec<(u8, &[u32])> = Vec::new();
     if wants_sw {
-        requests.push((2, &[108010]));
+        requests.push((2, &[ROGUE_SKILL_SWIFT]));
     }
     if wants_wolf {
-        requests.push((1, &[107705]));
+        // "Wolf" is the Rogue party buff Strength of Wolf (108030, type4
+        // attack buff). 107705 is the Rogue "Minor Healing" (type3, no type4
+        // row), which apply_bot_type4_support always rejected.
+        requests.push((2, &[ROGUE_SKILL_WOLF]));
     }
     if wants_lup {
         requests.push((2, &[108735]));
@@ -1112,6 +1220,467 @@ pub fn handle_party_chat_command(
         }
     }
     true
+}
+
+// ── Autonomous party support (priest heal/cure/buff/debuff, rogue wolf/swift) ──
+
+/// Karus skill ids; El Morad casts the same id + 100000.
+const ROGUE_SKILL_SWIFT: u32 = 108010;
+/// Strength of Wolf: party-wide attack buff (radius 35).
+const ROGUE_SKILL_WOLF: u32 = 108030;
+const ROGUE_SWIFT_MIN_LEVEL: u8 = 10;
+const ROGUE_WOLF_MIN_LEVEL: u8 = 30;
+const PRIEST_SKILL_CURE_CURSE: u32 = 112525;
+const PRIEST_CURE_CURSE_MIN_LEVEL: u8 = 25;
+const PRIEST_SKILL_CURE_DISEASE: u32 = 112535;
+const PRIEST_CURE_DISEASE_MIN_LEVEL: u8 = 35;
+/// `(min level, skill)`, best first. Single-target Type3 heals (1125 tree).
+const PRIEST_HEAL_SKILLS: [(u8, u32); 6] = [
+    (45, 112545),
+    (36, 112536),
+    (27, 112527),
+    (18, 112518),
+    (9, 112509),
+    (0, 112500),
+];
+/// AC line (buff_type 2), Insensibility Skin .. Guard.
+const PRIEST_AC_BUFFS: [(u8, u32); 8] = [
+    (76, 112674),
+    (60, 112660),
+    (51, 112651),
+    (39, 112639),
+    (30, 112630),
+    (21, 112621),
+    (12, 112612),
+    (3, 112603),
+];
+/// Max-HP line (buff_type 1), Grace .. Superioris.
+const PRIEST_HP_BUFFS: [(u8, u32); 9] = [
+    (78, 112675),
+    (70, 112670),
+    (57, 112657),
+    (54, 112655),
+    (42, 112642),
+    (33, 112633),
+    (24, 112624),
+    (15, 112615),
+    (6, 112606),
+];
+/// Single-target enemy curses (1127 tree): Massive (-20% attack), Parasite
+/// (-20% max HP), Slow (attack speed), Malice (AC).
+const PRIEST_CURSES: [(u8, u32); 4] = [(60, 112760), (45, 112745), (24, 112724), (3, 112703)];
+
+/// Party members below this HP ratio get healed.
+const BOT_PARTY_HEAL_HP_RATIO: f32 = 0.70;
+/// Shortest gap between two support casts of one bot.
+const BOT_SUPPORT_MIN_INTERVAL_MS: u64 = 1_500;
+/// Re-check interval when a support bot found nothing to cast.
+const BOT_SUPPORT_IDLE_RESCAN_MS: u64 = 1_000;
+
+/// Per `(bot, skill)` earliest next cast (tick ms), from the skill's recast time.
+static BOT_SUPPORT_READY: OnceLock<parking_lot::Mutex<HashMap<(BotId, u32), u64>>> =
+    OnceLock::new();
+/// Bots carry no `ActiveBuff` map, so buffs cast on bot party members are
+/// tracked here: `(target bot, buff_type)` -> expiry (tick ms).
+static BOT_TARGET_BUFF_UNTIL: OnceLock<parking_lot::Mutex<HashMap<(BotId, i32), u64>>> =
+    OnceLock::new();
+
+fn bot_support_ready_map() -> &'static parking_lot::Mutex<HashMap<(BotId, u32), u64>> {
+    BOT_SUPPORT_READY.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+fn bot_target_buff_map() -> &'static parking_lot::Mutex<HashMap<(BotId, i32), u64>> {
+    BOT_TARGET_BUFF_UNTIL.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+fn nation_skill(bot: &BotInstance, base_skill: u32) -> u32 {
+    if bot.nation == NATION_ELMORAD {
+        base_skill + 100_000
+    } else {
+        base_skill
+    }
+}
+
+fn skill_for_level(table: &[(u8, u32)], level: u8) -> Option<u32> {
+    table
+        .iter()
+        .find(|(min_level, _)| level >= *min_level)
+        .map(|(_, skill)| *skill)
+}
+
+#[derive(Clone, Copy)]
+struct SupportTarget {
+    sid: SessionId,
+    is_bot: bool,
+    hp: i16,
+    max_hp: i16,
+    x: f32,
+    z: f32,
+}
+
+/// Living party members in the caster's zone (bots and players), or just the
+/// caster when it is not grouped.
+fn collect_support_targets(world: &WorldState, bot: &BotInstance) -> Vec<SupportTarget> {
+    let self_target = SupportTarget {
+        sid: bot.id as SessionId,
+        is_bot: true,
+        hp: bot.hp,
+        max_hp: bot.max_hp,
+        x: bot.x,
+        z: bot.z,
+    };
+    let Some(party) = world
+        .get_party_id(bot.id as SessionId)
+        .and_then(|party_id| world.get_party(party_id))
+    else {
+        return vec![self_target];
+    };
+    party
+        .active_members()
+        .into_iter()
+        .filter_map(|sid| {
+            if sid as u32 >= crate::world::BOT_ID_BASE {
+                let member = world.get_bot(sid as u32)?;
+                (member.is_alive() && member.zone_id == bot.zone_id).then_some(SupportTarget {
+                    sid,
+                    is_bot: true,
+                    hp: member.hp,
+                    max_hp: member.max_hp,
+                    x: member.x,
+                    z: member.z,
+                })
+            } else {
+                let ch = world.get_character_info(sid)?;
+                let pos = world.get_position(sid)?;
+                (pos.zone_id == bot.zone_id && !world.is_player_dead(sid)).then_some(SupportTarget {
+                    sid,
+                    is_bot: false,
+                    hp: ch.hp,
+                    max_hp: ch.max_hp,
+                    x: pos.x,
+                    z: pos.z,
+                })
+            }
+        })
+        .collect()
+}
+
+fn support_skill_ready(bot: &BotInstance, skill_id: u32, now_ms: u64) -> bool {
+    bot_support_ready_map()
+        .lock()
+        .get(&(bot.id, skill_id))
+        .is_none_or(|ready| now_ms >= *ready)
+}
+
+fn in_skill_range(world: &WorldState, bot: &BotInstance, skill_id: u32, sid: SessionId, x: f32, z: f32) -> bool {
+    let range = bot_attack_range_for_skill(world, bot, skill_id, sid);
+    let (dx, dz) = (x - bot.x, z - bot.z);
+    dx * dx + dz * dz <= range * range
+}
+
+/// Pay the MP cost and start the skill's own cast/recast timers, mirroring a
+/// player cast (recast = `sReCastTime * 90` ms, cast = `bCastTime * 100` ms).
+/// Returns false when the bot cannot afford the skill.
+fn commit_support_cast(world: &WorldState, bot: &BotInstance, skill_id: u32, now_ms: u64) -> bool {
+    let Some(skill) = world.get_magic(skill_id as i32) else {
+        return false;
+    };
+    let mp_cost = skill.msp.unwrap_or(0).max(0);
+    let live_mp = world.get_bot(bot.id).map(|b| b.mp).unwrap_or(bot.mp);
+    if live_mp < mp_cost {
+        return false;
+    }
+    let cast_ms = skill.cast_time.unwrap_or(0).max(0) as u64 * 100;
+    let recast_ms = skill.recast_time.unwrap_or(0).max(0) as u64 * 90;
+    world.update_bot(bot.id, |b| {
+        b.mp = (b.mp - mp_cost).max(0);
+        b.skill_cooldown[1] = now_ms + cast_ms.max(BOT_SUPPORT_MIN_INTERVAL_MS);
+    });
+    if recast_ms > 0 {
+        let mut ready = bot_support_ready_map().lock();
+        if ready.len() > 4096 {
+            ready.retain(|_, at| *at > now_ms);
+        }
+        ready.insert((bot.id, skill_id), now_ms + recast_ms);
+    }
+    true
+}
+
+fn broadcast_support_effect(world: &WorldState, bot: &BotInstance, skill_id: u32, target: SessionId, data: [i32; 7]) {
+    let cast_pkt = build_bot_magic_packet(
+        MAGIC_CASTING,
+        skill_id,
+        bot.id,
+        target as u32,
+        [bot.x as i32, bot.y as i32, bot.z as i32, 0, 0, 0, 0],
+    );
+    broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &cast_pkt);
+    let effect_pkt = build_bot_magic_packet(MAGIC_EFFECTING, skill_id, bot.id, target as u32, data);
+    broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect_pkt);
+}
+
+/// Cast a friendly Type4 buff. Players go through the shared
+/// `apply_bot_type4_support` (real ActiveBuff + stat refresh); bot targets
+/// only get the visual plus local expiry tracking.
+fn cast_support_buff(
+    world: &WorldState,
+    bot: &BotInstance,
+    target: &SupportTarget,
+    skill_id: u32,
+    now_ms: u64,
+) -> bool {
+    let Some(type4) = world.get_magic_type4(skill_id as i32) else {
+        return false;
+    };
+    let buff_type = type4.buff_type.unwrap_or(0);
+    if !target.is_bot {
+        if crate::handler::magic_process::type4_buff_already_active(world, target.sid, &type4) {
+            return false;
+        }
+        if !commit_support_cast(world, bot, skill_id, now_ms) {
+            return false;
+        }
+        return crate::handler::magic_process::apply_bot_type4_support(world, bot.id, target.sid, skill_id);
+    }
+
+    let key = (target.sid as BotId, buff_type);
+    if bot_target_buff_map()
+        .lock()
+        .get(&key)
+        .is_some_and(|until| *until > now_ms)
+    {
+        return false;
+    }
+    if !commit_support_cast(world, bot, skill_id, now_ms) {
+        return false;
+    }
+    let duration = type4.duration.unwrap_or(0).max(0);
+    {
+        let mut buffs = bot_target_buff_map().lock();
+        if buffs.len() > 4096 {
+            buffs.retain(|_, until| *until > now_ms);
+        }
+        buffs.insert(key, now_ms + duration as u64 * 1000);
+    }
+    broadcast_support_effect(
+        world,
+        bot,
+        skill_id,
+        target.sid,
+        [0, 1, 0, duration, 0, type4.speed.unwrap_or(0), 0],
+    );
+    true
+}
+
+fn cast_support_heal(world: &WorldState, bot: &BotInstance, target: &SupportTarget, skill_id: u32, now_ms: u64) -> bool {
+    let amount = world
+        .get_magic_type3(skill_id as i32)
+        .and_then(|type3| type3.first_damage)
+        .unwrap_or(0)
+        .clamp(0, i16::MAX as i32) as i16;
+    if amount == 0 || !commit_support_cast(world, bot, skill_id, now_ms) {
+        return false;
+    }
+    if target.is_bot {
+        world.update_bot(target.sid as BotId, |b| {
+            b.hp = b.hp.saturating_add(amount).min(b.max_hp);
+            b.last_hp_change_ms = now_ms;
+        });
+        broadcast_bot_party_hp(world, target.sid as BotId);
+    } else {
+        let Some(ch) = world.get_character_info(target.sid) else {
+            return false;
+        };
+        let new_hp = ch.hp.saturating_add(amount).min(ch.max_hp);
+        world.update_character_hp(target.sid, new_hp);
+        world.send_to_session_owned(
+            target.sid,
+            crate::systems::regen::build_hp_change_packet(ch.max_hp, new_hp),
+        );
+    }
+    broadcast_support_effect(
+        world,
+        bot,
+        skill_id,
+        target.sid,
+        [target.x as i32, 0, target.z as i32, amount as i32, 0, 0, 0],
+    );
+    true
+}
+
+/// Curse a player enemy with a Type4 debuff, using the same ActiveBuff and
+/// status-indicator path as a player-cast debuff (so Cure Curse removes it).
+fn cast_enemy_curse(world: &WorldState, bot: &BotInstance, enemy_sid: SessionId, skill_id: u32, now_ms: u64) -> bool {
+    use crate::buff_constants::{BUFF_TYPE_SPEED, BUFF_TYPE_SPEED2};
+    use crate::magic_constants::{USER_STATUS_POISON, USER_STATUS_SPEED};
+    let (Some(skill), Some(type4)) = (
+        world.get_magic(skill_id as i32),
+        world.get_magic_type4(skill_id as i32),
+    ) else {
+        return false;
+    };
+    let buff_type = type4.buff_type.unwrap_or(0);
+    if buff_type <= 0 || world.has_buff(enemy_sid, buff_type) || world.is_player_dead(enemy_sid) {
+        return false;
+    }
+    if !commit_support_cast(world, bot, skill_id, now_ms) {
+        return false;
+    }
+    let buff = crate::handler::magic_process::create_active_buff(
+        skill_id,
+        bot.id as SessionId,
+        &type4,
+        false,
+    );
+    world.apply_buff(enemy_sid, buff);
+    crate::handler::magic_process::apply_type4_stats(
+        world,
+        enemy_sid,
+        &type4,
+        skill.skill.unwrap_or(0),
+        skill_id,
+    );
+    world.set_user_ability(enemy_sid);
+    world.send_item_move_refresh(enemy_sid);
+    let status = if matches!(buff_type, BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2) {
+        USER_STATUS_SPEED
+    } else {
+        USER_STATUS_POISON
+    };
+    crate::systems::buff_tick::send_user_status_update_packet(world, enemy_sid, status, 1);
+    broadcast_support_effect(
+        world,
+        bot,
+        skill_id,
+        enemy_sid,
+        [0, 1, 0, type4.duration.unwrap_or(0).max(0), 0, type4.speed.unwrap_or(0), 0],
+    );
+    true
+}
+
+/// Priest priority: cure > heal (< 70% HP) > AC/HP buffs > curse an enemy.
+fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) {
+    let in_range = |skill_id: u32, target: &SupportTarget| {
+        in_skill_range(world, bot, skill_id, target.sid, target.x, target.z)
+    };
+
+    for target in targets.iter().filter(|t| !t.is_bot) {
+        let skill_id = if bot.level >= PRIEST_CURE_DISEASE_MIN_LEVEL
+            && world.has_active_harmful_dot(target.sid)
+        {
+            nation_skill(bot, PRIEST_SKILL_CURE_DISEASE)
+        } else if bot.level >= PRIEST_CURE_CURSE_MIN_LEVEL
+            && world
+                .get_active_buffs(target.sid)
+                .iter()
+                .any(crate::handler::magic_process::is_debuff)
+        {
+            nation_skill(bot, PRIEST_SKILL_CURE_CURSE)
+        } else {
+            continue;
+        };
+        if support_skill_ready(bot, skill_id, now_ms)
+            && in_range(skill_id, target)
+            && commit_support_cast(world, bot, skill_id, now_ms)
+        {
+            crate::handler::magic_process::cure_player(world, target.sid);
+            broadcast_support_effect(world, bot, skill_id, target.sid, [0, 1, 0, 0, 0, 0, 0]);
+            return;
+        }
+    }
+
+    if let Some(heal) = skill_for_level(&PRIEST_HEAL_SKILLS, bot.level).map(|s| nation_skill(bot, s)) {
+        let mut wounded: Vec<&SupportTarget> = targets
+            .iter()
+            .filter(|t| t.sid as u32 != bot.id && t.max_hp > 0)
+            .filter(|t| (t.hp as f32) < t.max_hp as f32 * BOT_PARTY_HEAL_HP_RATIO)
+            .collect();
+        wounded.sort_by(|a, b| {
+            let ra = a.hp as f32 / a.max_hp as f32;
+            let rb = b.hp as f32 / b.max_hp as f32;
+            ra.total_cmp(&rb)
+        });
+        if support_skill_ready(bot, heal, now_ms) {
+            for target in wounded {
+                if in_range(heal, target) && cast_support_heal(world, bot, target, heal, now_ms) {
+                    return;
+                }
+            }
+        }
+    }
+
+    for table in [&PRIEST_AC_BUFFS[..], &PRIEST_HP_BUFFS[..]] {
+        let Some(buff) = skill_for_level(table, bot.level).map(|s| nation_skill(bot, s)) else {
+            continue;
+        };
+        if !support_skill_ready(bot, buff, now_ms) {
+            continue;
+        }
+        for target in targets {
+            if in_range(buff, target) && cast_support_buff(world, bot, target, buff, now_ms) {
+                return;
+            }
+        }
+    }
+
+    let Some(curse) = skill_for_level(&PRIEST_CURSES, bot.level).map(|s| nation_skill(bot, s)) else {
+        return;
+    };
+    if !support_skill_ready(bot, curse, now_ms) {
+        return;
+    }
+    // Bots keep no debuff state, so only real players are worth cursing.
+    if let Some((enemy, ex, _, ez)) = find_nearest_enemy(bot, world) {
+        if (enemy as u32) < crate::npc::NPC_BAND
+            && in_skill_range(world, bot, curse, enemy, ex, ez)
+        {
+            cast_enemy_curse(world, bot, enemy, curse, now_ms);
+        }
+    }
+}
+
+/// Rogue: keep Swift and Strength of Wolf up on the party.
+fn tick_rogue_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) {
+    let mut buffs = Vec::with_capacity(2);
+    if bot.level >= ROGUE_SWIFT_MIN_LEVEL {
+        buffs.push(nation_skill(bot, ROGUE_SKILL_SWIFT));
+    }
+    if bot.level >= ROGUE_WOLF_MIN_LEVEL {
+        buffs.push(nation_skill(bot, ROGUE_SKILL_WOLF));
+    }
+    for skill_id in buffs {
+        if !support_skill_ready(bot, skill_id, now_ms) {
+            continue;
+        }
+        for target in targets {
+            if in_skill_range(world, bot, skill_id, target.sid, target.x, target.z)
+                && cast_support_buff(world, bot, target, skill_id, now_ms)
+            {
+                return;
+            }
+        }
+    }
+}
+
+/// Autonomous support casting for priest and rogue bots, at most one cast
+/// per call and gated by each skill's own cast/recast time.
+fn tick_bot_support(world: &WorldState, bot: &BotInstance, now_ms: u64) {
+    if !(bot.is_priest() || bot.is_rogue()) || now_ms < bot.skill_cooldown[1] {
+        return;
+    }
+    let targets = collect_support_targets(world, bot);
+    if bot.is_priest() {
+        tick_priest_support(world, bot, &targets, now_ms);
+    } else {
+        tick_rogue_support(world, bot, &targets, now_ms);
+    }
+    // A cast moves the gate forward itself; with nothing to do, rescan once a
+    // second instead of every AI tick (the curse step scans the whole zone).
+    world.update_bot(bot.id, |b| {
+        if b.skill_cooldown[1] <= now_ms {
+            b.skill_cooldown[1] = now_ms + BOT_SUPPORT_IDLE_RESCAN_MS;
+        }
+    });
 }
 
 fn warp_party_member_to_bot(world: &WorldState, target_sid: SessionId, mage: &BotInstance) -> bool {
@@ -1422,12 +1991,21 @@ fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
             let dx = target_x - bot.x;
             let dz = target_z - bot.z;
             let distance = (dx * dx + dz * dz).sqrt();
-            let skill_id = select_bot_skill_with_weapon(bot, Some(world));
-            let attack_range = bot_attack_range_for_skill(world, bot, skill_id);
+            // The range gate and the cast must use the same skill: several
+            // class pools pick randomly per call.
+            let skill_id = select_bot_attack_skill(world, bot, target_sid, now_ms);
+            let attack_range = bot_attack_range_for_skill(world, bot, skill_id, target_sid);
 
             if distance <= attack_range {
                 // In attack range — perform attack.
-                bot_perform_attack(world, bot, target_sid, target_x, target_y, target_z, now_ms);
+                bot_perform_attack(
+                    world,
+                    bot,
+                    skill_id,
+                    target_sid,
+                    (target_x, target_y, target_z),
+                    now_ms,
+                );
             } else if distance <= BOT_SEARCH_RANGE {
                 // Out of attack range but within search range — move toward target.
                 let Some((new_x, new_y, new_z)) =
@@ -1896,21 +2474,18 @@ pub fn move_toward_target(
 fn bot_perform_attack(
     world: &WorldState,
     bot: &BotInstance,
+    skill_id: u32,
     target_sid: SessionId,
-    _target_x: f32,
-    _target_y: f32,
-    _target_z: f32,
+    target_pos: (f32, f32, f32),
     now_ms: u64,
 ) {
+    let (_target_x, _target_y, _target_z) = target_pos;
     // Check class-specific cooldown.
     let cooldown = get_bot_attack_cooldown(bot, Some(world));
     if now_ms.saturating_sub(bot.skill_cooldown[0]) < cooldown {
         world.update_bot(bot.id, |b| b.last_tick_ms = now_ms);
         return;
     }
-
-    // Select class-specific skill ID.
-    let skill_id = select_bot_skill_with_weapon(bot, Some(world));
 
     // Deduct MP cost for the skill (C++ routes through CMagicProcess::MagicPacketBot
     // which deducts pSkill->m_sMsp). Look up the skill's mana cost from magic_table.
@@ -2007,6 +2582,9 @@ fn bot_perform_attack(
 
     // Apply damage to the target.
     let (result, target_hp) = apply_damage_to_target(world, target_sid, damage, bot.id);
+    if result == ATTACK_SUCCESS {
+        note_bot_hard_cc(world, skill_id, target_sid, now_ms);
+    }
 
     // ── Post-damage drain effects ──────────────────────────────────────
     // HP Drain: attacker heals total_d1 * damage / 100
@@ -2292,6 +2870,9 @@ fn bot_perform_aoe_attack(
     // ── Phase 2: Apply damage to primary target ──────────────────────
     let primary_damage = calculate_aoe_target_damage(world, bot, primary_target);
     let (result, target_hp) = apply_damage_to_target(world, primary_target, primary_damage, bot.id);
+    if result == ATTACK_SUCCESS {
+        note_bot_hard_cc(world, skill_id, primary_target, now_ms);
+    }
     broadcast_bot_magic_effecting(world, bot, primary_target, skill_id, primary_damage);
     broadcast_target_hp_update(
         world,
@@ -2318,6 +2899,9 @@ fn bot_perform_aoe_attack(
     for (target_sid, _tx, _tz) in &secondary_targets {
         let damage = calculate_aoe_target_damage(world, bot, *target_sid);
         let (res, hp) = apply_damage_to_target(world, *target_sid, damage, bot.id);
+        if res == ATTACK_SUCCESS {
+            note_bot_hard_cc(world, skill_id, *target_sid, now_ms);
+        }
         broadcast_bot_magic_effecting(world, bot, *target_sid, skill_id, damage);
         broadcast_target_hp_update(world, bot, *target_sid, res, hp, damage as i32);
         if res == ATTACK_TARGET_DEAD {
@@ -3577,19 +4161,26 @@ fn spread_pk_spawn(
     let (configured_x, configured_z) = get_bot_respawn_position(zone_id, nation);
     let zone = world.get_zone(zone_id)?;
     let map = zone.map_data.as_ref()?;
-    // Ronark's town respawn coordinates are valid map coordinates but their
-    // event-grid cells are in tiny, isolated walkable pockets. PK bots spawned
-    // there cannot path out. Start them in opposite halves of the reachable
-    // central bowl instead; every destination still has to pass the SMD/A*.
-    let (base_x, base_z) = if zone_id == ZONE_RONARK_LAND {
-        match nation {
+    let (mut base_x, mut base_z) =
+        crate::systems::pathfind::nearest_bot_point(map, configured_x, configured_z, 64)?;
+    // Ronark's town points once sat in isolated walkable pockets, so bots
+    // were started in the central bowl instead. With the current
+    // freezone_b.smd both towns path to the bowl, so bots spawn in town like
+    // players; the bowl anchor stays as a fallback for map data where the
+    // town cannot reach the fighting area.
+    if zone_id == ZONE_RONARK_LAND {
+        let (bowl_x, bowl_z) = match nation {
             NATION_KARUS => (1050.0, 842.0),
             _ => (886.0, 1102.0),
+        };
+        if let Some((bowl_x, bowl_z)) =
+            crate::systems::pathfind::nearest_bot_point(map, bowl_x, bowl_z, 64)
+        {
+            if !crate::systems::pathfind::find_bot_path(map, base_x, base_z, bowl_x, bowl_z).found {
+                (base_x, base_z) = (bowl_x, bowl_z);
+            }
         }
-    } else {
-        (configured_x, configured_z)
-    };
-    let (base_x, base_z) = crate::systems::pathfind::nearest_bot_point(map, base_x, base_z, 64)?;
+    }
     const GOLDEN_ANGLE: f32 = 2.399_963_1;
 
     for attempt in 0..32usize {
@@ -3710,10 +4301,7 @@ fn bot_regene(world: &WorldState, bot_id: BotId, now_ms: u64) {
 /// `[BREAST(4), LEG(10), HEAD(1), GLOVE(12), FOOT(13), SHOULDER(5), RIGHTHAND(6), LEFTHAND(8),
 ///  CWING(42), CHELMET(43), CLEFT(44), CRIGHT(45), CTOP(46), CTATTOO(49), CFAIRY(48), CEMBLEM(47), CTALISMAN(50)]`
 fn parse_bot_equipment(str_item: Option<&[u8]>) -> [(u32, i16, u8); 17] {
-    const VISUAL_SLOT_ORDER: [usize; 17] = [
-        4, 10, 1, 12, 13, 5, 6, 8, // equipped slots
-        42, 43, 44, 45, 46, 49, 48, 47, 50, // cosplay slots
-    ];
+    const VISUAL_SLOT_ORDER: [usize; 17] = BOT_VISUAL_SLOT_ORDER;
     const ITEM_SIZE: usize = 8; // nItemID(4) + sDurability(2) + sCount(2)
 
     let mut result = [(0u32, 0i16, 0u8); 17];
@@ -4336,7 +4924,7 @@ pub fn spawn_farm_bot(
 
     // Apply stat-derived HP/MP using the coefficient table.
     if let Some(coeff) = world.get_coefficient(bot.class) {
-        set_bot_ability(&mut bot, &coeff);
+        set_bot_ability_with_equipment(world, &mut bot, &coeff);
     }
 
     // Assign a random patrol route for PK zone bots.
@@ -4427,35 +5015,572 @@ fn bot_class_group(class: u16) -> u8 {
     }
 }
 
-/// Reuse a zone bot template's equipped/cosmetic visuals for GM-created bots.
-/// Runtime bots do not carry bag inventory, but they expose the same 17 visual
-/// slots used by normal player INOUT packets.
-fn gm_bot_equipment(
-    world: &WorldState,
-    zone_id: u16,
-    nation: u8,
-    class: u16,
-) -> [(u32, i16, u8); 17] {
-    let class_group = bot_class_group(class);
-    let zone_rows = world.get_bots_in_zone(zone_id as i16);
-    let all_rows = world.get_all_bot_templates();
-    let find_equipment = |rows: &[ko_db::models::bot_system::BotHandlerFarmRow],
-                          same_nation: bool| {
-        rows.iter()
-            .filter(|row| {
-                (!same_nation || row.nation as u8 == nation)
-                    && bot_class_group(row.class as u16) == class_group
-                    && row.str_item.as_ref().is_some_and(|items| !items.is_empty())
+/// Promote a base class code to the novice (level 10+) or master (level 60+)
+/// tier, as a real character of that level would be. Master-only armour is
+/// class-gated to tiers 6/8/10/12, so a level-83 "beginner" could never wear it.
+fn promote_bot_class_for_level(class: u16, level: u8) -> u16 {
+    let tiers: [u16; 3] = match class % 100 {
+        1 | 5 | 6 => [1, 5, 6],
+        2 | 7 | 8 => [2, 7, 8],
+        3 | 9 | 10 => [3, 9, 10],
+        4 | 11 | 12 => [4, 11, 12],
+        13..=15 => [13, 14, 15],
+        _ => return class,
+    };
+    let tier = if level >= 60 {
+        2
+    } else if level >= 10 {
+        1
+    } else {
+        0
+    };
+    class - class % 100 + tiers[tier]
+}
+
+/// Pick a character race that can legally hold this class (mirrors
+/// `newchar::new_char_valid`). The race selects the client body model, so a
+/// warrior-only race (Arch Tuarek / Barbarian) on a mage renders a warrior body.
+fn bot_race_for_class(class: u16, nation: u8, rng: &mut impl Rng) -> u8 {
+    use crate::race_constants::{
+        BABARIAN, ELMORAD_MAN, ELMORAD_WOMAN, KARUS_BIG, KARUS_MIDDLE, KARUS_SMALL,
+        KARUS_WOMAN, KURIAN, PORUTU,
+    };
+    let elmorad_human = if rng.gen_bool(0.5) {
+        ELMORAD_MAN
+    } else {
+        ELMORAD_WOMAN
+    };
+    if nation == NATION_ELMORAD {
+        match class % 100 {
+            1 | 5 | 6 => *[BABARIAN, ELMORAD_MAN, ELMORAD_WOMAN]
+                .get(rng.gen_range(0..3))
+                .unwrap_or(&BABARIAN),
+            13..=15 => PORUTU,
+            _ => elmorad_human,
+        }
+    } else {
+        match class % 100 {
+            1 | 5 | 6 => KARUS_BIG,
+            2 | 7 | 8 => KARUS_MIDDLE,
+            3 | 9 | 10 => {
+                if rng.gen_bool(0.5) {
+                    KARUS_SMALL
+                } else {
+                    KARUS_WOMAN
+                }
+            }
+            4 | 11 | 12 => {
+                if rng.gen_bool(0.5) {
+                    KARUS_MIDDLE
+                } else {
+                    KARUS_WOMAN
+                }
+            }
+            13..=15 => KURIAN,
+            _ => KARUS_BIG,
+        }
+    }
+}
+
+// ── Generated bot equipment ──────────────────────────────────────────────
+
+const GEAR_ITEM_SLOT_EITHER_HAND: i32 = 0;
+const GEAR_ITEM_SLOT_1H_RIGHT: i32 = 1;
+const GEAR_ITEM_SLOT_1H_LEFT: i32 = 2;
+const GEAR_ITEM_SLOT_2H_RIGHT: i32 = 3;
+const GEAR_ITEM_SLOT_2H_LEFT: i32 = 4;
+
+/// `item.slot` of the armour piece shown in each of the first six visual
+/// slots (BREAST, LEG, HEAD, GLOVE, FOOT, SHOULDER). The SHOULDER equip slot
+/// only ever holds kaul/pet items (no armour row has the shoulder slot type).
+const VISUAL_ARMOR_ITEM_SLOTS: [Option<i32>; 6] = [Some(5), Some(6), Some(7), Some(8), Some(9), None];
+
+/// `item.item_type` tiers. Only the plain upgrade line (`(+N)` items) and
+/// unupgraded base/plain rows are used, so bots never wear rare, crafted,
+/// unique or reverse gear.
+const ITEM_TYPE_BASE: i32 = 0;
+const ITEM_TYPE_PLAIN: i32 = 1;
+const ITEM_TYPE_UNIQUE: i32 = 4;
+const ITEM_TYPE_UPGRADE_LINE: i32 = 5;
+const ITEM_TYPE_REVERSE: i32 = 11;
+const ITEM_TYPE_REVERSE_UNIQUE: i32 = 12;
+
+const ARMOR_KIND_KURIAN: i32 = 200;
+const ARMOR_KIND_WARRIOR: i32 = 210;
+const ARMOR_KIND_ROGUE: i32 = 220;
+const ARMOR_KIND_MAGE: i32 = 230;
+const ARMOR_KIND_PRIEST: i32 = 240;
+
+const WARRIOR_WEAPON_KINDS: [i32; 8] = [
+    crate::inventory_constants::WEAPON_KIND_1H_SWORD,
+    crate::inventory_constants::WEAPON_KIND_2H_SWORD,
+    crate::inventory_constants::WEAPON_KIND_1H_AXE,
+    crate::inventory_constants::WEAPON_KIND_2H_AXE,
+    crate::inventory_constants::WEAPON_KIND_1H_CLUB,
+    crate::inventory_constants::WEAPON_KIND_2H_CLUB,
+    crate::inventory_constants::WEAPON_KIND_1H_SPEAR,
+    crate::inventory_constants::WEAPON_KIND_2H_SPEAR,
+];
+const ROGUE_MELEE_KINDS: [i32; 2] = [
+    WEAPON_KIND_DAGGER,
+    crate::inventory_constants::WEAPON_KIND_JAMADAR,
+];
+const ROGUE_ARCHERY_KINDS: [i32; 2] = [WEAPON_KIND_BOW, WEAPON_KIND_CROSSBOW];
+
+/// One item line (`num / 1000`), e.g. every `(+N)` grade of "Crimson Robe".
+struct GearFamily {
+    /// Off-hand variants named "(Left-hand)"; never used as the main weapon.
+    left_hand_only: bool,
+    /// Has regular `(+N)` rows; lines that only exist as a single base row are
+    /// mostly starter, quest or novelty items.
+    has_upgrade_line: bool,
+    kind: i32,
+    slot: i32,
+    req_level: i32,
+    req_level_max: i32,
+    /// AC for armour/shields, damage for weapons; ranks families by quality.
+    tier: i32,
+    /// Row used for class gating (`item_class_available`).
+    base: ko_db::models::Item,
+    /// `(by_grade, item num, max durability)`, ascending by grade.
+    variants: Vec<(i16, u32, i16)>,
+}
+
+struct BotGearCatalog {
+    world_key: usize,
+    item_count: usize,
+    families: Vec<GearFamily>,
+}
+
+static BOT_GEAR_CATALOG: OnceLock<parking_lot::Mutex<Option<Arc<BotGearCatalog>>>> =
+    OnceLock::new();
+
+fn is_bot_gear_kind(kind: i32) -> bool {
+    WARRIOR_WEAPON_KINDS.contains(&kind)
+        || ROGUE_MELEE_KINDS.contains(&kind)
+        || ROGUE_ARCHERY_KINDS.contains(&kind)
+        || matches!(
+            kind,
+            crate::inventory_constants::WEAPON_KIND_SHIELD
+                | crate::inventory_constants::WEAPON_KIND_STAFF
+                | crate::inventory_constants::WEAPON_KIND_MACE
+                | ARMOR_KIND_KURIAN
+                | ARMOR_KIND_WARRIOR
+                | ARMOR_KIND_ROGUE
+                | ARMOR_KIND_MAGE
+                | ARMOR_KIND_PRIEST
+        )
+}
+
+/// Seasonal novelty weapons that are tradeable (so not caught by the
+/// untradeable-race filter) but look out of place on a PK character.
+const NOVELTY_ITEM_NAME_MARKERS: [&str; 8] = [
+    "candy", "halloween", "bouquet", "lantern", "mirror", "christmas", "santa", "pumpkin",
+];
+
+fn is_presentable_item_name(name: Option<&str>) -> bool {
+    let Some(name) = name.map(str::trim) else {
+        return false;
+    };
+    if name.is_empty() || name.starts_with('(') || name.starts_with('[') || name.contains('<') {
+        return false;
+    }
+    let lower = name.to_lowercase();
+    !NOVELTY_ITEM_NAME_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+fn build_bot_gear_catalog(world: &WorldState, world_key: usize, item_count: usize) -> BotGearCatalog {
+    let rows = world.collect_items_matching(|item| {
+        matches!(item.slot, Some(0..=9)) && item.kind.is_some_and(is_bot_gear_kind)
+    });
+
+    #[derive(Default)]
+    struct Acc {
+        rows: Vec<ko_db::models::Item>,
+        excluded: bool,
+        has_unique: bool,
+    }
+    let mut families: HashMap<i32, Acc> = HashMap::new();
+    for item in rows {
+        // Ten-digit item numbers are the later premium weapon series and
+        // untradeable rows are event/quest rewards (Candy Cane etc.); neither
+        // is ordinary field gear.
+        if item.num >= 1_000_000_000 {
+            continue;
+        }
+        let acc = families.entry(item.num / 1000).or_default();
+        if item.race == Some(crate::world::types::RACE_UNTRADEABLE) {
+            acc.excluded = true;
+            continue;
+        }
+        match item.item_type.unwrap_or(ITEM_TYPE_BASE) {
+            ITEM_TYPE_REVERSE | ITEM_TYPE_REVERSE_UNIQUE => acc.excluded = true,
+            ITEM_TYPE_UNIQUE => acc.has_unique = true,
+            ITEM_TYPE_BASE | ITEM_TYPE_PLAIN | ITEM_TYPE_UPGRADE_LINE => {
+                if is_presentable_item_name(item.str_name.as_deref()) {
+                    acc.rows.push(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut catalog = Vec::with_capacity(families.len());
+    for (_, mut acc) in families {
+        if acc.excluded || acc.rows.is_empty() {
+            continue;
+        }
+        acc.rows.sort_by_key(|item| item.num);
+        let mut variants: Vec<(i16, u32, i16)> = acc
+            .rows
+            .iter()
+            .filter(|item| item.item_type == Some(ITEM_TYPE_UPGRADE_LINE))
+            .map(|item| {
+                (
+                    item.by_grade.unwrap_or(0),
+                    item.num as u32,
+                    item.duration.unwrap_or(1).max(1),
+                )
             })
-            .map(|row| parse_bot_equipment(row.str_item.as_deref()))
-            .find(|equipment| equipment.iter().any(|(item_id, _, _)| *item_id != 0))
+            .collect();
+        // A unique line whose only wearable rows are base templates is still a
+        // unique item; only lines that also have a plain upgrade line qualify.
+        if variants.is_empty() && acc.has_unique {
+            continue;
+        }
+        let base = if variants.is_empty() {
+            acc.rows[0].clone()
+        } else {
+            acc.rows
+                .iter()
+                .filter(|item| item.item_type == Some(ITEM_TYPE_UPGRADE_LINE))
+                .min_by_key(|item| (item.by_grade.unwrap_or(0), item.num))
+                .cloned()
+                .unwrap_or_else(|| acc.rows[0].clone())
+        };
+        let has_upgrade_line = !variants.is_empty();
+        if variants.is_empty() {
+            variants.push((0, base.num as u32, base.duration.unwrap_or(1).max(1)));
+        }
+        variants.sort_unstable();
+        let kind = base.kind.unwrap_or(0);
+        let is_weapon = kind != crate::inventory_constants::WEAPON_KIND_SHIELD
+            && !matches!(
+                kind,
+                ARMOR_KIND_KURIAN
+                    | ARMOR_KIND_WARRIOR
+                    | ARMOR_KIND_ROGUE
+                    | ARMOR_KIND_MAGE
+                    | ARMOR_KIND_PRIEST
+            );
+        let tier = if is_weapon {
+            base.damage.unwrap_or(0) as i32
+        } else {
+            base.ac.unwrap_or(0) as i32
+        };
+        let left_hand_only = base
+            .str_name
+            .as_deref()
+            .is_some_and(|name| name.contains("Left-hand"));
+        catalog.push(GearFamily {
+            left_hand_only,
+            has_upgrade_line,
+            kind,
+            slot: base.slot.unwrap_or(-1),
+            req_level: base.req_level.unwrap_or(0),
+            req_level_max: base.req_level_max.unwrap_or(0),
+            tier,
+            base,
+            variants,
+        });
+    }
+    catalog.sort_by_key(|family| (family.tier, family.req_level, family.base.num));
+
+    BotGearCatalog {
+        world_key,
+        item_count,
+        families: catalog,
+    }
+}
+
+/// The item table holds ~500k rows, so the gear index is built once per
+/// loaded item table instead of scanning it on every bot spawn.
+fn bot_gear_catalog(world: &WorldState) -> Arc<BotGearCatalog> {
+    let world_key = world as *const WorldState as usize;
+    let item_count = world.item_count();
+    let cell = BOT_GEAR_CATALOG.get_or_init(|| parking_lot::Mutex::new(None));
+    let mut cached = cell.lock();
+    if let Some(catalog) = cached.as_ref() {
+        if catalog.world_key == world_key && catalog.item_count == item_count {
+            return Arc::clone(catalog);
+        }
+    }
+    let catalog = Arc::new(build_bot_gear_catalog(world, world_key, item_count));
+    *cached = Some(Arc::clone(&catalog));
+    catalog
+}
+
+/// Highest `(+N)` grade a bot of this level wears; bots look ordinary, not
+/// enchanted to the cap.
+fn bot_gear_grade_cap(level: u8) -> i16 {
+    match level {
+        0..=29 => 2,
+        30..=59 => 4,
+        _ => 6,
+    }
+}
+
+/// Choose an unremarkable family for the slot: candidates are ranked by
+/// AC/damage and the pick lands in the lower half (15% of the range for new
+/// characters, up to the median at max level), never best-in-slot.
+fn pick_bot_gear<'a>(
+    catalog: &'a BotGearCatalog,
+    class: u16,
+    level: u8,
+    rng: &mut impl Rng,
+    accept: impl Fn(&GearFamily) -> bool,
+) -> Option<(&'a GearFamily, (u32, i16, u8))> {
+    let level_i = level as i32;
+    let mut candidates: Vec<&GearFamily> = catalog
+        .families
+        .iter()
+        .filter(|family| {
+            accept(family)
+                && family.req_level <= level_i
+                && (family.req_level_max <= 0 || level_i <= family.req_level_max)
+                && crate::handler::item_move::item_class_available(&family.base, class)
+        })
+        .collect();
+    if candidates.iter().any(|family| family.has_upgrade_line) {
+        candidates.retain(|family| family.has_upgrade_line);
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let progress = level.min(83) as f32 / 83.0;
+    let percentile = 0.15 + 0.35 * progress;
+    let last = candidates.len() - 1;
+    let centre = (percentile * last as f32).round() as i64;
+    let idx = (centre + rng.gen_range(-2..=2)).clamp(0, last as i64) as usize;
+    let family = candidates[idx];
+
+    let cap = bot_gear_grade_cap(level);
+    let near_cap: Vec<&(i16, u32, i16)> = family
+        .variants
+        .iter()
+        .filter(|(grade, _, _)| *grade <= cap && *grade >= cap - 2)
+        .collect();
+    let variant = if near_cap.is_empty() {
+        family
+            .variants
+            .iter()
+            .filter(|(grade, _, _)| *grade <= cap)
+            .next_back()
+            .or_else(|| family.variants.first())?
+    } else {
+        near_cap[rng.gen_range(0..near_cap.len())]
+    };
+    Some((family, (variant.1, variant.2, 0)))
+}
+
+fn is_two_handed_slot(slot: i32) -> bool {
+    matches!(slot, GEAR_ITEM_SLOT_2H_RIGHT | GEAR_ITEM_SLOT_2H_LEFT)
+}
+
+/// Generate level- and class-appropriate visual equipment for a GM-spawned bot.
+/// Only the 8 equipped visual slots are filled; cosplay slots stay empty.
+/// Every slot is best-effort: a slot with no eligible item stays empty.
+fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i16, u8); 17] {
+    let mut equipment = [(0u32, 0i16, 0u8); 17];
+    let catalog = bot_gear_catalog(world);
+    if catalog.families.is_empty() {
+        return equipment;
+    }
+    let mut rng = rand::thread_rng();
+    let base_class = class % 100;
+    let is_kurian = matches!(base_class, 13..=15);
+
+    let armor_kinds: &[i32] = if is_kurian {
+        &[ARMOR_KIND_KURIAN, ARMOR_KIND_WARRIOR]
+    } else {
+        match bot_class_group(class) {
+            1 => &[ARMOR_KIND_WARRIOR],
+            2 => &[ARMOR_KIND_ROGUE],
+            3 => &[ARMOR_KIND_MAGE],
+            4 => &[ARMOR_KIND_PRIEST],
+            _ => &[],
+        }
+    };
+    for (vis_idx, item_slot) in VISUAL_ARMOR_ITEM_SLOTS.iter().enumerate() {
+        let Some(item_slot) = *item_slot else {
+            continue;
+        };
+        if let Some((_, picked)) = pick_bot_gear(&catalog, class, level, &mut rng, |family| {
+            family.slot == item_slot && armor_kinds.contains(&family.kind)
+        }) {
+            equipment[vis_idx] = picked;
+        }
+    }
+
+    let main_hand_slot =
+        |slot: i32| matches!(slot, GEAR_ITEM_SLOT_EITHER_HAND | GEAR_ITEM_SLOT_1H_RIGHT | GEAR_ITEM_SLOT_2H_RIGHT);
+    let pick_weapon = |kinds: &[i32], slot_ok: &dyn Fn(i32) -> bool, rng: &mut rand::rngs::ThreadRng| {
+        let mut order = kinds.to_vec();
+        for i in (1..order.len()).rev() {
+            order.swap(i, rng.gen_range(0..=i));
+        }
+        order.into_iter().find_map(|kind| {
+            pick_bot_gear(&catalog, class, level, rng, |family| {
+                family.kind == kind && slot_ok(family.slot) && !family.left_hand_only
+            })
+            .map(|(family, picked)| (family.slot, family.kind, picked))
+        })
     };
 
-    find_equipment(&zone_rows, true)
-        .or_else(|| find_equipment(&zone_rows, false))
-        .or_else(|| find_equipment(&all_rows, true))
-        .or_else(|| find_equipment(&all_rows, false))
-        .unwrap_or([(0, 0, 0); 17])
+    let wants_shield;
+    let mut main_weapon = None;
+    let mut off_hand = None;
+    if is_kurian || bot_class_group(class) == 1 {
+        main_weapon = pick_weapon(&WARRIOR_WEAPON_KINDS, &main_hand_slot, &mut rng);
+        wants_shield = true;
+    } else {
+        match bot_class_group(class) {
+            2 => {
+                wants_shield = false;
+                // A rogue fights with one archetype at a time; skill selection
+                // reads the archetype back from the equipped weapon kind.
+                if rng.gen_bool(0.5) {
+                    main_weapon = pick_weapon(
+                        &ROGUE_ARCHERY_KINDS,
+                        &|slot| is_two_handed_slot(slot),
+                        &mut rng,
+                    );
+                }
+                if main_weapon.is_none() {
+                    main_weapon = pick_weapon(
+                        &ROGUE_MELEE_KINDS,
+                        &|slot| matches!(slot, GEAR_ITEM_SLOT_EITHER_HAND | GEAR_ITEM_SLOT_1H_RIGHT),
+                        &mut rng,
+                    );
+                    if main_weapon.is_some() {
+                        off_hand = pick_weapon(
+                            &ROGUE_MELEE_KINDS,
+                            &|slot| slot == GEAR_ITEM_SLOT_EITHER_HAND,
+                            &mut rng,
+                        )
+                        .map(|(_, _, picked)| picked);
+                    }
+                }
+            }
+            3 => {
+                wants_shield = false;
+                main_weapon = pick_weapon(
+                    &[crate::inventory_constants::WEAPON_KIND_STAFF],
+                    &main_hand_slot,
+                    &mut rng,
+                );
+            }
+            4 => {
+                wants_shield = true;
+                main_weapon = pick_weapon(
+                    &[crate::inventory_constants::WEAPON_KIND_MACE],
+                    &main_hand_slot,
+                    &mut rng,
+                );
+            }
+            _ => wants_shield = false,
+        }
+    }
+
+    if let Some((slot, _, picked)) = main_weapon {
+        // Bows are left-hand two-handers (ITEM_SLOT_2H_LEFT); everything else
+        // is held in the right hand.
+        if slot == GEAR_ITEM_SLOT_2H_LEFT {
+            equipment[VISUAL_LEFTHAND_IDX] = picked;
+        } else {
+            equipment[VISUAL_RIGHTHAND_IDX] = picked;
+        }
+        // Two-handed weapons occupy both hands, so no shield/off-hand.
+        if !is_two_handed_slot(slot) {
+            if let Some(off) = off_hand {
+                equipment[VISUAL_LEFTHAND_IDX] = off;
+            } else if wants_shield {
+                if let Some((_, shield)) = pick_bot_gear(&catalog, class, level, &mut rng, |family| {
+                    family.kind == crate::inventory_constants::WEAPON_KIND_SHIELD
+                        && family.slot == GEAR_ITEM_SLOT_1H_LEFT
+                }) {
+                    equipment[VISUAL_LEFTHAND_IDX] = shield;
+                }
+            }
+        }
+    }
+
+    equipment
+}
+
+/// Inventory index of each `equip_visual` entry (8 equipped + 9 cosplay).
+const BOT_VISUAL_SLOT_ORDER: [usize; 17] = [
+    4, 10, 1, 12, 13, 5, 6, 8, // equipped slots
+    42, 43, 44, 45, 46, 49, 48, 47, 50, // cosplay slots
+];
+
+/// Aggregate a bot's worn item bonuses with the exact routine used for real
+/// players (`compute_slot_item_values`, including set bonuses).
+fn bot_equipped_stats(
+    world: &WorldState,
+    equip_visual: &[(u32, i16, u8); 17],
+) -> crate::world::types::EquippedStats {
+    let mut inventory = vec![crate::world::types::UserItemSlot::default(); 51];
+    for (vis_idx, &inv_slot) in BOT_VISUAL_SLOT_ORDER.iter().enumerate() {
+        let (item_id, durability, flag) = equip_visual[vis_idx];
+        if item_id == 0 {
+            continue;
+        }
+        inventory[inv_slot] = crate::world::types::UserItemSlot {
+            item_id,
+            durability,
+            count: 1,
+            flag,
+            ..Default::default()
+        };
+    }
+    world.compute_slot_item_values(&inventory)
+}
+
+/// `set_bot_ability` plus worn-equipment bonuses, in player order: item stat
+/// bonuses feed the HP/MP formulas, then flat item HP/MP is added on top.
+fn set_bot_ability_with_equipment(world: &WorldState, bot: &mut BotInstance, coeff: &CoefficientRow) {
+    let stats = bot_equipped_stats(world, &bot.equip_visual);
+    let add = |base: u8, bonus: i16| (base as i32 + bonus as i32).clamp(0, u8::MAX as i32) as u8;
+    bot.str_stat = add(bot.str_stat, stats.stat_bonuses[0]);
+    bot.sta_stat = add(bot.sta_stat, stats.stat_bonuses[1]);
+    bot.dex_stat = add(bot.dex_stat, stats.stat_bonuses[2]);
+    bot.int_stat = add(bot.int_stat, stats.stat_bonuses[3]);
+    bot.cha_stat = add(bot.cha_stat, stats.stat_bonuses[4]);
+
+    set_bot_ability(bot, coeff);
+
+    bot.max_hp = (bot.max_hp as i32 + stats.item_max_hp as i32).clamp(1, i16::MAX as i32) as i16;
+    bot.hp = bot.max_hp;
+    bot.max_mp = (bot.max_mp as i32 + stats.item_max_mp as i32).clamp(0, i16::MAX as i32) as i16;
+    bot.mp = bot.max_mp;
+}
+
+/// Defensive AC of a bot against physical attacks. Bots wearing armour use
+/// the real-player formula `coeff.ac * (level + item_ac)`; gear-less bots keep
+/// the legacy STA/level approximation so they are not left with near-zero AC.
+pub(crate) fn bot_defense_ac(world: &WorldState, bot: &BotInstance) -> i32 {
+    let legacy = bot.sta_stat as i32 * 3 + bot.level as i32 * 2;
+    let item_ac = bot_equipped_stats(world, &bot.equip_visual).item_ac as i32;
+    if item_ac <= 0 {
+        return legacy;
+    }
+    let coeff_ac = world
+        .get_coefficient(bot.class)
+        .map(|coeff| coeff.ac as f32)
+        .unwrap_or(1.0);
+    (coeff_ac * (bot.level as f32 + item_ac as f32)) as i32
 }
 
 /// Spawn a bot from GM command parameters (no DB row required).
@@ -4478,7 +5603,7 @@ pub fn spawn_gm_bot(world: &WorldState, params: SpawnGmBotParams) -> BotId {
         ai_state,
     } = params;
 
-    let real_class = gm_class_to_real_class(gm_class, nation);
+    let real_class = promote_bot_class_for_level(gm_class_to_real_class(gm_class, nation), level);
     let (str_stat, sta_stat, dex_stat, int_stat, cha_stat) = gm_bot_stats(real_class);
 
     let id = world.alloc_bot_id();
@@ -4490,8 +5615,7 @@ pub fn spawn_gm_bot(world: &WorldState, params: SpawnGmBotParams) -> BotId {
     // Generate a name like "Bot10001" using the allocated ID.
     let name = format!("Bot{}", id);
 
-    // Race: Karus=1 (Barbarian), ElMorad=11 (El Morad)
-    let race: u8 = if nation == 1 { 1 } else { 11 };
+    let race = bot_race_for_class(real_class, nation, &mut rand::thread_rng());
 
     let mut bot = BotInstance {
         id,
@@ -4560,14 +5684,14 @@ pub fn spawn_gm_bot(world: &WorldState, params: SpawnGmBotParams) -> BotId {
         hiding_helmet: false,
         hiding_cospre: false,
         need_party: 1,
-        equip_visual: gm_bot_equipment(world, zone_id, nation, real_class),
+        equip_visual: generate_bot_equipment(world, real_class, level),
         personal_rank: 0,
         knights_rank: 0,
     };
 
     // Apply stat-derived HP/MP using the coefficient table.
     if let Some(coeff) = world.get_coefficient(bot.class) {
-        set_bot_ability(&mut bot, &coeff);
+        set_bot_ability_with_equipment(world, &mut bot, &coeff);
     }
 
     // Assign a random patrol route for PK zone bots.
@@ -6764,6 +7888,78 @@ mod tests {
         let removed = despawn_all_bots(&world);
         assert_eq!(removed, 5, "should remove all 5 bots");
         assert_eq!(world.bot_count(), 0, "no bots should remain");
+    }
+
+    /// PK bots spawn at the real Ronark town points; both must path out to the
+    /// central bowl, or `spread_pk_spawn` would strand them.
+    #[test]
+    fn test_ronark_town_spawns_reach_the_bowl() {
+        use crate::systems::pathfind::{find_bot_path, nearest_bot_point};
+        let smd_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_b.smd");
+        let map = crate::zone::MapData::new(
+            ko_protocol::smd::SmdFile::load(&smd_path).expect("load Ronark Land SMD"),
+        );
+        let bowl = [(1050.0f32, 842.0f32), (886.0, 1102.0), (968.0, 972.0)];
+        for nation in [NATION_KARUS, NATION_ELMORAD] {
+            let (tx, tz) = get_bot_respawn_position(ZONE_RONARK_LAND, nation);
+            let (sx, sz) = nearest_bot_point(&map, tx, tz, 64).expect("walkable town tile");
+            for (gx, gz) in bowl {
+                let (gx, gz) = nearest_bot_point(&map, gx, gz, 8).expect("walkable bowl tile");
+                assert!(
+                    find_bot_path(&map, sx, sz, gx, gz).found,
+                    "nation {nation} town ({sx},{sz}) cannot reach bowl ({gx},{gz})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_generated_gear_uses_class_armor_kind() {
+        let world = WorldState::new();
+        let armor = |num: i32, kind: i32, class: i32| {
+            let mut item = make_test_item(num, kind);
+            item.slot = Some(5);
+            item.class = Some(class);
+            item.item_type = Some(ITEM_TYPE_UPGRADE_LINE);
+            item.by_grade = Some(2);
+            item.ac = Some(50);
+            item.duration = Some(5000);
+            item.str_name = Some(format!("Armor {num} (+2)"));
+            item
+        };
+        world.insert_item(210001002, armor(210001002, ARMOR_KIND_WARRIOR, 1));
+        world.insert_item(230001002, armor(230001002, ARMOR_KIND_MAGE, 3));
+        world.insert_item(231001002, armor(231001002, ARMOR_KIND_MAGE, 3));
+        world.insert_item(232001002, {
+            let mut reverse = armor(232001002, ARMOR_KIND_MAGE, 3);
+            reverse.item_type = Some(ITEM_TYPE_REVERSE);
+            reverse
+        });
+
+        let mage = generate_bot_equipment(&world, 109, 40);
+        assert!(matches!(mage[0].0, 230001002 | 231001002), "mage got {}", mage[0].0);
+        assert_eq!(mage[0].1, 5000, "durability comes from the item's max durability");
+        let warrior = generate_bot_equipment(&world, 105, 40);
+        assert_eq!(warrior[0].0, 210001002);
+    }
+
+    #[test]
+    fn test_promote_bot_class_for_level() {
+        assert_eq!(promote_bot_class_for_level(101, 5), 101);
+        assert_eq!(promote_bot_class_for_level(102, 30), 107);
+        assert_eq!(promote_bot_class_for_level(203, 60), 210);
+        assert_eq!(promote_bot_class_for_level(204, 83), 212);
+    }
+
+    #[test]
+    fn test_bot_race_matches_class() {
+        let mut rng = rand::thread_rng();
+        for _ in 0..20 {
+            assert!(matches!(bot_race_for_class(110, NATION_KARUS, &mut rng), 3 | 4));
+            assert!(matches!(bot_race_for_class(210, NATION_ELMORAD, &mut rng), 12 | 13));
+            assert_eq!(bot_race_for_class(106, NATION_KARUS, &mut rng), 1);
+        }
     }
 
     #[test]

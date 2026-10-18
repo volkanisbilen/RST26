@@ -2660,7 +2660,7 @@ fn handle_bot_spawn(
 /// priest). Only zones with patrol waypoints are accepted.
 fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     use crate::systems::bot_ai;
-    use crate::world::{BotAiState, ZONE_ARDREAM, ZONE_RONARK_LAND};
+    use crate::world::{BotAiState, ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
 
     let world = session.world().clone();
     let sid = session.session_id();
@@ -2682,13 +2682,13 @@ fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
             return Ok(());
         };
         let Some(zone_id) = resolve_zone(zone_arg) else {
-            send_help(session, "Error: Invalid zone. Use 71, 72, or here.");
+            send_help(session, "Error: Invalid zone. Use 71, 72, 73, or here.");
             return Ok(());
         };
-        if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM) {
+        if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE) {
             send_help(
                 session,
-                "Error: PK bot waves currently support Ronark Land (71) and Ardream (72).",
+                "Error: PK bot waves currently support Ronark Land (71), Ardream (72), and Ronark Land Base (73).",
             );
             return Ok(());
         }
@@ -2722,10 +2722,10 @@ fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
         send_help(session, "Error: Invalid zone. Use 71, 72, or here.");
         return Ok(());
     };
-    if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM) {
+    if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE) {
         send_help(
             session,
-            "Error: PK bot waves currently support Ronark Land (71) and Ardream (72).",
+            "Error: PK bot waves currently support Ronark Land (71), Ardream (72), and Ronark Land Base (73).",
         );
         return Ok(());
     }

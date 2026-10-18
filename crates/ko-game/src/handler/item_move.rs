@@ -1186,7 +1186,7 @@ fn is_valid_slot_pos(item: &Item, dest_pos: usize) -> bool {
 }
 
 /// Check if the item's class restriction allows this player's class.
-fn item_class_available(item: &Item, player_class: u16) -> bool {
+pub(crate) fn item_class_available(item: &Item, player_class: u16) -> bool {
     let item_class = item.class.unwrap_or(0);
     if item_class == 0 {
         return true; // No restriction

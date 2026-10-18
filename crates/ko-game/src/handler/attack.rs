@@ -193,6 +193,13 @@ pub(crate) fn get_weapon_range(world: &WorldState, sid: SessionId) -> f32 {
             (rh, lh)
         })
         .unwrap_or((0, 0));
+    weapon_range_of_items(world, rh_id, lh_id)
+}
+
+/// Range (game units) of the weapon held in the given right/left-hand item
+/// ids: right hand first, then left hand. Also used for runtime bots, whose
+/// weapons live in their visual equipment rather than a session inventory.
+pub(crate) fn weapon_range_of_items(world: &WorldState, rh_id: u32, lh_id: u32) -> f32 {
     // Item table lookups (separate DashMap, no session contention)
     if rh_id != 0 {
         if let Some(w) = world.get_item(rh_id) {
@@ -1684,7 +1691,7 @@ async fn handle_npc_attack(
         // weapon damage, stat bonuses, and buffs.
         let total_hit = attacker_snap.equipped_stats.total_hit;
         let temp_ap = total_hit as i32 * attacker_snap.attack_amount;
-        let bot_ac = (bot.sta_stat as i32 * 3) + (bot.level as i32 * 2);
+        let bot_ac = crate::systems::bot_ai::bot_defense_ac(&world, &bot);
         let temp_hit_b = if bot_ac + 240 > 0 {
             (temp_ap * 2) / (bot_ac + 240)
         } else {
@@ -1793,6 +1800,28 @@ async fn handle_npc_attack(
             // Bot died — trigger full death processing
             let now_ms = crate::systems::bot_ai::tick_ms();
             crate::systems::bot_ai::bot_on_death(&world, npc_id, now_ms);
+
+            // PK zone bot kills count toward Collection Race same as a real
+            // player kill would: bots never reach the regular NPC-death path
+            // below (where CR tracking normally hooks in), so they need their
+            // own call here with the reserved sentinel proto_id.
+            if matches!(
+                bot.zone_id,
+                ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
+            ) {
+                let cr = world.collection_race_event().clone();
+                if let Err(e) = super::collection_race::handle_kill(
+                    &world,
+                    attacker_sid,
+                    super::collection_race::CR_PK_BOT_KILL_PROTO_ID,
+                    &cr,
+                )
+                .await
+                {
+                    tracing::warn!("CR handle_kill error (PK bot kill): {}", e);
+                }
+            }
+
             ATTACK_TARGET_DEAD
         } else {
             ATTACK_SUCCESS

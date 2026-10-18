@@ -97,6 +97,15 @@ pub const CR_SLOTS: usize = 3;
 /// Number of reward slots per event (always 3, same as monster slots).
 pub const CR_REWARD_SLOTS: usize = 3;
 
+/// Reserved "proto_id" an admin can put in a CR target slot to mean "a kill in
+/// the PK zones (Ronark Land / Ardream / Ronark Land Base), real player or PK
+/// bot, counts toward this target" instead of a specific monster. The admin
+/// panel's target SID field is i16 (DB column `smallint`), so this has to fit
+/// that range -- `i16::MAX` rather than `u16::MAX`. `validate_collection_race_setting`
+/// (ko-admin, legacy.rs) special-cases this exact value to skip the normal
+/// "must be a real npc_template.s_sid" check.
+pub const CR_PK_BOT_KILL_PROTO_ID: u16 = i16::MAX as u16;
+
 use crate::world::{ITEM_COUNT, ITEM_EXP, ITEM_RANDOM};
 
 // ─────────────────────────────────────────────────────────────────────────────

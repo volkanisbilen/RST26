@@ -720,9 +720,9 @@ async fn collection_race_config(headers: HeaderMap, State(app): State<App>) -> R
         "settings": settings.into_iter().map(|r| json!({
             "index":r.try_get::<i16,_>("event_index").unwrap_or(0),"name":r.try_get::<String,_>("event_name").unwrap_or_default(),
             "targets":[
-                json!({"sid":r.try_get::<i16,_>("unit1").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count1").unwrap_or(0),"name":r.try_get::<String,_>("unit1_name").unwrap_or_default()}),
-                json!({"sid":r.try_get::<i16,_>("unit2").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count2").unwrap_or(0),"name":r.try_get::<String,_>("unit2_name").unwrap_or_default()}),
-                json!({"sid":r.try_get::<i16,_>("unit3").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count3").unwrap_or(0),"name":r.try_get::<String,_>("unit3_name").unwrap_or_default()})
+                json!({"sid":r.try_get::<i16,_>("unit1").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count1").unwrap_or(0),"name":cr_target_name(r.try_get::<i16,_>("unit1").unwrap_or(0),r.try_get::<String,_>("unit1_name").unwrap_or_default())}),
+                json!({"sid":r.try_get::<i16,_>("unit2").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count2").unwrap_or(0),"name":cr_target_name(r.try_get::<i16,_>("unit2").unwrap_or(0),r.try_get::<String,_>("unit2_name").unwrap_or_default())}),
+                json!({"sid":r.try_get::<i16,_>("unit3").unwrap_or(0),"count":r.try_get::<i16,_>("unit_count3").unwrap_or(0),"name":cr_target_name(r.try_get::<i16,_>("unit3").unwrap_or(0),r.try_get::<String,_>("unit3_name").unwrap_or_default())})
             ],
             "min_level":r.try_get::<i16,_>("min_level").unwrap_or(1),"max_level":r.try_get::<i16,_>("max_level").unwrap_or(83),"zone":r.try_get::<i16,_>("event_zone").unwrap_or(0),"zone_name":r.try_get::<String,_>("zone_name").unwrap_or_default(),"minutes":r.try_get::<i32,_>("event_time").unwrap_or(60),"user_limit":r.try_get::<i32,_>("user_limit").unwrap_or(1),"repeat":r.try_get::<bool,_>("is_repeat").unwrap_or(false),"auto_start":r.try_get::<bool,_>("auto_start").unwrap_or(false),"auto_hour":r.try_get::<i16,_>("auto_hour").unwrap_or(0),"auto_minute":r.try_get::<i16,_>("auto_minute").unwrap_or(0)
         })).collect::<Vec<_>>(),
@@ -748,9 +748,16 @@ struct CollectionRaceRewardEdit { description:String, item_id:i32, count:i32, ra
 
 async fn collection_race_zone_valid(pool:&DbPool, zone:i16) -> Result<bool,ApiError> { sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM zone_info WHERE zone_no=$1)").bind(zone).fetch_one(pool).await.map_err(|_|ApiError::Internal) }
 async fn collection_race_npc_valid(pool:&DbPool, sid:i16) -> Result<bool,ApiError> { sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM npc_template WHERE s_sid=$1)").bind(sid).fetch_one(pool).await.map_err(|_|ApiError::Internal) }
+// Sentinel target sid for "PK-zone bot kill counts as a real player kill"
+// (ko-game's collection_race::CR_PK_BOT_KILL_PROTO_ID) — not a real npc_template row,
+// so it must bypass the npc-existence check below.
+const CR_PK_BOT_KILL_PROTO_ID: i16 = i16::MAX;
+fn cr_target_name(sid: i16, joined_name: String) -> String {
+    if sid == CR_PK_BOT_KILL_PROTO_ID { "PK Bölgesi Bot Öldürme".to_string() } else { joined_name }
+}
 async fn validate_collection_race_setting(pool:&DbPool, p:&CollectionRaceSettingEdit) -> Result<(),ApiError> {
     if p.name.trim().is_empty() || p.name.len()>30 || p.targets.len()!=3 || !(1..=83).contains(&p.min_level) || !(p.min_level..=83).contains(&p.max_level) || !(1..=1440).contains(&p.minutes) || !(1..=i16::MAX as i32).contains(&p.user_limit) || !(0..=23).contains(&p.auto_hour) || !(0..=59).contains(&p.auto_minute) || !collection_race_zone_valid(pool,p.zone).await? { return Err(ApiError::BadRequest); }
-    for target in &p.targets { if target.sid<0 || target.count<0 || (target.sid==0 && target.count!=0) || (target.sid>0 && target.count==0) { return Err(ApiError::BadRequest); } if target.sid>0 && !collection_race_npc_valid(pool,target.sid).await? { return Err(ApiError::BadRequest); } }
+    for target in &p.targets { if target.sid<0 || target.count<0 || (target.sid==0 && target.count!=0) || (target.sid>0 && target.count==0) { return Err(ApiError::BadRequest); } if target.sid>0 && target.sid!=CR_PK_BOT_KILL_PROTO_ID && !collection_race_npc_valid(pool,target.sid).await? { return Err(ApiError::BadRequest); } }
     Ok(())
 }
 async fn write_collection_race_setting(tx:&mut sqlx::Transaction<'_,sqlx::Postgres>, index:i16, p:&CollectionRaceSettingEdit, upsert:bool) -> Result<u64,ApiError> {

@@ -599,8 +599,17 @@ fn determine_respawn_location(
     // ── 3. Chaos Dungeon / Bowl event → random spawn point ───────────
     //   if (GetZoneID() == ZONE_CHAOS_DUNGEON || (tBowlEventZone == GetZoneID() && isBowlEventActive))
     //     GetStartPositionRandom(sx, sz);
-    if let Some((rx, rz)) = world.get_start_position_random(current_zone) {
-        return (current_zone, rx, rz);
+    // Previously missing the isBowlEventActive/tBowlEventZone gate entirely --
+    // any zone with a start_position_random row (Ronark Land included) always
+    // took this branch, so players/bots respawned at the bowl center there
+    // even with no bowl event running, instead of falling through to their
+    // proper nation spawn in step 5.
+    let in_bowl_event =
+        world.is_bowl_event_active() && world.get_bowl_event_zone() as u16 == current_zone;
+    if current_zone == ZONE_CHAOS_DUNGEON || in_bowl_event {
+        if let Some((rx, rz)) = world.get_start_position_random(current_zone) {
+            return (current_zone, rx, rz);
+        }
     }
 
     // ── 4. Juraid Mountain — stage-specific respawn coords ───────────

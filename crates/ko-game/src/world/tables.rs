@@ -65,6 +65,11 @@ impl WorldState {
     pub fn get_magic_type6(&self, i_num: i32) -> Option<MagicType6Row> {
         self.magic_type6.get(&i_num).map(|r| r.clone())
     }
+    /// Insert a magic type 6 (transform) row. Used for tests.
+    #[cfg(test)]
+    pub(crate) fn insert_magic_type6(&self, row: MagicType6Row) {
+        self.magic_type6.insert(row.i_num, row);
+    }
     /// Look up magic type 7 (summon/CC) parameters by n_index.
     pub fn get_magic_type7(&self, n_index: i32) -> Option<MagicType7Row> {
         self.magic_type7.get(&n_index).map(|r| r.clone())
@@ -81,6 +86,18 @@ impl WorldState {
     ///
     pub fn get_item(&self, item_id: u32) -> Option<Item> {
         self.items.get(&item_id).map(|r| r.clone())
+    }
+    /// Number of loaded item definitions.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+    /// Clone every item definition matching `pred` (full-table scan; cache the result).
+    pub fn collect_items_matching(&self, pred: impl Fn(&Item) -> bool) -> Vec<Item> {
+        self.items
+            .iter()
+            .filter(|entry| pred(entry.value()))
+            .map(|entry| entry.value().clone())
+            .collect()
     }
     /// Insert an item template (for testing).
     #[cfg(test)]

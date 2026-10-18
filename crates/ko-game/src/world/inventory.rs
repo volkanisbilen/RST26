@@ -256,7 +256,7 @@ impl WorldState {
     ///   and duplicate-flagged items.
     /// - Set items: armor with race >= 100 accumulates a set ID; after the loop,
     ///   matching set bonuses are looked up and applied.
-    fn compute_slot_item_values(&self, inventory: &[UserItemSlot]) -> EquippedStats {
+    pub(crate) fn compute_slot_item_values(&self, inventory: &[UserItemSlot]) -> EquippedStats {
         let mut stats = EquippedStats {
             item_hitrate: 100,
             item_evasionrate: 100,
