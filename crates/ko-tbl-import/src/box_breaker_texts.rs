@@ -8,7 +8,7 @@
 //!
 //! Builder: `cargo run -p ko-tbl-import --bin patch_box_breaker -- <client Data dir> <out dir>`.
 
-use crate::parser::{CellValue, ColumnType, TblTable};
+use crate::raw_tbl::{put_str, put_u32, RawTbl, COL_STRING, COL_U32};
 
 /// One client text in English and in plain-ASCII Turkish (no diacritics: safe in every codepage).
 pub struct Text {
@@ -136,17 +136,11 @@ pub fn parse_text_constants(lua: &str, prefix: &str) -> Vec<(String, u32)> {
     out
 }
 
-fn first_id(row: &[CellValue]) -> Option<u32> {
-    match row.first() {
-        Some(CellValue::U32(v)) => Some(*v),
-        _ => None,
-    }
-}
-
 /// Adds / replaces the button texts in a `Quest_Menu_*.tbl` table (`[UnsignedInt, String]`).
-pub fn apply_menu(table: &mut TblTable, boxes: &[BoxText], turkish: bool) -> anyhow::Result<()> {
-    if table.columns != [ColumnType::UnsignedInt, ColumnType::String] {
-        anyhow::bail!("unexpected Quest_Menu schema: {:?}", table.columns);
+/// Works on the raw rows: all other rows stay byte-identical.
+pub fn apply_menu(table: &mut RawTbl, boxes: &[BoxText], turkish: bool) -> anyhow::Result<()> {
+    if table.types != [COL_U32, COL_STRING] {
+        anyhow::bail!("unexpected Quest_Menu schema: {:?}", table.types);
     }
     let mut rows: Vec<(u32, String)> = MENU_TEXTS
         .iter()
@@ -154,40 +148,31 @@ pub fn apply_menu(table: &mut TblTable, boxes: &[BoxText], turkish: bool) -> any
         .collect();
     rows.extend(boxes.iter().map(|b| (b.text_id, b.name.clone())));
     for (id, text) in rows {
-        table.rows.retain(|r| first_id(r) != Some(id));
-        table.rows.push(vec![CellValue::U32(id), CellValue::Str(text)]);
+        table.remove_id(id);
+        let mut row = Vec::new();
+        put_u32(&mut row, id);
+        put_str(&mut row, &text);
+        table.rows.push(row);
     }
     Ok(())
 }
 
 /// Adds / replaces the header texts in a `Quest_Talk_*.tbl` table
 /// (`[UnsignedInt, String, UnsignedInt, UnsignedInt]`).
-pub fn apply_talk(table: &mut TblTable, turkish: bool) -> anyhow::Result<()> {
-    if table.columns
-        != [
-            ColumnType::UnsignedInt,
-            ColumnType::String,
-            ColumnType::UnsignedInt,
-            ColumnType::UnsignedInt,
-        ]
-    {
-        anyhow::bail!("unexpected Quest_Talk schema: {:?}", table.columns);
+pub fn apply_talk(table: &mut RawTbl, turkish: bool) -> anyhow::Result<()> {
+    if table.types != [COL_U32, COL_STRING, COL_U32, COL_U32] {
+        anyhow::bail!("unexpected Quest_Talk schema: {:?}", table.types);
     }
     for t in TALK_TEXTS {
-        table.rows.retain(|r| first_id(r) != Some(t.id));
-        table.rows.push(vec![
-            CellValue::U32(t.id),
-            CellValue::Str((if turkish { t.tr } else { t.en }).to_string()),
-            CellValue::U32(TALK_EXTRA.0),
-            CellValue::U32(TALK_EXTRA.1),
-        ]);
+        table.remove_id(t.id);
+        let mut row = Vec::new();
+        put_u32(&mut row, t.id);
+        put_str(&mut row, if turkish { t.tr } else { t.en });
+        put_u32(&mut row, TALK_EXTRA.0);
+        put_u32(&mut row, TALK_EXTRA.1);
+        table.rows.push(row);
     }
     Ok(())
-}
-
-/// Sorts rows by their first (id) column like the original client tables.
-pub fn sort_by_id(table: &mut TblTable) {
-    table.rows.sort_by_key(|r| first_id(r).unwrap_or(u32::MAX));
 }
 
 #[cfg(test)]
@@ -197,11 +182,14 @@ mod tests {
     const LUA: &str = include_str!("../../../Quests/31514_BoxBreaker.lua");
     const MIGRATION: &str =
         include_str!("../../../migrations/20261018120000_box_breaker_npc.sql");
+    /// Box button names (duplicate names numbered, boxes added by the box rewards migration).
+    const BOX_MIGRATION: &str =
+        include_str!("../../../migrations/20261018330000_box_breaker_menu_texts.sql");
 
     #[test]
     fn lua_box_table_is_parsed() {
         let boxes = parse_box_texts(LUA);
-        assert!(boxes.len() >= 30, "BOX_TEXT parsed: {}", boxes.len());
+        assert!(boxes.len() >= 80, "BOX_TEXT parsed: {}", boxes.len());
         // distinct item ids and text ids, all in the reserved 622xx range
         let mut items: Vec<_> = boxes.iter().map(|b| b.item_id).collect();
         items.sort_unstable();
@@ -211,10 +199,14 @@ mod tests {
         texts.sort_unstable();
         texts.dedup();
         assert_eq!(texts.len(), boxes.len(), "duplicate text id in BOX_TEXT");
+        let mut names: Vec<_> = boxes.iter().map(|b| b.name.to_lowercase()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), boxes.len(), "two box buttons share a name");
         for b in &boxes {
             assert!((62201..62300).contains(&b.text_id), "{b:?}");
             assert!(!b.name.is_empty());
-            assert!(b.name.len() < 100, "menu text limit is 100 chars: {b:?}");
+            assert!(b.name.len() <= 40, "box button names stay short: {b:?}");
         }
     }
 
@@ -287,47 +279,47 @@ mod tests {
         }
         for b in parse_box_texts(LUA) {
             assert!(
-                MIGRATION.contains(&format!("({}, {})", b.text_id, sql_quote(&b.name))),
+                BOX_MIGRATION.contains(&format!("({}, {})", b.text_id, sql_quote(&b.name))),
                 "migration is missing box text {b:?}"
             );
         }
     }
 
+    fn row(id: u32, text: &str) -> Vec<u8> {
+        let mut r = Vec::new();
+        put_u32(&mut r, id);
+        put_str(&mut r, text);
+        r
+    }
+
+    fn table(types: &[i32], rows: Vec<Vec<u8>>) -> RawTbl {
+        // build the plaintext (no new-structure header) and parse it back
+        let mut d = Vec::new();
+        d.extend_from_slice(&(types.len() as i32).to_le_bytes());
+        for t in types {
+            d.extend_from_slice(&t.to_le_bytes());
+        }
+        d.extend_from_slice(&(rows.len() as i32).to_le_bytes());
+        for r in rows {
+            d.extend_from_slice(&r);
+        }
+        RawTbl::parse(&d, false).unwrap()
+    }
+
     #[test]
     fn apply_adds_and_replaces_rows() {
-        let mut menu = TblTable {
-            columns: vec![ColumnType::UnsignedInt, ColumnType::String],
-            rows: vec![
-                vec![CellValue::U32(27), CellValue::Str("Close".into())],
-                vec![CellValue::U32(62101), CellValue::Str("old".into())],
-            ],
-        };
+        let mut menu = table(&[COL_U32, COL_STRING], vec![row(27, "Close"), row(62101, "old")]);
         let boxes = parse_box_texts(LUA);
         apply_menu(&mut menu, &boxes, false).unwrap();
-        sort_by_id(&mut menu);
         assert_eq!(menu.rows.len(), 1 + MENU_TEXTS.len() + boxes.len());
-        let row = menu
-            .rows
-            .iter()
-            .find(|r| first_id(r) == Some(62101))
-            .unwrap();
-        assert!(matches!(&row[1], CellValue::Str(s) if s == "Break 1"));
-        assert_eq!(first_id(&menu.rows[0]), Some(27));
+        assert_eq!(menu.rows[0], row(27, "Close"));
+        assert!(menu.rows.contains(&row(62101, "Break 1")));
 
-        let mut talk = TblTable {
-            columns: vec![
-                ColumnType::UnsignedInt,
-                ColumnType::String,
-                ColumnType::UnsignedInt,
-                ColumnType::UnsignedInt,
-            ],
-            rows: vec![],
-        };
+        let mut talk = table(&[COL_U32, COL_STRING, COL_U32, COL_U32], vec![]);
         apply_talk(&mut talk, true).unwrap();
         assert_eq!(talk.rows.len(), TALK_TEXTS.len());
-        assert_eq!(talk.rows[0].len(), 4);
 
-        let mut wrong = TblTable { columns: vec![ColumnType::UnsignedInt], rows: vec![] };
+        let mut wrong = table(&[COL_U32], vec![]);
         assert!(apply_menu(&mut wrong, &boxes, false).is_err());
         assert!(apply_talk(&mut wrong, false).is_err());
     }

@@ -4,7 +4,7 @@ The Box Breaker NPC (Quests/31514_BoxBreaker.lua) is a normal Lua SelectMsg dial
 button / header texts come from the client tables. Copy into the client Data directory (back up
 the old files first):
 
-  Quest_Menu_us.tbl   buttons: ids 62101-62110 (fixed UI) + 62201-62236 (one per box name)
+  Quest_Menu_us.tbl   buttons: ids 62101-62110 (fixed UI) + 62201-62286 (one per box name, 86 boxes; duplicate names are numbered 'Accessory Box (1)', '(2)', ...)
   Quest_Talk_us.tbl   dialog headers: ids 62101-62109
 
 Optional (cosmetic):
@@ -14,8 +14,10 @@ Optional (cosmetic):
       "[Box Breaker]". NOTE: they were built from the same Data directory as the two files
       above; do not mix them with the older client_patch\funclass_npc NPC tables.
 
-Built from "D:\ai\JstKO Client\Data" (Quest_Menu_us.tbl of Oct 13, Quest_Talk_us.tbl of Oct 9,
-NPC tables of Oct 11). If another change to one of these tables lands first, rebuild from the
+Rebuilt from the then-current "D:\ai\JstKO Client\Data" after the box rewards migration
+(20261018320000) made 50 more boxes breakable (86 box buttons in total, ids 62201-62286; free id
+block 62201-62299, button text limit 100 chars). The NPC tables in optional_npc_name were rebuilt
+in the same run. If another change to one of these tables lands first, rebuild from the
 newer file instead of copying these:
 
   cargo run -p ko-tbl-import --bin patch_box_breaker -- "<client>\Data" <out dir> [--lang tr] [--rename-npc]
