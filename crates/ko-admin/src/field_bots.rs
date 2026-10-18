@@ -5,7 +5,7 @@
 //! Everything lives in the `field_bot_zone` table and is OFF by default. Saving a row queues a
 //! `field_bot_reload` admin_command (the game server re-reads the table and brings the
 //! population in line), "respawn" queues a `field_bot` clear (bots of enabled zones refill within
-//! seconds). The caps below are duplicated from the game server on purpose -- ko-admin has no
+//! seconds). The technical ceilings below are duplicated from the game server on purpose -- ko-admin has no
 //! dependency on ko-game (same reasoning as `PK_BOT_ZONES` in legacy.rs) -- and the game server
 //! enforces them again, so a hand-edited row can never overload it.
 
@@ -33,9 +33,9 @@ pub fn routes() -> Router<App> {
 
 type R = Result<Json<Value>, ApiError>;
 
-/// Max field bots of one nation in one zone / in the whole world (mirrors ko-game).
-const MAX_PER_NATION_ZONE: i16 = 40;
-const MAX_TOTAL: i64 = 150;
+/// Technical safety ceilings (mirrors ko-game): not a gameplay limit.
+const MAX_PER_NATION_ZONE: i16 = 1000;
+const MAX_TOTAL: i64 = 5000;
 
 /// (zone id, label, owner: 0 = both nations, 1 = Karus, 2 = El Morad, zone minimum level).
 const ZONES: [(i16, &str, i16, i16); 5] = [
@@ -88,7 +88,7 @@ async fn list(headers: HeaderMap, State(app): State<App>) -> R {
     auth(&headers, false)?;
     let rows = sqlx::query(
         "SELECT zone_id, enabled, karus_count, elmorad_count, level_min, level_max, mix_warrior, mix_rogue, \
-         mix_mage, mix_priest, mix_kurian, live_karus, live_elmorad, \
+         mix_mage, mix_priest, mix_kurian, live_karus, live_elmorad, live_note, \
          COALESCE(EXTRACT(EPOCH FROM (NOW() - live_updated_at))::float8, -1) AS live_age \
          FROM field_bot_zone",
     )
@@ -119,6 +119,7 @@ async fn list(headers: HeaderMap, State(app): State<App>) -> R {
             "mix": [g("mix_warrior", 30), g("mix_rogue", 20), g("mix_mage", 25), g("mix_priest", 25), g("mix_kurian", 0)],
             "live_karus": g("live_karus", 0),
             "live_elmorad": g("live_elmorad", 0),
+            "live_note": r.and_then(|r| r.try_get::<Option<String>, _>("live_note").ok().flatten()).unwrap_or_default(),
             "live_age": r.and_then(|r| r.try_get::<f64, _>("live_age").ok()).unwrap_or(-1.0),
         }));
     }
@@ -236,13 +237,13 @@ mod tests {
 
     #[test]
     fn counts_levels_and_owner_are_clamped() {
-        // Karus land: the El Morad count is dropped, the Karus count capped at 40.
+        // Karus land: the El Morad count is dropped, the Karus count not capped at the old 40.
         let r = sanitize(1, &input(true, 500, 30, 1, 200, [10, 10, 10, 10, 10])).unwrap();
-        assert_eq!((r.karus, r.elmorad), (40, 0));
+        assert_eq!((r.karus, r.elmorad), (500, 0));
         assert_eq!((r.level_min, r.level_max), (35, 83), "level starts at the zone minimum");
         // Neutral Moradon keeps both nations, each capped.
         let m = sanitize(21, &input(true, -4, 99, 70, 20, [10, 10, 10, 10, 10])).unwrap();
-        assert_eq!((m.karus, m.elmorad), (0, 40));
+        assert_eq!((m.karus, m.elmorad), (0, 99));
         assert!(m.level_min <= m.level_max);
     }
 

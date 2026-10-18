@@ -208,9 +208,10 @@ CREATE TABLE IF NOT EXISTS field_bot_zone (
     live_karus      SMALLINT    NOT NULL DEFAULT 0,
     live_elmorad    SMALLINT    NOT NULL DEFAULT 0,
     live_updated_at TIMESTAMPTZ,
+    live_note       TEXT        NOT NULL DEFAULT '',
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT field_bot_zone_zone_chk   CHECK (zone_id IN (1, 2, 11, 12, 21)),
-    CONSTRAINT field_bot_zone_count_chk  CHECK (karus_count BETWEEN 0 AND 40 AND elmorad_count BETWEEN 0 AND 40),
+    CONSTRAINT field_bot_zone_count_chk  CHECK (karus_count BETWEEN 0 AND 1000 AND elmorad_count BETWEEN 0 AND 1000),
     CONSTRAINT field_bot_zone_level_chk  CHECK (level_min BETWEEN 1 AND 83 AND level_max BETWEEN 1 AND 83 AND level_min <= level_max),
     CONSTRAINT field_bot_zone_mix_chk    CHECK (mix_warrior BETWEEN 0 AND 100 AND mix_rogue BETWEEN 0 AND 100
                                                AND mix_mage BETWEEN 0 AND 100 AND mix_priest BETWEEN 0 AND 100
@@ -221,6 +222,19 @@ INSERT INTO field_bot_zone (zone_id, enabled, karus_count, elmorad_count, level_
 VALUES (21, FALSE, 6, 6, 8, 45), (1, FALSE, 10, 0, 35, 60), (2, FALSE, 0, 10, 35, 60),
        (11, FALSE, 8, 0, 66, 80), (12, FALSE, 0, 8, 66, 80)
 ON CONFLICT (zone_id) DO NOTHING
+-- ;;
+-- Field bot limits removed (migrations/20261018260000_field_bot_remove_caps.sql): live_note column + 1000 ceiling.
+ALTER TABLE field_bot_zone ADD COLUMN IF NOT EXISTS live_note TEXT NOT NULL DEFAULT ''
+-- ;;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'field_bot_zone_count_chk'
+               AND conrelid = 'field_bot_zone'::regclass AND pg_get_constraintdef(oid) LIKE '%40%') THEN
+        ALTER TABLE field_bot_zone DROP CONSTRAINT field_bot_zone_count_chk;
+        ALTER TABLE field_bot_zone ADD CONSTRAINT field_bot_zone_count_chk
+            CHECK (karus_count BETWEEN 0 AND 1000 AND elmorad_count BETWEEN 0 AND 1000);
+    END IF;
+END $$
+-- ;;
 -- Right-top info list entries ("Bilgi Paneli" page); see migrations/20261018180000_info_panel_entry.sql.
 CREATE TABLE IF NOT EXISTS info_panel_entry (
     id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

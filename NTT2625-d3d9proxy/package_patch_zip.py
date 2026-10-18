@@ -9,6 +9,10 @@
 # zip_extract only ever adds/overwrites files) -- if a file needs to go away, say so and it'll
 # be handled by hand.
 #
+# Every zip also contains a freshly written Server.ini: a copy of <client_dir>\Server.ini with
+# [Version] Files=<new version> (other keys unchanged), so the launcher's stored version is always
+# in step with the last patch it extracted.
+#
 # Run this (from NTT2625-d3d9proxy) after every change meant to reach players, then run the
 # scp command it prints to upload client_patch_release/zips/<new>.zip to the VPS. No ko-admin
 # restart needed -- patch_tcp.rs re-scans the zips/ folder on every request.
@@ -25,6 +29,9 @@ CLIENT_DIR = sys.argv[1] if len(sys.argv) > 1 else r'D:\ai\JstKO Client'
 OUT_DIR = os.path.join(HERE, 'client_patch_release')
 STATE_PATH = os.path.join(HERE, 'patch_state.json')
 BLACK_LION_DIR = os.path.join(os.path.dirname(HERE), 'client_patch', 'black_lion_chr')
+
+CRLF = chr(13) + chr(10)
+LF = chr(10)
 
 VPS_HOST = 'root@84.247.183.23'
 VPS_ZIPS_DIR = '/opt/ko26xx-build-2625/client_patch_release/zips'
@@ -85,6 +92,42 @@ def collect():
     return entries
 
 
+def make_server_ini(new_version):
+    """Server.ini for the patch zip: a copy of the client's own Server.ini with [Version] Files
+    set to the new patch version (every other key/line stays as it is in the client, CRLF kept).
+    The launcher extracts it over the player's Server.ini, so the stored version always matches
+    the last applied patch even if the launcher's own WritePrivateProfileString was lost."""
+    src = os.path.join(CLIENT_DIR, 'Server.ini')
+    if os.path.isfile(src):
+        with open(src, 'rb') as f:
+            text = f.read().decode('latin-1')
+    else:
+        text = '[Server]'+CRLF+'Count=1'+CRLF+'IP0=game.jstko.com'+CRLF+'[Version]'+CRLF+'Files=0'+CRLF
+    eol = CRLF  # Windows INI; GetPrivateProfile* reads either, keep CRLF like the client file
+    lines = text.replace(CRLF, LF).split(LF)
+    out, section, done = [], '', False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            if section == 'version' and not done:
+                out.append('Files=%d' % new_version)
+                done = True
+            section = stripped[1:-1].strip().lower()
+        elif section == 'version' and stripped.split('=', 1)[0].strip().lower() == 'files' and '=' in stripped:
+            line = 'Files=%d' % new_version
+            done = True
+        out.append(line)
+    if not done:
+        while out and out[-1] == '':
+            out.pop()
+        if section != 'version':
+            out.append('[Version]')
+        out.append('Files=%d' % new_version)
+    while out and out[-1] == '':
+        out.pop()
+    return (eol.join(out) + eol).encode('latin-1')
+
+
 def load_state():
     if os.path.isfile(STATE_PATH):
         with open(STATE_PATH, encoding='utf-8') as f:
@@ -116,6 +159,9 @@ def main():
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for rel, full in changed:
             zf.write(full, rel)
+        # Always ship a freshly written Server.ini carrying the new version (forward-slash name,
+        # like every other entry, so the launcher's zip_extract places it next to Launcher.exe).
+        zf.writestr('Server.ini', make_server_ini(new_version))
 
     state['version'] = new_version
     state['files'] = new_hashes

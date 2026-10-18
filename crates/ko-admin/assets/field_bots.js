@@ -2,7 +2,7 @@
 /* Saha Botları: normal haritalarda (Moradon, Luferson, El Morad, Eslant) canavar avlayan ve
    party'ye davet edilebilen botlar. Her bölge varsayılan KAPALI; kaydedince oyun sunucusuna
    field_bot_reload komutu sıraya girer (admin_command), sunucu birkaç saniyede uygular.
-   Üst sınırlar oyun sunucusunda da zorlanır: bölge/ırk başına 40, toplam 150. */
+   Yapay sınır yok; yalnızca teknik güvenlik tavanı (bölge/ırk başına 1000, toplam 5000). */
 
 const FB_MIX = [['Savaşçı', 0], ['Rogue', 1], ['Büyücü', 2], ['Rahip', 3], ['Kurian/Porutu', 4]];
 const FB_OWNER = { 0: 'Her iki ırk', 1: 'Karus', 2: 'El Morad' };
@@ -42,7 +42,7 @@ PAGE.fieldbots = async function (main) {
       if (c.enabled.checked) total += (Number(c.karus.value) || 0) + (Number(c.elmorad.value) || 0);
     }
     totalBox.className = 'hint' + (total > data.caps.total ? ' warn' : '');
-    clear(totalBox).append('Aktif bölgelerde toplam hedef: ' + total + ' / ' + data.caps.total + ' bot (üst sınır). Bölge ve ırk başına en fazla ' + data.caps.per_nation_zone + '.');
+    clear(totalBox).append('Aktif bölgelerde toplam hedef: ' + total + ' bot (teknik tavan ' + data.caps.total + ', bölge/ırk başına ' + data.caps.per_nation_zone + ').');
   }
 
   function zoneCard(z) {
@@ -58,7 +58,11 @@ PAGE.fieldbots = async function (main) {
     const live = h('span', { class: 'muted sm' });
     const paintLive = zz => {
       const age = zz.live_age;
-      clear(live).append('Canlı: Karus ' + zz.live_karus + ' · El Morad ' + zz.live_elmorad + (age >= 0 ? ' (' + Math.round(age) + ' sn önce)' : ' (henüz bilgi yok)'));
+      const tgt = (zz.enabled ? (zz.karus_count + zz.elmorad_count) : 0);
+      const cnt = zz.live_karus + zz.live_elmorad;
+      clear(live).append('Canlı: Karus ' + zz.live_karus + ' · El Morad ' + zz.live_elmorad + ' / hedef ' + tgt + (age >= 0 ? ' (' + Math.round(age) + ' sn önce)' : ' (henüz bilgi yok)'));
+      if (zz.live_note && (cnt < tgt || !zz.enabled)) live.append(h('b', { style: 'color:var(--warn,#d9822b);margin-left:6px' }, 'Neden: ' + zz.live_note));
+      else if (zz.enabled && age < 0) live.append(h('b', { style: 'margin-left:6px' }, 'Neden: oyun sunucusu henüz durum yazmadı (yeniden başlatma/migration gerekebilir)'));
     };
     paintLive(z);
 

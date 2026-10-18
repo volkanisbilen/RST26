@@ -10,9 +10,9 @@
 //!
 //! * **Off by default.** Nothing spawns until an admin enables a zone (`field_bot_zone` table,
 //!   admin panel "Saha Botlari"). Counts, levels and the class mix are per zone.
-//! * **Hard caps.** [`MAX_FIELD_BOTS_PER_NATION_ZONE`] per nation and zone,
-//!   [`MAX_FIELD_BOTS_TOTAL`] overall, enforced when the config is applied *and* when spawning, so a
-//!   misconfigured row can never overload the server.
+//! * **No artificial limits.** Only a very high technical safety ceiling
+//!   ([`MAX_FIELD_BOTS_PER_NATION_ZONE`] per nation and zone, [`MAX_FIELD_BOTS_TOTAL`] overall, bounded by
+//!   the bot-id range) and the per-tick work budget below.
 //! * **Zone ownership.** A Karus land only gets Karus bots, an El Morad land only El Morad bots;
 //!   neutral Moradon gets both. Hostile-nation field bots therefore only exist in Moradon (where
 //!   nobody can attack the other nation anyway).
@@ -56,10 +56,10 @@ use crate::zone::{calc_region, SessionId};
 
 // ── Caps and tuning ──────────────────────────────────────────────────────
 
-/// Never more than this many field bots of one nation in one zone.
-pub const MAX_FIELD_BOTS_PER_NATION_ZONE: u8 = 40;
-/// Never more than this many field bots in the whole world (all zones).
-pub const MAX_FIELD_BOTS_TOTAL: usize = 150;
+/// Technical safety ceiling: field bots of one nation in one zone.
+pub const MAX_FIELD_BOTS_PER_NATION_ZONE: u16 = 1000;
+/// Technical safety ceiling: field bots in the whole world (the bot-id range is 5000).
+pub const MAX_FIELD_BOTS_TOTAL: usize = 5000;
 /// Field bots a single real party may hold (the rest of the 8 slots stay for people).
 pub const MAX_BOTS_PER_PARTY: usize = 3;
 /// Highest level a bot can be configured to.
@@ -162,8 +162,8 @@ pub fn zone_profile(zone_id: u16) -> Option<&'static ZoneProfile> {
 pub struct FieldZoneConfig {
     pub zone_id: u16,
     pub enabled: bool,
-    pub karus_count: u8,
-    pub elmorad_count: u8,
+    pub karus_count: u16,
+    pub elmorad_count: u16,
     pub level_min: u8,
     pub level_max: u8,
     /// warrior, rogue, mage, priest, kurian weights (0..=100 each).
@@ -323,6 +323,8 @@ pub struct FieldBotRegistry {
     last_manage_ms: AtomicU64,
     last_global_chat_ms: AtomicU64,
     cursor: AtomicUsize,
+    /// Why a zone could not (fully) spawn its bots, shown in the admin panel ("why 0").
+    spawn_note: Mutex<HashMap<u16, String>>,
 }
 
 impl FieldBotRegistry {
@@ -345,6 +347,23 @@ impl FieldBotRegistry {
         // Re-evaluate the population at the next tick instead of waiting for the interval.
         self.last_manage_ms.store(0, Ordering::Relaxed);
         n
+    }
+
+    fn set_note(&self, zone_id: u16, note: Option<String>) {
+        let mut n = self.spawn_note.lock();
+        match note {
+            Some(t) => {
+                n.insert(zone_id, t);
+            }
+            None => {
+                n.remove(&zone_id);
+            }
+        }
+    }
+
+    /// Last spawn problem of a zone, if any.
+    pub fn note_for(&self, zone_id: u16) -> Option<String> {
+        self.spawn_note.lock().get(&zone_id).cloned()
     }
 
     fn warn_once(&self, key: String, now_ms: u64, msg: &str) {
@@ -600,6 +619,10 @@ fn spawn_one(
         }
     }
     let Some((level, anchor)) = picked else {
+        world.field_bots.set_note(
+            cfg.zone_id,
+            Some(format!("Seviye {}-{} icin uygun canavar grubu yok", cfg.level_min, cfg.level_max)),
+        );
         world.field_bots.warn_once(
             format!("noground:{}", cfg.zone_id),
             now_ms,
@@ -611,8 +634,18 @@ fn spawn_one(
         return None;
     };
     let (jx, jz) = (rng.gen_range(-6.0..6.0f32), rng.gen_range(-6.0..6.0f32));
-    let (x, z) = walkable_near(world, cfg.zone_id, anchor.0 + jx, anchor.1 + jz, 12)
-        .or_else(|| walkable_near(world, cfg.zone_id, anchor.0, anchor.1, 24))?;
+    let Some((x, z)) = walkable_near(world, cfg.zone_id, anchor.0 + jx, anchor.1 + jz, 12)
+        .or_else(|| walkable_near(world, cfg.zone_id, anchor.0, anchor.1, 24))
+    else {
+        world.field_bots.set_note(cfg.zone_id, Some("Av alaninda yurunebilir zemin bulunamadi".to_string()));
+        world.field_bots.warn_once(
+            format!("nowalk:{}", cfg.zone_id),
+            now_ms,
+            &format!("field bots: zone {} has no walkable tile near its hunting ground; nothing spawned", cfg.zone_id),
+        );
+        return None;
+    };
+    world.field_bots.set_note(cfg.zone_id, None);
     let y = terrain_y(world, cfg.zone_id, x, z, 0.0);
     let id = bot_ai::spawn_gm_bot(
         world,
@@ -716,6 +749,9 @@ pub fn manage(world: &WorldState, now_ms: u64) {
             } else if have.len() < target {
                 let room_global = MAX_FIELD_BOTS_TOTAL.saturating_sub(total);
                 let room_capacity = 4_900usize.saturating_sub(world.bot_count());
+                if room_capacity == 0 {
+                    reg.set_note(cfg.zone_id, Some("Bot kimlik araligi dolu".to_string()));
+                }
                 let want = (target - have.len())
                     .min(room_global)
                     .min(room_capacity)
@@ -2310,8 +2346,8 @@ pub async fn reload_config(world: &WorldState, pool: &ko_db::DbPool) -> anyhow::
         .map(|r| FieldZoneConfig {
             zone_id: r.try_get::<i16, _>("zone_id").unwrap_or(0).max(0) as u16,
             enabled: r.try_get::<bool, _>("enabled").unwrap_or(false),
-            karus_count: clamp_u8(r.try_get::<i16, _>("karus_count").unwrap_or(0)),
-            elmorad_count: clamp_u8(r.try_get::<i16, _>("elmorad_count").unwrap_or(0)),
+            karus_count: r.try_get::<i16, _>("karus_count").unwrap_or(0).max(0) as u16,
+            elmorad_count: r.try_get::<i16, _>("elmorad_count").unwrap_or(0).max(0) as u16,
             level_min: clamp_u8(r.try_get::<i16, _>("level_min").unwrap_or(1)),
             level_max: clamp_u8(r.try_get::<i16, _>("level_max").unwrap_or(1)),
             mix: [
@@ -2333,12 +2369,26 @@ async fn write_status(world: &WorldState, pool: &ko_db::DbPool) {
     for cfg in world.field_bots.config_snapshot() {
         let k = counts.get(&(cfg.zone_id, NATION_KARUS)).copied().unwrap_or(0) as i16;
         let e = counts.get(&(cfg.zone_id, NATION_ELMORAD)).copied().unwrap_or(0) as i16;
+        let target = cfg.target_for(NATION_KARUS) + cfg.target_for(NATION_ELMORAD);
+        let live = (k.max(0) + e.max(0)) as usize;
+        let note = if !cfg.enabled {
+            "Bolge kapali".to_string()
+        } else if target == 0 {
+            "Hedef 0 bot".to_string()
+        } else if let Some(n) = world.field_bots.note_for(cfg.zone_id) {
+            n
+        } else if live < target {
+            "Dogma suruyor".to_string()
+        } else {
+            String::new()
+        };
         let _ = sqlx::query(
-            "UPDATE field_bot_zone SET live_karus=$2, live_elmorad=$3, live_updated_at=NOW() WHERE zone_id=$1",
+            "UPDATE field_bot_zone SET live_karus=$2, live_elmorad=$3, live_note=$4, live_updated_at=NOW() WHERE zone_id=$1",
         )
         .bind(cfg.zone_id as i16)
         .bind(k)
         .bind(e)
+        .bind(note)
         .execute(pool)
         .await;
     }
@@ -2612,20 +2662,31 @@ mod tests {
         now
     }
 
-    fn cfg(zone: u16, enabled: bool, k: u8, e: u8, lo: u8, hi: u8) -> FieldZoneConfig {
+    fn cfg(zone: u16, enabled: bool, k: u16, e: u16, lo: u8, hi: u8) -> FieldZoneConfig {
         FieldZoneConfig { zone_id: zone, enabled, karus_count: k, elmorad_count: e, level_min: lo, level_max: hi, mix: DEFAULT_MIX }
+    }
+
+    #[test]
+    fn empty_event_grid_map_is_walkable_by_terrain_for_bots() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/moradon_0826.smd");
+        let mut raw = ko_protocol::smd::SmdFile::load(&path).expect("load SMD");
+        raw.event_grid.iter_mut().for_each(|v| *v = 0);
+        let map = MapData::new(raw);
+        let (x, z) = nearest_bot_point(&map, 700.0, 700.0, 40).expect("terrain is walkable even with an all-zero event grid");
+        assert!(map.is_bot_movable(x, z));
+        assert!(!map.is_bot_movable(-5.0, 10.0), "out of bounds stays blocked");
     }
 
     // ── configuration, caps, determinism ────────────────────────────────
 
     #[test]
     fn config_is_clamped_to_zone_rules_and_caps() {
-        let c = cfg(1, true, 250, 90, 1, 200).sanitized().unwrap();
-        assert_eq!(c.karus_count, MAX_FIELD_BOTS_PER_NATION_ZONE, "per nation/zone cap");
+        let c = cfg(1, true, 5000, 90, 1, 200).sanitized().unwrap();
+        assert_eq!(c.karus_count, MAX_FIELD_BOTS_PER_NATION_ZONE, "technical per nation/zone ceiling");
         assert_eq!(c.elmorad_count, 0, "Luferson is a Karus land: no El Morad bots");
         assert_eq!((c.level_min, c.level_max), (35, MAX_BOT_LEVEL), "zone minimum level, global maximum");
         let m = cfg(21, true, 99, 99, 50, 10).sanitized().unwrap();
-        assert_eq!((m.karus_count, m.elmorad_count), (40, 40), "neutral Moradon keeps both nations");
+        assert_eq!((m.karus_count, m.elmorad_count), (99, 99), "neutral Moradon keeps both nations, no 40 cap");
         assert!(m.level_min <= m.level_max);
         assert!(cfg(71, true, 5, 5, 1, 83).sanitized().is_none(), "PK zones are not field-bot zones");
         assert!(cfg(72, true, 5, 5, 1, 83).sanitized().is_none());
@@ -2727,7 +2788,7 @@ mod tests {
     }
 
     #[test]
-    fn global_cap_holds_even_with_absurd_config() {
+    fn old_caps_are_gone_but_owner_rules_hold() {
         let world = WorldState::new();
         for z in [21u16, 1, 2, 11, 12] {
             world.ensure_zone(z, 4096);
@@ -2748,7 +2809,8 @@ mod tests {
             now += MANAGE_INTERVAL_MS;
             manage(&world, now);
         }
-        assert_eq!(live_counts(&world).values().sum::<usize>(), MAX_FIELD_BOTS_TOTAL, "global cap");
+        let total = live_counts(&world).values().sum::<usize>();
+        assert!(total > 150 && total <= MAX_FIELD_BOTS_TOTAL, "the old global cap of 150 is gone: {total}");
         for ((zone, nation), n) in live_counts(&world) {
             assert!(n <= MAX_FIELD_BOTS_PER_NATION_ZONE as usize, "zone {zone} nation {nation}: {n}");
             let owner = zone_profile(zone).unwrap().owner;
