@@ -152,12 +152,71 @@ pub async fn handle_npc_event(session: &mut ClientSession, pkt: Packet) -> anyho
     handle_npc_by_nid(session, npc_nid).await
 }
 
+/// Result codes of the Ticket Exchange reply `[sub=6][status]` (client `sub_80DC30`, case 6).
+/// Status 1 is a silent success; the others select a native client message:
+/// 2 = "Your inventory is full.", 3 = "Invalid item.",
+/// 4 = "You cannot purchase this item using exchange voucher", 5 = "System Error".
+const TICKET_STATUS_OK: u8 = 1;
+const TICKET_STATUS_NO_ROOM: u8 = 2;
+const TICKET_STATUS_INVALID_ITEM: u8 = 3;
+const TICKET_STATUS_RESTRICTED: u8 = 4;
+const TICKET_STATUS_SYSTEM_ERROR: u8 = 5;
+
+/// Whether a TICKET_EXCHANGE.tbl reward slot with `selector` may be taken by this character.
+///
+/// Mirrors the client list filter in `CUITiketExchange` (`sub_722740`):
+/// 0 = everybody, 1 = Karus only, 2 = El Morad only, 3 = everybody except
+/// Portu/Kurian classes (113-115, 213-215; client text 44851 "Portu/Kurian
+/// characters cannot use this.").
+pub(crate) fn ticket_selector_allows(selector: i16, nation: u8, class: u16) -> bool {
+    match selector {
+        1 => nation == 1,
+        2 => nation == 2,
+        3 => !super::class_change::is_portu_kurian(class),
+        _ => true,
+    }
+}
+
+/// Lifetime in seconds of a reward, from the `duration` column (hours) of TICKET_EXCHANGE.tbl.
+/// 0 means the reward never expires.
+pub(crate) fn ticket_expiry_secs(duration_hours: i32) -> u32 {
+    (duration_hours.max(0) as u32).saturating_mul(3600)
+}
+
+async fn send_ticket_exchange_status(
+    session: &mut ClientSession,
+    status: u8,
+) -> anyhow::Result<()> {
+    // The client consumes [sub=6][status].
+    let mut out = Packet::new(Opcode::WizNpcEvent as u8);
+    out.write_u8(6);
+    out.write_u8(status);
+    session.send_packet(&out).await
+}
+
 async fn handle_ticket_exchange(session: &mut ClientSession, pkt: &Packet) -> anyhow::Result<()> {
     let mut reader = PacketReader::new(&pkt.data);
     let _sub = reader.read_u8();
     let ticket_item = reader.read_u32().unwrap_or(0);
     let reward_item = reader.read_u32().unwrap_or(0);
-    tracing::info!(sid = session.session_id(), ticket_item, reward_item, "Ticket Exchange request received");
+    let world = session.world().clone();
+    let sid = session.session_id();
+    tracing::info!(sid, ticket_item, reward_item, "Ticket Exchange request received");
+
+    // Same "busy" guard as an NPC click: a dead, trading, merchant-mode, mining or
+    // fishing player must not mutate the bag.
+    if world.is_player_dead(sid)
+        || world.is_trading(sid)
+        || world.is_merchanting(sid)
+        || world.is_mining(sid)
+        || world.is_fishing(sid)
+    {
+        tracing::warn!(
+            sid, ticket_item, reward_item,
+            "Ticket Exchange rejected: player busy (status 3)"
+        );
+        return send_ticket_exchange_status(session, TICKET_STATUS_INVALID_ITEM).await;
+    }
 
     // The allow-list is imported from the client's TICKET_EXCHANGE.tbl. The
     // client controls both IDs on the wire, so never trust the pair without
@@ -171,90 +230,114 @@ async fn handle_ticket_exchange(session: &mut ClientSession, pkt: &Packet) -> an
     .fetch_optional(session.pool())
     .await?;
 
-    let world = session.world().clone();
-    let sid = session.session_id();
-    let nation = world
-        .get_character_info(sid)
-        .map(|character| character.nation)
-        .unwrap_or(0);
-    let selector_allowed = rule.is_some_and(|(_, selector)| match selector {
-        1 => nation == 1, // Karus-only row
-        2 => nation == 2, // El Morad-only row
-        _ => true,
-    });
-    let status = if !selector_allowed || world.get_item(reward_item).is_none() {
-        tracing::warn!(
-            sid, ticket_item, reward_item,
-            rule_found = rule.is_some(), selector_allowed,
-            "Ticket Exchange rejected: invalid ticket/reward pair (status 3)"
-        );
-        3u8 // invalid ticket/reward pair
-    } else {
-        let ticket_count: u32 = world
-            .get_inventory(sid)
-            .iter()
-            .filter(|slot| slot.item_id == ticket_item)
-            .map(|slot| slot.count as u32)
-            .sum();
-        if ticket_count == 0 {
-            tracing::warn!(sid, ticket_item, reward_item, "Ticket Exchange rejected: ticket not in inventory (status 2)");
-            2u8 // ticket is no longer in inventory
-        } else if !world.check_weight(sid, reward_item, 1) {
-            tracing::warn!(sid, ticket_item, reward_item, "Ticket Exchange rejected: inventory/weight full (status 4)");
-            4u8 // inventory slot or weight failure
-        } else if !world.rob_item(sid, ticket_item, 1) {
-            tracing::warn!(sid, ticket_item, reward_item, ticket_count, "Ticket Exchange rejected: rob_item failed despite ticket_count>0 (status 2)");
-            2u8
-        } else {
-            let hours = rule.map(|(hours, _)| hours).unwrap_or(0).max(0) as u32;
-            let days = hours.div_ceil(24);
-            let given = if days > 0 {
-                world.give_item_with_expiry(sid, reward_item, 1, days)
-            } else {
-                world.give_item(sid, reward_item, 1)
-            };
-            if given {
-                let account = world
-                    .with_session(sid, |h| h.account_id.clone())
-                    .unwrap_or_default();
-                let character = world.get_session_name(sid).unwrap_or_default();
-                let pos = world.get_position(sid);
-                crate::handler::audit_log::log_give_item(
-                    session.pool(),
-                    &account,
-                    &character,
-                    pos.as_ref().map(|p| p.zone_id as i16).unwrap_or(0),
-                    pos.as_ref().map(|p| p.x as i16).unwrap_or(0),
-                    pos.as_ref().map(|p| p.z as i16).unwrap_or(0),
-                    "ticket_exchange",
-                    reward_item,
-                    1,
+    let status = match rule {
+        None => {
+            tracing::warn!(
+                sid, ticket_item, reward_item,
+                "Ticket Exchange rejected: pair not in TICKET_EXCHANGE rules (status 3)"
+            );
+            TICKET_STATUS_INVALID_ITEM
+        }
+        Some((duration_hours, selector)) => {
+            let (nation, class) = world
+                .get_character_info(sid)
+                .map(|c| (c.nation, c.class))
+                .unwrap_or((0, 0));
+            if !ticket_selector_allows(selector, nation, class) {
+                tracing::warn!(
+                    sid, ticket_item, reward_item, selector, nation, class,
+                    "Ticket Exchange rejected: nation/class restriction (status 4)"
                 );
-                tracing::info!(
-                    sid,
-                    ticket_item,
-                    reward_item,
-                    duration_hours = hours,
-                    "Ticket Exchange completed"
+                TICKET_STATUS_RESTRICTED
+            } else if world.get_item(reward_item).is_none() {
+                tracing::warn!(
+                    sid, ticket_item, reward_item,
+                    "Ticket Exchange rejected: reward item missing from item table (status 5)"
                 );
-                1u8
+                TICKET_STATUS_SYSTEM_ERROR
+            } else if world.bag_item_count(sid, ticket_item) == 0 {
+                tracing::warn!(
+                    sid, ticket_item, reward_item,
+                    "Ticket Exchange rejected: ticket not in bag (status 3)"
+                );
+                TICKET_STATUS_INVALID_ITEM
+            } else if !world.ticket_exchange_has_room(sid, ticket_item, reward_item) {
+                tracing::warn!(
+                    sid, ticket_item, reward_item,
+                    "Ticket Exchange rejected: no bag slot/weight for reward (status 2)"
+                );
+                TICKET_STATUS_NO_ROOM
+            } else if !world.take_one_item(sid, ticket_item) {
+                tracing::warn!(
+                    sid, ticket_item, reward_item,
+                    "Ticket Exchange rejected: ticket could not be consumed (status 3)"
+                );
+                TICKET_STATUS_INVALID_ITEM
             } else {
-                tracing::warn!(sid, ticket_item, reward_item, "Ticket Exchange rejected: give_item(_with_expiry) failed after rob_item succeeded (status 5)");
-                // Pre-validation should make this exceptional; restore the
-                // consumed ticket if delivery still fails.
-                let _ = world.give_item(sid, ticket_item, 1);
-                5u8
+                // Exactly one ticket is consumed per exchange and exactly one reward
+                // is delivered. There is no await between the two world calls and the
+                // room check above makes a failed delivery exceptional.
+                let expiry_secs = ticket_expiry_secs(duration_hours);
+                let given = if expiry_secs > 0 {
+                    world.give_item_with_expiry_secs(sid, reward_item, 1, expiry_secs)
+                } else {
+                    world.give_item(sid, reward_item, 1)
+                };
+                if given {
+                    let account = world
+                        .with_session(sid, |h| h.account_id.clone())
+                        .unwrap_or_default();
+                    let character = world.get_session_name(sid).unwrap_or_default();
+                    let pos = world.get_position(sid);
+                    let zone = pos.as_ref().map(|p| p.zone_id as i16).unwrap_or(0);
+                    let x = pos.as_ref().map(|p| p.x as i16).unwrap_or(0);
+                    let z = pos.as_ref().map(|p| p.z as i16).unwrap_or(0);
+                    crate::handler::audit_log::log_rob_item(
+                        session.pool(),
+                        &account,
+                        &character,
+                        zone,
+                        x,
+                        z,
+                        ticket_item,
+                        1,
+                        0,
+                    );
+                    crate::handler::audit_log::log_give_item(
+                        session.pool(),
+                        &account,
+                        &character,
+                        zone,
+                        x,
+                        z,
+                        "ticket_exchange",
+                        reward_item,
+                        1,
+                    );
+                    tracing::info!(
+                        sid, ticket_item, reward_item, duration_hours,
+                        "Ticket Exchange completed"
+                    );
+                    TICKET_STATUS_OK
+                } else {
+                    tracing::warn!(
+                        sid, ticket_item, reward_item,
+                        "Ticket Exchange failed: reward delivery failed after the ticket was consumed; restoring the ticket (status 5)"
+                    );
+                    // Never keep the ticket if the reward was not delivered.
+                    if !world.give_item(sid, ticket_item, 1) {
+                        tracing::error!(
+                            sid, ticket_item, reward_item,
+                            "Ticket Exchange: ticket restore failed after a delivery failure"
+                        );
+                    }
+                    TICKET_STATUS_SYSTEM_ERROR
+                }
             }
         }
     };
 
-    // sub_807C20 consumes [sub=6][status]. Status 1 is silent success;
-    // statuses 2..5 select the client's native error strings.
-    let mut out = Packet::new(Opcode::WizNpcEvent as u8);
-    out.write_u8(6);
-    out.write_u8(status);
-    session.send_packet(&out).await?;
-    Ok(())
+    send_ticket_exchange_status(session, status).await
 }
 
 /// Core NPC interaction logic shared by WIZ_CLIENT_EVENT and WIZ_NPC_EVENT.
@@ -837,6 +920,194 @@ mod tests {
         assert_eq!(r.read_u32(), Some(508_056_000));
         assert_eq!(r.read_u32(), Some(508_013_318));
         assert_eq!(r.remaining(), 0);
+    }
+
+    // ── TICKET_EXCHANGE.tbl audit tests ──────────────────────────────
+
+    #[test]
+    fn test_ticket_selector_matches_client_filter() {
+        // 0 = everybody (Portu included), unknown selectors behave like the client: shown.
+        for class in [101u16, 112, 113, 213, 215] {
+            assert!(ticket_selector_allows(0, 1, class));
+            assert!(ticket_selector_allows(9, 2, class));
+        }
+        // 1 = Karus only, 2 = El Morad only.
+        assert!(ticket_selector_allows(1, 1, 105));
+        assert!(!ticket_selector_allows(1, 2, 205));
+        assert!(ticket_selector_allows(2, 2, 205));
+        assert!(!ticket_selector_allows(2, 1, 105));
+        // 3 = every class except Portu/Kurian (113-115, 213-215).
+        for class in [101u16, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 201, 212] {
+            assert!(ticket_selector_allows(3, 1, class), "class {class}");
+            assert!(ticket_selector_allows(3, 2, class), "class {class}");
+        }
+        for class in [113u16, 114, 115, 213, 214, 215] {
+            assert!(!ticket_selector_allows(3, 1, class), "class {class}");
+            assert!(!ticket_selector_allows(3, 2, class), "class {class}");
+        }
+    }
+
+    #[test]
+    fn test_ticket_expiry_is_exact_hours() {
+        assert_eq!(ticket_expiry_secs(0), 0);
+        assert_eq!(ticket_expiry_secs(-5), 0);
+        assert_eq!(ticket_expiry_secs(1), 3_600);
+        assert_eq!(ticket_expiry_secs(4), 14_400);
+        assert_eq!(ticket_expiry_secs(720), 30 * 86_400);
+        assert_eq!(ticket_expiry_secs(1440), 60 * 86_400);
+        assert_eq!(ticket_expiry_secs(4320), 180 * 86_400);
+        assert_eq!(ticket_expiry_secs(i32::MAX), u32::MAX); // saturates, never wraps
+    }
+
+    #[test]
+    fn test_ticket_status_codes_match_client_messages() {
+        // sub_80DC30 case 6: 1 silent, 2..5 native messages.
+        let all = [
+            TICKET_STATUS_OK,
+            TICKET_STATUS_NO_ROOM,
+            TICKET_STATUS_INVALID_ITEM,
+            TICKET_STATUS_RESTRICTED,
+            TICKET_STATUS_SYSTEM_ERROR,
+        ];
+        assert_eq!(all, [1, 2, 3, 4, 5]);
+    }
+
+    /// (ticket, reward, duration_hours, selector) rows exactly as the client reads
+    /// `Data\TICKET_EXCHANGE.tbl`: `[ticket u32][hours u32]` + 30 × `[selector u8][item u32]`.
+    fn ticket_tbl_rules() -> Vec<(u32, u32, u32, u8)> {
+        use ko_tbl_import::parser::CellValue;
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/data/TICKET_EXCHANGE.tbl");
+        let raw = std::fs::read(path).expect("docs/data/TICKET_EXCHANGE.tbl");
+        let (plain, new_structure) = ko_tbl_import::decrypt::decrypt_tbl(&raw).expect("decrypt");
+        let table = ko_tbl_import::parser::parse_tbl(&plain, new_structure).expect("parse");
+        assert_eq!(table.columns.len(), 62, "2 header columns + 30 selector/item pairs");
+        let as_u32 = |c: &CellValue| match c {
+            CellValue::U32(v) => *v,
+            other => panic!("expected u32 cell, got {other:?}"),
+        };
+        let as_u8 = |c: &CellValue| match c {
+            CellValue::U8(v) => *v,
+            other => panic!("expected u8 cell, got {other:?}"),
+        };
+        let mut out = Vec::new();
+        for row in &table.rows {
+            assert_eq!(row.len(), 62);
+            let ticket = as_u32(&row[0]);
+            let hours = as_u32(&row[1]);
+            for pair in row[2..].chunks(2) {
+                let (selector, item) = (as_u8(&pair[0]), as_u32(&pair[1]));
+                if item != 0 {
+                    out.push((ticket, item, hours, selector));
+                }
+            }
+        }
+        out
+    }
+
+    fn migration_sql() -> String {
+        std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/20261018210000_ticket_exchange_full_sync.sql"
+        ))
+        .expect("ticket exchange migration")
+    }
+
+    #[test]
+    fn test_ticket_tbl_is_well_formed() {
+        let rules = ticket_tbl_rules();
+        assert!(!rules.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        let mut tickets = std::collections::HashSet::new();
+        for (ticket, reward, hours, selector) in &rules {
+            assert!(*selector <= 3, "unknown selector {selector} on ticket {ticket}");
+            assert_ne!(ticket, reward, "ticket {ticket} rewards itself");
+            assert!(seen.insert((*ticket, *reward)), "duplicate pair {ticket}->{reward}");
+            assert!(*hours <= 24 * 365, "implausible duration on ticket {ticket}");
+            assert!(*ticket <= i32::MAX as u32 && *reward <= i32::MAX as u32);
+            tickets.insert(*ticket);
+        }
+        // A reward is never itself another exchangeable ticket (no chains / loops).
+        for (_, reward, _, _) in &rules {
+            assert!(!tickets.contains(reward), "reward {reward} is also a ticket");
+        }
+    }
+
+    /// The server rule table must mirror the client table 1:1 (duration + selector too).
+    #[test]
+    fn test_migration_rules_mirror_tbl_exactly() {
+        let sql = migration_sql();
+        let block = sql
+            .split("-- BEGIN RULES")
+            .nth(1)
+            .and_then(|s| s.split("-- END RULES").next())
+            .expect("rules block markers");
+        let mut migrated = std::collections::HashSet::new();
+        for line in block.lines() {
+            let line = line.trim();
+            if !line.starts_with('(') {
+                continue;
+            }
+            let nums: Vec<u64> = line
+                .trim_matches(|c| c == '(' || c == ')' || c == ',' || c == ';')
+                .split(',')
+                .map(|n| n.trim().parse().expect("number"))
+                .collect();
+            assert_eq!(nums.len(), 4, "bad rule line: {line}");
+            assert!(
+                migrated.insert((nums[0] as u32, nums[1] as u32, nums[2] as u32, nums[3] as u8)),
+                "duplicate migration rule: {line}"
+            );
+        }
+        let expected: std::collections::HashSet<_> = ticket_tbl_rules().into_iter().collect();
+        let missing: Vec<_> = expected.difference(&migrated).collect();
+        let extra: Vec<_> = migrated.difference(&expected).collect();
+        assert!(missing.is_empty(), "rules missing from migration: {missing:?}");
+        assert!(extra.is_empty(), "rules in migration but not in the tbl: {extra:?}");
+    }
+
+    /// Items the live `item` table lacked: every ticket/reward of the tbl that is not seeded by
+    /// an older migration is created by this one (from Item_Org_us / Item_Ext_*_us).
+    #[test]
+    fn test_migration_seeds_the_missing_items() {
+        let sql = migration_sql();
+        let block = sql
+            .split("-- BEGIN ITEMS")
+            .nth(1)
+            .and_then(|s| s.split("-- END ITEMS").next())
+            .expect("items block markers");
+        let mut nums = Vec::new();
+        for line in block.lines() {
+            if let Some(rest) = line.trim().strip_prefix("('{\"num\":") {
+                let n: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                nums.push(n.parse::<u32>().expect("item num"));
+            }
+        }
+        let expected = [
+            // Holy Knight Wings exchange coupons + their 4 wing rewards
+            808_111_000u32, 808_112_000, 808_113_000, 808_114_000, 808_115_000, 808_116_000,
+            1_808_107_168, 1_808_108_169, 1_808_109_170, 1_808_110_171,
+            // Alencia / Hellfire / Stellar / Oreads vouchers
+            910_920_000, 910_940_000, 978_017_000, 978_018_000, 999_916_000, 999_917_000,
+            999_918_000, 999_919_000,
+            // Transparent Minerva helmet/armor rewards of the Minerva vouchers
+            808_065_704, 808_065_705, 808_066_698, 808_066_699,
+        ];
+        let mut sorted = nums.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), nums.len(), "duplicate item seeds");
+        for id in expected {
+            assert!(nums.contains(&id), "item {id} is not seeded");
+        }
+        assert_eq!(nums.len(), expected.len(), "unexpected extra item seeds: {nums:?}");
+        // Every seeded item is actually part of the tbl (as ticket or reward).
+        let used: std::collections::HashSet<u32> = ticket_tbl_rules()
+            .iter()
+            .flat_map(|(t, r, _, _)| [*t, *r])
+            .collect();
+        for id in &nums {
+            assert!(used.contains(id), "seeded item {id} is not referenced by the tbl");
+        }
     }
 
     /// Merchant NPC → WIZ_TRADE_NPC with selling_group.
