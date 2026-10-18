@@ -79,6 +79,356 @@ const OBJECT_EVENT_SIZE_LEGACY: usize = 24;
 /// Packed object-event size used by the Manes map exporter.
 const OBJECT_EVENT_SIZE_HEADERED: usize = 19;
 
+// ─── Client movement rules ──────────────────────────────────────────────
+//
+// Everything below was read out of the 2625 `KnightOnline.exe` (Hex-Rays
+// decompile, addresses are VAs). A real player cannot be placed anywhere
+// the client's own move validation would refuse to step, so the bot
+// navigation mask must be a subset of what that validation allows.
+//
+// * `sub_910720` (CPlayerMySelf move predictor, behind every key/mouse
+//   step): for the next position it calls, on the world object
+//   (`dword_1114570 + 36`, a CN3TerrainManager):
+//     - vtbl+76  `sub_8C9300`  map-edge test: 4.0 <= x,z <= 4*size - 8.
+//     - vtbl+112 `sub_8C8F20` -> `sub_6B20C0`  ray vs collision faces.
+//     - vtbl+108 `sub_8C8EA0` -> `sub_6B0510`  swept SPHERE vs collision
+//       faces, radius clamped to 1.124 (inputs outside 1.1..1.2 become
+//       1.124), centre lifted `radius + 0.1` above a probe point that is
+//       itself 0.5 above the feet => the sphere covers feet+0.6 ..
+//       feet+2.848.  A face only counts when its normal is "wall like":
+//       `hypot(nx, nz) > 0.643` (normalised normal) and it faces against
+//       the move direction.
+//     - vtbl+80  `sub_8C9210` CheckIncline(pos, dir, 0.643): terrain normal
+//       from `sub_8C13A0`; blocked when `hypot(nx, nz) > 0.643` and
+//       `dot(n.xz, dir.xz) <= 0` (moving uphill / along the contour).
+//   0.643 is sin(40 deg): the real climb limit is a 40 degree slope
+//   (gradient 0.8396), NOT 45 degrees (gradient 1.0).
+// * Terrain triangles (`sub_8C7B40` height, `sub_8C13A0` normal) are split
+//   along the (0,0)-(1,1) diagonal when (ix + iz) is even and along the
+//   (1,0)-(0,1) diagonal when it is odd, i.e. a checkerboard.
+//
+/// sin of the steepest slope a player can walk up (client constant 0.643).
+pub const CLIENT_SLOPE_SIN_LIMIT: f32 = 0.643;
+/// Radius of the player's collision sphere (client clamps it to 1.124).
+pub const CLIENT_BODY_RADIUS: f32 = 1.124;
+/// Collision sphere bottom relative to the feet (0.5 probe lift + 0.1).
+pub const CLIENT_BODY_LOW: f32 = 0.6;
+/// Collision sphere top relative to the feet (bottom + 2 * radius).
+pub const CLIENT_BODY_HIGH: f32 = 0.6 + 2.0 * CLIENT_BODY_RADIUS;
+/// Players cannot stand closer than this to the map edge (`sub_8C9300`).
+pub const CLIENT_MAP_EDGE_MARGIN: f32 = 4.0;
+/// Horizontal clearance bots keep from every wall-like collision face. Equal
+/// to the client's collision sphere so a bot never stands where the player
+/// model would be pushed out of the wall.
+pub const BOT_WALL_CLEARANCE: f32 = CLIENT_BODY_RADIUS;
+
+/// Gradient `(dh/dx, dh/dz)` per world unit of the terrain triangle that
+/// holds the fractional quad position `(fx, fz)`, using the client's
+/// checkerboard triangulation. `h = [h(0,0), h(0,1), h(1,0), h(1,1)]` with
+/// the first index along x.
+fn client_quad_gradient(h: [f32; 4], parity_even: bool, fx: f32, fz: f32, unit: f32) -> (f32, f32) {
+    let [h00, h01, h10, h11] = h;
+    let (gx, gz) = if parity_even {
+        // Diagonal (0,0)-(1,1).
+        if fz > fx {
+            (h11 - h01, h01 - h00)
+        } else {
+            (h10 - h00, h11 - h10)
+        }
+    } else if fx + fz <= 1.0 {
+        // Diagonal (1,0)-(0,1), lower triangle (0,0),(1,0),(0,1).
+        (h10 - h00, h01 - h00)
+    } else {
+        (h11 - h01, h11 - h10)
+    };
+    (gx / unit, gz / unit)
+}
+
+/// The four heights of terrain quad `(ix, iz)`, `None` if outside the grid.
+fn quad_heights(heights: &[f32], size: i32, ix: i32, iz: i32) -> Option<[f32; 4]> {
+    if ix < 0 || iz < 0 || ix + 1 >= size || iz + 1 >= size {
+        return None;
+    }
+    let i = (ix * size + iz) as usize;
+    let s = size as usize;
+    if i + s + 1 >= heights.len() {
+        return None;
+    }
+    Some([heights[i], heights[i + 1], heights[i + s], heights[i + s + 1]])
+}
+
+/// Terrain height exactly as the client computes it (`sub_8C7B40`).
+pub fn client_terrain_height(heights: &[f32], size: i32, unit: f32, x: f32, z: f32) -> Option<f32> {
+    if !(x.is_finite() && z.is_finite()) || x < 0.0 || z < 0.0 {
+        return None;
+    }
+    let (ix, iz) = ((x / unit) as i32, (z / unit) as i32);
+    let [h00, h01, h10, h11] = quad_heights(heights, size, ix, iz)?;
+    let (fx, fz) = (x / unit - ix as f32, z / unit - iz as f32);
+    let value = if (ix + iz) % 2 == 0 {
+        if fz > fx {
+            h00 + (h01 - h00) * fz + (h11 - h01) * fx
+        } else {
+            h00 + (h10 - h00) * fx + (h11 - h10) * fz
+        }
+    } else if fx + fz <= 1.0 {
+        h00 + (h10 - h00) * fx + (h01 - h00) * fz
+    } else {
+        h11 + (h10 - h11) * (1.0 - fz) + (h01 - h11) * (1.0 - fx)
+    };
+    Some(value)
+}
+
+/// `sin(slope)` of the terrain triangle under `(x, z)` (client triangulation).
+pub fn client_terrain_slope_sin(heights: &[f32], size: i32, unit: f32, x: f32, z: f32) -> Option<f32> {
+    if !(x.is_finite() && z.is_finite()) || x < 0.0 || z < 0.0 {
+        return None;
+    }
+    let (ix, iz) = ((x / unit) as i32, (z / unit) as i32);
+    let h = quad_heights(heights, size, ix, iz)?;
+    let (fx, fz) = (x / unit - ix as f32, z / unit - iz as f32);
+    let (gx, gz) = client_quad_gradient(h, (ix + iz) % 2 == 0, fx, fz, unit);
+    let g = gx.hypot(gz);
+    Some(g / (1.0 + g * g).sqrt())
+}
+
+/// Would the client refuse a step at `(x, z)` heading `(dir_x, dir_z)`
+/// because the terrain is too steep (`sub_8C9210`)?  Moving downhill is
+/// allowed by the client; moving uphill or along the contour is not.
+pub fn client_incline_blocks(heights: &[f32], size: i32, unit: f32, x: f32, z: f32, dir_x: f32, dir_z: f32) -> bool {
+    if !(x.is_finite() && z.is_finite()) || x < 0.0 || z < 0.0 {
+        return false;
+    }
+    let (ix, iz) = ((x / unit) as i32, (z / unit) as i32);
+    let Some(h) = quad_heights(heights, size, ix, iz) else { return false };
+    let (fx, fz) = (x / unit - ix as f32, z / unit - iz as f32);
+    let (gx, gz) = client_quad_gradient(h, (ix + iz) % 2 == 0, fx, fz, unit);
+    let g = gx.hypot(gz);
+    // Terrain normal is (-gx, 1, -gz): its horizontal part points downhill.
+    g / (1.0 + g * g).sqrt() > CLIENT_SLOPE_SIN_LIMIT && (-gx * dir_x - gz * dir_z) <= 0.0
+}
+
+/// True when terrain quad `(ix, iz)` holds a triangle steeper than the
+/// client's climb limit, a non-finite height, or lies in the unwalkable map
+/// edge band.
+pub fn terrain_quad_blocked(heights: &[f32], size: i32, unit: f32, ix: i32, iz: i32) -> bool {
+    // Positions outside [4, 4*size-8] are refused by `sub_8C9300`; a cell is
+    // usable only if it lies wholly inside.
+    if ix < 1 || iz < 1 || ix > size - 3 || iz > size - 3 {
+        return true;
+    }
+    let Some(h) = quad_heights(heights, size, ix, iz) else { return true };
+    if h.iter().any(|v| !v.is_finite()) {
+        return true;
+    }
+    // Both triangles of the client's split for this quad. A hair under the
+    // client limit so float noise never lets a borderline triangle through.
+    let limit = CLIENT_SLOPE_SIN_LIMIT - 0.002;
+    let [h00, h01, h10, h11] = h;
+    let triangles: [(f32, f32); 2] = if (ix + iz) % 2 == 0 {
+        [(h11 - h01, h01 - h00), (h10 - h00, h11 - h10)]
+    } else {
+        [(h10 - h00, h01 - h00), (h11 - h01, h11 - h10)]
+    };
+    triangles.iter().any(|&(gx, gz)| {
+        let g = (gx / unit).hypot(gz / unit);
+        g / (1.0 + g * g).sqrt() > limit
+    })
+}
+
+/// A collision triangle from the SMD's CN3ShapeMgr section.
+pub type CollisionFace = [[f32; 3]; 3];
+
+/// Reject garbage faces. `freezone_a.smd` (and its aliases) carries ~1.6k
+/// faces of uninitialised memory; coordinates like 1e29 or -44610 are not
+/// map geometry. The invisible boundary walls the map editors emit run from
+/// y = -5000 to y = 5000, so that is the vertical bound.
+fn collision_face_is_sane(v: &CollisionFace, extent: f32) -> bool {
+    v.iter().flatten().all(|c| c.is_finite())
+        && v.iter().all(|p| {
+            p[0] >= -1000.0
+                && p[0] <= extent + 1000.0
+                && p[2] >= -1000.0
+                && p[2] <= extent + 1000.0
+                && p[1].abs() <= 5001.0
+        })
+}
+
+/// Mark every terrain cell a player-blocking collision face would stop a
+/// walker in. A face is a wall for the client when its normal's horizontal
+/// part is > 0.643 (see the notes above); shallower faces are floors/ramps
+/// the client walks over. A cell is blocked when such a face comes within
+/// `BOT_WALL_CLEARANCE` of the cell box and overlaps the body's vertical
+/// extent above the cell's ground.
+fn rasterize_wall_faces(faces: &[CollisionFace], size: i32, unit: f32, heights: &[f32], blocked: &mut [bool]) {
+    let margin = BOT_WALL_CLEARANCE;
+    for v in faces {
+        let a = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]];
+        let b = [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]];
+        let n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if !(len > 1e-9) || n[0].hypot(n[2]) / len <= CLIENT_SLOPE_SIN_LIMIT {
+            continue;
+        }
+        let min = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::INFINITY, f32::min);
+        let max = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::NEG_INFINITY, f32::max);
+        let x0 = (((min(0) - margin) / unit).floor() as i32).max(0);
+        let x1 = (((max(0) + margin) / unit).floor() as i32).min(size - 2);
+        let z0 = (((min(2) - margin) / unit).floor() as i32).max(0);
+        let z1 = (((max(2) + margin) / unit).floor() as i32).min(size - 2);
+        let (face_low, face_high) = (min(1), max(1));
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                // Separating-axis test of the face's XZ footprint against the
+                // cell box grown by the body radius.
+                let center = [(x as f32 + 0.5) * unit, (z as f32 + 0.5) * unit];
+                let half = unit * 0.5 + margin;
+                let separated = (0..3).any(|edge| {
+                    let next = (edge + 1) % 3;
+                    let axis = [v[next][2] - v[edge][2], v[edge][0] - v[next][0]];
+                    let lo = v.iter().map(|p| p[0] * axis[0] + p[2] * axis[1]).fold(f32::INFINITY, f32::min);
+                    let hi = v.iter().map(|p| p[0] * axis[0] + p[2] * axis[1]).fold(f32::NEG_INFINITY, f32::max);
+                    let c = center[0] * axis[0] + center[1] * axis[1];
+                    let r = half * (axis[0].abs() + axis[1].abs());
+                    hi < c - r || lo > c + r
+                });
+                if separated {
+                    continue;
+                }
+                let i = (x * size + z) as usize;
+                let h = [heights[i], heights[i + 1], heights[i + size as usize], heights[i + size as usize + 1]];
+                let low = h.iter().copied().fold(f32::INFINITY, f32::min);
+                let high = h.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                // 0.5 rather than the client's 0.6: stay a hair conservative.
+                if face_high > low + (CLIENT_BODY_LOW - 0.1) && face_low < high + CLIENT_BODY_HIGH {
+                    blocked[i] = true;
+                }
+            }
+        }
+    }
+}
+
+/// Spatial index over the wall-like collision faces, used to measure how
+/// close a player-sized sphere at a given position is to a wall exactly the
+/// way the client's swept-sphere test does. This is the *independent model*
+/// the navigation mask and the bot movement tests are verified against; the
+/// runtime mask itself never consults it.
+pub struct WallIndex {
+    bin: f32,
+    bins_x: i32,
+    bins: Vec<Vec<u32>>,
+    faces: Vec<CollisionFace>,
+}
+
+impl WallIndex {
+    /// Index every face the client would treat as a wall (`hypot(nx,nz) >
+    /// 0.643`). `extent` is the map width in world units.
+    pub fn new(faces: &[CollisionFace], extent: f32) -> Self {
+        let bin = 16.0;
+        let bins_x = (extent / bin).ceil() as i32 + 1;
+        let mut index = WallIndex {
+            bin,
+            bins_x,
+            bins: vec![Vec::new(); (bins_x * bins_x) as usize],
+            faces: Vec::new(),
+        };
+        for v in faces {
+            let a = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]];
+            let b = [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]];
+            let n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if !(len > 1e-9) || n[0].hypot(n[2]) / len <= CLIENT_SLOPE_SIN_LIMIT {
+                continue;
+            }
+            let id = index.faces.len() as u32;
+            index.faces.push(*v);
+            let lo = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::INFINITY, f32::min);
+            let hi = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::NEG_INFINITY, f32::max);
+            let bx0 = (((lo(0) - 2.0) / bin).floor() as i32).max(0);
+            let bx1 = (((hi(0) + 2.0) / bin).floor() as i32).min(bins_x - 1);
+            let bz0 = (((lo(2) - 2.0) / bin).floor() as i32).max(0);
+            let bz1 = (((hi(2) + 2.0) / bin).floor() as i32).min(bins_x - 1);
+            for bx in bx0..=bx1 {
+                for bz in bz0..=bz1 {
+                    index.bins[(bx * bins_x + bz) as usize].push(id);
+                }
+            }
+        }
+        index
+    }
+
+    /// Distance from the centre of the client's collision sphere, for a
+    /// player whose feet are at `(x, feet_y, z)`, to the nearest wall face.
+    /// `f32::INFINITY` when no wall lies within the 16 m bin. A value below
+    /// [`CLIENT_BODY_RADIUS`] means the client would not let a player stand
+    /// there (walking into it is refused).
+    pub fn clearance(&self, x: f32, feet_y: f32, z: f32) -> f32 {
+        let bx = (x / self.bin).floor() as i32;
+        let bz = (z / self.bin).floor() as i32;
+        if bx < 0 || bz < 0 || bx >= self.bins_x || bz >= self.bins_x {
+            return f32::INFINITY;
+        }
+        let centre = [x, feet_y + CLIENT_BODY_LOW + CLIENT_BODY_RADIUS, z];
+        let mut best = f32::INFINITY;
+        for &id in &self.bins[(bx * self.bins_x + bz) as usize] {
+            best = best.min(point_triangle_distance(centre, &self.faces[id as usize]));
+        }
+        best
+    }
+}
+
+/// Distance from `p` to triangle `t` (Ericson, Real-Time Collision Detection 5.1.5).
+fn point_triangle_distance(p: [f32; 3], t: &CollisionFace) -> f32 {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let (a, b, c) = (t[0], t[1], t[2]);
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    let closest = if d1 <= 0.0 && d2 <= 0.0 {
+        a
+    } else {
+        let bp = sub(p, b);
+        let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+        if d3 >= 0.0 && d4 <= d3 {
+            b
+        } else {
+            let vc = d1 * d4 - d3 * d2;
+            if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+                let v = d1 / (d1 - d3);
+                [a[0] + ab[0] * v, a[1] + ab[1] * v, a[2] + ab[2] * v]
+            } else {
+                let cp = sub(p, c);
+                let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+                if d6 >= 0.0 && d5 <= d6 {
+                    c
+                } else {
+                    let vb = d5 * d2 - d1 * d6;
+                    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+                        let w = d2 / (d2 - d6);
+                        [a[0] + ac[0] * w, a[1] + ac[1] * w, a[2] + ac[2] * w]
+                    } else {
+                        let va = d3 * d6 - d5 * d4;
+                        if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+                            let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                            [b[0] + (c[0] - b[0]) * w, b[1] + (c[1] - b[1]) * w, b[2] + (c[2] - b[2]) * w]
+                        } else {
+                            let denom = 1.0 / (va + vb + vc);
+                            let (v, w) = (vb * denom, vc * denom);
+                            [
+                                a[0] + ab[0] * v + ac[0] * w,
+                                a[1] + ab[1] * v + ac[1] * w,
+                                a[2] + ab[2] * v + ac[2] * w,
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+    };
+    let d = sub(p, closest);
+    dot(d, d).sqrt()
+}
+
 impl SmdFile {
     /// Load an SMD file from disk.
     ///
@@ -90,8 +440,22 @@ impl SmdFile {
         Self::parse(&mut cursor)
     }
 
+    /// Load an SMD file and also return the sane collision faces from its
+    /// CN3ShapeMgr section (used by tests and diagnostics that need the raw
+    /// geometry the bot navigation mask was derived from).
+    pub fn load_with_faces(path: &Path) -> io::Result<(Self, Vec<CollisionFace>)> {
+        let data = std::fs::read(path)?;
+        let mut cursor = io::Cursor::new(&data);
+        Self::parse_with_faces(&mut cursor)
+    }
+
     /// Parse SMD from a reader.
     pub fn parse<R: Read + Seek>(reader: &mut R) -> io::Result<Self> {
+        Self::parse_with_faces(reader).map(|(smd, _)| smd)
+    }
+
+    /// Parse SMD from a reader, also returning the sane collision faces.
+    pub fn parse_with_faces<R: Read + Seek>(reader: &mut R) -> io::Result<(Self, Vec<CollisionFace>)> {
         // 1. LoadTerrain. Most server SMDs start directly with map_size/unit_dist.
         // The 2615 Manes exporter prepends two length-prefixed strings plus a
         // 10-byte exporter header. Detect that format without changing legacy maps.
@@ -138,15 +502,13 @@ impl SmdFile {
         }
         let heights = (0..map_size as usize * map_size as usize)
             .map(|_| read_f32(reader)).collect::<io::Result<Vec<_>>>()?;
+        // Conservative bot navigation mask: terrain too steep for the client
+        // (see "Client movement rules" above), the unwalkable map edge, and
+        // (below) cells a wall-like collision face reaches into.
         let mut bot_blocked = vec![true; heights.len()];
         for x in 0..map_size - 1 {
             for z in 0..map_size - 1 {
-                let i = (x * map_size + z) as usize;
-                let h = [heights[i], heights[i + 1], heights[i + map_size as usize], heights[i + map_size as usize + 1]];
-                // Both terrain triangles must have a gradient <= 45 degrees.
-                let slope1 = (h[2] - h[0]).hypot(h[1] - h[0]) / unit_dist;
-                let slope2 = (h[3] - h[1]).hypot(h[3] - h[2]) / unit_dist;
-                bot_blocked[i] = h.iter().any(|v| !v.is_finite()) || slope1 > 1.0 || slope2 > 1.0;
+                bot_blocked[(x * map_size + z) as usize] = terrain_quad_blocked(&heights, map_size, unit_dist, x, z);
             }
         }
 
@@ -159,7 +521,8 @@ impl SmdFile {
         );
 
         // 2. LoadCollisionData (CN3ShapeMgr)
-        let (map_width, map_height) = Self::skip_collision_data(reader, map_size, unit_dist, &heights, &mut bot_blocked)?;
+        let (map_width, map_height, faces) = Self::read_collision_data(reader, map_size, unit_dist)?;
+        rasterize_wall_faces(&faces, map_size, unit_dist, &heights, &mut bot_blocked);
         let pos_after_collision = reader.stream_position()?;
         tracing::debug!(
             map_width,
@@ -247,17 +610,20 @@ impl SmdFile {
         // 6. LoadWarpList
         let warps = Self::read_warp_list(reader)?;
 
-        Ok(SmdFile {
-            map_size,
-            unit_dist,
-            map_width,
-            map_height,
-            event_grid,
-            heights,
-            bot_blocked,
-            warps,
-            regene_events,
-        })
+        Ok((
+            SmdFile {
+                map_size,
+                unit_dist,
+                map_width,
+                map_height,
+                event_grid,
+                heights,
+                bot_blocked,
+                warps,
+                regene_events,
+            },
+            faces,
+        ))
     }
 
     /// Check if a world position is within map boundaries.
@@ -296,9 +662,10 @@ impl SmdFile {
         self.get_event_id_at(world_x, world_z) == 0
     }
 
-    /// Skip collision data (CN3ShapeMgr::LoadCollisionData), extracting map dimensions.
-    ///
-    fn skip_collision_data<R: Read + Seek>(reader: &mut R, size: i32, unit: f32, heights: &[f32], blocked: &mut [bool]) -> io::Result<(f32, f32)> {
+    /// Read collision data (CN3ShapeMgr::LoadCollisionData): map dimensions
+    /// plus the sane collision faces. The per-cell polygon index grid that
+    /// follows the faces is skipped.
+    fn read_collision_data<R: Read + Seek>(reader: &mut R, size: i32, unit: f32) -> io::Result<(f32, f32, Vec<CollisionFace>)> {
         let map_width = read_f32(reader)?;
         let map_length = read_f32(reader)?;
 
@@ -310,54 +677,20 @@ impl SmdFile {
                 "negative collision face count",
             ));
         }
+        let extent = (size - 1) as f32 * unit;
+        let mut faces = Vec::new();
         // Each face = 3 vertices, each vertex = 3 floats (12 bytes)
         for _ in 0..face_count {
             let mut v = [[0.0f32; 3]; 3];
             for vertex in &mut v {
                 for coordinate in vertex { *coordinate = read_f32(reader)?; }
             }
-            // Some exported SMDs (e.g. the "freezone" event maps) contain a handful of
-            // degenerate/garbage collision faces. The original client tolerates this
-            // silently; aborting the whole map load over one bad face took down the
-            // entire zone (no warps, no NPCs, nothing). Skip just this face instead.
-            // `is_finite()` alone misses garbage that happens to decode to a huge but
-            // finite float (e.g. ~1e29): freezone_a.smd has one, and its absurd bounding
-            // box rasterized as "blocked" across virtually the whole grid, leaving PK
-            // bots in Ardream with nowhere walkable to step to. Any vertex far outside
-            // plausible map coordinates is the same kind of garbage.
-            const VERTEX_SANITY_LIMIT: f32 = 100_000.0;
-            if v.iter().flatten().any(|c| !c.is_finite() || c.abs() > VERTEX_SANITY_LIMIT) {
-                continue;
-            }
-            let a = [v[1][0]-v[0][0], v[1][1]-v[0][1], v[1][2]-v[0][2]];
-            let b = [v[2][0]-v[0][0], v[2][1]-v[0][1], v[2][2]-v[0][2]];
-            let n = [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
-            // Floors/bridges do not form walls; retain steep collision faces.
-            if n[1].abs() >= n[0].hypot(n[2]) { continue; }
-            let min = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::INFINITY, f32::min);
-            let max = |axis: usize| v.iter().map(|p| p[axis]).fold(f32::NEG_INFINITY, f32::max);
-            for x in ((min(0) / unit).floor() as i32).max(0)..=((max(0) / unit).floor() as i32).min(size-2) {
-                for z in ((min(2) / unit).floor() as i32).max(0)..=((max(2) / unit).floor() as i32).min(size-2) {
-                    // Separating-axis test: do not block the empty corners of a
-                    // long diagonal wall's bounding rectangle.
-                    let center = [(x as f32 + 0.5) * unit, (z as f32 + 0.5) * unit];
-                    let half = unit * 0.5 + 0.2;
-                    let separated = (0..3).any(|edge| {
-                        let next = (edge + 1) % 3;
-                        let axis = [v[next][2] - v[edge][2], v[edge][0] - v[next][0]];
-                        let lo = v.iter().map(|p| p[0]*axis[0] + p[2]*axis[1]).fold(f32::INFINITY, f32::min);
-                        let hi = v.iter().map(|p| p[0]*axis[0] + p[2]*axis[1]).fold(f32::NEG_INFINITY, f32::max);
-                        let c = center[0]*axis[0] + center[1]*axis[1];
-                        let r = half * (axis[0].abs() + axis[1].abs());
-                        hi < c-r || lo > c+r
-                    });
-                    if separated { continue; }
-                    let i = (x * size + z) as usize;
-                    let h = [heights[i], heights[i+1], heights[i+size as usize], heights[i+size as usize+1]];
-                    let low = h.iter().copied().fold(f32::INFINITY, f32::min);
-                    let high = h.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                    if max(1) > low + 0.4 && min(1) < high + 2.0 { blocked[i] = true; }
-                }
+            // Some exported SMDs (the "freezone_a" family) contain ~1.6k
+            // garbage faces. The original client tolerates this silently;
+            // aborting the load took down the entire zone. Skip just those
+            // faces; see `collision_face_is_sane`.
+            if collision_face_is_sane(&v, extent) {
+                faces.push(v);
             }
         }
 
@@ -391,7 +724,7 @@ impl SmdFile {
             }
         }
 
-        Ok((map_width, map_length))
+        Ok((map_width, map_length, faces))
     }
 
     /// Read the warp list section.
@@ -712,6 +1045,174 @@ mod tests {
             blocked < smd.bot_blocked.len(),
             "a single garbage-coordinate collision face should not block the entire grid"
         );
+    }
+
+    // ── Client movement rule tests ──────────────────────────────────────
+
+    /// Build a synthetic SMD: `size` x `size` terrain from `height(x, z)`,
+    /// the given collision faces, all event tiles walkable.
+    fn synthetic_smd(size: i32, height: impl Fn(i32, i32) -> f32, faces: &[CollisionFace]) -> SmdFile {
+        let unit = 4.0f32;
+        let width = (size - 1) as f32 * unit;
+        let mut data = Vec::new();
+        data.extend_from_slice(&size.to_le_bytes());
+        data.extend_from_slice(&unit.to_le_bytes());
+        for x in 0..size {
+            for z in 0..size {
+                data.extend_from_slice(&height(x, z).to_le_bytes());
+            }
+        }
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&(faces.len() as i32).to_le_bytes());
+        for face in faces {
+            for v in face {
+                for c in v {
+                    data.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+        }
+        let cells = (width / 16.0).ceil() as u32;
+        for _ in 0..cells * cells {
+            data.extend_from_slice(&0u32.to_le_bytes());
+        }
+        data.extend_from_slice(&0i32.to_le_bytes());
+        for _ in 0..size * size {
+            data.extend_from_slice(&1i16.to_le_bytes());
+        }
+        SmdFile::parse(&mut io::Cursor::new(&data)).expect("parse synthetic SMD")
+    }
+
+    fn blocked(smd: &SmdFile, x: i32, z: i32) -> bool {
+        smd.bot_blocked[(x * smd.map_size + z) as usize]
+    }
+
+    /// Client `sub_8C7B40`: even quads split along (0,0)-(1,1), odd quads
+    /// along (1,0)-(0,1). A lone raised vertex makes the two differ.
+    #[test]
+    fn client_terrain_height_uses_checkerboard_triangulation() {
+        // 3x3 vertices, index x*3+z, only vertex (1,1) raised to 4 m.
+        let mut heights = vec![0.0f32; 9];
+        heights[1 * 3 + 1] = 4.0;
+        let at = |x: f32, z: f32| client_terrain_height(&heights, 3, 4.0, x, z).unwrap();
+        // The raised vertex itself.
+        assert!((at(4.0, 4.0) - 4.0).abs() < 1e-4);
+        // Quad (0,0) is even: diagonal (0,0)-(1,1). Its midpoint (2,2) lies on
+        // the diagonal, halfway between 0 and 4.
+        assert!((at(2.0, 2.0) - 2.0).abs() < 1e-4);
+        // Same offset into quad (1,0) (odd, diagonal (1,0)-(0,1) i.e. world
+        // (8,0)-(4,4)): the midpoint of that diagonal is (6,2), halfway
+        // between h(2,0)=0 and h(1,1)=4.
+        assert!((at(6.0, 2.0) - 2.0).abs() < 1e-4);
+        // Point (5,3) is in the odd quad's far triangle (fx+fz = 0.5+... > 1
+        // is false here), so it belongs to triangle (1,0),(2,0),(1,1):
+        // h = h10 + (h20-h10)*fx + (h11-h10)*fz = 0 + 0*0.25 + 4*0.75 = 3.
+        assert!((at(5.0, 3.0) - 3.0).abs() < 1e-4);
+        assert!(client_terrain_height(&heights, 3, 4.0, -1.0, 2.0).is_none());
+        assert!(client_terrain_height(&heights, 3, 4.0, 8.0, 2.0).is_none());
+    }
+
+    #[test]
+    fn climb_limit_is_40_degrees_not_45() {
+        // Uniform ramp along z, `rise` metres per 4 m cell.
+        let ramp = |rise: f32| synthetic_smd(10, move |_, z| z as f32 * rise, &[]);
+        // 3.0 m / 4 m = 36.9 deg: walkable. 3.6 m / 4 m = 42.0 deg: the old
+        // 45 degree rule let bots up it, the client refuses it.
+        assert!(!blocked(&ramp(3.0), 4, 4), "36.9 degree slope must stay walkable");
+        assert!(blocked(&ramp(3.6), 4, 4), "42 degree slope must be blocked");
+        assert!(blocked(&ramp(4.5), 4, 4), "48 degree slope must be blocked");
+    }
+
+    #[test]
+    fn slope_check_follows_the_clients_triangle_split() {
+        // One raised vertex (3 m): on an even quad the split puts the rise on
+        // the shared diagonal so both triangles climb 3 m per 4 m; on an odd
+        // quad one triangle stays flat and the other climbs 3 m per 4 m in
+        // both axes (4.2 m/ 5.7 m diagonal -> steeper than 40 degrees).
+        let corner_up = |qx: i32, qz: i32| {
+            synthetic_smd(10, move |x, z| if (x, z) == (qx + 1, qz + 1) { 3.0 } else { 0.0 }, &[])
+        };
+        let even = corner_up(4, 4); // quad (4,4): 4+4 even
+        let odd = corner_up(4, 5); // quad (4,5): odd
+        assert!(!blocked(&even, 4, 4), "even split: both triangles climb 3 m over 4 m");
+        assert!(blocked(&odd, 4, 5), "odd split: the upper triangle is steeper than 40 degrees");
+    }
+
+    #[test]
+    fn map_edge_band_is_blocked() {
+        let smd = synthetic_smd(12, |_, _| 0.0, &[]);
+        for i in 0..12 {
+            for edge in [0, 10, 11] {
+                assert!(blocked(&smd, edge, i) && blocked(&smd, i, edge), "edge cell {edge},{i}");
+            }
+        }
+        assert!(!blocked(&smd, 1, 1) && !blocked(&smd, 9, 9) && !blocked(&smd, 5, 5));
+    }
+
+    fn wall_x24(rise_over_run: Option<f32>) -> CollisionFace {
+        // A wall along z = 8..40 at x = 24, 10 m tall; with `rise_over_run`
+        // the top edge leans away so the face has that slope.
+        match rise_over_run {
+            None => [[24.0, 0.0, 8.0], [24.0, 0.0, 40.0], [24.0, 10.0, 8.0]],
+            Some(r) => [[24.0, 0.0, 8.0], [24.0, 0.0, 40.0], [24.0 + 10.0 / r, 10.0, 8.0]],
+        }
+    }
+
+    #[test]
+    fn wall_faces_block_cells_within_the_body_radius() {
+        let smd = synthetic_smd(16, |_, _| 0.0, &[wall_x24(None)]);
+        // Wall at x=24: cells 5 (x 20..24) and 6 (24..28) touch it; cell 4
+        // (16..20) and cell 7 (28..32) are 4 m away, outside the 1.124 radius.
+        for z in 3..9 {
+            assert!(blocked(&smd, 5, z) && blocked(&smd, 6, z), "cells beside the wall at z={z}");
+            assert!(!blocked(&smd, 4, z) && !blocked(&smd, 7, z), "cells 4 m off the wall at z={z}");
+        }
+        // The wall ends at z=40: a cell well beyond it is free.
+        assert!(!blocked(&smd, 5, 12));
+    }
+
+    /// The old rule only treated faces steeper than 45 degrees as walls; the
+    /// client's sphere test treats everything steeper than 40 degrees as a
+    /// wall (`hypot(nx,nz) > 0.643`).
+    #[test]
+    fn faces_between_40_and_45_degrees_are_walls_but_shallower_ones_are_floors() {
+        let leaning = |slope_tan: f32| synthetic_smd(16, |_, _| 0.0, &[wall_x24(Some(slope_tan))]);
+        // tan(42 deg) = 0.9, tan(35 deg) = 0.7
+        assert!(blocked(&leaning(0.9), 6, 5), "42 degree face must block");
+        assert!(!blocked(&leaning(0.7), 6, 5), "35 degree face is a ramp, not a wall");
+    }
+
+    #[test]
+    fn garbage_faces_are_ignored_not_fatal() {
+        let garbage: CollisionFace = [[-46658.7, -44610.7, -0.1], [1.0e29, 3.5e24, 1.9e36], [0.0, 71813.9, 0.0]];
+        let smd = synthetic_smd(16, |_, _| 0.0, &[garbage]);
+        assert!(!blocked(&smd, 5, 5) && !blocked(&smd, 8, 8));
+    }
+
+    #[test]
+    fn wall_index_clearance_matches_distance_to_the_wall() {
+        let face = wall_x24(None);
+        let index = WallIndex::new(&[face], 64.0);
+        // 3 m in front of the wall; the sphere centre is 1.724 up but the
+        // wall is 10 m tall, so the nearest point is straight across.
+        let c = index.clearance(21.0, 0.0, 20.0);
+        assert!((c - 3.0).abs() < 0.01, "clearance {c}");
+        // A shallow ramp is not a wall and never reports clearance.
+        let ramp: CollisionFace = [[24.0, 0.0, 8.0], [24.0, 0.0, 40.0], [38.0, 10.0, 8.0]];
+        assert_eq!(WallIndex::new(&[ramp], 64.0).clearance(21.0, 0.0, 20.0), f32::INFINITY);
+    }
+
+    #[test]
+    fn client_incline_blocks_only_uphill_on_steep_triangles() {
+        // 42 degree ramp rising along +z.
+        let size = 6;
+        let heights: Vec<f32> = (0..size).flat_map(|_| (0..size).map(|z| z as f32 * 3.6)).collect();
+        let (x, z) = (10.0, 10.0);
+        assert!(client_incline_blocks(&heights, size, 4.0, x, z, 0.0, 1.0), "walking up must be refused");
+        assert!(client_incline_blocks(&heights, size, 4.0, x, z, 1.0, 0.0), "along the contour is refused too");
+        assert!(!client_incline_blocks(&heights, size, 4.0, x, z, 0.0, -1.0), "walking down is allowed");
+        let gentle: Vec<f32> = (0..size).flat_map(|_| (0..size).map(|z| z as f32 * 3.0)).collect();
+        assert!(!client_incline_blocks(&gentle, size, 4.0, x, z, 0.0, 1.0), "36.9 degrees is climbable");
     }
 
     /// Integration test: parse a real SMD file (moradon_0826.smd).

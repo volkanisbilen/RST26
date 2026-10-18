@@ -241,20 +241,30 @@ impl MapData {
             && self.is_bot_movable_grid((x / self.unit_dist()) as i32, (z / self.unit_dist()) as i32)
     }
 
+    /// Terrain height under `(x, z)`, computed exactly like the client does
+    /// (`sub_8C7B40`: checkerboard triangulation, not bilinear), so the Y we
+    /// send for bots is the Y the client would stand a player at.
     pub fn terrain_height(&self, x: f32, z: f32) -> Option<f32> {
-        if !self.is_valid_position(x, z) || self.smd.heights.is_empty() { return None; }
-        let gx = x / self.unit_dist();
-        let gz = z / self.unit_dist();
-        let ix = gx.floor() as usize;
-        let iz = gz.floor() as usize;
-        let size = self.smd.map_size as usize;
-        if ix + 1 >= size || iz + 1 >= size { return None; }
-        let h = &self.smd.heights;
-        let i = ix * size + iz;
-        let tx = gx - ix as f32;
-        let tz = gz - iz as f32;
-        Some((h[i] * (1.0-tx) + h[i+size] * tx) * (1.0-tz)
-            + (h[i+1] * (1.0-tx) + h[i+size+1] * tx) * tz)
+        if !self.is_valid_position(x, z) || self.smd.heights.is_empty() {
+            return None;
+        }
+        ko_protocol::smd::client_terrain_height(&self.smd.heights, self.smd.map_size, self.smd.unit_dist, x, z)
+    }
+
+    /// Would the real client refuse to walk a player from `(x, z)` in
+    /// direction `(dir_x, dir_z)` because the terrain triangle is too steep
+    /// (>40 degrees uphill, `sub_8C9210`)?
+    pub fn client_incline_blocks(&self, x: f32, z: f32, dir_x: f32, dir_z: f32) -> bool {
+        !self.smd.heights.is_empty()
+            && ko_protocol::smd::client_incline_blocks(
+                &self.smd.heights,
+                self.smd.map_size,
+                self.smd.unit_dist,
+                x,
+                z,
+                dir_x,
+                dir_z,
+            )
     }
 
     /// Create map data from a parsed SMD file.
