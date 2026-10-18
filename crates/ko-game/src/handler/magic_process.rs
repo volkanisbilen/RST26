@@ -675,7 +675,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     if matches!(
         b_opcode,
         MAGIC_CASTING | MAGIC_FLYING | MAGIC_EFFECTING
-    ) && caster.authority != 0
+    ) && SKILL_REQUIREMENT_GATE_ENABLED
+        && caster.authority != 0
         && !is_unlocked_manes_magic
         && !matches!(
             caster_pos.zone_id,
@@ -6338,6 +6339,9 @@ fn check_skill_class(iclass: i16, player_class: u16) -> bool {
 /// `sSkill = class * 10 + tree`. Only the regular class codes (101..=115 / 201..=215) are gated:
 /// tree 0 needs `level >= sSkillLevel`; trees 5..=8 need `skill_points[tree] >= sSkillLevel`.
 /// Everything else (event/item/monster skills, tree 9 helpers, extended-id rows) is not gated.
+/// Learned-skill gate is off until it can be verified against live skill data in game.
+const SKILL_REQUIREMENT_GATE_ENABLED: bool = false;
+
 fn skill_requirement_met(s_skill: i16, required: i16, level: u8, skill_points: &[u8; 10]) -> bool {
     if s_skill <= 0 || required <= 0 {
         return true;
