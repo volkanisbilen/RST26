@@ -234,6 +234,7 @@ impl WorldState {
                 premium_map: HashMap::new(),
                 premium_in_use: 0,
                 clan_premium_in_use: 0,
+                info_panel: Default::default(),
                 switch_premium_count: 0,
                 account_status: 0,
                 deleted_items: Vec::new(),

@@ -146,6 +146,7 @@ impl WorldState {
         self.load_mining_tables(pool).await;
         self.load_mining_exchange_table(pool).await;
         self.load_right_top_titles(pool).await;
+        crate::handler::info_panel::load_at_startup(self, pool).await;
 
         // ─── Bot System Loading ─────────────────────────────────────────────────
         self.load_bot_tables(pool).await;

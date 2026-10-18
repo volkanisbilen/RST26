@@ -252,6 +252,17 @@ pub struct TypeCooldown {
     pub t_catch: bool,
 }
 
+/// Per-session state of the right-top info list (`WIZ_NOTICE` type 4 entries managed by
+/// `handler::info_panel`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InfoPanelSession {
+    /// UNIX seconds from which entries may be sent (0 = the player is not in the world yet).
+    /// Set a few seconds after world entry so the client is past its loading screen.
+    pub ready_at: u64,
+    /// (title, description) pairs currently shown in the player's list, in send order.
+    pub shown: Vec<(String, String)>,
+}
+
 /// Handle for sending packets to a specific session.
 pub struct SessionHandle {
     /// Channel sender to the session's writer task.
@@ -723,6 +734,8 @@ pub struct SessionHandle {
     /// Clan premium type (0 = none, 13 = CLAN_PREMIUM).
     ///
     pub clan_premium_in_use: u8,
+    /// Right-top info list state of this session (see `handler::info_panel`).
+    pub info_panel: InfoPanelSession,
     /// Counter for how many switch premiums have been loaded this session.
     ///
     pub switch_premium_count: u8,

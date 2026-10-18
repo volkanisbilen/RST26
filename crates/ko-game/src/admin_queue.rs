@@ -173,6 +173,7 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
             .await
             .map(|n| format!("{n} bot loadout override bracket(s) loaded"))
             .map_err(|e| e.to_string()),
+        "info_panel_reload" => crate::handler::info_panel::reload_and_sync(world, pool).await,
         other => {
             warn!(command = other, "unknown admin command");
             Err(format!("unknown command {other}"))

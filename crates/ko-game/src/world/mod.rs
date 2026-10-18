@@ -836,6 +836,8 @@ pub struct WorldState {
     ///
     /// `RIGHT_TOP_TITLE` DB table, sent via `CUser::RightTopTitleMsg()`.
     right_top_titles: parking_lot::RwLock<Vec<(String, String)>>,
+    /// Admin-managed right-top info list entries (`info_panel_entry` table, see `handler::info_panel`).
+    info_panel_entries: parking_lot::RwLock<Arc<Vec<crate::handler::info_panel::InfoPanelEntry>>>,
 
     // â”€â”€ Zone Reward Tables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     /// Zone kill reward definitions (all rows, iterated per kill).
@@ -1152,6 +1154,7 @@ impl WorldState {
             cape_bonus_entries: parking_lot::RwLock::new(Vec::new()),
             clan_premium_entries: parking_lot::RwLock::new(Vec::new()),
             right_top_titles: parking_lot::RwLock::new(Vec::new()),
+            info_panel_entries: parking_lot::RwLock::new(Arc::new(Vec::new())),
             zone_kill_rewards: parking_lot::RwLock::new(Vec::new()),
             zone_online_rewards: parking_lot::RwLock::new(Vec::new()),
             wanted_rooms: parking_lot::RwLock::new(Default::default()),
@@ -1397,6 +1400,7 @@ impl WorldState {
             cape_bonus_entries: parking_lot::RwLock::new(Vec::new()),
             clan_premium_entries: parking_lot::RwLock::new(Vec::new()),
             right_top_titles: parking_lot::RwLock::new(Vec::new()),
+            info_panel_entries: parking_lot::RwLock::new(Arc::new(Vec::new())),
             zone_kill_rewards: parking_lot::RwLock::new(Vec::new()),
             zone_online_rewards: parking_lot::RwLock::new(Vec::new()),
             wanted_rooms: parking_lot::RwLock::new(Default::default()),
@@ -1491,6 +1495,16 @@ impl WorldState {
     /// Set right-top title messages (loaded from DB at startup).
     pub fn set_right_top_titles(&self, titles: Vec<(String, String)>) {
         *self.right_top_titles.write() = titles;
+    }
+
+    /// Admin-managed right-top info list entries (already sanitized, ordered).
+    pub fn info_panel_entries(&self) -> Arc<Vec<crate::handler::info_panel::InfoPanelEntry>> {
+        self.info_panel_entries.read().clone()
+    }
+
+    /// Replace the admin-managed right-top info list entries.
+    pub fn set_info_panel_entries(&self, entries: Vec<crate::handler::info_panel::InfoPanelEntry>) {
+        *self.info_panel_entries.write() = Arc::new(entries);
     }
 
     /// Set the permanent chat banner text and broadcast to all players.

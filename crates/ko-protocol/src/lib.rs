@@ -10,6 +10,7 @@
 pub mod aes_crypt;
 pub mod crypto;
 pub mod gameguard;
+pub mod info_panel;
 pub mod opcode;
 pub mod packet;
 pub mod smd;

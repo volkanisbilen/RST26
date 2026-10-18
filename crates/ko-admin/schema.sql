@@ -190,3 +190,18 @@ CREATE TABLE IF NOT EXISTS bot_loadout_override_item (
     CONSTRAINT bot_loadout_override_item_bracket_chk CHECK (level_bracket IN (59, 69, 83)),
     CONSTRAINT bot_loadout_override_item_slot_chk CHECK (slot IN (1, 4, 5, 6, 8, 10, 12, 13))
 )
+-- ;;
+-- Right-top info list entries ("Bilgi Paneli" page); see migrations/20261018180000_info_panel_entry.sql.
+CREATE TABLE IF NOT EXISTS info_panel_entry (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sort_order            INTEGER      NOT NULL DEFAULT 0,
+    title                 VARCHAR(24)  NOT NULL,
+    description           VARCHAR(255) NOT NULL,
+    enabled               BOOLEAN      NOT NULL DEFAULT TRUE,
+    requires_clan_premium BOOLEAN      NOT NULL DEFAULT FALSE,
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT info_panel_entry_title_chk CHECK (char_length(btrim(title)) BETWEEN 1 AND 24),
+    CONSTRAINT info_panel_entry_desc_chk  CHECK (char_length(btrim(description)) BETWEEN 1 AND 255)
+)
+-- ;;
+CREATE INDEX IF NOT EXISTS idx_info_panel_entry_order ON info_panel_entry (sort_order, id)
