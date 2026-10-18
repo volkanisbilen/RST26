@@ -20,10 +20,21 @@ impl WorldState {
     /// The closure receives a mutable reference to the `CharacterInfo` and can
     /// modify any fields. Commonly used after stat/skill point allocation.
     pub fn update_character_stats(&self, id: SessionId, updater: impl FnOnce(&mut CharacterInfo)) {
-        if let Some(mut handle) = self.sessions.get_mut(&id) {
+        let vitals_changed = if let Some(mut handle) = self.sessions.get_mut(&id) {
             if let Some(ref mut ch) = handle.character {
+                let before = (ch.hp, ch.max_hp, ch.mp, ch.max_mp);
                 updater(ch);
+                before != (ch.hp, ch.max_hp, ch.mp, ch.max_mp)
+            } else {
+                false
             }
+        } else {
+            false
+        };
+        // Drop the session-map guard before party lookup/broadcast. Updating
+        // vitals through this common path must refresh both HP and MP bars.
+        if vitals_changed {
+            crate::handler::party::broadcast_party_hp(self, id);
         }
     }
     /// Recalculate max HP/MP using the coefficient formula and update the session.
@@ -82,6 +93,9 @@ impl WorldState {
             id,
             SessionHandle {
                 tx,
+                pvp_serial_kill_count: 0,
+                pvp_total_kill_count: 0,
+                pvp_last_kill_time: 0,
                 character: None,
                 position: Position::default(),
                 direction: 0,
@@ -121,6 +135,8 @@ impl WorldState {
                 daily_quests: HashMap::new(),
                 event_nid: -1,
                 event_sid: -1,
+                native_event_hub_armed: false,
+                akara_altar_armed: false,
                 quest_helper_id: 0,
                 by_selected_reward: -1,
                 select_msg_flag: 0,
@@ -135,6 +151,7 @@ impl WorldState {
                 achieve_timed: HashMap::new(),
                 achieve_challenge_active: false,
                 achieve_stat_bonuses: [0i16; 7],
+                achieve_title_idx: 0,
                 requesting_challenge: 0,
                 challenge_requested: 0,
                 challenge_user: -1,
@@ -152,6 +169,7 @@ impl WorldState {
                     .checked_sub(std::time::Duration::from_secs(601))
                     .unwrap_or(Instant::now()),
                 is_mining: false,
+                mining_half_wear_pending: false,
                 is_fishing: false,
                 auto_mining_time: 0,
                 auto_fishing_time: 0,
@@ -847,18 +865,36 @@ impl WorldState {
     }
     /// Update a player's current HP in CharacterInfo.
     pub fn update_character_hp(&self, id: SessionId, hp: i16) {
-        if let Some(mut handle) = self.sessions.get_mut(&id) {
+        let changed = if let Some(mut handle) = self.sessions.get_mut(&id) {
             if let Some(ref mut ch) = handle.character {
+                let changed = ch.hp != hp;
                 ch.hp = hp;
+                changed
+            } else {
+                false
             }
+        } else {
+            false
+        };
+        if changed {
+            crate::handler::party::broadcast_party_hp(self, id);
         }
     }
     /// Update a player's current MP in CharacterInfo.
     pub fn update_character_mp(&self, id: SessionId, mp: i16) {
-        if let Some(mut handle) = self.sessions.get_mut(&id) {
+        let changed = if let Some(mut handle) = self.sessions.get_mut(&id) {
             if let Some(ref mut ch) = handle.character {
+                let changed = ch.mp != mp;
                 ch.mp = mp;
+                changed
+            } else {
+                false
             }
+        } else {
+            false
+        };
+        if changed {
+            crate::handler::party::broadcast_party_hp(self, id);
         }
     }
     /// Update a player's current SP in CharacterInfo.
@@ -1436,16 +1472,11 @@ impl WorldState {
             }
         }
     }
-    /// Send a PvP death notice to all players in a zone with per-recipient killtype.
+    /// Send the native v2615 death notice and the killer's narration update.
     ///
-    ///
-    /// Packet format: WIZ_EXT_HOOK (0xE9) + DeathNotice sub-opcode (0xD7) + SByte strings.
-    /// - killtype 1: recipient IS the killer or victim
-    /// - killtype 2: recipient is in the killer's party
-    /// - killtype 3: bystander
-    ///
-    /// Also sends a WIZ_CHAT WAR_SYSTEM_CHAT fallback for vanilla v2525 clients
-    /// that drop ext_hook (0xE9 ≥ 0xD8 dispatch range).
+    /// `WIZ_CHAT/DEATH_NOTICE` is rendered as the chat-bar death line and
+    /// minimap marker. `WIZ_KILLASSIST` drives `re_killcount.uif`,
+    /// `killnameall.dxt` and `killnamebackgall.dxt`.
     #[allow(clippy::too_many_arguments)]
     pub fn send_death_notice_to_zone(
         &self,
@@ -1454,61 +1485,90 @@ impl WorldState {
         victim_sid: SessionId,
         killer_name: &str,
         victim_name: &str,
-        killer_party_id: Option<u16>,
+        _killer_party_id: Option<u16>,
         victim_x: u16,
         victim_z: u16,
     ) {
-        /// ExtSub::DeathNotice = 0xD7
-        const EXT_SUB_DEATH_NOTICE: u8 = 0xD7;
+        let killer_nation = self
+            .get_character_info(killer_sid)
+            .map(|ch| ch.nation)
+            .or_else(|| self.get_bot(killer_sid as u32).map(|bot| bot.nation))
+            .unwrap_or(0);
+        let victim_nation = self
+            .get_character_info(victim_sid)
+            .map(|ch| ch.nation)
+            .or_else(|| self.get_bot(victim_sid as u32).map(|bot| bot.nation))
+            .unwrap_or(0);
+        let death_notice = crate::handler::chat::build_death_notice_packet(
+            killer_nation,
+            victim_nation,
+            0,
+            killer_sid as u32,
+            killer_name,
+            victim_sid as u32,
+            victim_name,
+            victim_x,
+            victim_z,
+        );
+        self.broadcast_to_zone(zone_id, Arc::new(death_notice), None);
 
-        // WIZ_CHAT WAR_SYSTEM_CHAT fallback for vanilla v2525 client
-        let chat_msg = format!("[PvP] {} killed {}", killer_name, victim_name);
-        let arc_chat_pkt = Arc::new(crate::systems::timed_notice::build_notice_packet(
-            8, &chat_msg,
-        ));
-
-        if let Some(index_entry) = self.zone_session_index.get(&zone_id) {
-            let session_ids: Vec<SessionId> = index_entry.value().read().iter().copied().collect();
-            for sid in session_ids {
-                if let Some(handle) = self.sessions.get(&sid) {
-                    if handle.character.is_none() {
-                        continue;
-                    }
-
-                    let killtype: u8 = if sid == killer_sid || sid == victim_sid {
-                        1 // direct participant
-                    } else if let Some(party_id) = killer_party_id {
-                        if handle
-                            .character
-                            .as_ref()
-                            .is_some_and(|ch| ch.party_id == Some(party_id))
-                        {
-                            2 // killer's party member
-                        } else {
-                            3 // bystander
-                        }
+        // Runtime bots have no client connection. A real player killer receives
+        // the exact CUser::KA_KillUpdate payload used by the 2615 client UI.
+        if (killer_sid as u32) < crate::world::BOT_ID_BASE {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut narration_state = None;
+            self.update_session(killer_sid, |handle| {
+                if handle.pvp_last_kill_time > 0
+                    && now.saturating_sub(handle.pvp_last_kill_time) > 15 * 60
+                {
+                    handle.pvp_serial_kill_count = 0;
+                    handle.pvp_total_kill_count = 0;
+                }
+                handle.pvp_serial_kill_count = handle.pvp_serial_kill_count.saturating_add(1);
+                handle.pvp_total_kill_count = handle.pvp_total_kill_count.saturating_add(1);
+                handle.pvp_last_kill_time = now;
+                narration_state = Some((
+                    handle.pvp_serial_kill_count.min(u16::MAX as u32) as u16,
+                    handle.pvp_total_kill_count,
+                ));
+            });
+            if let Some((stage, total_kills)) = narration_state {
+                self.send_to_session_owned(
+                    killer_sid,
+                    crate::handler::dead::build_kill_narration_packet(
+                        killer_sid as u32,
+                        killer_name,
+                        killer_nation,
+                        stage,
+                    ),
+                );
+                if total_kills % 10 == 0 {
+                    let killer_nation = self
+                        .get_character_info(killer_sid)
+                        .map(|ch| ch.nation)
+                        .unwrap_or(0);
+                    let total_packet = crate::handler::dead::build_kill_total_packet(
+                        killer_sid as u32,
+                        killer_name,
+                        killer_nation,
+                        total_kills.min(u16::MAX as u32) as u16,
+                    );
+                    if let Some(party_id) = self.get_party_id(killer_sid) {
+                        self.send_to_party(party_id, &total_packet);
                     } else {
-                        3 // bystander
-                    };
-
-                    let mut pkt = Packet::new(Opcode::EXT_HOOK_S2C);
-                    pkt.write_u8(EXT_SUB_DEATH_NOTICE);
-                    pkt.write_u8(killtype);
-                    // SByte string: u8 length prefix + bytes
-                    let kn = killer_name.as_bytes();
-                    pkt.write_u8(kn.len() as u8);
-                    pkt.data.extend_from_slice(kn);
-                    let vn = victim_name.as_bytes();
-                    pkt.write_u8(vn.len() as u8);
-                    pkt.data.extend_from_slice(vn);
-                    pkt.write_u16(victim_x);
-                    pkt.write_u16(victim_z);
-
-                    let _ = handle.tx.send(Arc::new(pkt));
-                    // Chat fallback (same for all recipients)
-                    let _ = handle.tx.send(Arc::clone(&arc_chat_pkt));
+                        self.send_to_session_owned(killer_sid, total_packet);
+                    }
                 }
             }
+        }
+
+        if (victim_sid as u32) < crate::world::BOT_ID_BASE {
+            self.update_session(victim_sid, |handle| {
+                handle.pvp_serial_kill_count = 0;
+            });
         }
     }
 
@@ -1668,8 +1728,16 @@ impl WorldState {
     /// tasks will detect the broken channel and exit, but since the session
     /// is already removed, the cleanup is handled here inline.
     pub async fn kick_session_for_duplicate(&self, id: SessionId) {
+        self.kick_session(id, "Another client has logged in with this account.")
+            .await
+    }
+
+    /// Kick a session for any reason (used for duplicate logins and the client
+    /// integrity handshake) — sends the reason, saves the character, and tears
+    /// the session down so the reader/writer tasks exit.
+    pub async fn kick_session(&self, id: SessionId, reason: &str) {
         // 0a. Send kick reason to client before disconnecting
-        self.send_kick_reason(id, "Another client has logged in with this account.");
+        self.send_kick_reason(id, reason);
 
         // 0b. Save character data before kicking — prevents data loss on duplicate login
         if let Some(pool) = self.db_pool() {
@@ -2072,8 +2140,12 @@ impl WorldState {
             if let Some(ref mut pet) = h.pet_data {
                 pet.satisfaction = (pet.satisfaction + amount).clamp(0, 10000);
                 if pet.satisfaction <= 0 {
-                    // Pet dies — remove pet data
-                    h.pet_data = None;
+                    // Despawn the runtime companion but retain persistent pet
+                    // data and equipment. A familiar must not lose its items
+                    // merely because its satisfaction reached zero.
+                    pet.nid = 0;
+                    pet.attack_started = false;
+                    pet.attack_target_id = -1;
                     result = None;
                 } else {
                     result = Some(pet.satisfaction);
@@ -2090,6 +2162,7 @@ impl WorldState {
         self.with_session(sid, |h| {
             h.pet_data
                 .as_ref()
+                .filter(|pet| pet.nid != 0)
                 .map(|p| (p.nid, p.index, p.satisfaction))
         })
         .flatten()
@@ -2099,6 +2172,34 @@ impl WorldState {
     ///
     /// Iterates sessions to locate the one whose `pet_data.nid` matches.
     /// Returns the owner's session ID if found.
+    /// Template used to render an NPC to clients. Runtime familiars share one carrier template,
+    /// so their own (possibly transformed) model PID and size have to be applied whenever the
+    /// NPC_IN is rebuilt: on region entry, REQ_NPCIN and refreshes, not only at summon.
+    pub fn npc_visual_template(
+        &self,
+        instance: &NpcInstance,
+        template: &Arc<NpcTemplate>,
+    ) -> Arc<NpcTemplate> {
+        if instance.pet_name.is_empty() || instance.nid == 0 {
+            return template.clone();
+        }
+        let Some(owner) = self.find_pet_owner_by_nid(instance.nid as u16) else {
+            return template.clone();
+        };
+        let appearance = self
+            .with_session(owner, |h| h.pet_data.as_ref().map(|p| (p.pid, p.size)))
+            .flatten();
+        match appearance {
+            Some((pid, size)) => {
+                let mut visual = template.as_ref().clone();
+                visual.pid = if pid == 0 { 25500 } else { pid };
+                visual.size = if size == 0 { 100 } else { size };
+                Arc::new(visual)
+            }
+            None => template.clone(),
+        }
+    }
+
     pub fn find_pet_owner_by_nid(&self, pet_npc_id: u16) -> Option<SessionId> {
         if pet_npc_id == 0 {
             return None;
@@ -2136,7 +2237,9 @@ impl WorldState {
                 data.push(PetAttackData {
                     session_id: sid,
                     pet_nid: pet.nid,
+                    pet_level: pet.level.clamp(1, 60),
                     target_npc_id: pet.attack_target_id as u32,
+                    attack_skill_id: pet.pending_attack_skill_id,
                     owner_zone_id: zone_id,
                     owner_dead: is_dead,
                 });
@@ -3084,7 +3187,9 @@ mod tests {
         world.set_transformation(1, 1, 500, 600100, 10000, 30000);
         assert!(world.is_transformed(1));
         // Verify fields via with_session
-        let (t_type, t_id) = world.with_session(1, |h| (h.transformation_type, h.transform_id)).unwrap();
+        let (t_type, t_id) = world
+            .with_session(1, |h| (h.transformation_type, h.transform_id))
+            .unwrap();
         assert_eq!(t_type, 1);
         assert_eq!(t_id, 500);
         // Clear
@@ -3101,8 +3206,12 @@ mod tests {
         world.register_session(1, tx1);
         world.register_session(2, tx2);
         // Session 1: blink expires at 100, session 2: blink expires at 200
-        world.update_session(1, |h| { h.blink_expiry_time = 100; });
-        world.update_session(2, |h| { h.blink_expiry_time = 200; });
+        world.update_session(1, |h| {
+            h.blink_expiry_time = 100;
+        });
+        world.update_session(2, |h| {
+            h.blink_expiry_time = 200;
+        });
         // At time 150: session 1 expired, session 2 still active
         let expired = world.collect_expired_blinks(150);
         assert_eq!(expired.len(), 1);
@@ -3117,7 +3226,9 @@ mod tests {
         world.register_session(1, tx);
         assert!(world.can_use_potions(1));
         // Disable potions
-        world.update_session(1, |h| { h.can_use_potions = false; });
+        world.update_session(1, |h| {
+            h.can_use_potions = false;
+        });
         assert!(!world.can_use_potions(1));
         // Nonexistent → true (safe default)
         assert!(world.can_use_potions(999));
@@ -3159,7 +3270,9 @@ mod tests {
             h.is_mining = true;
             h.is_fishing = true;
         });
-        let (mining, fishing) = world.with_session(1, |h| (h.is_mining, h.is_fishing)).unwrap();
+        let (mining, fishing) = world
+            .with_session(1, |h| (h.is_mining, h.is_fishing))
+            .unwrap();
         assert!(mining);
         assert!(fishing);
     }
@@ -3222,7 +3335,12 @@ mod tests {
         world.register_session(1, tx);
         let (pm_id, event_nid, event_sid, reward) = world
             .with_session(1, |h| {
-                (h.gm_send_pm_id, h.event_nid, h.event_sid, h.by_selected_reward)
+                (
+                    h.gm_send_pm_id,
+                    h.event_nid,
+                    h.event_sid,
+                    h.by_selected_reward,
+                )
             })
             .unwrap();
         assert_eq!(pm_id, 0xFFFF);
@@ -3237,9 +3355,7 @@ mod tests {
         let world = WorldState::new();
         let (tx, _rx) = mpsc::unbounded_channel();
         world.register_session(1, tx);
-        let limit = world
-            .with_session(1, |h| h.draki_entrance_limit)
-            .unwrap();
+        let limit = world.with_session(1, |h| h.draki_entrance_limit).unwrap();
         assert_eq!(limit, 3);
     }
 
@@ -3301,7 +3417,11 @@ mod tests {
         assert_eq!(bow, 100);
         // Soul categories: 8 entries, first element = index (0-7), rest zeros
         for i in 0..8 {
-            assert_eq!(soul_cats[i][0], i as i16, "soul_categories[{}][0] should be {}", i, i);
+            assert_eq!(
+                soul_cats[i][0], i as i16,
+                "soul_categories[{}][0] should be {}",
+                i, i
+            );
             assert_eq!(soul_cats[i][1], 0i16);
             assert_eq!(soul_cats[i][2], 0i16);
             assert_eq!(soul_cats[i][3], 0i16);

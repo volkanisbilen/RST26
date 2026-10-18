@@ -1,0 +1,14 @@
+# Uploaded files are validated as real images (getimagesize) before being saved here, but this is
+# a second layer: never execute anything in this folder even if that check is ever bypassed.
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<FilesMatch "\.(php|php\d|phtml|pl|py|cgi|sh)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</FilesMatch>

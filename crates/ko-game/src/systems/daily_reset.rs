@@ -114,6 +114,9 @@ pub fn start_daily_reset_task(world: Arc<WorldState>, pool: DbPool) -> tokio::ta
             if rank_reload_minute_counter >= RELOAD_RANK_INTERVAL_MINUTES {
                 rank_reload_minute_counter = 0;
                 world.reload_user_rankings(&pool).await;
+                if let Err(error) = world.reload_moraranker(&pool, true).await {
+                    tracing::warn!(%error, "automatic MORANKER reload failed");
+                }
             }
 
             // ── Minute change — player ranking rewards ───────────────

@@ -81,6 +81,9 @@ fn process_pet_decay_tick(world: &WorldState) {
                 );
             }
             None => {
+                if pd.pet_nid != 0 {
+                    world.kill_npc(pd.pet_nid as u32);
+                }
                 // Pet died (satisfaction hit 0) — send death notification
                 let mut death_pkt = Packet::new(Opcode::WizPet as u8);
                 death_pkt.write_u8(PET_MODE_FUNCTION);
@@ -218,9 +221,14 @@ mod tests {
         let result = world.apply_pet_decay(sid, -100, 200);
         assert!(result.is_none(), "Pet should be dead");
 
-        // Verify pet data is removed
-        let has_pet = world.with_session(sid, |h| h.pet_data.is_some()).unwrap();
-        assert!(!has_pet, "Pet data should be None after death");
+        // The runtime companion disappears, but its persistent data and
+        // equipped items must survive a dismissal/death.
+        let pet = world
+            .with_session(sid, |h| h.pet_data.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(pet.nid, 0);
+        assert_eq!(pet.satisfaction, 0);
     }
 
     #[test]

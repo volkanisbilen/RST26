@@ -36,9 +36,15 @@ struct Args {
     #[arg(short = 'q', long, env = "KO_QUEST_DIR")]
     quest_dir: PathBuf,
 
-    /// Path to MSSQL quest_helper dump (pipe-delimited).
+    /// Path to MSSQL quest_helper dump (pipe-delimited). Optional when
+    /// --tbl-only is used.
     #[arg(short = 'm', long)]
-    mssql_helper: PathBuf,
+    mssql_helper: Option<PathBuf>,
+
+    /// Use Quest_Helper.tbl as the authoritative source. This is the correct
+    /// mode for the v2615 client; old MSSQL rows may target older clients.
+    #[arg(long)]
+    tbl_only: bool,
 
     /// Path to MSSQL item_exchange dump (pipe-delimited, optional).
     #[arg(long)]
@@ -78,20 +84,28 @@ fn main() -> anyhow::Result<()> {
     if !args.quest_dir.is_dir() {
         anyhow::bail!("Quest directory not found: {}", args.quest_dir.display());
     }
-    if !args.mssql_helper.is_file() {
-        anyhow::bail!(
-            "MSSQL helper dump not found: {}",
-            args.mssql_helper.display()
-        );
+    if !args.tbl_only {
+        let Some(path) = args.mssql_helper.as_ref() else {
+            anyhow::bail!("--mssql-helper is required unless --tbl-only is used");
+        };
+        if !path.is_file() {
+            anyhow::bail!("MSSQL helper dump not found: {}", path.display());
+        }
     }
 
     // 1. Load TBL data (for quest_talk, quest_menu, item_exchange lookups)
     tracing::info!("Loading TBL files from {}...", args.data_dir.display());
     let tbl = ko_quest_audit::tbl_loader::TblData::load(&args.data_dir)?;
 
-    // 2. Parse MSSQL quest_helper dump + merge TBL-only rows
-    tracing::info!("Parsing MSSQL dump...");
-    let mut mssql_rows = mssql_parser::parse_quest_helper_dump(&args.mssql_helper)?;
+    // 2. Parse MSSQL quest_helper dump + merge TBL-only rows. For v2615 the
+    // client TBL is authoritative, so --tbl-only intentionally starts empty.
+    let mut mssql_rows = if args.tbl_only {
+        tracing::info!("Using Quest_Helper.tbl as authoritative v2615 source");
+        Vec::new()
+    } else {
+        tracing::info!("Parsing MSSQL dump...");
+        mssql_parser::parse_quest_helper_dump(args.mssql_helper.as_ref().unwrap())?
+    };
 
     // Merge TBL quest_helper rows that are NOT in the MSSQL dump.
     // Uses (npc_id, quest_id, status) as key to avoid duplicates.

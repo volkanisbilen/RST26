@@ -4,15 +4,62 @@
 //! - 2 = UserInfoDetail (inspect player equipment/stats)
 //! - 3 = UserList (refresh, lower bandwidth)
 //! - 4 = RegionDelete (logout notification to nearby players)
+//! - 5 = Equipment View (right-click context menu) — see `equipment_view.rs`
 
 use std::sync::Arc;
 
 use ko_protocol::{Opcode, Packet, PacketReader};
 
-use crate::handler::region;
 use crate::session::{ClientSession, SessionState};
 
 use super::{HAVE_MAX, SLOT_MAX};
+
+fn build_user_list_header(sub_opcode: u8, zone_id: u16, count: u16) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizUserInfo as u8);
+    pkt.write_u8(sub_opcode);
+    pkt.write_u8(1);
+    pkt.write_u16(zone_id);
+    pkt.write_u8(0);
+    pkt.write_u16(count);
+    pkt
+}
+
+fn build_user_list_entry(
+    name: &str,
+    nation: u8,
+    x: f32,
+    z: f32,
+    clan_id: u16,
+    mark_version: Option<u16>,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizUserInfo as u8);
+    // These bytes are concatenated into the parent packet; the packet opcode
+    // is intentionally discarded by the caller.
+    pkt.write_sbyte_string(name);
+    pkt.write_u8(nation);
+    pkt.write_u16(1);
+    pkt.write_u16(world_coord_to_short(x));
+    pkt.write_u16(world_coord_to_short(z));
+    pkt.write_u16(clan_id);
+    if clan_id != 0 {
+        pkt.write_u16(mark_version.unwrap_or(0));
+        pkt.write_u8(0);
+        pkt.write_u8(0);
+    } else {
+        pkt.write_u16(0);
+        pkt.write_u16(0);
+    }
+    pkt.write_u16(1);
+    pkt
+}
+
+fn world_coord_to_short(coord: f32) -> u16 {
+    (coord * 10.0).round().clamp(0.0, u16::MAX as f32) as u16
+}
+
+fn distance_squared(ax: f32, az: f32, bx: f32, bz: f32) -> f32 {
+    (ax - bx).powi(2) + (az - bz).powi(2)
+}
 
 /// Handle WIZ_USER_INFORMATIN from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
@@ -26,50 +73,105 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     match sub_opcode {
         1 | 3 => {
-            // Sign (initial) or UserList (refresh)
-            // Response: [sub=1 or 3] [u8(1)] [u16 zone_id] [u8(0)] [u16 count] [per-user data]
+            // Sign (initial) or UserList (refresh). The client expects two
+            // packets: an empty sub=1 header, then a compressed record list.
             let response_sub = if sub_opcode == 1 { 1u8 } else { 3u8 };
 
             let world = session.world().clone();
             let sid = session.session_id();
-            let (pos, my_event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+            let (pos, my_event_room, my_authority) = world
+                .with_session(sid, |h| {
+                    (
+                        h.position,
+                        h.event_room,
+                        h.character.as_ref().map(|c| c.authority),
+                    )
+                })
+                .unwrap_or_default();
+            let Some(my_authority) = my_authority else {
+                return Ok(());
+            };
 
-            // Get nearby session IDs (event_room filtered)
-            let nearby = world.get_nearby_session_ids(
-                pos.zone_id,
-                pos.region_x,
-                pos.region_z,
-                Some(sid),
-                my_event_room,
-            );
+            // Match the native client/server flow: initialize with an empty
+            // Sign packet, then send the actual names/positions in one list.
+            session
+                .send_packet(&build_user_list_header(1, pos.zone_id, 0))
+                .await?;
 
-            let mut response = Packet::new(Opcode::WizUserInfo as u8);
-            response.write_u8(response_sub);
-            response.write_u8(1); // reserved
-            response.write_u16(pos.zone_id);
-            response.write_u8(0); // reserved
-            response.write_u16(nearby.len() as u16);
+            let excluded_zone = matches!(pos.zone_id, 85 | 92 | 76 | 89);
+            let is_gm = my_authority == 0;
+            let mut entries: Vec<(f32, Packet)> = Vec::new();
+            if !excluded_zone {
+                for other_id in world.sessions_in_zone(pos.zone_id) {
+                    let Some((other_pos, event_room, other_char)) = world
+                        .with_session(other_id, |h| {
+                            (h.position, h.event_room, h.character.clone())
+                        })
+                    else {
+                        continue;
+                    };
+                    let Some(other_char) = other_char else {
+                        continue;
+                    };
+                    if event_room != my_event_room
+                        || (!is_gm && other_char.authority == 0)
+                        || (other_id != sid
+                            && !is_gm
+                            && distance_squared(pos.x, pos.z, other_pos.x, other_pos.z)
+                                > 300.0 * 300.0)
+                    {
+                        continue;
+                    }
+                    let distance = distance_squared(pos.x, pos.z, other_pos.x, other_pos.z).sqrt();
+                    let mark_version = if other_char.knights_id == 0 {
+                        0
+                    } else {
+                        world
+                            .get_knights(other_char.knights_id)
+                            .map(|clan| clan.mark_version)
+                            .unwrap_or(0)
+                    };
+                    entries.push((
+                        distance,
+                        build_user_list_entry(
+                            &other_char.name,
+                            other_char.nation,
+                            other_pos.x,
+                            other_pos.z,
+                            other_char.knights_id,
+                            Some(mark_version),
+                        ),
+                    ));
+                }
 
-            // For each nearby user, send a WIZ_USER_INOUT(INOUT_IN) packet
-            // so the client adds them to the visible player list
-            for &other_id in &nearby {
-                let other_char = world.get_character_info(other_id);
-                let other_pos = world.get_position(other_id).unwrap_or_default();
-                let other_invis = world.get_invisibility_type(other_id);
-                let other_abnormal = world.get_abnormal_type(other_id);
-                let other_equip = region::get_equipped_visual(&world, other_id);
-                let inout = region::build_user_inout_with_invis(
-                    region::INOUT_IN,
-                    other_id,
-                    other_char.as_ref(),
-                    &other_pos,
-                    other_invis,
-                    other_abnormal,
-                    &other_equip,
-                );
-                session.send_packet(&inout).await?;
+                // Bots are included by the original bottom-left list protocol.
+                for bot in world.get_bots_in_zone_live(pos.zone_id) {
+                    if !bot.in_game {
+                        continue;
+                    }
+                    let distance = distance_squared(pos.x, pos.z, bot.x, bot.z).sqrt();
+                    entries.push((
+                        distance,
+                        build_user_list_entry(
+                            &bot.name,
+                            bot.nation,
+                            bot.x,
+                            bot.z,
+                            bot.knights_id,
+                            Some(0),
+                        ),
+                    ));
+                }
             }
+            entries.sort_by(|a, b| a.0.total_cmp(&b.0));
+            entries.truncate(800);
 
+            let mut response = build_user_list_header(response_sub, pos.zone_id, 0);
+            for (_, entry) in &entries {
+                response.data.extend_from_slice(&entry.data);
+            }
+            response.put_u16_at(5, entries.len() as u16);
+            let response = response.to_compressed().unwrap_or(response);
             session.send_packet(&response).await?;
         }
         2 => {
@@ -79,6 +181,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         4 => {
             // RegionDelete — logout notification to nearby players
             handle_region_delete(session)?;
+        }
+        super::equipment_view::SUB_EQUIPMENT_VIEW => {
+            super::equipment_view::handle(session, &mut reader).await?;
         }
         _ => {
             tracing::trace!(
@@ -470,6 +575,38 @@ mod tests {
         assert_eq!(r.remaining(), 0);
     }
 
+    #[test]
+    fn bottom_user_list_header_uses_native_wire_layout() {
+        let mut pkt = build_user_list_header(3, 21, 2);
+        assert_eq!(pkt.opcode, Opcode::WizUserInfo as u8);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(3));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(21));
+        assert_eq!(r.read_u8(), Some(0));
+        assert_eq!(r.read_u16(), Some(2));
+        assert_eq!(r.remaining(), 0);
+        pkt.put_u16_at(5, 1);
+        assert_eq!(u16::from_le_bytes([pkt.data[5], pkt.data[6]]), 1);
+    }
+
+    #[test]
+    fn bottom_user_list_entry_has_name_nation_position_and_clan_fields() {
+        let pkt = build_user_list_entry("Volkan", 1, 12.3, 45.6, 7, Some(42));
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_sbyte_string(), Some("Volkan".to_string()));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(1));
+        assert_eq!(r.read_u16(), Some(123));
+        assert_eq!(r.read_u16(), Some(456));
+        assert_eq!(r.read_u16(), Some(7));
+        assert_eq!(r.read_u16(), Some(42));
+        assert_eq!(r.read_u8(), Some(0));
+        assert_eq!(r.read_u8(), Some(0));
+        assert_eq!(r.read_u16(), Some(1));
+        assert_eq!(r.remaining(), 0);
+    }
+
     // ── Sprint 922: Additional coverage ──────────────────────────────
 
     /// Detail packet total data length: sub(1) + markers(2) + sbyte_name(1+len)
@@ -480,8 +617,16 @@ mod tests {
     fn test_user_info_detail_data_length() {
         let name = "Hero";
         let pkt = build_user_info_detail_packet(
-            name, 1, 1, 101, 80, 0,
-            [50, 50, 50, 50, 50], 0, 0, [0, 0, 0, 0],
+            name,
+            1,
+            1,
+            101,
+            80,
+            0,
+            [50, 50, 50, 50, 50],
+            0,
+            0,
+            [0, 0, 0, 0],
         );
         // 1+2 + (1+4) + 1+1+2+1+4 + 10 + 4+2+1+2 + 4 + 378 + 1 = 419
         let expected = 3 + (1 + name.len()) + 9 + 10 + 9 + 4 + 378 + 1;
@@ -549,15 +694,26 @@ mod tests {
         pkt.write_u8(1);
         pkt.write_sbyte_string("Rebirth");
         // Minimal char data
-        pkt.write_u8(1); pkt.write_u8(1); pkt.write_u16(101);
-        pkt.write_u8(83); pkt.write_u32(0);
-        for _ in 0..5 { pkt.write_u16(0); }
-        pkt.write_u32(0); pkt.write_u16(0);
-        pkt.write_u8(0); pkt.write_u16(0);
-        for _ in 0..4 { pkt.write_u8(0); }
+        pkt.write_u8(1);
+        pkt.write_u8(1);
+        pkt.write_u16(101);
+        pkt.write_u8(83);
+        pkt.write_u32(0);
+        for _ in 0..5 {
+            pkt.write_u16(0);
+        }
+        pkt.write_u32(0);
+        pkt.write_u16(0);
+        pkt.write_u8(0);
+        pkt.write_u16(0);
+        for _ in 0..4 {
+            pkt.write_u8(0);
+        }
         for _ in 0..42 {
-            pkt.write_u32(0); pkt.write_i16(0);
-            pkt.write_u16(0); pkt.write_u8(0);
+            pkt.write_u32(0);
+            pkt.write_i16(0);
+            pkt.write_u16(0);
+            pkt.write_u8(0);
         }
         pkt.write_u8(3); // rebirth_level = 3
 
@@ -570,19 +726,28 @@ mod tests {
     #[test]
     fn test_user_info_detail_skill_categories() {
         let pkt = build_user_info_detail_packet(
-            "Mage", 2, 12, 205, 70, 3000,
-            [30, 30, 30, 200, 30], 50000, 5,
+            "Mage",
+            2,
+            12,
+            205,
+            70,
+            3000,
+            [30, 30, 30, 200, 30],
+            50000,
+            5,
             [80, 60, 40, 10], // cat1=80, cat2=60, cat3=40, master=10
         );
         let mut r = PacketReader::new(&pkt.data);
         // Skip: sub(1) + markers(2) + sbyte("Mage"=1+4) + nation(1) + race(1)
         // + class(2) + level(1) + loyalty(4) + stats(10) + gold(4) + points(2)
         // + reserved(1+2) = 36
-        for _ in 0..36 { r.read_u8(); }
-        assert_eq!(r.read_u8(), Some(80));  // cat1
-        assert_eq!(r.read_u8(), Some(60));  // cat2
-        assert_eq!(r.read_u8(), Some(40));  // cat3
-        assert_eq!(r.read_u8(), Some(10));  // master
+        for _ in 0..36 {
+            r.read_u8();
+        }
+        assert_eq!(r.read_u8(), Some(80)); // cat1
+        assert_eq!(r.read_u8(), Some(60)); // cat2
+        assert_eq!(r.read_u8(), Some(40)); // cat3
+        assert_eq!(r.read_u8(), Some(10)); // master
     }
 
     /// Sub-opcode constants match C++ BottomUserListOpcode enum.

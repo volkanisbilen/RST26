@@ -362,6 +362,7 @@ fn build_item_removal_packet(absolute_idx: usize) -> Packet {
     pkt.write_u16(0); // durability = 0
     pkt.write_u32(0); // reserved
     pkt.write_u32(0); // expiration = 0
+    pkt.write_u16(0); // v2625 SendStackChange trailing field
     pkt
 }
 
@@ -678,7 +679,7 @@ mod tests {
         assert_eq!(r.read_u16(), Some(0)); // durability = 0
         assert_eq!(r.read_u32(), Some(0)); // reserved
         assert_eq!(r.read_u32(), Some(0)); // expiration = 0
-        // v2600: no trailing u16 padding (sniff verified)
+                                           // v2600: no trailing u16 padding (sniff verified)
     }
 
     #[test]
@@ -901,7 +902,8 @@ mod tests {
         assert_eq!(r.read_u16(), Some(0)); // durability
         assert_eq!(r.read_u32(), Some(0)); // reserved
         assert_eq!(r.read_u32(), Some(0)); // expiration
-        assert_eq!(r.remaining(), 0); // v2600: no trailing padding
+        assert_eq!(r.read_u16(), Some(0)); // v2625 SendStackChange trailing field
+        assert_eq!(r.remaining(), 0);
     }
 
     #[test]

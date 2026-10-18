@@ -27,10 +27,78 @@ use tracing::{debug, warn};
 use crate::handler::zone_change;
 use crate::session::{ClientSession, SessionState};
 use crate::systems::war::{NATION_BATTLE, SIEGE_BATTLE};
-use crate::world::types::{ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
+use crate::world::types::{
+    ZONE_ARDREAM, ZONE_BATTLE, ZONE_BATTLE2, ZONE_BATTLE3, ZONE_BATTLE4, ZONE_BATTLE5,
+    ZONE_BATTLE6, ZONE_ELMORAD_ESLANT, ZONE_KARUS_ESLANT,
+    ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+};
+use crate::world::WorldState;
 
 /// Default max users per zone (`m_sMaxUser`, not yet stored in our zone model).
 const DEFAULT_MAX_USERS: u16 = 150;
+const WARP_FUNCLASS_ENTRY: i16 = 9000;
+
+/// The Fun Class Event entry is offered in every warp gate outside the event zone and the closed PvP zones.
+fn funclass_entry_visible(world: &WorldState, zone: u16) -> bool {
+    world.is_cinderella_active()
+        && zone != world.cinderella_zone_id()
+        && !is_funclass_closed_zone(zone)
+}
+
+/// PvP zones that are closed while the Fun Class Event runs (players are sent back to Moradon).
+pub(crate) fn is_funclass_closed_zone(zone: u16) -> bool {
+    matches!(zone, ZONE_BATTLE..=ZONE_BATTLE6 | ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE)
+}
+
+/// Resolve the two legacy Eslant destinations stored in the active v2615 SMDs.
+fn effective_warp_destination(warp_id: i16, raw_zone: i16, nation: u8) -> u16 {
+    match (warp_id, raw_zone) {
+        (153, 19) => ZONE_KARUS_ESLANT,
+        (253, 19) => ZONE_ELMORAD_ESLANT,
+        (_, 11 | 13 | 14) => ZONE_KARUS_ESLANT,
+        (_, 12 | 15 | 16) => ZONE_ELMORAD_ESLANT,
+        (_, 19) if nation == 1 => ZONE_KARUS_ESLANT,
+        (_, 19) if nation == 2 => ZONE_ELMORAD_ESLANT,
+        _ => raw_zone.max(0) as u16,
+    }
+}
+
+pub(super) fn resolve_active_battle_warp(world: &WorldState, effective_zone: u16) -> u16 {
+    if !matches!(
+        effective_zone,
+        ZONE_BATTLE | ZONE_BATTLE2 | ZONE_BATTLE3 | ZONE_BATTLE4 | ZONE_BATTLE5 | ZONE_BATTLE6
+    ) {
+        return effective_zone;
+    }
+
+    let battle = world.get_battle_state();
+    if battle.battle_open == NATION_BATTLE || battle.battle_open == SIEGE_BATTLE {
+        let active_zone = battle.battle_zone_id();
+        if matches!(
+            active_zone,
+            ZONE_BATTLE | ZONE_BATTLE2 | ZONE_BATTLE3 | ZONE_BATTLE4 | ZONE_BATTLE5 | ZONE_BATTLE6
+        ) {
+            return active_zone;
+        }
+    }
+
+    effective_zone
+}
+
+fn effective_destination_for_warp(
+    source_zone: u16,
+    warp: &ko_protocol::smd::WarpInfo,
+    nation: u8,
+) -> u16 {
+    // Moradon's Abyss entry was exported with a legacy destination (105).
+    // The live dungeon is zone 32; preserve the gate's menu entry and correct
+    // both the displayed destination and the final selected destination.
+    let label = format!("{} {}", warp.name, warp.announce).to_ascii_lowercase();
+    if source_zone == 21 && (warp.dest_zone == 9 || warp.dest_zone == 105 || label.contains("abyss")) {
+        return 32;
+    }
+    effective_warp_destination(warp.warp_id, warp.dest_zone, nation)
+}
 
 use crate::npc_type_constants::MAX_OBJECT_RANGE;
 use crate::object_event_constants::OBJECT_WARP_GATE;
@@ -70,9 +138,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     let sid = session.session_id();
 
     // Basic validation: player must be alive and in-game
-    let (pos, char_info) = match world.with_session(sid, |h| {
-        h.character.as_ref().map(|c| (h.position, c.clone()))
-    }).flatten() {
+    let (pos, char_info) = match world
+        .with_session(sid, |h| {
+            h.character.as_ref().map(|c| (h.position, c.clone()))
+        })
+        .flatten()
+    {
         Some(v) => v,
         None => {
             send_select_fail(session).await?;
@@ -139,6 +210,19 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
+    if warp_id == WARP_FUNCLASS_ENTRY {
+        if !funclass_entry_visible(&world, pos.zone_id) {
+            send_select_fail(session).await?;
+            return Ok(());
+        }
+        let event_zone = world.cinderella_zone_id();
+        if event_zone == 0 || world.get_zone(event_zone).is_none() {
+            send_select_fail(session).await?;
+            return Ok(());
+        }
+        zone_change::trigger_zone_change(session, event_zone, 0.0, 0.0).await?;
+        return Ok(());
+    }
     let warp = match zone.map_data.as_ref().and_then(|md| md.get_warp(warp_id)) {
         Some(w) => w.clone(),
         None => {
@@ -153,19 +237,50 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     };
 
+    // Keep the removed Moradon Abyss destination unavailable even if a client
+    // submits a stale/forged warp ID instead of selecting from the visible list.
     // Nation check: if warp is nation-restricted, must match player nation
     if warp.nation != 0 && warp.nation != char_info.nation as i16 {
         send_select_fail(session).await?;
         return Ok(());
     }
 
-    // Verify destination zone exists and is active
-    match world.get_zone(warp.dest_zone as u16) {
+    let effective_dest_zone = resolve_active_battle_warp(
+        &world,
+        effective_destination_for_warp(pos.zone_id, &warp, char_info.nation),
+    );
+
+    // Validate after resolving v2615's legacy zone-19 Eslant destination.
+    match world.get_zone(effective_dest_zone) {
         Some(z) => {
             let status = z.zone_info.as_ref().map(|i| i.status).unwrap_or(1);
             if status == 0 {
                 send_select_fail(session).await?;
                 return Ok(());
+            }
+
+            // ArdReam / Ronark Land Base / Ronark Land enforce level brackets:
+            // GMs bypass (matches reference CUser::CanChangeZone isGM() early-out).
+            if matches!(
+                effective_dest_zone,
+                ZONE_ARDREAM | ZONE_RONARK_LAND_BASE | ZONE_RONARK_LAND
+            ) && !world.is_gm(sid)
+            {
+                if let Some(info) = z.zone_info.as_ref() {
+                    let level = char_info.level;
+                    if level < info.min_level || level > info.max_level {
+                        warn!(
+                            "[{}] SelectWarpList: level {} outside zone {} bracket {}-{}",
+                            session.addr(),
+                            level,
+                            effective_dest_zone,
+                            info.min_level,
+                            info.max_level,
+                        );
+                        send_select_fail(session).await?;
+                        return Ok(());
+                    }
+                }
             }
         }
         None => {
@@ -173,15 +288,6 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             return Ok(());
         }
     }
-
-    // Eslant zone redirect — all Eslant variants redirect to ZONE_KARUS_ESLANT (11).
-    //   if (isInKarusEslant(zoneid) || isInElmoradEslant(zoneid))
-    //       zoneid = ZONE_KARUS_ESLANT;
-    // Karus Eslant: 11, 13, 14 — Elmorad Eslant: 12, 15, 16
-    let effective_dest_zone = match warp.dest_zone {
-        11..=16 => 11u16, // All Eslant variants → zone 11
-        z => z as u16,
-    };
 
     // Add random offset within warp radius
     let (dest_x, dest_z, dest_zone) = {
@@ -194,7 +300,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if rz < warp.radius {
             rz = -rz;
         }
-        (warp.dest_x + rx, warp.dest_z + rz, effective_dest_zone)
+        if (61..=66).contains(&effective_dest_zone) {
+            (0.0, 0.0, effective_dest_zone)
+        } else {
+            (warp.dest_x + rx, warp.dest_z + rz, effective_dest_zone)
+        }
     };
 
     // Same-zone warp: send success response before warping
@@ -244,22 +354,46 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
     let world = session.world().clone();
     let sid = session.session_id();
 
-    let (pos, char_info) = match world.with_session(sid, |h| {
-        h.character.as_ref().map(|c| (h.position, c.clone()))
-    }).flatten() {
+    let (pos, char_info) = match world
+        .with_session(sid, |h| {
+            h.character.as_ref().map(|c| (h.position, c.clone()))
+        })
+        .flatten()
+    {
         Some(v) => v,
         None => return Ok(false),
     };
 
     let zone = match world.get_zone(pos.zone_id) {
         Some(z) => z,
-        None => return Ok(false),
+        None => {
+            warn!(
+                "[{}] send_warp_list: zone {} not found",
+                session.addr(),
+                pos.zone_id
+            );
+            return Ok(false);
+        }
     };
 
     let warps = match zone.map_data.as_ref() {
         Some(md) => md.get_warp_list(warp_group),
-        None => return Ok(false),
+        None => {
+            warn!(
+                "[{}] send_warp_list: zone {} has no map_data",
+                session.addr(),
+                pos.zone_id
+            );
+            return Ok(false);
+        }
     };
+    warn!(
+        "[{}] send_warp_list: zone {} group {} raw_warps={}",
+        session.addr(),
+        pos.zone_id,
+        warp_group,
+        warps.len()
+    );
 
     // Filter warps: nation check, destination zone must exist and be active
     let battle = world.get_battle_state();
@@ -270,8 +404,13 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
             continue;
         }
 
-        // Destination zone must exist and be active
-        match world.get_zone(warp.dest_zone as u16) {
+        let effective_dest_zone = resolve_active_battle_warp(
+            &world,
+            effective_destination_for_warp(pos.zone_id, &warp, char_info.nation),
+        );
+
+        // Destination zone must exist and be active after legacy resolution.
+        match world.get_zone(effective_dest_zone) {
             Some(z) => {
                 let status = z.zone_info.as_ref().map(|i| i.status).unwrap_or(1);
                 if status == 0 {
@@ -281,8 +420,12 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
             None => continue,
         }
 
+        if world.is_cinderella_active() && is_funclass_closed_zone(effective_dest_zone) {
+            continue;
+        }
+
         // Battle zone filter: hide Ardream/Ronark warps based on active battle type
-        let dz = warp.dest_zone as u16;
+        let dz = effective_dest_zone;
         if battle.battle_open == NATION_BATTLE || battle.battle_open == SIEGE_BATTLE {
             let is_battle_zone =
                 dz == ZONE_ARDREAM || dz == ZONE_RONARK_LAND_BASE || dz == ZONE_RONARK_LAND;
@@ -298,22 +441,43 @@ pub async fn send_warp_list(session: &mut ClientSession, warp_group: i32) -> any
     }
 
     // Sort by zone ID (C++ sorts by sZone)
-    entries.sort_by_key(|w| w.dest_zone);
+    entries.sort_by_key(|w| {
+        resolve_active_battle_warp(
+            &world,
+            effective_destination_for_warp(pos.zone_id, w, char_info.nation),
+        )
+    });
 
+    let show_funclass_entry = funclass_entry_visible(&world, pos.zone_id);
+    debug!(zone = pos.zone_id, show_funclass_entry, "warp list funclass entry");
     // Build the response packet
     let mut result = Packet::new(Opcode::WizWarpList as u8);
     result.write_u8(1); // sub-opcode: GetWarpList
-    result.write_u16(entries.len() as u16);
+    result.write_u16((entries.len() + usize::from(show_funclass_entry)) as u16);
 
     for warp in &entries {
         result.write_u16(warp.warp_id as u16);
         result.write_string(&warp.name);
         result.write_string(&warp.announce);
-        result.write_u16(warp.dest_zone as u16);
+        result.write_u16(resolve_active_battle_warp(
+            &world,
+            effective_destination_for_warp(pos.zone_id, &warp, char_info.nation),
+        ));
         result.write_u16(DEFAULT_MAX_USERS);
         result.write_u32(warp.pay);
     }
 
+    if show_funclass_entry {
+        result.write_u16(WARP_FUNCLASS_ENTRY as u16);
+        result.write_string("Fun Class Event");
+        result.write_string("Enter the active Cinderella War event");
+        // The client resolves picture / level range from this zone number and drops rows it
+        // does not know; the event zone (110) is not in its warp tables, so show Moradon's.
+        // The real destination is resolved server side from the warp id.
+        result.write_u16(21);
+        result.write_u16(DEFAULT_MAX_USERS);
+        result.write_u32(0);
+    }
     session.send_packet(&result).await?;
 
     debug!(
@@ -338,6 +502,14 @@ async fn send_select_fail(session: &mut ClientSession) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use ko_protocol::{Opcode, Packet, PacketReader};
+
+    #[test]
+    fn v2615_legacy_eslant_warps_resolve_by_nation() {
+        assert_eq!(effective_warp_destination(153, 19, 1), ZONE_KARUS_ESLANT);
+        assert_eq!(effective_warp_destination(253, 19, 2), ZONE_ELMORAD_ESLANT);
+        assert_eq!(effective_warp_destination(999, 14, 1), ZONE_KARUS_ESLANT);
+        assert_eq!(effective_warp_destination(999, 16, 2), ZONE_ELMORAD_ESLANT);
+    }
 
     #[test]
     fn test_get_warp_list_packet_format() {

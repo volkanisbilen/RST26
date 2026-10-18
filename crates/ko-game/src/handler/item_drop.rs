@@ -221,12 +221,7 @@ mod tests {
     #[test]
     fn test_s2c_bundle_position_scaling() {
         // Verify ×10 scaling for various positions
-        let test_positions = [
-            (0.0_f32, 0u16),
-            (1.0, 10),
-            (99.9, 999),
-            (512.0, 5120),
-        ];
+        let test_positions = [(0.0_f32, 0u16), (1.0, 10), (99.9, 999), (512.0, 5120)];
         for (world_coord, expected_wire) in test_positions {
             assert_eq!(
                 (world_coord * 10.0) as u16,

@@ -17,9 +17,9 @@ use ko_protocol::{Opcode, Packet, PacketReader};
 
 use crate::session::{ClientSession, SessionState};
 
-use super::{HAVE_MAX, SLOT_MAX};
 #[cfg(test)]
 use super::INVENTORY_TOTAL;
+use super::{HAVE_MAX, SLOT_MAX};
 
 /// STORE_OPEN sub-opcode.
 const STORE_OPEN: u8 = 1;
@@ -127,6 +127,18 @@ async fn handle_store_open(session: &mut ClientSession) -> anyhow::Result<()> {
     session
         .send_packet(&build_store_open_success(free_slots))
         .await?;
+
+    // The v2625 client embeds WebView2. Give it a short-lived, account-bound
+    // URL; catalog, price and balance are always revalidated server-side.
+    if let Some(account_id) = session.account_id().filter(|v| !v.is_empty()) {
+        let token = crate::pus_web::create_session(
+            sid,
+            account_id.to_string(),
+            world.get_session_name(sid).unwrap_or_default(),
+            session.addr().ip(),
+        );
+        tracing::debug!(sid, token_prefix = %&token[..8], "PUS WebView2 session prepared");
+    }
     Ok(())
 }
 
@@ -308,6 +320,8 @@ mod tests {
             item_desc: "HP Scroll 60%".into(),
             category: 1,
             price_type: PRICE_TYPE_KC,
+            duration_days: 0,
+            sort_order: 0,
         };
         let item2 = PusItemRow {
             id: 29,
@@ -320,6 +334,8 @@ mod tests {
             item_desc: "Switching Premium".into(),
             category: 2,
             price_type: PRICE_TYPE_TL,
+            duration_days: 0,
+            sort_order: 0,
         };
         let item3 = PusItemRow {
             id: 112,
@@ -332,6 +348,8 @@ mod tests {
             item_desc: "10 TL To 200 KC".into(),
             category: 5,
             price_type: PRICE_TYPE_TL,
+            duration_days: 0,
+            sort_order: 0,
         };
 
         world.pus_items_by_id.insert(item1.id, item1.clone());
@@ -471,6 +489,8 @@ mod tests {
             item_desc: "VIP Hazir Paket".into(),
             category: 2,
             price_type: PRICE_TYPE_TL,
+            duration_days: 0,
+            sort_order: 0,
         };
         world.pus_items_by_id.insert(free_item.id, free_item);
 

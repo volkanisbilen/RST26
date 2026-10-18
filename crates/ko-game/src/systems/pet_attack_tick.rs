@@ -21,9 +21,6 @@ use crate::zone::SessionId;
 /// Pet attack tick interval — 1 second.
 const PET_ATTACK_TICK_SECS: u64 = 1;
 
-/// Squared range for pet attack: 50 m.
-use crate::world::RANGE_50M;
-
 use crate::attack_constants::{ATTACK_FAIL, ATTACK_SUCCESS, ATTACK_TARGET_DEAD, LONG_ATTACK};
 
 use crate::attack_constants::MAX_DAMAGE;
@@ -102,7 +99,7 @@ async fn process_single_pet_attack(world: &WorldState, pd: &crate::world::PetAtt
         let new_z = target_npc.z - dir_z * 2.0;
 
         // Update pet NPC position
-        world.update_npc_position(pd.pet_nid as NpcId, new_x, new_z);
+        world.move_runtime_npc(pd.pet_nid as NpcId, new_x, new_z);
 
         // Broadcast pet move: WIZ_NPC_MOVE
         let mut move_pkt = Packet::new(Opcode::WizNpcMove as u8);
@@ -110,45 +107,110 @@ async fn process_single_pet_attack(world: &WorldState, pd: &crate::world::PetAtt
         move_pkt.write_u32(pd.pet_nid as u32);
         move_pkt.write_u16((new_x * 10.0) as u16);
         move_pkt.write_u16((new_z * 10.0) as u16);
-        move_pkt.write_u16(0); // y * 10
+        // Familiar spawn uses the owner's actual terrain height. Sending a
+        // hard-coded zero here makes the client interpolate the pet below the
+        // ground after its first chase step (the server-side attack continues,
+        // so it looks exactly like a pet that vanishes while still attacking).
+        move_pkt.write_u16((pet_npc.y.max(0.0) * 10.0) as u16);
         move_pkt.write_u16((distance * 10.0) as u16); // speed
 
-        if let Some(pos) = world.get_position(pd.session_id) {
-            let event_room = world.get_event_room(pd.session_id);
-            world.broadcast_to_3x3(
-                pos.zone_id,
-                pos.region_x,
-                pos.region_z,
-                Arc::new(move_pkt),
-                None,
-                event_room,
-            );
+        let event_room = world.get_event_room(pd.session_id);
+        // Publish from both sides of a region transition so observers receive
+        // the final step and nearby subscribers keep the pet in their view.
+        world.broadcast_to_3x3(
+            pet_npc.zone_id,
+            pet_npc.region_x,
+            pet_npc.region_z,
+            Arc::new(move_pkt.clone()),
+            None,
+            event_room,
+        );
+        if let Some(updated) = world.get_npc_instance(pd.pet_nid as NpcId) {
+            if updated.region_x != pet_npc.region_x || updated.region_z != pet_npc.region_z {
+                // Observers of the new region have never seen this familiar: hand over with
+                // NPC_OUT (old 3x3) and NPC_IN carrying the pet's own model (new 3x3).
+                if let Some(template) = world.get_npc_template(updated.proto_id, updated.is_monster)
+                {
+                    let visual = world.npc_visual_template(&updated, &template);
+                    world.broadcast_to_3x3(
+                        pet_npc.zone_id,
+                        pet_npc.region_x,
+                        pet_npc.region_z,
+                        Arc::new(crate::npc::build_npc_inout(
+                            crate::npc::NPC_OUT,
+                            &pet_npc,
+                            &template,
+                        )),
+                        None,
+                        event_room,
+                    );
+                    world.broadcast_to_3x3(
+                        updated.zone_id,
+                        updated.region_x,
+                        updated.region_z,
+                        Arc::new(crate::npc::build_npc_inout(
+                            crate::npc::NPC_IN,
+                            &updated,
+                            &visual,
+                        )),
+                        None,
+                        event_room,
+                    );
+                }
+                world.broadcast_to_3x3(
+                    updated.zone_id,
+                    updated.region_x,
+                    updated.region_z,
+                    Arc::new(move_pkt),
+                    None,
+                    event_room,
+                );
+            }
         }
         return;
     }
 
     // 5. In range — calculate and apply damage
 
-    // Get pet template for damage stats
-    let pet_tmpl = match world.get_npc_template(pet_npc.proto_id, pet_npc.is_monster) {
-        Some(t) => t,
-        None => {
-            stop_pet_attack(world, pd.session_id);
-            return;
-        }
-    };
-
-    // Damage formula: pets always get GREAT_SUCCESS in NPC-vs-NPC combat
+    // A pet is carried by a generic type-15 NPC template. Its real combat
+    // strength comes exclusively from pet_stats_info, otherwise a level-1
+    // familiar inherits the carrier NPC's high damage.
+    let hit = world
+        .get_pet_stats_info(pd.pet_level)
+        .map(|stats| stats.pet_attack.max(1) as f32)
+        .unwrap_or(1.0);
     // GREAT_SUCCESS: damage = rand(0, 0.6 * Hit) + 0.7 * Hit
-    let hit = pet_tmpl.damage as f32;
     let rand_range = (0.6 * hit) as i16;
     let base = (0.7 * hit) as i16;
-    let damage = if rand_range > 0 {
+    let mut damage = if rand_range > 0 {
         let random_part = (rand::random::<u16>() % (rand_range as u16 + 1)) as i16;
         (random_part + base).min(MAX_DAMAGE as i16)
     } else {
         base.min(MAX_DAMAGE as i16)
     };
+
+    // The v2625 familiar attack skills 301001–301006 are real Type-1 attacks,
+    // not just animation requests. Apply their TBL hit multiplier to the next
+    // pet hit (instead of treating every button as the same basic attack).
+    // The pending ID is cleared once consumed so it cannot repeat every tick.
+    if (301_001..=301_006).contains(&pd.attack_skill_id) {
+        let hit_percent = world
+            .get_magic_type1(pd.attack_skill_id as i32)
+            .and_then(|row| row.hit)
+            .filter(|hit| *hit > 0)
+            .unwrap_or(100);
+        damage = ((damage as i32 * hit_percent) / 100)
+            .clamp(1, MAX_DAMAGE as i32) as i16;
+    }
+    if pd.attack_skill_id != 0 {
+        world.update_session(pd.session_id, |h| {
+            if let Some(pet) = h.pet_data.as_mut() {
+                if pet.pending_attack_skill_id == pd.attack_skill_id {
+                    pet.pending_attack_skill_id = 0;
+                }
+            }
+        });
+    }
 
     if damage <= 0 {
         // Miss — broadcast fail
@@ -172,13 +234,14 @@ async fn process_single_pet_attack(world: &WorldState, pd: &crate::world::PetAtt
                 pd.target_npc_id,
                 &target_npc,
                 tmpl,
+                false,
             )
             .await;
         }
 
         // Award pet EXP from the killed NPC.
         if let Some(ref tmpl) = target_tmpl {
-            let npc_exp = tmpl.exp as i32;
+            let npc_exp = crate::handler::level::monster_exp_rate(world, tmpl.exp as i64) as i32;
             if npc_exp > 0 {
                 award_pet_exp(world, pd.session_id, pd.pet_nid, npc_exp);
             }
@@ -202,14 +265,14 @@ async fn process_single_pet_attack(world: &WorldState, pd: &crate::world::PetAtt
         .map(|t| t.max_hp)
         .unwrap_or(0);
 
-    let mut hp_pkt = Packet::new(Opcode::WizTargetHp as u8);
-    hp_pkt.write_u32(pd.target_npc_id);
-    hp_pkt.write_u8(0);
-    hp_pkt.write_u32(max_hp as u32);
-    hp_pkt.write_u32(new_hp.max(0) as u32);
-    hp_pkt.write_u32((-damage as i32) as u32); // C++ sends negative
-    hp_pkt.write_u32(0);
-    hp_pkt.write_u8(0);
+    let hp_pkt = crate::handler::target_hp::build_target_hp_packet(
+        pd.target_npc_id,
+        0,
+        max_hp as u32,
+        new_hp.max(0) as u32,
+        -(damage as i32),
+        -(damage as i32),
+    );
     world.send_to_session_owned(pd.session_id, hp_pkt);
 
     debug!(
@@ -224,6 +287,7 @@ fn stop_pet_attack(world: &WorldState, sid: SessionId) {
         if let Some(ref mut pet) = h.pet_data {
             pet.attack_started = false;
             pet.attack_target_id = -1;
+            pet.pending_attack_skill_id = 0;
         }
     });
 }
@@ -337,6 +401,10 @@ fn award_pet_exp(world: &WorldState, sid: SessionId, pet_nid: u16, gained_exp: i
                 attack: stats.pet_attack as u16,
                 defence: stats.pet_defence as u16,
                 resistance: stats.pet_res as u16,
+                items: world
+                    .with_session(sid, |h| h.pet_data.as_ref().map(|p| p.items.clone()))
+                    .flatten()
+                    .unwrap_or_default(),
             };
             let spawn_pkt = crate::handler::pet::build_pet_spawn_packet(&spawn_info);
             world.send_to_session_owned(sid, spawn_pkt);
@@ -395,6 +463,7 @@ fn compute_exp_percent(current_exp: u32, level_exp: i32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::RANGE_50M;
     use ko_protocol::PacketReader;
 
     #[test]

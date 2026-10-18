@@ -400,6 +400,8 @@ pub enum Opcode {
     WizWorldBoss = 0xD6,
     /// Season system (v2525 native, inline handler — max GameMain opcode).
     WizSeason = 0xD7,
+    /// Moradon native nation-ranker statues (R..W) and ranker memo UI.
+    WizRanker = 0xD9,
     /// Scrolling notice message (used for merchant wind notice, etc.).
     ///
     /// **WARNING**: Outside v2525 GameMain range (0x06-0xD7), silently dropped.
@@ -468,6 +470,8 @@ pub enum Opcode {
     WizClanpointsBattle = 0x91,
     /// Kill assist notification.
     WizKillAssist = 0xC8,
+    /// Manes Survival shares byte 0xD0 with the v2525 guild-bank route.
+    /// Dispatch must therefore use protocol version and sub-opcode context.
     /// Knight Royale event.
     WizKnightRoyale = 0xEF,
 
@@ -689,6 +693,7 @@ impl Opcode {
             0xD5 => Some(Self::WizTerritory),
             0xD6 => Some(Self::WizWorldBoss),
             0xD7 => Some(Self::WizSeason),
+            0xD9 => Some(Self::WizRanker),
             0xDB => Some(Self::WizAddMsg),
             // 0xE0+  Extended
             0xE0 => Some(Self::WizCinderella),
@@ -773,6 +778,8 @@ mod tests {
     fn test_opcode_roundtrip() {
         assert_eq!(Opcode::from_byte(0x01), Some(Opcode::WizLogin));
         assert_eq!(Opcode::from_byte(0x2C), Some(Opcode::WizCryption));
+        // The enum uses the v2525 name for the shared, version-dependent byte.
+        assert_eq!(Opcode::from_byte(0xD0), Some(Opcode::WizGuildBank));
         assert_eq!(Opcode::from_byte(0xFF), None);
     }
 
@@ -927,6 +934,7 @@ mod tests {
             (0xD5, Opcode::WizTerritory),
             (0xD6, Opcode::WizWorldBoss),
             (0xD7, Opcode::WizSeason),
+            (0xD9, Opcode::WizRanker),
         ];
         for &(byte, expected) in cases {
             assert_eq!(

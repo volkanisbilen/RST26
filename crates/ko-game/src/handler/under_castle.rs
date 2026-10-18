@@ -69,6 +69,20 @@ pub const MONSTER_FLUWITON_ROOM_4_VI: u16 = 9518;
 /// NPC ID for the exit portal spawned after final boss death.
 pub const UTC_EXIT_PORTAL_NPC: u16 = 29197;
 
+// ── Internal UTC transition gate ─────────────────────────────────────
+
+/// The final internal transition is a map trigger, not an NPC interaction.
+///
+/// Reference: `reference_cpp/GameServer/EventTrapSystem.cpp`,
+/// `CUser::EventTrapProcess()` for `ZONE_UNDER_CASTLE`.
+/// Entering this five-unit radius sends the player to the separate final-boss
+/// area in the same `bossmode.smd` map via `WIZ_WARP`.
+pub const UTC_FINAL_GATE_X: f32 = 646.0;
+pub const UTC_FINAL_GATE_Z: f32 = 236.0;
+pub const UTC_FINAL_GATE_RADIUS: f32 = 5.0;
+pub const UTC_FINAL_BOSS_WARP_X: f32 = 824.0;
+pub const UTC_FINAL_BOSS_WARP_Z: f32 = 932.0;
+
 // ── UTC Reward Item IDs ──────────────────────────────────────────────
 
 /// Trophy of Flame — awarded in every room.
@@ -119,6 +133,17 @@ fn distance_2d(x1: f32, z1: f32, x2: f32, z2: f32) -> f32 {
 /// Check if a point is within range of a center (XZ plane).
 pub fn is_in_range_slow(px: f32, pz: f32, cx: f32, cz: f32, range: f32) -> bool {
     distance_2d(px, pz, cx, cz) <= range
+}
+
+/// Whether a UTC movement position has reached the final-boss transition gate.
+pub fn is_at_final_boss_transition_gate(x: f32, z: f32) -> bool {
+    is_in_range_slow(
+        x,
+        z,
+        UTC_FINAL_GATE_X,
+        UTC_FINAL_GATE_Z,
+        UTC_FINAL_GATE_RADIUS,
+    )
 }
 
 /// Determine the reward items for a UTC room.
@@ -220,10 +245,11 @@ pub struct UnderTheCastleState {
     /// Tracked spawned monster NPC IDs (proto_id -> npc_runtime_id).
     /// Used for cleanup on event end.
     pub monster_list: RwLock<Vec<u32>>,
-    /// Gate NPC runtime IDs: [gate_0, gate_1, gate_2].
-    /// Set to 0 when uninitialized. Killing a gate boss opens the corresponding gate.
+    /// Gate NPC runtime IDs: one or more physical door pieces for each stage.
+    /// UTC's source table contains two pieces for the third gate, and C++ kills
+    /// the doors on boss death rather than merely toggling an object flag.
     ///
-    pub gate_ids: RwLock<[u32; 3]>,
+    pub gate_ids: RwLock<[Vec<u32>; 3]>,
 }
 
 impl UnderTheCastleState {
@@ -237,7 +263,7 @@ impl UnderTheCastleState {
             min_level: std::sync::atomic::AtomicU8::new(0),
             max_level: std::sync::atomic::AtomicU8::new(0),
             monster_list: RwLock::new(Vec::new()),
-            gate_ids: RwLock::new([0; 3]),
+            gate_ids: RwLock::new(std::array::from_fn(|_| Vec::new())),
         }
     }
 
@@ -256,7 +282,7 @@ impl UnderTheCastleState {
         }
         {
             let mut gates = self.gate_ids.write();
-            *gates = [0; 3];
+            *gates = std::array::from_fn(|_| Vec::new());
         }
     }
 }
@@ -429,21 +455,26 @@ pub fn on_monster_death(proto_id: u16, npc_type: u16) -> UtcMonsterDeathResult {
     let despawn_fast = npc_type == NPC_UTC_SPAWN_FAST;
 
     let (movie_id, reward_room, gate_index, spawn_exit_portals) = match proto_id {
-        MONSTER_EMPEROR_MAMMOTH_I => (7, 0, None, false),
+        // First room (v2615 UTC spawn table index 1002).
+        MONSTER_EMPEROR_MAMMOTH_I => (7, 0, Some(0), false),
         MONSTER_EMPEROR_MAMMOTH_II => (8, 0, None, false),
         MONSTER_EMPEROR_MAMMOTH_III => (2, 1, None, false),
         MONSTER_CRESHERGIMMIC_I => (6, 0, None, false),
         MONSTER_CRESHERGIMMIC_II => (6, 0, None, false),
         MONSTER_CRESHERGIMMIC_III => (6, 0, None, false),
-        MONSTER_CRESHERGIMMIC_VI => (3, 2, Some(0), false),
-        MONSTER_PURIOUS_I => (6, 0, None, false),
+        // The supplied old C++ source uses an earlier set of intermediary
+        // boss IDs. The v2615 `monster_under_the_castle` table has one boss
+        // per remaining room: 9508 at (522,493), 9512 at (646,291), and
+        // 9515 at (804,837). These are the IDs observed in the current log.
+        MONSTER_CRESHERGIMMIC_VI => (3, 2, None, false),
+        MONSTER_PURIOUS_I => (3, 2, Some(1), false),
         MONSTER_PURIOUS_II => (6, 0, None, false),
         MONSTER_PURIOUS_III => (6, 0, None, false),
         MONSTER_PURIOUS_VI => (4, 3, Some(1), false),
-        MONSTER_FLUWITON_ROOM_3_I => (6, 0, None, false),
+        MONSTER_FLUWITON_ROOM_3_I => (5, 4, Some(2), false),
         MONSTER_FLUWITON_ROOM_3_II => (6, 0, None, false),
         MONSTER_FLUWITON_ROOM_3_III => (5, 4, Some(2), false),
-        MONSTER_FLUWITON_ROOM_4_I => (6, 0, None, false),
+        MONSTER_FLUWITON_ROOM_4_I => (5, 5, None, true),
         MONSTER_FLUWITON_ROOM_4_II => (6, 0, None, false),
         MONSTER_FLUWITON_ROOM_4_III => (6, 0, None, false),
         MONSTER_FLUWITON_ROOM_4_VI => (0, 5, None, true),
@@ -472,17 +503,19 @@ pub fn set_gate_id(state: &UnderTheCastleState, gate_index: u8, npc_id: u32) {
     if gate_index > 2 {
         return;
     }
-    if let Some(mut gates) = Some(state.gate_ids.write()) {
-        gates[gate_index as usize] = npc_id;
+    let mut gates = state.gate_ids.write();
+    let gate_ids = &mut gates[gate_index as usize];
+    if !gate_ids.contains(&npc_id) {
+        gate_ids.push(npc_id);
     }
 }
 
-/// Get the runtime NPC ID of a gate by index.
-pub fn get_gate_id(state: &UnderTheCastleState, gate_index: u8) -> u32 {
+/// Get every runtime NPC ID belonging to a gate stage.
+pub fn get_gate_ids(state: &UnderTheCastleState, gate_index: u8) -> Vec<u32> {
     if gate_index > 2 {
-        return 0;
+        return Vec::new();
     }
-    state.gate_ids.read()[gate_index as usize]
+    state.gate_ids.read()[gate_index as usize].clone()
 }
 
 // ── Packet builders ────────────────────────────────────────────────────
@@ -555,7 +588,7 @@ mod tests {
         assert_eq!(state.min_level.load(Ordering::Relaxed), 0);
         assert_eq!(state.max_level.load(Ordering::Relaxed), 0);
         assert!(get_all_monster_ids(&state).is_empty());
-        assert_eq!(get_gate_id(&state, 0), 0);
+        assert!(get_gate_ids(&state, 0).is_empty());
     }
 
     // ── Activation tests ───────────────────────────────────────────
@@ -715,11 +748,11 @@ mod tests {
     // ── Monster death tests ────────────────────────────────────────
 
     #[test]
-    fn death_emperor_mammoth_i() {
+    fn death_emperor_mammoth_i_opens_gate_0() {
         let result = on_monster_death(MONSTER_EMPEROR_MAMMOTH_I, 0);
         assert_eq!(result.movie_id, 7);
         assert_eq!(result.reward_room, 0);
-        assert_eq!(result.gate_index, None);
+        assert_eq!(result.gate_index, Some(0));
         assert!(!result.spawn_exit_portals);
     }
 
@@ -739,11 +772,11 @@ mod tests {
     }
 
     #[test]
-    fn death_creshergimmic_vi_opens_gate_0() {
+    fn death_creshergimmic_vi_rewards_room_2_without_gate() {
         let result = on_monster_death(MONSTER_CRESHERGIMMIC_VI, 0);
         assert_eq!(result.movie_id, 3);
         assert_eq!(result.reward_room, 2);
-        assert_eq!(result.gate_index, Some(0));
+        assert_eq!(result.gate_index, None);
     }
 
     #[test]
@@ -798,8 +831,16 @@ mod tests {
     }
 
     #[test]
-    fn death_purious_i_ii_iii_movie_6() {
-        for proto_id in [MONSTER_PURIOUS_I, MONSTER_PURIOUS_II, MONSTER_PURIOUS_III] {
+    fn death_purious_i_is_v2615_room_2_boss() {
+        let result = on_monster_death(MONSTER_PURIOUS_I, 0);
+        assert_eq!(result.movie_id, 3);
+        assert_eq!(result.reward_room, 2);
+        assert_eq!(result.gate_index, Some(1));
+    }
+
+    #[test]
+    fn death_purious_ii_iii_movie_6() {
+        for proto_id in [MONSTER_PURIOUS_II, MONSTER_PURIOUS_III] {
             let result = on_monster_death(proto_id, 0);
             assert_eq!(
                 result.movie_id, 6,
@@ -809,12 +850,24 @@ mod tests {
     }
 
     #[test]
-    fn death_fluwiton_room_4_i_ii_iii_movie_6() {
-        for proto_id in [
-            MONSTER_FLUWITON_ROOM_4_I,
-            MONSTER_FLUWITON_ROOM_4_II,
-            MONSTER_FLUWITON_ROOM_4_III,
-        ] {
+    fn death_fluwiton_room_3_i_is_v2615_room_3_boss() {
+        let result = on_monster_death(MONSTER_FLUWITON_ROOM_3_I, 0);
+        assert_eq!(result.movie_id, 5);
+        assert_eq!(result.reward_room, 4);
+        assert_eq!(result.gate_index, Some(2));
+    }
+
+    #[test]
+    fn death_fluwiton_room_4_i_is_v2615_final_boss() {
+        let result = on_monster_death(MONSTER_FLUWITON_ROOM_4_I, 0);
+        assert_eq!(result.movie_id, 5);
+        assert_eq!(result.reward_room, 5);
+        assert!(result.spawn_exit_portals);
+    }
+
+    #[test]
+    fn death_fluwiton_room_4_ii_iii_movie_6() {
+        for proto_id in [MONSTER_FLUWITON_ROOM_4_II, MONSTER_FLUWITON_ROOM_4_III] {
             let result = on_monster_death(proto_id, 0);
             assert_eq!(
                 result.movie_id, 6,
@@ -882,20 +935,22 @@ mod tests {
     fn set_and_get_gate_ids() {
         let state = UnderTheCastleState::new();
         set_gate_id(&state, 0, 1000);
+        set_gate_id(&state, 0, 1001);
         set_gate_id(&state, 1, 2000);
         set_gate_id(&state, 2, 3000);
+        set_gate_id(&state, 2, 3001);
 
-        assert_eq!(get_gate_id(&state, 0), 1000);
-        assert_eq!(get_gate_id(&state, 1), 2000);
-        assert_eq!(get_gate_id(&state, 2), 3000);
+        assert_eq!(get_gate_ids(&state, 0), vec![1000, 1001]);
+        assert_eq!(get_gate_ids(&state, 1), vec![2000]);
+        assert_eq!(get_gate_ids(&state, 2), vec![3000, 3001]);
     }
 
     #[test]
-    fn get_gate_id_uninitialized_returns_zero() {
+    fn get_gate_ids_uninitialized_returns_empty() {
         let state = UnderTheCastleState::new();
-        assert_eq!(get_gate_id(&state, 0), 0);
-        assert_eq!(get_gate_id(&state, 1), 0);
-        assert_eq!(get_gate_id(&state, 2), 0);
+        assert!(get_gate_ids(&state, 0).is_empty());
+        assert!(get_gate_ids(&state, 1).is_empty());
+        assert!(get_gate_ids(&state, 2).is_empty());
     }
 
     #[test]
@@ -903,7 +958,7 @@ mod tests {
         let state = UnderTheCastleState::new();
         set_gate_id(&state, 3, 9999); // should be ignored
         set_gate_id(&state, 255, 9999); // should be ignored
-        assert_eq!(get_gate_id(&state, 3), 0);
+        assert!(get_gate_ids(&state, 3).is_empty());
     }
 
     // ── Packet builder tests ───────────────────────────────────────
@@ -935,6 +990,15 @@ mod tests {
                 u32::from_le_bytes([id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3]]);
             assert_eq!(reconstructed, movie_id);
         }
+    }
+
+    #[test]
+    fn final_boss_transition_gate_matches_reference_event_trap() {
+        assert!(is_at_final_boss_transition_gate(646.0, 236.0));
+        assert!(is_at_final_boss_transition_gate(651.0, 236.0));
+        assert!(!is_at_final_boss_transition_gate(651.1, 236.0));
+        assert_eq!(UTC_FINAL_BOSS_WARP_X, 824.0);
+        assert_eq!(UTC_FINAL_BOSS_WARP_Z, 932.0);
     }
 
     // ── Full lifecycle test ────────────────────────────────────────

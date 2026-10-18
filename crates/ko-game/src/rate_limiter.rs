@@ -3,7 +3,7 @@
 //! Uses a fixed window counter algorithm to enforce:
 //! - Per-IP connection limit (max 5 concurrent connections)
 //! - Per-session packet rate: soft limit (100 pps, drop packets), critical limit (300 pps, disconnect)
-//! - Per-opcode throttle (chat=5/s, move=20/s, attack/magic=10/s, other=30/s)
+//! - Per-opcode throttle (chat=5/s, move=20/s, attack=10/s, magic=40/s, other=30/s)
 //! - Chat group limiter: WizChat, WizNationChat, WizChatTarget share a single counter
 //! - GM bypass: sessions flagged as GM skip all rate limits
 //! - Temporary ban after 3 violations (5 minutes)
@@ -96,7 +96,16 @@ fn opcode_rate_limit(opcode: Option<Opcode>) -> u32 {
         Some(Opcode::WizChat) | Some(Opcode::WizNationChat) | Some(Opcode::WizChatTarget) => 5,
         Some(Opcode::WizMove) => 20,
         Some(Opcode::WizAttack) => 10,
-        Some(Opcode::WizMagicProcess) => 10,
+        // The v2615 client sends a burst of WIZ_MAGIC_PROCESS packets for one
+        // legitimate archer cast: Arrow Shower / Multiple Shot use a cast
+        // packet plus one pair of effect packets per projectile.  A single
+        // five-arrow use produced 13 packets in the captured client log, so
+        // the old 10/s limit both dropped damage packets and accumulated all
+        // three ban strikes during that one cast.  Forty accepts two complete
+        // multi-shot bursts across a one-second window boundary while the
+        // existing 100 pps global and 300 pps critical guards still protect
+        // the session from packet floods.
+        Some(Opcode::WizMagicProcess) => 40,
         _ => 30,
     }
 }
@@ -187,7 +196,8 @@ impl SessionRateState {
 /// - **IP connections**: max 5 concurrent per IP
 /// - **Session global (soft)**: 100 packets/second — excess packets are silently dropped
 /// - **Session global (critical)**: 300 packets/second — session is disconnected
-/// - **Per-opcode**: WIZ_CHAT=5/s, WIZ_MOVE=20/s, WIZ_ATTACK/MAGIC=10/s, other=30/s
+/// - **Per-opcode**: WIZ_CHAT=5/s, WIZ_MOVE=20/s, WIZ_ATTACK=10/s,
+///   WIZ_MAGIC_PROCESS=40/s, other=30/s
 /// - **Violations**: 3 strikes = 5 minute temporary ban
 pub struct RateLimiter {
     /// Per-session rate state.
@@ -524,16 +534,20 @@ mod tests {
         let limiter = RateLimiter::new();
         limiter.register_session(1);
 
-        // WIZ_MAGIC_PROCESS limit = 10/s
-        for _ in 0..10 {
+        // v2615 multi-arrow skills legitimately burst 13 packets per cast.
+        // Keep enough room for two casts around the fixed-window boundary.
+        for _ in 0..40 {
             assert!(limiter
                 .check_rate_limit(1, Opcode::WizMagicProcess as u8, false)
                 .is_ok());
         }
 
-        // 11th should fail
+        // The 41st packet in the same one-second window is still rejected.
         let result = limiter.check_rate_limit(1, Opcode::WizMagicProcess as u8, false);
-        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RateLimitError::OpcodeRateExceeded(1, Some(Opcode::WizMagicProcess), 40)
+        ));
     }
 
     #[test]
@@ -867,7 +881,7 @@ mod tests {
         assert_eq!(opcode_rate_limit(Some(Opcode::WizChatTarget)), 5);
         assert_eq!(opcode_rate_limit(Some(Opcode::WizMove)), 20);
         assert_eq!(opcode_rate_limit(Some(Opcode::WizAttack)), 10);
-        assert_eq!(opcode_rate_limit(Some(Opcode::WizMagicProcess)), 10);
+        assert_eq!(opcode_rate_limit(Some(Opcode::WizMagicProcess)), 40);
         assert_eq!(opcode_rate_limit(Some(Opcode::WizDead)), 30); // "other"
         assert_eq!(opcode_rate_limit(None), 30);
     }

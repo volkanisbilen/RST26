@@ -50,7 +50,7 @@ impl<'a> ItemTablesRepository<'a> {
              ac_bonus_class_type, ac_bonus_class_percent, \
              max_weight_bonus, np_bonus, \
              unk1, unk2, unk3, unk4, unk5, unk6, unk7, \
-             unk8, unk9, unk10, unk11, unk12, unk13, unk14 \
+             unk8, unk9, unk10, unk11, unk12, unk13, unk14, unk15 \
              FROM set_item ORDER BY set_index",
         )
         .fetch_all(self.pool)

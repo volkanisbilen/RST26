@@ -13,7 +13,7 @@ use ko_db::repositories::knights_cape::KnightsCapeRepository;
 use ko_protocol::Packet;
 use tracing::debug;
 
-use crate::clan_constants::CHIEF;
+use crate::clan_constants::{CHIEF, CLAN_TYPE_ACCREDITED5};
 use crate::session::{ClientSession, SessionState};
 
 /// WIZ_CAPE opcode byte.
@@ -98,6 +98,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         None => return Ok(()),
     };
 
+    // Solo Cape designs are bought by the character, not the clan
+    let is_leader = ch.fame == CHIEF && ch.knights_id != 0;
+    if super::solo_cape::try_buy(session, cape_id, r, g, b, is_leader).await? {
+        return Ok(());
+    }
+
     // Must be: in game, alive, clan leader, not busy, in a clan
     let sid = session.session_id();
     let world = session.world();
@@ -113,13 +119,27 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         return Ok(());
     }
 
-    let clan = match session.world().get_knights(ch.knights_id) {
+    let mut clan = match session.world().get_knights(ch.knights_id) {
         Some(k) => k,
         None => {
             session.send_packet(&send_cape_fail(-2)).await?;
             return Ok(());
         }
     };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    // Normalize an expired runtime flag before validating a new purchase.
+    // Visual packets already check the timestamp; the purchase and bonus paths
+    // must make the same decision.
+    if clan.castellan_cape && clan.cast_cape_time < now {
+        session.world().update_knights(ch.knights_id, |k| {
+            k.castellan_cape = false;
+        });
+        clan.castellan_cape = false;
+    }
 
     // Must be promoted (flag >= 2)
     if clan.flag < 2 {
@@ -215,9 +235,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Paint (colour) cost
     let applying_paint = r != 0 || g != 0 || b != 0;
     if applying_paint {
-        // Grade <= 3 required for painting (non-1098 uses flag/accredited check,
-        // but grade check is simpler and equivalent for most setups)
-        if clan.grade > 3 {
+        // v2615/reference rule: cape painting is unlocked by clan type, not
+        // the computed NP grade. Promoted clans (flag=2) may buy an eligible
+        // cape but cannot paint it until Accredited5 (flag=3).
+        if clan.flag < CLAN_TYPE_ACCREDITED5 {
             session.send_packet(&send_cape_fail(-1)).await?;
             return Ok(());
         }
@@ -258,10 +279,6 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     if cape_id >= 0 {
         if is_castellan_cape {
             let cape_duration_days: u32 = if opcode == 1 { 14 } else { 15 };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32;
             let expiry = now + 60 * 60 * 24 * cape_duration_days;
             session.world().update_knights(ch.knights_id, |k| {
                 k.cast_cape_id = cape_id;
@@ -276,7 +293,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 
     // Deduct clan points
-    if req_clan_points > 0 {
+    // Ticket/castellan requests never spend the clan fund in the reference
+    // flow. This matters when a ticket request also contains an RGB colour.
+    if opcode == 0 && req_clan_points > 0 {
         let new_fund = clan.clan_point_fund.saturating_sub(req_clan_points);
         session.world().update_knights(ch.knights_id, |k| {
             k.clan_point_fund = new_fund;
@@ -331,6 +350,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 updated_clan.cast_cape_r as i16,
                 updated_clan.cast_cape_g as i16,
                 updated_clan.cast_cape_b as i16,
+                updated_clan.cast_cape_time.min(i32::MAX as u32) as i32,
             )
             .await
         {
@@ -402,6 +422,16 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     session
         .world()
         .send_to_knights_members(ch.knights_id, Arc::new(update_pkt), None);
+
+    // Cape bonuses are part of SetUserAbility in both implementations. Apply
+    // or remove them immediately for every online clan member instead of
+    // waiting for relog/equipment movement.
+    for member_sid in session
+        .world()
+        .get_online_knights_session_ids(ch.knights_id)
+    {
+        session.world().set_user_ability(member_sid);
+    }
 
     // If in alliance and is alliance leader, update all alliance clans.
     if clan.alliance > 0 && clan.alliance == clan.id {

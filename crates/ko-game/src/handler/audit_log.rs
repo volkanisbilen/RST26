@@ -863,14 +863,30 @@ mod tests {
     #[test]
     fn test_audit_event_all_distinct() {
         let events = [
-            AuditEvent::Login, AuditEvent::Logout, AuditEvent::Disconnect,
-            AuditEvent::Chat, AuditEvent::NpcShopping, AuditEvent::GiveItem,
-            AuditEvent::RobItem, AuditEvent::MerchantCreation, AuditEvent::ItemRemove,
-            AuditEvent::MerchantShopping, AuditEvent::KillingNpc, AuditEvent::ExpChange,
-            AuditEvent::Upgrade, AuditEvent::KillingUser, AuditEvent::NameChange,
-            AuditEvent::ClanNameChange, AuditEvent::NationTransfer, AuditEvent::JobChange,
-            AuditEvent::PusShopping, AuditEvent::NpcDrop, AuditEvent::Premium,
-            AuditEvent::Trade, AuditEvent::LoyaltyChange, AuditEvent::ClanBank,
+            AuditEvent::Login,
+            AuditEvent::Logout,
+            AuditEvent::Disconnect,
+            AuditEvent::Chat,
+            AuditEvent::NpcShopping,
+            AuditEvent::GiveItem,
+            AuditEvent::RobItem,
+            AuditEvent::MerchantCreation,
+            AuditEvent::ItemRemove,
+            AuditEvent::MerchantShopping,
+            AuditEvent::KillingNpc,
+            AuditEvent::ExpChange,
+            AuditEvent::Upgrade,
+            AuditEvent::KillingUser,
+            AuditEvent::NameChange,
+            AuditEvent::ClanNameChange,
+            AuditEvent::NationTransfer,
+            AuditEvent::JobChange,
+            AuditEvent::PusShopping,
+            AuditEvent::NpcDrop,
+            AuditEvent::Premium,
+            AuditEvent::Trade,
+            AuditEvent::LoyaltyChange,
+            AuditEvent::ClanBank,
         ];
         for i in 0..events.len() {
             for j in (i + 1)..events.len() {

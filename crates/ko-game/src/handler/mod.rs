@@ -41,6 +41,7 @@ pub mod clan_warehouse;
 pub mod clanpoints_battle;
 pub mod class_change;
 pub mod client_event;
+pub mod client_integrity;
 pub mod collection;
 pub mod collection_race;
 pub mod concurrent_user;
@@ -49,6 +50,10 @@ pub mod corpse;
 pub mod costume;
 pub mod cryption;
 pub mod daily_quest;
+pub mod gm_panel;
+pub mod golem_war;
+pub mod soft_reconnect;
+pub mod ultima;
 pub mod daily_quest_v2525;
 pub mod daily_rank;
 pub mod datasave;
@@ -56,9 +61,12 @@ pub mod dead;
 pub mod delchar;
 pub mod draki_tower;
 pub mod dungeon_defence;
+pub mod discord_presence;
+pub mod rift_entry;
 pub mod durability;
 pub mod edit_box;
 pub mod enchant;
+pub mod equipment_view;
 pub mod event;
 pub mod exp_seal;
 pub mod ext_hook;
@@ -71,7 +79,12 @@ pub mod guild_bank;
 pub mod hacktool;
 pub mod helmet;
 pub mod home;
+pub mod drop_box;
 pub mod item_drop;
+pub mod solo_cape;
+pub mod slave_priest;
+pub mod manner_store;
+pub mod jobchange_hook;
 pub mod item_get;
 pub mod item_move;
 pub mod item_production;
@@ -81,6 +94,8 @@ pub mod item_upgrade;
 pub mod king;
 pub mod kiss;
 pub mod knight_cash;
+pub mod pus_codes;
+pub mod slave_merchant;
 pub mod knights;
 pub mod letter;
 pub mod level;
@@ -96,11 +111,13 @@ pub mod max_hp_change;
 pub mod merchant;
 pub mod mining;
 pub mod monument;
+pub mod moraranker;
 pub mod move_handler;
 pub mod moving_tower;
 pub mod name_change;
 pub mod nation;
 pub mod nation_transfer;
+pub mod native_events;
 pub mod newchar;
 pub mod notice;
 pub mod npc_loot;
@@ -144,6 +161,7 @@ pub mod state_change;
 pub mod stats;
 pub mod stealth;
 pub mod story;
+pub mod survival;
 pub mod tag_change;
 pub mod target_hp;
 pub mod terrain_effects;
@@ -159,6 +177,7 @@ pub mod vanguard;
 pub mod version;
 pub mod vip_warehouse;
 pub mod virtual_server;
+pub mod voice_chat;
 pub mod warehouse;
 pub mod warp_list;
 pub mod webpage;
@@ -275,7 +294,12 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
         }
     }
 
-    match opcode {
+    let sync_exchange_slots = matches!(opcode, Some(Opcode::WizItemMove | Opcode::WizItemGet
+        | Opcode::WizItemUpgrade | Opcode::WizWarehouse | Opcode::WizTradeNpc
+        | Opcode::WizShoppingMall | Opcode::WizClientEvent | Opcode::WizNpcEvent | Opcode::WizSelectMsg))
+        || (opcode == Some(Opcode::WizExtHook) && matches!((packet.data.first().copied(), packet.data.get(1).copied()),
+            (Some(0xE6), Some(4 | 5)) | (Some(0xA8), Some(1 | 3)) | (Some(0xB4), _)));
+    let result = match opcode {
         // --- Pre-auth ---
         Some(Opcode::WizKickout) if session.state() == SessionState::Connected => {
             // v2600: client sends 0x51 as first packet to game server (handshake).
@@ -389,7 +413,7 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
         Some(Opcode::WizClientEvent) => client_event::handle(session, packet).await,
         Some(Opcode::WizMapEvent) => map_event::handle(session, packet).await,
         Some(Opcode::WizWeightChange) => weight_change::handle(session, packet).await,
-        Some(Opcode::WizSelectMsg) => select_msg::handle(session, packet),
+        Some(Opcode::WizSelectMsg) => select_msg::handle(session, packet).await,
         Some(Opcode::WizAuthorityChange) => Ok(()), // server→client only (fame/authority broadcast)
         Some(Opcode::WizEditBox) => edit_box::handle(session, packet).await,
         Some(Opcode::WizSanta) => Ok(()), // server→client only (flying Santa/Angel visual event)
@@ -441,7 +465,7 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
         Some(Opcode::WizGenderChange) => gender_change::handle(session, packet).await,
         Some(Opcode::WizExpSeal) => exp_seal::handle(session, packet).await,
         Some(Opcode::WizKurianSpChange) => Ok(()), // server→client only (Kurian SP update)
-        Some(Opcode::WizSound) => Ok(()),          // server→client only (area sound effect)
+        Some(Opcode::WizSound) => voice_chat::handle(session, packet).await, // party voice chat control (also used outbound for area sound effects — see voice_chat.rs)
         Some(Opcode::WizVanguard) => vanguard::handle(session, packet),
         Some(Opcode::WizPreset) => preset::handle(session, packet).await,
         Some(Opcode::WizClanWarehouse) => clan_warehouse::handle(session, packet).await,
@@ -513,14 +537,44 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
         Some(Opcode::WizCostume) => costume::handle(session, packet).await,
         Some(Opcode::WizSoul) => soul::handle(session, packet).await,
         Some(Opcode::WizDailyQuest) => daily_quest_v2525::handle(session, packet).await,
-        Some(Opcode::WizEnchant) => enchant::handle(session, packet).await,
-        Some(Opcode::WizAbility) => ability::handle(session, packet).await,
-        Some(Opcode::WizGuildBank) => guild_bank::handle(session, packet).await,
+        Some(Opcode::WizEnchant) => {
+            let native = session.world().get_server_settings()
+                .map(|s| s.game_version >= 2600).unwrap_or(false);
+            if native { native_events::handle_jigsaw_coin(session, packet).await }
+            else { enchant::handle(session, packet).await }
+        },
+        Some(Opcode::WizAbility) => {
+            let native = session.world().get_server_settings()
+                .map(|s| s.game_version >= 2600).unwrap_or(false);
+            if native { native_events::handle_marble(session, packet).await }
+            else { ability::handle(session, packet).await }
+        },
+        // 0xD0 is version-dependent: v2525 uses Guild Bank, while the
+        // verified 26xx client contract uses Manes Survival. Missing settings
+        // deliberately preserve the established Guild Bank behavior.
+        Some(Opcode::WizGuildBank) => {
+            let is_survival_client = session
+                .world()
+                .get_server_settings()
+                .map(|settings| settings.game_version >= 2600)
+                .unwrap_or(false);
+            if is_survival_client {
+                survival::handle(session, packet).await
+            } else {
+                guild_bank::handle(session, packet).await
+            }
+        },
         Some(Opcode::WizRebirth) => rebirth::handle(session, packet).await,
         Some(Opcode::WizWorldBoss) => world_boss::handle(session, packet).await,
         Some(Opcode::WizSeason) => season::handle(session, packet).await,
+        Some(Opcode::WizRanker) => moraranker::handle(session, packet).await,
         // Special protocol (resource transfer — stub is correct):
-        Some(Opcode::WizContinousPacketData) => continuous_packet::handle(session, packet),
+        Some(Opcode::WizContinousPacketData) => {
+            let native = session.world().get_server_settings()
+                .map(|s| s.game_version >= 2600).unwrap_or(false);
+            if native { native_events::handle_roulette(session, packet).await }
+            else { continuous_packet::handle(session, packet) }
+        },
         _ => {
             warn!(
                 "[{}] Unhandled opcode: 0x{:02X}",
@@ -529,7 +583,11 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
             );
             Ok(())
         }
+    };
+    if result.is_ok() && sync_exchange_slots && session.state() == SessionState::InGame {
+        ext_hook::send_right_exchange_slots(session).await?;
     }
+    result
 }
 
 /// Handle WIZ_TIME / WIZ_WEATHER from client (GM-only update).
@@ -607,11 +665,21 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
     let mut reader = PacketReader::new(&pkt.data);
     let sub_opcode = reader.read_u8().unwrap_or(0);
 
+    tracing::info!(target: "hook_protocol", sid = session.session_id(),
+        sub = sub_opcode, command = pkt.data.get(1).copied(), bytes = pkt.data.len(),
+        "HOOK C2S dispatch");
+
     match sub_opcode {
         ext_hook::EXT_SUB_CINDERELLA => cinderella::handle(session, repack_ext_data(&pkt)).await,
         ext_hook::EXT_SUB_PERKS => perks::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::KCUPDATE = 0xB9 — client requests current KC/TL balance
         knight_cash::EXT_SUB_KCUPDATE => knight_cash::handle_kcupdate_query(session).await,
+        // ExtSub::DAILY_QUEST = 0xD3 — daily quest UI panel requests
+        daily_quest::EXT_SUB_DAILY_QUEST => daily_quest::handle(session, repack_ext_data(&pkt)).await,
+        // ExtSub::GMPANEL = 0xF5 — GM panel (GM-only)
+        gm_panel::EXT_SUB_GM_PANEL => gm_panel::handle(session, repack_ext_data(&pkt)).await,
+        // ExtSub::RECONNECT = 0xEF — soft re-connect resume
+        soft_reconnect::EXT_SUB_RECONNECT => soft_reconnect::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::LOTTERY = 0xC7 — lottery event join/state
         lottery::EXT_SUB_LOTTERY => lottery::handle(session, repack_ext_data(&pkt)).await,
         // ExtSub::CR = 0xAF — Collection Race (server→client only, silently ignore)
@@ -652,7 +720,7 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
             ext_hook::handle_drop_request(session, &pkt.data[1..]).await
         }
         ext_hook::EXT_SUB_RESET => ext_hook::handle_reset(session, &pkt.data[1..]),
-        ext_hook::EXT_SUB_CLANBANK => ext_hook::handle_clanbank(session, &pkt.data[1..]),
+        ext_hook::EXT_SUB_CLANBANK => clan_warehouse::open_native(session).await,
         ext_hook::EXT_SUB_CHAOTIC_EXCHANGE => {
             ext_hook::handle_chaotic_exchange(session, &pkt.data[1..]).await
         }
@@ -672,19 +740,34 @@ async fn handle_ext_hook(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
             ext_hook::handle_item_exchange_info(session, &pkt.data[1..]).await
         }
         ext_hook::EXT_SUB_DAILY_REWARD => {
-            ext_hook::handle_daily_reward(session, &pkt.data[1..]).await
+            if jobchange_hook::is_jobchange_packet(&pkt.data[1..]) {
+                jobchange_hook::handle(session, repack_ext_data(&pkt)).await
+            } else {
+                ext_hook::handle_daily_reward(session, &pkt.data[1..]).await
+            }
         }
+        solo_cape::EXT_SUB_SOLOCAPEICON => solo_cape::handle_icon(session, repack_ext_data(&pkt)).await,
+        solo_cape::EXT_SUB_HGGENIE => solo_cape::handle_hggenie(session, repack_ext_data(&pkt)).await,
+        native_events::EXT_SUB_EVENT_DIRECT => {
+            native_events::direct_select(session, pkt.data.get(1).copied().unwrap_or(0)).await
+        }
+        item_upgrade::EXT_SUB_CHAOTIC_OPTS => {
+            item_upgrade::handle_chaotic_opts(session, &pkt.data[1..]);
+            Ok(())
+        }
+        client_integrity::EXT_SUB_INTEGRITY => client_integrity::handle(session, repack_ext_data(&pkt)).await,
+        slave_priest::EXT_SUB_SLAVEPRIEST => slave_priest::handle(session, repack_ext_data(&pkt)).await,
+        slave_merchant::EXT_SUB_SLAVEMERC => slave_merchant::handle(session, repack_ext_data(&pkt)).await,
+        manner_store::EXT_SUB_MANNER => manner_store::handle(session, repack_ext_data(&pkt)).await,
         ext_hook::EXT_SUB_RESETREBSTAT => ext_hook::handle_resetrebstat(session),
         // Sprint 26: BANSYSTEM (0xBF) — life skill data query (C++ repurposed this sub-opcode)
-        ext_hook::EXT_SUB_BANSYSTEM => {
-            ext_hook::handle_bansystem(session, &pkt.data[1..]).await
-        }
+        ext_hook::EXT_SUB_BANSYSTEM => ext_hook::handle_bansystem(session, &pkt.data[1..]).await,
         // Sprint 26: GAME_MASTER_MODE (0xE9) — GM mode UI toggle
         ext_hook::EXT_SUB_GAME_MASTER_MODE => {
             ext_hook::handle_game_master_mode(session, &pkt.data[1..]).await
         }
         _ => {
-            debug!(
+            tracing::warn!(
                 "[{}] WIZ_EXT_HOOK unhandled sub-opcode: 0x{:02X}",
                 session.addr(),
                 sub_opcode

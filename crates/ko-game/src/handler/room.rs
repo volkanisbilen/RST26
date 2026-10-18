@@ -117,11 +117,7 @@ async fn handle_join(
 ) -> anyhow::Result<()> {
     let room_id = reader.read_u16().unwrap_or(0);
 
-    debug!(
-        "[{}] ROOM_JOIN: room_id={}",
-        session.addr(),
-        room_id
-    );
+    debug!("[{}] ROOM_JOIN: room_id={}", session.addr(), room_id);
 
     let response = build_result_packet(ROOM_JOIN, ROOM_RESULT_NOT_FOUND);
     session.send_packet(&response).await?;
@@ -231,10 +227,7 @@ mod tests {
 
     #[test]
     fn test_room_packet_opcode_from_byte() {
-        assert_eq!(
-            Opcode::from_byte(0x61),
-            Some(Opcode::WizRoomPacketProcess)
-        );
+        assert_eq!(Opcode::from_byte(0x61), Some(Opcode::WizRoomPacketProcess));
     }
 
     #[test]
