@@ -625,7 +625,10 @@ async fn handle_phase1(session: &mut ClientSession) -> anyhow::Result<()> {
         match item {
             Some(it) => {
                 pkt.write_u32(it.item_id as u32);
-                pkt.write_i16(it.durability);
+                pkt.write_i16(super::durability::sanitized_item_durability(
+                    world.get_item(it.item_id as u32).as_ref(),
+                    it.durability,
+                ));
                 pkt.write_u16(it.count as u16);
                 pkt.write_u8(it.flag as u8);
                 pkt.write_u16(crate::world::types::remaining_rental_minutes(
@@ -1215,7 +1218,10 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
         if slot < inventory.len() {
             inventory[slot] = UserItemSlot {
                 item_id: item.item_id as u32,
-                durability: item.durability,
+                durability: super::durability::sanitized_item_durability(
+                    world.get_item(item.item_id as u32).as_ref(),
+                    item.durability,
+                ),
                 count: item.count as u16,
                 flag: item.flag as u8,
                 original_flag: item.original_flag as u8,
@@ -2646,7 +2652,10 @@ pub(crate) async fn send_myinfo_refresh(session: &mut ClientSession) -> anyhow::
         match item {
             Some(it) => {
                 pkt.write_u32(it.item_id);
-                pkt.write_i16(it.durability);
+                pkt.write_i16(super::durability::sanitized_item_durability(
+                    world.get_item(it.item_id).as_ref(),
+                    it.durability,
+                ));
                 pkt.write_u16(it.count);
                 pkt.write_u8(it.flag);
                 pkt.write_u16(it.remaining_rental_minutes());

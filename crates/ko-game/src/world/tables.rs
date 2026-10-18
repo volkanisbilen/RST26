@@ -57,6 +57,11 @@ impl WorldState {
     pub(crate) fn insert_magic_type4(&self, row: MagicType4Row) {
         self.magic_type4.insert(row.i_num, row);
     }
+    /// Insert a magic type 5 (resurrection) row. Used for tests.
+    #[cfg(test)]
+    pub(crate) fn insert_magic_type5(&self, row: MagicType5Row) {
+        self.magic_type5.insert(row.i_num, row);
+    }
     /// Look up magic type 5 (resurrection) parameters by i_num.
     pub fn get_magic_type5(&self, i_num: i32) -> Option<MagicType5Row> {
         self.magic_type5.get(&i_num).map(|r| r.clone())

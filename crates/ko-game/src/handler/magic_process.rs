@@ -7584,6 +7584,15 @@ fn cure_type4_debuffs(world: &WorldState, target_sid: SessionId) -> Vec<i32> {
     removed_types
 }
 
+/// Zones/events where an in-place scroll revive is not allowed (they have their own respawn).
+fn scroll_revive_forbidden(world: &WorldState, sid: SessionId) -> bool {
+    let zone = world.get_position(sid).map(|p| p.zone_id).unwrap_or(0);
+    matches!(
+        zone,
+        ZONE_CHAOS_DUNGEON | ZONE_DUNGEON_DEFENCE | ZONE_KNIGHT_ROYALE
+    ) || world.manes_survival_manager.is_participant_playing(sid)
+}
+
 async fn execute_type5(
     world: &WorldState,
     caster_sid: SessionId,
@@ -7760,6 +7769,13 @@ async fn execute_type5(
             }
 
             if target.res_hp_type != USER_DEAD && target.hp > 0 {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+
+            // Resurrection scrolls revive in place; refuse where the zone or event owns
+            // the respawn. Failing here keeps the scroll (consume_item only runs on success).
+            if scroll_revive_forbidden(world, caster_sid) {
                 send_skill_failed(world, caster_sid, instance);
                 return false;
             }
@@ -14327,6 +14343,121 @@ mod tests {
             !blocked,
             "Type 5 skill should NOT be blocked for dead caster"
         );
+    }
+
+    /// Build a world with a dead player carrying a Resurrection Scroll (kind 255, 10 uses).
+    fn scroll_revive_world(zone: u16) -> (crate::world::WorldState, MagicRow) {
+        let world = crate::world::WorldState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(1, tx);
+        let mut ch = make_res_test_char(1, "Dead");
+        ch.hp = 0;
+        ch.res_hp_type = crate::world::USER_DEAD;
+        world.register_ingame(
+            1,
+            ch,
+            crate::world::Position {
+                zone_id: zone,
+                x: 500.0,
+                y: 0.0,
+                z: 300.0,
+                region_x: 4,
+                region_z: 4,
+            },
+        );
+        world.update_session(1, |h| {
+            h.who_killed_me = -1;
+            h.lost_exp = 1000;
+        });
+        let mut scroll = crate::handler::durability::tests::make_item(900136000, 0, 10, 255);
+        scroll.effect1 = Some(480010);
+        world.insert_item(900136000, scroll);
+        world.update_inventory(1, |inv| {
+            inv.resize(crate::inventory_constants::INVENTORY_TOTAL + 1, Default::default());
+            inv[crate::inventory_constants::SLOT_MAX] = crate::world::UserItemSlot {
+                item_id: 900136000,
+                durability: 10,
+                count: 1,
+                ..Default::default()
+            };
+            true
+        });
+        world.insert_magic_type5(ko_db::models::MagicType5Row {
+            i_num: 480010,
+            r#type: Some(TYPE5_RESURRECTION_SELF),
+            exp_recover: Some(80),
+            need_stone: Some(0),
+        });
+        let mut skill = make_test_magic(480010, MORAL_SELF);
+        skill.type1 = Some(5);
+        skill.item_group = Some(9);
+        skill.use_item = Some(900136000);
+        world.insert_magic(skill.clone());
+        (world, skill)
+    }
+
+    fn scroll_uses_left(world: &crate::world::WorldState) -> i16 {
+        world
+            .get_inventory(1)
+            .iter()
+            .find(|s| s.item_id == 900136000)
+            .map(|s| s.durability)
+            .unwrap_or(0)
+    }
+
+    /// A dead player using a Resurrection Scroll is revived in place, exactly one use is consumed.
+    #[tokio::test]
+    async fn test_scroll_revives_in_place_and_consumes_one() {
+        let (world, skill) = scroll_revive_world(21);
+        let mut inst = MagicInstance {
+            opcode: MAGIC_EFFECTING,
+            skill_id: 480010,
+            caster_id: 1,
+            target_id: 1,
+            data: [0; 7],
+        };
+        assert!(execute_skill(&world, 1, &mut inst, &skill).await);
+        consume_item(&world, 1, &skill);
+        let ch = world.get_character_info(1).unwrap();
+        assert!(ch.hp > 0 && !world.is_player_dead(1), "must be alive again");
+        let pos = world.get_position(1).unwrap();
+        assert_eq!((pos.x, pos.z), (500.0, 300.0), "revived in place");
+        assert_eq!(scroll_uses_left(&world), 9, "exactly one use consumed");
+        let lost = world.with_session(1, |h| h.lost_exp).unwrap();
+        assert_eq!(lost, 0, "death tracking reset (no second restore)");
+    }
+
+    /// Forbidden zones refuse the revive, the player stays dead and keeps the scroll.
+    #[tokio::test]
+    async fn test_scroll_refused_in_forbidden_zone_keeps_scroll() {
+        let (world, skill) = scroll_revive_world(crate::world::ZONE_CHAOS_DUNGEON);
+        let mut inst = MagicInstance {
+            opcode: MAGIC_EFFECTING,
+            skill_id: 480010,
+            caster_id: 1,
+            target_id: 1,
+            data: [0; 7],
+        };
+        assert!(!execute_skill(&world, 1, &mut inst, &skill).await);
+        assert!(world.is_player_dead(1));
+        assert_eq!(scroll_uses_left(&world), 10);
+    }
+
+    /// An alive player cannot waste a scroll (execute fails, nothing consumed by the caller).
+    #[tokio::test]
+    async fn test_scroll_not_usable_when_alive() {
+        let (world, skill) = scroll_revive_world(21);
+        world.update_character_hp(1, 100);
+        world.update_res_hp_type(1, 1);
+        let mut inst = MagicInstance {
+            opcode: MAGIC_EFFECTING,
+            skill_id: 480010,
+            caster_id: 1,
+            target_id: 1,
+            data: [0; 7],
+        };
+        assert!(!execute_skill(&world, 1, &mut inst, &skill).await);
+        assert_eq!(scroll_uses_left(&world), 10);
     }
 
     #[test]
