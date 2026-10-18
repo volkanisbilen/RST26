@@ -37,7 +37,19 @@ pub const MAX_PACKET_SIZE: usize = 65536;
 /// Decode a byte slice from Windows-1254 (Turkish) encoding to a UTF-8 String.
 /// ASCII bytes pass through unchanged. Non-ASCII bytes are mapped to the
 /// correct Unicode code points per the Windows-1254 / ISO 8859-9 spec.
+///
+/// The result ends at the first NUL byte (C-string semantics). The original
+/// C++ server handed these strings to ODBC as NUL-terminated text, whereas
+/// PostgreSQL rejects 0x00 inside `text` ("invalid byte sequence for encoding
+/// UTF8: 0x00") and a failed query returned from a handler drops the player's
+/// connection. A client-side fixed buffer or an embedded NUL in any client
+/// string could therefore disconnect the sender; cut it off here for every
+/// handler instead of auditing each insert.
 fn decode_win1254(bytes: &[u8]) -> String {
+    let bytes = match bytes.iter().position(|&b| b == 0) {
+        Some(end) => &bytes[..end],
+        None => bytes,
+    };
     // Fast path: if valid UTF-8, return as-is (covers pure ASCII and
     // strings already stored as UTF-8 in the DB).
     if let Ok(valid) = std::str::from_utf8(bytes) {
@@ -601,6 +613,46 @@ mod tests {
         let s = reader.read_string().unwrap();
         assert_eq!(s, "testuser");
         assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn test_read_string_stops_at_embedded_nul() {
+        // [u16 len=7]["abc\0def"] [u8 marker]: the string is cut at the NUL
+        // but the cursor still advances past the whole declared length.
+        let mut data = vec![7u8, 0];
+        data.extend_from_slice(b"abc\0def");
+        data.push(0x5A);
+        let mut reader = PacketReader::new(&data);
+        assert_eq!(reader.read_string().as_deref(), Some("abc"));
+        assert_eq!(reader.read_u8(), Some(0x5A));
+        assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn test_read_string_all_nul_is_empty() {
+        let data = [3u8, 0, 0, 0, 0];
+        let mut reader = PacketReader::new(&data);
+        assert_eq!(reader.read_string().as_deref(), Some(""));
+        assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn test_read_sbyte_string_stops_at_embedded_nul() {
+        let mut data = vec![5u8];
+        data.extend_from_slice(b"ab\0cd");
+        data.push(0x7B);
+        let mut reader = PacketReader::new(&data);
+        assert_eq!(reader.read_sbyte_string().as_deref(), Some("ab"));
+        assert_eq!(reader.read_u8(), Some(0x7B));
+    }
+
+    #[test]
+    fn test_read_string_nul_in_non_utf8_text() {
+        // Windows-1254 text (0xFE = ş) followed by NUL padding.
+        let mut data = vec![4u8, 0];
+        data.extend_from_slice(&[b'a', 0xFE, 0, 0]);
+        let mut reader = PacketReader::new(&data);
+        assert_eq!(reader.read_string().as_deref(), Some("aş"));
     }
 
     #[test]
