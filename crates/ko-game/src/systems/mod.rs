@@ -17,6 +17,7 @@ pub mod dot_tick;
 pub mod event_room;
 pub mod event_system;
 pub mod expiry_tick;
+pub mod field_bots;
 pub mod flash;
 pub mod heartbeat_probe;
 pub mod juraid;

@@ -397,6 +397,8 @@ pub struct WorldState {
     ///
     /// We use a simple monotonic counter starting at BOT_ID_BASE.
     next_bot_id: AtomicU32,
+    /// Field-bot (normal-map hunter) configuration and runtime state.
+    pub(crate) field_bots: crate::systems::field_bots::FieldBotRegistry,
 
     // â”€â”€ Tournament (CvC / Party VS) System â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     /// Active tournament arenas keyed by zone_id (77, 78, 96-99).
@@ -1034,6 +1036,7 @@ impl WorldState {
             user_knights_rank: parking_lot::RwLock::new(std::collections::HashMap::new()),
             bots: DashMap::new(),
             next_bot_id: AtomicU32::new(BOT_ID_BASE),
+            field_bots: Default::default(),
             tournament_registry: crate::handler::tournament::new_tournament_registry(),
             siege_war: tokio::sync::RwLock::new(SiegeWarfare::default()),
             war_commanders: parking_lot::RwLock::new(std::collections::HashSet::new()),
@@ -1279,6 +1282,7 @@ impl WorldState {
             user_knights_rank: parking_lot::RwLock::new(std::collections::HashMap::new()),
             bots: DashMap::new(),
             next_bot_id: AtomicU32::new(BOT_ID_BASE),
+            field_bots: Default::default(),
             tournament_registry: crate::handler::tournament::new_tournament_registry(),
             siege_war: tokio::sync::RwLock::new(SiegeWarfare::default()),
             war_commanders: parking_lot::RwLock::new(std::collections::HashSet::new()),

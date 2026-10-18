@@ -495,6 +495,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 return Ok(());
             }
 
+            // Field bots near the speaker may answer (delayed, rate limited).
+            crate::systems::field_bots::on_nearby_chat(&world, sid, &message);
+
             // Broadcast normal player chat to 3x3 region (nearby players)
             if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room))
             {
@@ -516,6 +519,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 None => return Ok(()),
             };
 
+            // A whisper to a field bot: bots have no session, the bot system answers.
+            if target_sid as u32 >= crate::world::BOT_ID_BASE {
+                crate::systems::field_bots::on_whisper(&world, sid, target_sid as u32, &message);
+                return Ok(());
+            }
+
             // Verify target is still in-game
             let target_info = match world.get_character_info(target_sid) {
                 Some(t) => t,
@@ -536,6 +545,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             if let Some(party_id) = world.get_party_id(sid) {
                 world.send_to_party(party_id, &broadcast);
                 crate::systems::bot_ai::handle_party_chat_command(&world, party_id, sid, &message);
+                crate::systems::field_bots::on_party_chat(&world, party_id, sid, &message);
             }
         }
 
@@ -844,8 +854,18 @@ pub async fn handle_chat_target(session: &mut ClientSession, pkt: Packet) -> any
                 }
             }
             None => {
-                // Target not found
-                result_pkt.write_i16(0);
+                // A field bot can be whispered like a player: answer "found" and remember it
+                // as the private-chat target (bot ids fit the session id type).
+                if let Some(bot) = crate::systems::field_bots::find_field_bot_by_name(&world, &target_name) {
+                    world.set_private_chat_target(sid, Some(bot.id as crate::zone::SessionId));
+                    result_pkt.write_i16(1);
+                    result_pkt.write_string(&bot.name);
+                    result_pkt.write_i8(-1);
+                    result_pkt.write_u8(0);
+                } else {
+                    // Target not found
+                    result_pkt.write_i16(0);
+                }
             }
         }
 

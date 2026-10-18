@@ -72,7 +72,7 @@ const PARTY_ALERT: u8 = 0x20;
 /// Check if a zone allows cross-nation party formation.
 /// Returns true for Moradon, arenas, Forgotten Temple, Under Castle,
 /// Stone zones, Delos Castellan, Draki Tower, Old Moradon, and Eslant zones.
-fn is_partner_party_zone(zone_id: u16) -> bool {
+pub(crate) fn is_partner_party_zone(zone_id: u16) -> bool {
     use crate::world::{
         ZONE_ARENA, ZONE_BLOOD_DON_ARENA, ZONE_DELOS_CASTELLAN, ZONE_DRAKI_TOWER,
         ZONE_ELMORAD_ESLANT, ZONE_ELMORAD_ESLANT2, ZONE_ELMORAD_ESLANT3, ZONE_FORGOTTEN_TEMPLE,
@@ -173,7 +173,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 /// Level check passes if EITHER condition is true:
 /// - Target level is within +-8 of inviter level
 /// - Target level is within 0.67x to 1.5x of inviter level
-fn is_level_compatible(level_a: u8, level_b: u8) -> bool {
+pub(crate) fn is_level_compatible(level_a: u8, level_b: u8) -> bool {
     let a = level_a as i32;
     let b = level_b as i32;
 
@@ -395,6 +395,10 @@ async fn handle_party_create(
     let target_sid = match world.find_session_by_name(&target_name) {
         Some(tsid) => tsid,
         None => {
+            // A field bot (normal-map hunter) answers the invitation itself.
+            if crate::systems::field_bots::try_party_invite(&world, sid, &target_name, party_type) {
+                return Ok(());
+            }
             send_party_error(&world, sid, PARTY_ERR_GENERIC);
             return Ok(());
         }
@@ -616,6 +620,10 @@ fn handle_party_invite(
     let target_sid = match world.find_session_by_name(&target_name) {
         Some(tsid) => tsid,
         None => {
+            // A field bot (normal-map hunter) answers the invitation itself.
+            if crate::systems::field_bots::try_party_invite(&world, sid, &target_name, party_type) {
+                return Ok(());
+            }
             send_party_error(&world, sid, PARTY_ERR_GENERIC);
             return Ok(());
         }

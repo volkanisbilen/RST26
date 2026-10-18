@@ -271,6 +271,11 @@ impl GameServer {
             self.world.clone(),
         ));
         info!("Bot AI tick started");
+        bg_tasks.push(crate::systems::field_bots::start_field_bot_task(
+            self.world.clone(),
+            self.pool.clone(),
+        ));
+        info!("Field bot scheduler started (every zone is OFF until enabled in the admin panel)");
 
         // DISABLED: heartbeat probe sends opcode=0x02 (WIZ_NEW_CHAR) with 16 random bytes.
         // v2600 client parses this as NPC data → garbage parse → memory corruption → bag items cleared.
