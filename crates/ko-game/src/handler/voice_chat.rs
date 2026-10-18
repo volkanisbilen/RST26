@@ -123,7 +123,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     };
 
     match sub_opcode {
-        SUB_JOIN_REQUEST => handle_join_request(session).await,
+        // Live trace: the 2625 client sends 0x05 (1-byte payload) when the voice window opens and
+        // on its Reconnect button; 0x04 was only the original guess. Both ask for a room.
+        SUB_JOIN_REQUEST | SUB_MEMBER_INFO => handle_join_request(session).await,
         _ => {
             debug!(
                 "[{}] WIZ_SOUND (0xB5): unhandled inbound sub-opcode 0x{:02X}",
