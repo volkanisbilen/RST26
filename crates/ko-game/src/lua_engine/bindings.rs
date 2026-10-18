@@ -598,6 +598,16 @@ pub fn register_all(lua: &Lua) -> LuaResult<()> {
         lua.create_function(lua_open_shopping_mall)?,
     )?;
 
+    // Box Breaker NPC (Quests/31514_BoxBreaker.lua) - see world/box_breaker.rs
+    g.set(
+        "GetBreakableBoxes",
+        lua.create_function(lua_get_breakable_boxes)?,
+    )?;
+    g.set("BoxPick", lua.create_function(lua_box_pick)?)?;
+    g.set("BoxBreak", lua.create_function(lua_box_break)?)?;
+    g.set("BoxBreakAll", lua.create_function(lua_box_break_all)?)?;
+    g.set("SendChatLine", lua.create_function(lua_send_chat_line)?)?;
+
     Ok(())
 }
 
@@ -5861,6 +5871,99 @@ fn lua_open_shopping_mall(lua: &Lua, (uid, sub_type): (i32, i32)) -> LuaResult<(
     Ok(())
 }
 
+// -- Box Breaker NPC bindings (world/box_breaker.rs) ----------------------
+
+/// `GetBreakableBoxes(uid)` -> array of `{id=, count=, name=}`: every breakable box type
+/// (item.effect2 = 251 with a Chaotic Generator reward pool) in the player's bag, sorted by
+/// item id. Rented / sealed / duplicate-flagged stacks are not counted.
+fn lua_get_breakable_boxes(lua: &Lua, uid: i32) -> LuaResult<LuaTable> {
+    let w = get_world(lua)?;
+    let list = lua.create_table()?;
+    for (i, b) in w.breakable_boxes(uid as SessionId).iter().enumerate() {
+        let entry = lua.create_table()?;
+        entry.set("id", b.item_id)?;
+        entry.set("count", b.count)?;
+        entry.set("name", b.name.as_str())?;
+        list.set(i + 1, entry)?;
+    }
+    Ok(list)
+}
+
+/// `BoxPick(uid, item_id)` -> usable count. Remembers `item_id` as the box type of the next
+/// `BoxBreak`; returns 0 (and forgets any pick) when it is not a breakable box or none is owned.
+fn lua_box_pick(lua: &Lua, (uid, item_id): (i32, i64)) -> LuaResult<u32> {
+    let w = get_world(lua)?;
+    let item_id = u32::try_from(item_id).unwrap_or(0);
+    Ok(w.box_breaker_pick(uid as SessionId, item_id))
+}
+
+fn box_outcome_table(
+    lua: &Lua,
+    w: &WorldState,
+    outcome: &crate::world::box_breaker::BreakOutcome,
+) -> LuaResult<LuaTable> {
+    let t = lua.create_table()?;
+    t.set("broken", outcome.broken)?;
+    t.set("stop", outcome.stop.code())?;
+    let rewards = lua.create_table()?;
+    for (i, (id, count)) in outcome.rewards.iter().enumerate() {
+        let entry = lua.create_table()?;
+        entry.set("id", *id)?;
+        entry.set("count", *count)?;
+        entry.set("name", w.box_display_name(*id))?;
+        rewards.set(i + 1, entry)?;
+    }
+    t.set("rewards", rewards)?;
+    Ok(t)
+}
+
+/// `BoxBreak(uid, count)` -> `{broken=, stop=, rewards={{id=,count=,name=}...}}`.
+/// Breaks `count` boxes of the type picked with `BoxPick` (`count` 0 = all of that type, at most
+/// 200 per call; a negative count breaks nothing). The reward is drawn with the Chaotic
+/// Generator's weights, no gold is charged.
+fn lua_box_break(lua: &Lua, (uid, count): (i32, i64)) -> LuaResult<LuaTable> {
+    use crate::world::box_breaker::{BreakOutcome, BreakStop};
+    let w = get_world(lua)?;
+    let sid = uid as SessionId;
+    let outcome = if count < 0 {
+        BreakOutcome {
+            stop: BreakStop::NotBreakable,
+            ..Default::default()
+        }
+    } else {
+        let picked = w.box_breaker_picked(sid);
+        if picked == 0 {
+            BreakOutcome {
+                stop: BreakStop::NoBox,
+                ..Default::default()
+            }
+        } else {
+            w.box_breaker_break(sid, picked, count.min(u32::MAX as i64) as u32)
+        }
+    };
+    box_outcome_table(lua, &w, &outcome)
+}
+
+/// `BoxBreakAll(uid)` -> same table as `BoxBreak`: breaks every breakable box type in the bag
+/// (at most 200 boxes per call, lowest item id first).
+fn lua_box_break_all(lua: &Lua, uid: i32) -> LuaResult<LuaTable> {
+    let w = get_world(lua)?;
+    let outcome = w.box_breaker_break_all(uid as SessionId, 0);
+    box_outcome_table(lua, &w, &outcome)
+}
+
+/// `SendChatLine(uid, text)` - one line of text in the player's chat window (notice colour).
+/// Text is cut to 250 characters.
+fn lua_send_chat_line(lua: &Lua, (uid, text): (i32, String)) -> LuaResult<()> {
+    let w = get_world(lua)?;
+    let text: String = text.chars().take(250).collect();
+    w.send_to_session_owned(
+        uid as SessionId,
+        crate::systems::timed_notice::build_notice_packet(8, &text),
+    );
+    Ok(())
+}
+
 /// RebirthBas(uid) — shows the rebirth NPC menu.
 /// Custom private server feature (not in original C++).
 /// Replaces the commented-out `SelectMsg(UID, 3, 974, 8082, NPC, 4481, 101, 8265, 301, 3019, 203)`
@@ -6044,8 +6147,14 @@ mod tests {
     /// Create a WorldState with a registered session + character + inventory,
     /// wire it as Lua app_data, and return (Lua, WorldState-Arc).
     fn setup_lua_world() -> (Lua, Arc<WorldState>) {
+        let (lua, world, _rx) = setup_lua_world_rx();
+        (lua, world)
+    }
+
+    /// Same as `setup_lua_world`, but keeps the packet receiver of session 1.
+    fn setup_lua_world_rx() -> (Lua, Arc<WorldState>, mpsc::UnboundedReceiver<Arc<Packet>>) {
         let world = Arc::new(WorldState::new());
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         let sid: SessionId = 1;
         world.register_session(sid, tx);
 
@@ -6120,7 +6229,7 @@ mod tests {
         lua.set_app_data(Arc::clone(&world));
         register_all(&lua).unwrap();
 
-        (lua, world)
+        (lua, world, rx)
     }
 
     /// Insert a test item definition into WorldState.items.
@@ -9577,5 +9686,823 @@ mod tests {
             csw.deathmatch_players.is_empty(),
             "reset should clear registrations"
         );
+    }
+
+    // ── Box Breaker NPC (Quests/31514_BoxBreaker.lua, world/box_breaker.rs) ──────────────
+
+    use crate::world::box_breaker::test_exchange_row;
+    use crate::world::{ITEM_FLAG_SEALED, ITEMCOUNT_MAX};
+
+    const BB_NPC_NID: u32 = 10_501;
+    /// Real ids from the script's BOX_TEXT table.
+    const BOX_AKARA: u32 = 811_053_000; // Akara Accessory Box   -> menu text 62234
+    const BOX_DRAGON: u32 = 810_341_000; // Dragon Box            -> menu text 62224
+    const REWARD_STACK: u32 = 1_001; // countable reward
+    const REWARD_GEAR: u32 = 1_002; // non-countable reward (needs a free slot each)
+    const REWARD_EPIC: u32 = 1_003; // item_type 4 (unique, server-wide shout)
+
+    fn bb_item(
+        world: &WorldState,
+        id: u32,
+        name: &str,
+        effect2: i32,
+        weight: i16,
+        item_type: i32,
+        countable: i32,
+    ) {
+        insert_test_item(world, id, true);
+        let mut item = world.get_item(id).unwrap();
+        item.str_name = Some(name.into());
+        item.effect2 = Some(effect2);
+        item.weight = Some(weight);
+        item.item_type = Some(item_type);
+        item.countable = Some(countable);
+        world.insert_item(id, item);
+    }
+
+    fn bb_box(world: &WorldState, id: u32, name: &str, rewards: &[(u32, i32)]) {
+        bb_item(world, id, name, 251, 1, 0, 1);
+        for (i, (reward, weight)) in rewards.iter().enumerate() {
+            let idx = (id % 1_000_000) as i32 * 10 + i as i32;
+            world.insert_item_exchange(
+                idx,
+                test_exchange_row(idx, 1, id as i32, 1, *reward as i32, *weight),
+            );
+        }
+    }
+
+    /// Player 1 stands next to a Box Breaker NPC; reward items and two boxes exist.
+    fn setup_box_breaker() -> (Lua, Arc<WorldState>, mpsc::UnboundedReceiver<Arc<Packet>>) {
+        let (lua, world, rx) = setup_lua_world_rx();
+        bb_item(&world, REWARD_STACK, "Reward One", 0, 1, 0, 1);
+        bb_item(&world, REWARD_GEAR, "Reward Gear", 0, 2, 0, 0);
+        bb_item(&world, REWARD_EPIC, "Reward Epic", 0, 2, 4, 0);
+        bb_box(&world, BOX_AKARA, "Akara Accessory Box", &[(REWARD_STACK, 50)]);
+        bb_box(&world, BOX_DRAGON, "Dragon Box", &[(REWARD_GEAR, 50)]);
+        world.insert_npc_instance(NpcInstance {
+            nid: BB_NPC_NID,
+            proto_id: 31514,
+            is_monster: false,
+            zone_id: 21,
+            x: 52.0,
+            y: 0.0,
+            z: 50.0,
+            direction: 0,
+            region_x: 0,
+            region_z: 0,
+            gate_open: 0,
+            object_type: 0,
+            nation: 3,
+            special_type: 0,
+            trap_number: 0,
+            event_room: 0,
+            is_event_npc: false,
+            summon_type: 0,
+            user_name: String::new(),
+            pet_name: String::new(),
+            clan_name: String::new(),
+            clan_id: 0,
+            clan_mark_version: 0,
+        });
+        world.update_session(1, |h| {
+            h.event_nid = BB_NPC_NID as i16;
+            h.event_sid = 31514;
+        });
+        // set_user_ability only fills max_weight when the class has a coefficient row
+        world.insert_test_coefficient(
+            101,
+            ko_db::models::CoefficientRow {
+                s_class: 101,
+                hp: 1.0,
+                mp: 1.0,
+                sp: 0.0,
+                ac: 1.0,
+                hitrate: 0.001,
+                evasionrate: 0.001,
+                short_sword: 0.01,
+                sword: 0.01,
+                axe: 0.01,
+                club: 0.01,
+                spear: 0.01,
+                bow: 0.01,
+                staff: 0.01,
+                jamadar: 0.01,
+                pole: 0.01,
+            },
+        );
+        world.set_user_ability(1);
+        (lua, world, rx)
+    }
+
+    fn bb_count(world: &WorldState, item_id: u32) -> u32 {
+        world
+            .get_inventory(1)
+            .iter()
+            .skip(WorldState::SLOT_MAX)
+            .filter(|s| s.item_id == item_id)
+            .map(|s| s.count as u32)
+            .sum()
+    }
+
+    fn bb_run(lua: &Lua, code: &str) -> LuaTable {
+        lua.load(code).eval::<LuaTable>().unwrap()
+    }
+
+    #[test]
+    fn box_breaker_bindings_are_registered() {
+        let lua = Lua::new();
+        register_all(&lua).unwrap();
+        let g = lua.globals();
+        for name in [
+            "GetBreakableBoxes",
+            "BoxPick",
+            "BoxBreak",
+            "BoxBreakAll",
+            "SendChatLine",
+        ] {
+            assert!(g.get::<LuaFunction>(name).is_ok(), "{name} not registered");
+        }
+    }
+
+    #[test]
+    fn box_breaker_lists_only_usable_breakable_boxes_sorted() {
+        let (lua, world, _rx) = setup_box_breaker();
+        // breakable but sealed: never counted
+        let (junk_box, junk_effect, junk_nopool) = (2_001u32, 2_002u32, 2_003u32);
+        bb_item(&world, junk_effect, "Not a box", 0, 1, 0, 1);
+        world.insert_item_exchange(
+            9_001,
+            test_exchange_row(9_001, 1, junk_effect as i32, 1, REWARD_STACK as i32, 50),
+        );
+        bb_item(&world, junk_nopool, "Box without pool", 251, 1, 0, 1);
+        bb_item(&world, junk_box, "Plain item", 0, 1, 0, 1);
+
+        world.give_item(1, BOX_AKARA, 3);
+        world.give_item(1, BOX_DRAGON, 2);
+        world.give_item(1, junk_effect, 1);
+        world.give_item(1, junk_nopool, 1);
+        world.give_item(1, junk_box, 1);
+        // a second Akara stack elsewhere and a sealed one that must be ignored
+        world.update_inventory(1, |inv| {
+            inv[WorldState::SLOT_MAX + 10] = UserItemSlot {
+                item_id: BOX_AKARA,
+                count: 2,
+                ..Default::default()
+            };
+            inv[WorldState::SLOT_MAX + 11] = UserItemSlot {
+                item_id: BOX_AKARA,
+                count: 4,
+                flag: ITEM_FLAG_SEALED,
+                ..Default::default()
+            };
+            // an equipped-slot copy is not "in the bag"
+            inv[3] = UserItemSlot {
+                item_id: BOX_DRAGON,
+                count: 9,
+                ..Default::default()
+            };
+            true
+        });
+
+        let list = bb_run(&lua, "return GetBreakableBoxes(1)");
+        assert_eq!(list.len().unwrap(), 2);
+        let first: LuaTable = list.get(1).unwrap();
+        assert_eq!(first.get::<u32>("id").unwrap(), BOX_DRAGON);
+        assert_eq!(first.get::<u32>("count").unwrap(), 2);
+        assert_eq!(first.get::<String>("name").unwrap(), "Dragon Box");
+        let second: LuaTable = list.get(2).unwrap();
+        assert_eq!(second.get::<u32>("id").unwrap(), BOX_AKARA);
+        assert_eq!(second.get::<u32>("count").unwrap(), 5);
+    }
+
+    #[test]
+    fn box_breaker_pick_validates_item_and_ownership() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 3);
+        world.give_item(1, REWARD_STACK, 1);
+        let owned: u32 = lua.load("return BoxPick(1, 811053000)").eval().unwrap();
+        assert_eq!(owned, 3);
+        assert_eq!(world.box_breaker_picked(1), BOX_AKARA);
+        // not owned -> pick cleared
+        let owned: u32 = lua.load("return BoxPick(1, 810341000)").eval().unwrap();
+        assert_eq!(owned, 0);
+        assert_eq!(world.box_breaker_picked(1), 0);
+        // owned but not a box
+        let owned: u32 = lua.load("return BoxPick(1, 1001)").eval().unwrap();
+        assert_eq!(owned, 0);
+        // garbage ids
+        let owned: u32 = lua.load("return BoxPick(1, -5)").eval().unwrap();
+        assert_eq!(owned, 0);
+        let owned: u32 = lua.load("return BoxPick(1, 99999999999)").eval().unwrap();
+        assert_eq!(owned, 0);
+        assert_eq!(world.box_breaker_picked(1), 0);
+    }
+
+    #[test]
+    fn box_breaker_breaks_one_box_and_gives_the_reward() {
+        let (lua, world, mut rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 5);
+        while rx.try_recv().is_ok() {}
+        lua.load("BoxPick(1, 811053000)").exec().unwrap();
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 1);
+        assert_eq!(res.get::<String>("stop").unwrap(), "done");
+        let rewards: LuaTable = res.get("rewards").unwrap();
+        assert_eq!(rewards.len().unwrap(), 1);
+        let r: LuaTable = rewards.get(1).unwrap();
+        assert_eq!(r.get::<u32>("id").unwrap(), REWARD_STACK);
+        assert_eq!(r.get::<u32>("count").unwrap(), 1);
+        assert_eq!(r.get::<String>("name").unwrap(), "Reward One");
+        assert_eq!(bb_count(&world, BOX_AKARA), 4);
+        assert_eq!(bb_count(&world, REWARD_STACK), 1);
+        // the client was told about the box stack (count 4) and the new reward
+        let mut count_changes = 0;
+        while let Ok(p) = rx.try_recv() {
+            if p.opcode == Opcode::WizItemCountChange as u8 {
+                count_changes += 1;
+            }
+        }
+        assert_eq!(count_changes, 2);
+    }
+
+    #[test]
+    fn box_breaker_break_all_of_a_kind_is_bounded_and_atomic() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 3);
+        lua.load("BoxPick(1, 811053000)").exec().unwrap();
+        let res = bb_run(&lua, "return BoxBreak(1, 0)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 3);
+        assert_eq!(res.get::<String>("stop").unwrap(), "done");
+        assert_eq!(bb_count(&world, BOX_AKARA), 0);
+        assert_eq!(bb_count(&world, REWARD_STACK), 3);
+        // nothing left: no further reward, clean stop
+        let res = bb_run(&lua, "return BoxBreak(1, 0)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(res.get::<String>("stop").unwrap(), "nobox");
+        assert_eq!(bb_count(&world, REWARD_STACK), 3);
+    }
+
+    #[test]
+    fn box_breaker_caps_one_call_at_200() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 300);
+        lua.load("BoxPick(1, 811053000)").exec().unwrap();
+        let res = bb_run(&lua, "return BoxBreak(1, 0)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 200);
+        assert_eq!(res.get::<String>("stop").unwrap(), "capped");
+        assert_eq!(bb_count(&world, BOX_AKARA), 100);
+        assert_eq!(bb_count(&world, REWARD_STACK), 200);
+        // a huge count is clamped, never wraps
+        let res = bb_run(&lua, "return BoxBreak(1, 4294967296)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 100);
+        assert_eq!(bb_count(&world, BOX_AKARA), 0);
+    }
+
+    #[test]
+    fn box_breaker_rejects_negative_counts_and_missing_pick() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 2);
+        // no pick yet
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(res.get::<String>("stop").unwrap(), "nobox");
+        lua.load("BoxPick(1, 811053000)").exec().unwrap();
+        for bad in ["-1", "-100000"] {
+            let res = bb_run(&lua, &format!("return BoxBreak(1, {bad})"));
+            assert_eq!(res.get::<u32>("broken").unwrap(), 0, "count {bad}");
+            assert_eq!(res.get::<String>("stop").unwrap(), "notbox");
+        }
+        assert_eq!(bb_count(&world, BOX_AKARA), 2);
+        assert_eq!(bb_count(&world, REWARD_STACK), 0);
+    }
+
+    #[test]
+    fn box_breaker_requires_the_player_next_to_the_npc() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 2);
+        lua.load("BoxPick(1, 811053000)").exec().unwrap();
+        // walk away (range is 30)
+        world.update_session(1, |h| h.position.x = 200.0);
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(res.get::<String>("stop").unwrap(), "far");
+        let res = bb_run(&lua, "return BoxBreakAll(1)");
+        assert_eq!(res.get::<String>("stop").unwrap(), "far");
+        // no NPC at all
+        world.update_session(1, |h| {
+            h.position.x = 50.0;
+            h.event_nid = -1;
+        });
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<String>("stop").unwrap(), "far");
+        assert_eq!(bb_count(&world, BOX_AKARA), 2);
+        // back in range
+        world.update_session(1, |h| h.event_nid = BB_NPC_NID as i16);
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 1);
+    }
+
+    #[test]
+    fn box_breaker_refuses_while_busy_or_dead() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 2);
+        lua.load("BoxPick(1, 811053000)").exec().unwrap();
+        world.update_character_stats(1, |c| c.hp = 0);
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<String>("stop").unwrap(), "busy");
+        assert_eq!(bb_count(&world, BOX_AKARA), 2);
+    }
+
+    #[test]
+    fn box_breaker_never_touches_sealed_or_rented_stacks() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.update_inventory(1, |inv| {
+            inv[WorldState::SLOT_MAX] = UserItemSlot {
+                item_id: BOX_AKARA,
+                count: 4,
+                flag: ITEM_FLAG_SEALED,
+                ..Default::default()
+            };
+            true
+        });
+        assert_eq!(
+            lua.load("return BoxPick(1, 811053000)").eval::<u32>().unwrap(),
+            0
+        );
+        let res = bb_run(&lua, "return BoxBreakAll(1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(bb_count(&world, BOX_AKARA), 4);
+        assert_eq!(bb_count(&world, REWARD_STACK), 0);
+    }
+
+    #[test]
+    fn box_breaker_stops_when_the_bag_is_full_without_losing_boxes() {
+        let (lua, world, _rx) = setup_box_breaker();
+        // 28 bag slots: slot 0 holds 3 Dragon Boxes (they give a non-stackable reward), the
+        // other 27 are junk
+        world.update_inventory(1, |inv| {
+            inv[WorldState::SLOT_MAX] = UserItemSlot {
+                item_id: BOX_DRAGON,
+                count: 3,
+                ..Default::default()
+            };
+            for i in 1..WorldState::HAVE_MAX {
+                inv[WorldState::SLOT_MAX + i] = UserItemSlot {
+                    item_id: 7_000 + i as u32,
+                    count: 1,
+                    ..Default::default()
+                };
+            }
+            true
+        });
+        world.set_user_ability(1);
+        lua.load("BoxPick(1, 810341000)").exec().unwrap();
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(res.get::<String>("stop").unwrap(), "full");
+        assert_eq!(bb_count(&world, BOX_DRAGON), 3, "box must not be consumed");
+        assert_eq!(bb_count(&world, REWARD_GEAR), 0);
+
+        // the last box of a stack frees its own slot for the reward
+        world.update_inventory(1, |inv| {
+            inv[WorldState::SLOT_MAX].count = 1;
+            true
+        });
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 1);
+        assert_eq!(bb_count(&world, BOX_DRAGON), 0);
+        assert_eq!(bb_count(&world, REWARD_GEAR), 1);
+    }
+
+    #[test]
+    fn box_breaker_stops_when_overweight() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_DRAGON, 2);
+        lua.load("BoxPick(1, 810341000)").exec().unwrap();
+        // reward weighs 2, box 1: 100 - 1 + 2 > 100
+        world.update_session(1, |h| {
+            h.equipped_stats.item_weight = 100;
+            h.equipped_stats.max_weight = 100;
+        });
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(res.get::<String>("stop").unwrap(), "heavy");
+        assert_eq!(bb_count(&world, BOX_DRAGON), 2);
+        // exactly at the limit is fine
+        world.update_session(1, |h| {
+            h.equipped_stats.item_weight = 99;
+            h.equipped_stats.max_weight = 100;
+        });
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 1);
+    }
+
+    #[test]
+    fn box_breaker_hands_the_box_back_when_the_reward_cannot_be_given() {
+        let (lua, world, _rx) = setup_box_breaker();
+        // countable = 2 items are never handed out by give_item
+        bb_item(&world, 3_001, "Ungivable", 0, 1, 0, 2);
+        bb_box(&world, 3_002_000, "Cursed Box", &[(3_001, 50)]);
+        world.give_item(1, 3_002_000, 4);
+        lua.load("BoxPick(1, 3002000)").exec().unwrap();
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(res.get::<String>("stop").unwrap(), "full");
+        assert_eq!(bb_count(&world, 3_002_000), 4, "box refunded");
+        assert_eq!(bb_count(&world, 3_001), 0);
+    }
+
+    #[test]
+    fn box_breaker_aborts_on_a_reward_that_is_not_in_the_item_table() {
+        let (lua, world, _rx) = setup_box_breaker();
+        bb_box(&world, 3_003_000, "Broken Box", &[(REWARD_STACK, 50), (9_999_999, 50)]);
+        world.give_item(1, 3_003_000, 2);
+        lua.load("BoxPick(1, 3003000)").exec().unwrap();
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 0);
+        assert_eq!(res.get::<String>("stop").unwrap(), "badpool");
+        assert_eq!(bb_count(&world, 3_003_000), 2);
+    }
+
+    #[test]
+    fn box_breaker_break_all_walks_every_kind_lowest_id_first() {
+        let (lua, world, _rx) = setup_box_breaker();
+        world.give_item(1, BOX_AKARA, 3);
+        world.give_item(1, BOX_DRAGON, 2);
+        let res = bb_run(&lua, "return BoxBreakAll(1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 5);
+        assert_eq!(res.get::<String>("stop").unwrap(), "done");
+        let rewards: LuaTable = res.get("rewards").unwrap();
+        assert_eq!(rewards.len().unwrap(), 2);
+        let first: LuaTable = rewards.get(1).unwrap();
+        assert_eq!(first.get::<u32>("id").unwrap(), REWARD_GEAR, "Dragon Box (lower id) first");
+        assert_eq!(first.get::<u32>("count").unwrap(), 2);
+        assert_eq!(bb_count(&world, BOX_AKARA) + bb_count(&world, BOX_DRAGON), 0);
+        assert_eq!(bb_count(&world, REWARD_STACK), 3);
+        assert_eq!(bb_count(&world, REWARD_GEAR), 2);
+        let res = bb_run(&lua, "return BoxBreakAll(1)");
+        assert_eq!(res.get::<String>("stop").unwrap(), "nobox");
+    }
+
+    #[test]
+    fn box_breaker_break_all_stops_at_200_pieces_across_kinds() {
+        let (lua, world, _rx) = setup_box_breaker();
+        bb_box(&world, 3_007_000, "Second Box", &[(REWARD_STACK, 50)]);
+        world.give_item(1, BOX_AKARA, 150);
+        world.give_item(1, 3_007_000, 80);
+        let res = bb_run(&lua, "return BoxBreakAll(1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 200);
+        assert_eq!(res.get::<String>("stop").unwrap(), "capped");
+        // the lower id went first: all 80 of it, then 120 Akara boxes
+        assert_eq!(bb_count(&world, 3_007_000), 0);
+        assert_eq!(bb_count(&world, BOX_AKARA), 30);
+        assert_eq!(bb_count(&world, REWARD_STACK), 200);
+    }
+
+    #[test]
+    fn box_breaker_reward_weights_follow_the_generator() {
+        let (lua, world, _rx) = setup_box_breaker();
+        // 50 -> 10 slots, 150 -> 30 slots: 1 : 3
+        // weightless items so the weight limit never interferes with 2000 breaks
+        bb_item(&world, REWARD_STACK, "Reward One", 0, 0, 0, 1);
+        bb_item(&world, 4_001, "Heavy Reward", 0, 0, 0, 1);
+        bb_item(&world, 4_002, "Zero Slot Reward", 0, 0, 0, 1);
+        bb_box(&world, 3_004_000, "Weighted Box", &[(REWARD_STACK, 50), (4_001, 150), (4_002, 4)]);
+        bb_item(&world, 3_004_000, "Weighted Box", 251, 0, 0, 1);
+        world.give_item(1, 3_004_000, ITEMCOUNT_MAX);
+        lua.load("BoxPick(1, 3004000)").exec().unwrap();
+        for _ in 0..10 {
+            bb_run(&lua, "return BoxBreak(1, 200)");
+        }
+        let (a, b, z) = (
+            bb_count(&world, REWARD_STACK),
+            bb_count(&world, 4_001),
+            bb_count(&world, 4_002),
+        );
+        assert_eq!(a + b, 2000);
+        assert_eq!(z, 0, "weights below 5 never win (count / 5 = 0 slots)");
+        let share = b as f64 / 2000.0;
+        assert!((0.70..=0.80).contains(&share), "expected ~0.75, got {share}");
+    }
+
+    #[test]
+    fn box_breaker_unique_rewards_are_announced_server_wide() {
+        let (lua, world, mut rx) = setup_box_breaker();
+        bb_box(&world, 3_005_000, "Epic Box", &[(REWARD_EPIC, 50)]);
+        world.give_item(1, 3_005_000, 1);
+        lua.load("BoxPick(1, 3005000)").exec().unwrap();
+        while rx.try_recv().is_ok() {}
+        let res = bb_run(&lua, "return BoxBreak(1, 1)");
+        assert_eq!(res.get::<u32>("broken").unwrap(), 1);
+        let mut shouts = 0;
+        while let Ok(p) = rx.try_recv() {
+            if p.opcode == Opcode::WizLogosshout as u8 {
+                shouts += 1;
+            }
+        }
+        assert_eq!(shouts, 1);
+    }
+
+    #[test]
+    fn box_breaker_send_chat_line_truncates() {
+        let (lua, _world, mut rx) = setup_box_breaker();
+        while rx.try_recv().is_ok() {}
+        let long = "x".repeat(400);
+        lua.load(format!("SendChatLine(1, '{long}')")).exec().unwrap();
+        let p = rx.try_recv().unwrap();
+        assert_eq!(p.opcode, Opcode::WizChat as u8);
+        let mut r = ko_protocol::PacketReader::new(&p.data);
+        r.read_u8();
+        r.read_u8();
+        r.read_u32();
+        r.read_sbyte_string();
+        assert_eq!(r.read_string().unwrap().len(), 250);
+    }
+
+    // ---- the real Lua script, end to end ----------------------------------------------
+
+    struct BbMenu {
+        flag: u8,
+        header: i32,
+        texts: Vec<i32>,
+        events: Vec<i32>,
+    }
+
+    fn bb_engine() -> crate::lua_engine::LuaEngine {
+        crate::lua_engine::LuaEngine::with_script_dir(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("Quests"),
+        )
+    }
+
+    /// Runs the script for `event` and returns the last SelectMsg menu plus the chat lines.
+    fn bb_event(
+        engine: &crate::lua_engine::LuaEngine,
+        world: &Arc<WorldState>,
+        rx: &mut mpsc::UnboundedReceiver<Arc<Packet>>,
+        event: i32,
+    ) -> (Option<BbMenu>, Vec<String>) {
+        while rx.try_recv().is_ok() {}
+        assert!(
+            engine.execute(world, 1, event, -1, "31514_BoxBreaker.lua"),
+            "script failed for event {event}"
+        );
+        let mut menu = None;
+        let mut chats = Vec::new();
+        while let Ok(p) = rx.try_recv() {
+            let mut r = ko_protocol::PacketReader::new(&p.data);
+            if p.opcode == Opcode::WizSelectMsg as u8 {
+                r.read_u32();
+                let flag = r.read_u8().unwrap();
+                r.read_i32();
+                let header = r.read_i32().unwrap();
+                let texts: Vec<i32> = (0..12).map(|_| r.read_i32().unwrap()).collect();
+                let events = world.with_session(1, |h| h.select_msg_events).unwrap().to_vec();
+                menu = Some(BbMenu {
+                    flag,
+                    header,
+                    texts,
+                    events,
+                });
+            } else if p.opcode == Opcode::WizChat as u8 {
+                r.read_u8();
+                r.read_u8();
+                r.read_u32();
+                r.read_sbyte_string();
+                chats.push(r.read_string().unwrap());
+            }
+        }
+        (menu, chats)
+    }
+
+    fn visible(menu: &BbMenu) -> Vec<(i32, i32)> {
+        menu.texts
+            .iter()
+            .zip(menu.events.iter())
+            .filter(|(t, _)| **t != -1)
+            .map(|(t, e)| (*t, *e))
+            .collect()
+    }
+
+    #[test]
+    fn box_breaker_script_full_flow() {
+        let (_lua, world, mut rx) = setup_box_breaker();
+        let engine = bb_engine();
+
+        // nothing to break
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 100);
+        let menu = menu.unwrap();
+        assert_eq!((menu.flag, menu.header), (2, 62102));
+        assert_eq!(visible(&menu), vec![(27, -1)]);
+
+        world.give_item(1, BOX_AKARA, 3);
+        world.give_item(1, BOX_DRAGON, 1);
+
+        // root list: Dragon Box (lower id) first, then Akara, break-all, close
+        let (menu, chats) = bb_event(&engine, &world, &mut rx, 100);
+        let menu = menu.unwrap();
+        assert_eq!((menu.flag, menu.header), (3, 62101));
+        assert_eq!(
+            visible(&menu),
+            vec![
+                (62224, BOX_DRAGON as i32),
+                (62234, BOX_AKARA as i32),
+                (62104, 500),
+                (27, -1)
+            ]
+        );
+        assert_eq!(chats.len(), 1);
+        assert!(chats[0].contains("Dragon Box x1") && chats[0].contains("Akara Accessory Box x3"));
+
+        // pick the Akara boxes: break 1 / break all of this kind / back / close (no "10")
+        let (menu, chats) = bb_event(&engine, &world, &mut rx, BOX_AKARA as i32);
+        let menu = menu.unwrap();
+        assert_eq!(menu.header, 62103);
+        assert_eq!(
+            visible(&menu),
+            vec![(62101, 410), (62103, 430), (62107, 200), (27, -1)]
+        );
+        assert!(chats[0].contains("Akara Accessory Box x3"));
+        assert_eq!(world.box_breaker_picked(1), BOX_AKARA);
+
+        // break one
+        let (menu, chats) = bb_event(&engine, &world, &mut rx, 410);
+        let menu = menu.unwrap();
+        assert_eq!(menu.header, 62105, "done dialog");
+        assert_eq!(visible(&menu), vec![(62107, 200), (27, -1)]);
+        assert_eq!(bb_count(&world, BOX_AKARA), 2);
+        assert_eq!(bb_count(&world, REWARD_STACK), 1);
+        assert!(chats.iter().any(|c| c.contains("Reward One x1")), "{chats:?}");
+
+        // break the rest of that kind
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 430);
+        assert_eq!(menu.unwrap().header, 62105);
+        assert_eq!(bb_count(&world, BOX_AKARA), 0);
+        assert_eq!(bb_count(&world, REWARD_STACK), 3);
+
+        // only the Dragon Box is left in the list
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 200);
+        assert_eq!(
+            visible(&menu.unwrap()),
+            vec![(62224, BOX_DRAGON as i32), (62104, 500), (27, -1)]
+        );
+
+        // break-all asks first
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 500);
+        let menu = menu.unwrap();
+        assert_eq!(menu.header, 62104);
+        assert_eq!(visible(&menu), vec![(62109, 510), (62110, 200)]);
+        assert_eq!(bb_count(&world, BOX_DRAGON), 1, "nothing broken by the question");
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 510);
+        assert_eq!(menu.unwrap().header, 62105);
+        assert_eq!(bb_count(&world, BOX_DRAGON), 0);
+        assert_eq!(bb_count(&world, REWARD_GEAR), 1);
+
+        // empty again
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 100);
+        assert_eq!(menu.unwrap().header, 62102);
+    }
+
+    #[test]
+    fn box_breaker_script_offers_break_10_only_with_enough_boxes() {
+        let (_lua, world, mut rx) = setup_box_breaker();
+        let engine = bb_engine();
+        world.give_item(1, BOX_AKARA, 12);
+        let (menu, _) = bb_event(&engine, &world, &mut rx, BOX_AKARA as i32);
+        assert_eq!(
+            visible(&menu.unwrap()),
+            vec![(62101, 410), (62102, 420), (62103, 430), (62107, 200), (27, -1)]
+        );
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 420);
+        assert_eq!(menu.unwrap().header, 62105);
+        assert_eq!(bb_count(&world, BOX_AKARA), 2);
+        assert_eq!(bb_count(&world, REWARD_STACK), 10);
+    }
+
+    #[test]
+    fn box_breaker_script_pages_after_8_kinds() {
+        let (_lua, world, mut rx) = setup_box_breaker();
+        let engine = bb_engine();
+        // ten more real box ids from the script's table (12 kinds with the two from the setup)
+        let extra = [
+            379_154_000u32,
+            379_155_000,
+            379_156_000,
+            389_160_000,
+            389_161_000,
+            389_162_000,
+            389_163_000,
+            389_164_000,
+            389_165_000,
+            389_166_000,
+        ];
+        for id in extra {
+            bb_box(&world, id, "Extra Box", &[(REWARD_STACK, 50)]);
+            world.give_item(1, id, 1);
+        }
+        world.give_item(1, BOX_AKARA, 1);
+        world.give_item(1, BOX_DRAGON, 1);
+
+        // page 0: 8 boxes + break-all + next + close = 11 buttons
+        let (menu, chats) = bb_event(&engine, &world, &mut rx, 100);
+        let page0 = visible(&menu.unwrap());
+        assert_eq!(page0.len(), 11);
+        assert_eq!(page0[0], (62201, 379_154_000));
+        assert_eq!(page0[7], (62208, 389_164_000));
+        assert_eq!(page0[8], (62104, 500));
+        assert_eq!(page0[9], (62106, 201));
+        assert_eq!(page0[10], (27, -1));
+        assert!(chats[0].contains("1/2"));
+
+        // page 1: 4 boxes + break-all + previous + close
+        let (menu, chats) = bb_event(&engine, &world, &mut rx, 201);
+        let page1 = visible(&menu.unwrap());
+        assert_eq!(
+            page1,
+            vec![
+                (62209, 389_165_000),
+                (62210, 389_166_000),
+                (62224, BOX_DRAGON as i32),
+                (62234, BOX_AKARA as i32),
+                (62104, 500),
+                (62105, 200),
+                (27, -1)
+            ]
+        );
+        assert!(chats[0].contains("2/2"));
+
+        // an out-of-range page is clamped to the last one
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 250);
+        assert_eq!(visible(&menu.unwrap()).len(), 7);
+    }
+
+    #[test]
+    fn box_breaker_script_uses_the_generic_text_for_unmapped_boxes() {
+        let (_lua, world, mut rx) = setup_box_breaker();
+        let engine = bb_engine();
+        bb_box(&world, 389_999_000, "Brand New Box", &[(REWARD_STACK, 50)]);
+        world.give_item(1, 389_999_000, 2);
+        let (menu, chats) = bb_event(&engine, &world, &mut rx, 100);
+        assert_eq!(visible(&menu.unwrap())[0], (62108, 389_999_000));
+        assert!(chats[0].contains("Brand New Box x2"));
+        // and it can still be picked and broken
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 389_999_000);
+        assert_eq!(menu.unwrap().header, 62103);
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 430);
+        assert_eq!(menu.unwrap().header, 62105);
+        assert_eq!(bb_count(&world, 389_999_000), 0);
+    }
+
+    #[test]
+    fn box_breaker_script_reports_a_full_bag() {
+        let (_lua, world, mut rx) = setup_box_breaker();
+        let engine = bb_engine();
+        world.update_inventory(1, |inv| {
+            inv[WorldState::SLOT_MAX] = UserItemSlot {
+                item_id: BOX_DRAGON,
+                count: 3,
+                ..Default::default()
+            };
+            for i in 1..WorldState::HAVE_MAX {
+                inv[WorldState::SLOT_MAX + i] = UserItemSlot {
+                    item_id: 7_000 + i as u32,
+                    count: 1,
+                    ..Default::default()
+                };
+            }
+            true
+        });
+        world.set_user_ability(1);
+        bb_event(&engine, &world, &mut rx, BOX_DRAGON as i32);
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 410);
+        assert_eq!(menu.unwrap().header, 62107);
+        assert_eq!(bb_count(&world, BOX_DRAGON), 3);
+    }
+
+    #[test]
+    fn box_breaker_script_is_safe_against_stale_or_forged_events() {
+        let (_lua, world, mut rx) = setup_box_breaker();
+        let engine = bb_engine();
+        world.give_item(1, BOX_AKARA, 2);
+        // break events without a pick break nothing
+        for ev in [410, 420, 430] {
+            let (menu, _) = bb_event(&engine, &world, &mut rx, ev);
+            assert_eq!(menu.unwrap().header, 62109, "event {ev}");
+        }
+        assert_eq!(bb_count(&world, BOX_AKARA), 2);
+        // picking something the player does not own falls back to the list
+        let (menu, _) = bb_event(&engine, &world, &mut rx, BOX_DRAGON as i32);
+        assert_eq!(menu.unwrap().header, 62101);
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 410);
+        assert_eq!(menu.unwrap().header, 62109);
+        // a huge / non-box item id is rejected too
+        let (menu, _) = bb_event(&engine, &world, &mut rx, 2_000_000_000);
+        assert_eq!(menu.unwrap().header, 62101);
+        assert_eq!(bb_count(&world, BOX_AKARA), 2);
+        // unknown events do nothing
+        let (menu, chats) = bb_event(&engine, &world, &mut rx, 77);
+        assert!(menu.is_none() && chats.is_empty());
     }
 }

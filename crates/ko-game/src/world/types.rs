@@ -333,6 +333,10 @@ pub struct SessionHandle {
     /// reuses WIZ_COSTUME (0xC3) for both costume and special-auction traffic;
     /// this server-owned context is what safely separates those contracts.
     pub akara_altar_armed: bool,
+    /// Box type the player picked in the Box Breaker NPC menu (item id, 0 = none).
+    /// Set by the `BoxPick` Lua binding after it verified the player owns a breakable
+    /// box of that type; the later `BoxBreak` call re-validates everything.
+    pub box_breaker_pick: u32,
     /// Current quest helper ID for NPC dialog (Lua script).
     ///
     pub quest_helper_id: u32,
