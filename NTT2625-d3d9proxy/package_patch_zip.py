@@ -14,6 +14,19 @@
 # restart needed -- patch_tcp.rs re-scans the zips/ folder on every request.
 #
 # Usage: python package_patch_zip.py [client_dir]   (default: D:\ai\JstKO Client)
+#
+# CONSOLIDATED mode (--consolidate): the launcher does not reliably apply every intermediate patch
+# in order, so instead of one small incremental zip, EVERY zip from --first to the new version is
+# (re)written with the SAME full file set (latest d3d9.dll, XIGNCODE xldr, every Data tbl, plus
+# any other file that ever appeared in the existing zips in the range and still exists in the
+# client) and a Server.ini whose [Version] Files= equals that zip's own version number. The
+# launcher extracts Server.ini last, so a player on any old version who downloads ANY of the zips
+# ends up fully current and then simply continues through the later (identical) zips.
+# Launcher.upd / launcher2.exe (12 MB self-update builds) are NOT repeated in every zip unless you
+# pass --with-launcher. patch_state.json is advanced to the new version as usual.
+#   python package_patch_zip.py --consolidate --first 2639 [--version 2647] [--zips-dir DIR] [client_dir]
+# Back up the old zips on the VPS before uploading the rewritten ones (see the printed commands).
+import argparse
 import hashlib
 import json
 import os
@@ -21,7 +34,15 @@ import sys
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CLIENT_DIR = sys.argv[1] if len(sys.argv) > 1 else r'D:\ai\JstKO Client'
+_ap = argparse.ArgumentParser()
+_ap.add_argument('client_dir', nargs='?', default=r'D:\ai\JstKO Client')
+_ap.add_argument('--consolidate', action='store_true')
+_ap.add_argument('--first', type=int, default=None, help='first version to (re)write in consolidated mode')
+_ap.add_argument('--version', type=int, default=None, help='new latest version (default: state version + 1)')
+_ap.add_argument('--with-launcher', action='store_true', help='also repeat Launcher.upd/launcher2.exe in every zip')
+_ap.add_argument('--zips-dir', default=None)
+ARGS = _ap.parse_args()
+CLIENT_DIR = ARGS.client_dir
 OUT_DIR = os.path.join(HERE, 'client_patch_release')
 STATE_PATH = os.path.join(HERE, 'patch_state.json')
 BLACK_LION_DIR = os.path.join(os.path.dirname(HERE), 'client_patch', 'black_lion_chr')
@@ -92,7 +113,86 @@ def load_state():
     return {'version': 0, 'files': {}}
 
 
+def consolidated_entries(first, last):
+    """Fixed full file set: normal tracked set restricted to d3d9.dll/xldr/Data tbl + union of the
+    entries of the existing zips first..last that still exist in the client."""
+    zips_dir = ARGS.zips_dir or os.path.join(OUT_DIR, 'zips')
+    skip = {'server.ini'}
+    if not ARGS.with_launcher:
+        skip |= {'launcher.upd', 'launcher2.exe'}
+    chosen = {}
+    for rel, full in collect():
+        low = rel.lower()
+        if rel == 'd3d9.dll' or low.startswith('data/') or 'xldr_' in low:
+            chosen[rel] = full
+    for v in range(first, last + 1):
+        zp = os.path.join(zips_dir, '%d.zip' % v)
+        if not os.path.isfile(zp):
+            continue
+        with zipfile.ZipFile(zp) as zf:
+            for name in zf.namelist():
+                if name.lower() in skip or name in chosen:
+                    continue
+                full = os.path.join(CLIENT_DIR, *name.split('/'))
+                if os.path.isfile(full):
+                    chosen[name] = full
+                else:
+                    print('note: %s (in %d.zip) is not in the client dir, left out' % (name, v))
+    return sorted(chosen.items(), key=lambda e: e[0].lower())
+
+
+def server_ini_for(version):
+    """Client's own Server.ini (CRLF kept) with [Version] Files= set to `version`."""
+    path = os.path.join(CLIENT_DIR, 'Server.ini')
+    with open(path, 'rb') as f:
+        raw = f.read().decode('latin-1')
+    eol = '\r\n' if '\r\n' in raw else '\n'
+    lines = raw.replace('\r\n', '\n').split('\n')
+    out, in_ver, done = [], False, False
+    for ln in lines:
+        st = ln.strip()
+        if st.startswith('['):
+            if in_ver and not done:
+                out.append('Files=%d' % version); done = True
+            in_ver = st.lower() == '[version]'
+        elif in_ver and st.lower().startswith('files'):
+            ln = 'Files=%d' % version; done = True
+        out.append(ln)
+    if in_ver and not done:
+        out.insert(len(out) - (1 if out and out[-1] == '' else 0), 'Files=%d' % version); done = True
+    if not done:
+        out += ['[Version]', 'Files=%d' % version]
+    return eol.join(out).encode('latin-1')
+
+
+def consolidate():
+    state = load_state()
+    new_version = ARGS.version or state['version'] + 1
+    first = ARGS.first or new_version
+    entries = consolidated_entries(first, new_version)
+    zips_dir = ARGS.zips_dir or os.path.join(OUT_DIR, 'zips')
+    os.makedirs(zips_dir, exist_ok=True)
+    print('consolidated set: %d files' % len(entries))
+    for v in range(first, new_version + 1):
+        zip_path = os.path.join(zips_dir, '%d.zip' % v)
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for rel, full in entries:
+                zf.write(full, rel)
+            info = zipfile.ZipInfo('Server.ini', date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, server_ini_for(v))      # LAST entry: the launcher extracts in order
+        print('wrote %d.zip  %.2f MB  sha256 %s' % (v, os.path.getsize(zip_path) / 1e6, sha256_of(zip_path)))
+    state['version'] = new_version
+    state['files'] = {rel: sha256_of(full) for rel, full in collect()}
+    with open(STATE_PATH, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(state, f, indent=1)
+    print('patch_state.json -> version %d' % new_version)
+    print('upload: back up %s on the VPS first, then scp the %d.zip..%d.zip files' % (VPS_ZIPS_DIR, first, new_version))
+
+
 def main():
+    if ARGS.consolidate:
+        return consolidate()
     state = load_state()
     entries = collect()
 

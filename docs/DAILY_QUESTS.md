@@ -293,3 +293,16 @@ unit-tested). The migration also clamps stored progress (step 3) so offline play
 | 198 | Troll Hunt | 50-83 | 71 | 70 | 250 -> **80** | 8,000,000 EXP, Blessed Upgrade Scroll x1, Silver bar x1 | 4,300,000 EXP, 240,000 Gold, Scroll of Armor 350 x1, Upgrade Scroll x3 | ok |
 | 199 | Troll Warrior Hunt | 50-83 | 71 | 80 | 250 -> **65** | 9,500,000 EXP, Blessed Upgrade Scroll x1, Silver bar x1 | 4,300,000 EXP, 220,000 Gold, Scroll of 2000HP Up x1, Black Lion Weapon Box x1 | ok |
 | 200 | Death Knight Hunt | 65-83 | 71 | 45 | 250 -> **155** | 9,500,000 EXP, Blessed Upgrade Scroll x1, Silver bar x1 | 2,900,000 EXP, 310,000 Gold, Ibexs potion [Limited edition] x1, Blessed Upgrade Scroll x2 | NO SPAWN |
+
+## Nation filter and level rules (2026-10-18, dq-nation-patch)
+
+* A quest belongs to a nation by its zone (`daily_quest::quest_nation`): zone 1 / 11 = Karus, zone 2 / 12 = El Morad,
+  everything else (Moradon 21, Ronark 71, any) is neutral. Karus players never see, auto-start, accept or count El Morad
+  quests and vice versa (quest list, progress list, `auto_start_all`, `quest_accept_check`, kill counting). No migration needed
+  (derived from `zone_id`); progress rows already stored for the other nation are simply hidden/ignored.
+* Level rule is now only the quest's own `min_level..max_level` (inclusive) everywhere. The old extra rule "a player standing in
+  Moradon only counts home-zone quests up to level 35" made level 36-83 players lose quests that the list showed as available
+  (their mobs only spawn in Moradon); it is gone. Level-ups (and the GM panel level edit) start the newly eligible quests only after
+  the new level is stored.
+* Kill counter overlay (client): a solid dark panel with a gold/green border centred just below the target HP bar
+  (`target_hp.cpp::TargetHp_BarAnchor`); `JstKO\daily_hud.ini` `[hud] x= y=` are now small nudges from that anchor.

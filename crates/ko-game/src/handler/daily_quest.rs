@@ -112,6 +112,32 @@ pub fn quest_level_check(quest: &DailyQuestRow, level: i16) -> bool {
     level >= quest.min_level && level <= quest.max_level
 }
 
+/// Nation a quest belongs to, derived from its zone: the Karus lands (zone 1
+/// Luferson, zone 11 Karus Eslant) are 1, the El Morad lands (zone 2, zone 12
+/// Elmorad Eslant) are 2, everything else (Moradon 21, Ronark Land 71, any
+/// zone) is neutral (0). The El Morad quests are "twins" of the Karus ones
+/// with their own mob ids, so the zone is the only nation marker they carry.
+pub fn quest_nation(quest: &DailyQuestRow) -> u8 {
+    match quest.zone_id {
+        1 | 11 => 1,
+        2 | 12 => 2,
+        _ => 0,
+    }
+}
+
+/// A quest of the other nation must never be listed, started or counted.
+pub fn quest_nation_check(quest: &DailyQuestRow, nation: u8) -> bool {
+    let qn = quest_nation(quest);
+    qn == 0 || qn == nation
+}
+
+fn player_nation(world: &WorldState, sid: SessionId) -> u8 {
+    world
+        .get_character_info(sid)
+        .map(|c| c.nation)
+        .unwrap_or(0)
+}
+
 /// Check if a kill is valid for the quest based on party status.
 /// - killtype 0: solo only (must NOT be in party)
 /// - killtype 1: party only (must be in party)
@@ -277,10 +303,13 @@ fn quest_accept_check(
             },
         );
     }
+    if !quest_nation_check(quest, nation) {
+        return Err(RES_UNKNOWN);
+    }
     if !quest_level_check(quest, level) {
         return Err(RES_LEVEL);
     }
-    if !daily_manager_zone_check(quest.zone_id, player_zone, level, nation) {
+    if !daily_manager_zone_check(quest.zone_id, player_zone, nation) {
         return Err(RES_ZONE);
     }
     Ok(())
@@ -318,16 +347,13 @@ fn eligible_manager_quests(world: &WorldState, sid: SessionId) -> Vec<DailyQuest
 }
 
 /// Apply the same zone policy while listing and progressing manager quests.
-/// Moradon owns the 1–35 beginner band, including the character's
-/// nation-specific home-zone definitions; later quests stay in their zone.
-fn daily_manager_zone_check(
-    quest_zone: i16,
-    player_zone: u16,
-    player_level: i16,
-    nation: u8,
-) -> bool {
+/// Moradon also serves the character's own nation-specific home-zone
+/// definitions (the home zone's mobs spawn in Moradon). This is NOT capped by
+/// the player's level any more: the quest's own `min_level..max_level` band is
+/// the only level rule, so the list, auto start and kill counting agree.
+fn daily_manager_zone_check(quest_zone: i16, player_zone: u16, nation: u8) -> bool {
     if player_zone == 21 {
-        quest_zone == 21 || (player_level <= 35 && quest_zone == if nation == 1 { 1 } else { 2 })
+        quest_zone == 21 || quest_zone == if nation == 1 { 1 } else { 2 }
     } else {
         zone_check(quest_zone, player_zone)
     }
@@ -429,10 +455,10 @@ pub async fn handle_daily_quest_manager_event(
 /// Quests that are completed, cooling down or already running are left alone. Returns true when
 /// something was started.
 pub fn auto_start_all(world: &WorldState, sid: SessionId) -> bool {
-    let Some((name, level)) = world.with_session(sid, |h| {
+    let Some((name, level, nation)) = world.with_session(sid, |h| {
         h.character
             .as_ref()
-            .map(|c| (c.name.clone(), c.level as i16))
+            .map(|c| (c.name.clone(), c.level as i16, c.nation))
     }).flatten() else {
         return false;
     };
@@ -441,7 +467,10 @@ pub fn auto_start_all(world: &WorldState, sid: SessionId) -> bool {
         .unwrap_or_default();
     let mut rows = Vec::new();
     for quest in world.get_all_daily_quests() {
-        if selected.contains_key(&quest.id) || !quest_level_check(&quest, level) {
+        if selected.contains_key(&quest.id)
+            || !quest_level_check(&quest, level)
+            || !quest_nation_check(&quest, nation)
+        {
             continue;
         }
         rows.push(UserDailyQuestRow {
@@ -794,7 +823,12 @@ fn describe_objective(world: &WorldState, def: &DailyQuestRow) -> String {
 
 /// Send op 0 (definitions).
 pub fn send_list(world: &WorldState, sid: SessionId) {
-    let mut defs = world.get_all_daily_quests();
+    let nation = player_nation(world, sid);
+    let mut defs: Vec<DailyQuestRow> = world
+        .get_all_daily_quests()
+        .into_iter()
+        .filter(|d| quest_nation_check(d, nation))
+        .collect();
     defs.sort_by_key(|d| d.id);
     let entries: Vec<DqListEntry> = defs
         .iter()
@@ -829,6 +863,17 @@ pub fn send_progress(world: &WorldState, sid: SessionId) {
     let Some(user_quests) = world.with_session(sid, |h| h.daily_quests.clone()) else {
         return;
     };
+    let nation = player_nation(world, sid);
+    let hidden: std::collections::HashSet<i16> = world
+        .get_all_daily_quests()
+        .iter()
+        .filter(|d| !quest_nation_check(d, nation))
+        .map(|d| d.id)
+        .collect();
+    let user_quests: std::collections::HashMap<_, _> = user_quests
+        .into_iter()
+        .filter(|(id, _)| !hidden.contains(id))
+        .collect();
     let entries = progress_entries(&user_quests, unix_now());
     world.send_to_session_owned(sid, build_progress_packet(&entries));
 }
@@ -964,8 +1009,13 @@ pub async fn update_daily_quest_count(world: &WorldState, sid: SessionId, monste
             continue;
         }
 
+        // Nation check: never count the other nation's quests
+        if !quest_nation_check(def, player_nation) {
+            continue;
+        }
+
         // Zone check
-        if !daily_manager_zone_check(def.zone_id, player_zone, player_level, player_nation) {
+        if !daily_manager_zone_check(def.zone_id, player_zone, player_nation) {
             continue;
         }
 
@@ -1913,6 +1963,65 @@ mod tests {
         assert!(zone_check(12, 13)); // Karus Eslant 2 counts
         assert!(zone_check(12, 14)); // Karus Eslant 3 counts
         assert!(!zone_check(12, 15)); // Elmorad Eslant 2 does NOT count
+    }
+
+    #[test]
+    fn test_quest_nation_from_zone() {
+        let mut q = make_quest(1, 551, 10, 0, 2);
+        for (zone, nation) in [(1, 1), (11, 1), (2, 2), (12, 2), (21, 0), (71, 0), (0, 0)] {
+            q.zone_id = zone;
+            assert_eq!(quest_nation(&q), nation, "zone {zone}");
+        }
+    }
+
+    #[test]
+    fn test_quest_nation_check_hides_other_nation() {
+        let mut q = make_quest(1, 551, 10, 0, 2);
+        q.zone_id = 1; // Karus quest
+        assert!(quest_nation_check(&q, 1));
+        assert!(!quest_nation_check(&q, 2));
+        q.zone_id = 2; // El Morad twin
+        assert!(quest_nation_check(&q, 2));
+        assert!(!quest_nation_check(&q, 1));
+        q.zone_id = 21; // neutral
+        assert!(quest_nation_check(&q, 1) && quest_nation_check(&q, 2));
+    }
+
+    #[test]
+    fn test_accept_check_rejects_other_nation_before_level() {
+        let mut q = make_quest(5, 551, 10, 0, 2);
+        q.zone_id = 2;
+        q.min_level = 20;
+        q.max_level = 49;
+        let sel = std::collections::HashMap::new();
+        assert!(quest_accept_check(&q, 2, 30, 2, &sel, 0).is_ok());
+        assert_eq!(quest_accept_check(&q, 2, 30, 1, &sel, 0), Err(RES_UNKNOWN));
+    }
+
+    #[test]
+    fn test_moradon_home_zone_quest_not_capped_by_level() {
+        // A level 36..49 player standing in Moradon must still count a
+        // level 20-49 home-zone quest (list, auto start and counting agree).
+        assert!(daily_manager_zone_check(1, 21, 1));
+        assert!(daily_manager_zone_check(2, 21, 2));
+        assert!(!daily_manager_zone_check(2, 21, 1)); // wrong nation home zone
+        assert!(!daily_manager_zone_check(1, 21, 2));
+        assert!(daily_manager_zone_check(21, 21, 1));
+        assert!(!daily_manager_zone_check(11, 21, 1));
+        // outside Moradon the exact zone rules stay
+        assert!(daily_manager_zone_check(1, 1, 1));
+        assert!(!daily_manager_zone_check(1, 21 + 1, 1));
+    }
+
+    #[test]
+    fn test_level_band_edges_are_inclusive() {
+        let mut q = make_quest(1, 551, 10, 0, 2);
+        q.min_level = 20;
+        q.max_level = 49;
+        assert!(!quest_level_check(&q, 19));
+        assert!(quest_level_check(&q, 20));
+        assert!(quest_level_check(&q, 49));
+        assert!(!quest_level_check(&q, 50));
     }
 
     #[test]
