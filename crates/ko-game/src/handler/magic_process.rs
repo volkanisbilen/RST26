@@ -5913,7 +5913,7 @@ fn broadcast_kaul_state_change(
 }
 
 /// Broadcast size change visual to region if the applied buff is SIZE.
-fn broadcast_size_state_change(
+pub(crate) fn broadcast_size_state_change(
     world: &WorldState,
     target_sid: SessionId,
     type4: &ko_db::models::MagicType4Row,

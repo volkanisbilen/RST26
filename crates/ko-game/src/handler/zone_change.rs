@@ -748,6 +748,16 @@ pub async fn trigger_zone_change(
     let cind_zone = world.cinderella_zone_id();
     let is_cind = world.is_cinderella_active() && cind_zone == dest_zone;
     world.clear_all_dots(sid);
+    // The client drops its transformation model on every cross-zone change. Forget the
+    // server side too, otherwise it stays "transformed" forever (no second TS usable and
+    // the saved-magic recast is skipped); the saved TS is re-applied after loading.
+    if world.is_transformed(sid) {
+        world.clear_transformation(sid);
+        world.update_session(sid, |h| {
+            h.old_abnormal_type = h.abnormal_type;
+            h.abnormal_type = crate::magic_constants::ABNORMAL_NORMAL;
+        });
+    }
     world.clear_all_buffs(sid, is_cind);
     stealth::remove_stealth(&world, sid);
     world.set_user_ability(sid);

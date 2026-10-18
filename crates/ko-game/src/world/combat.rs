@@ -508,6 +508,7 @@ impl WorldState {
         let is_item_scroll_buff = skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID
             && self.get_magic(skill_id as i32).is_some_and(|skill| {
                 crate::handler::magic_process::should_persist_type4_magic(&skill, skill_id)
+                    || self.is_persistent_item_transformation(&skill, skill_id)
             });
         if skill_id == 0 || (skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID && !is_item_scroll_buff) {
             return;
@@ -528,6 +529,19 @@ impl WorldState {
                 .saved_magic_map
                 .insert(skill_id, now_ms + (duration_secs as u64) * 1000);
         }
+    }
+    /// Item transformation scrolls (monster / NPC TS) below the custom-skill id
+    /// range must survive zone changes too. Siege / tower forms are zone bound
+    /// and stay unsaved.
+    fn is_persistent_item_transformation(&self, skill: &ko_db::models::MagicRow, skill_id: u32) -> bool {
+        skill.type1 == Some(6)
+            && matches!(skill.item_group, Some(9 | 255))
+            && skill.use_item.unwrap_or(0) > 0
+            && self.get_magic_type6(skill_id as i32).is_some_and(|t6| {
+                crate::handler::magic_process::transformation_type_from_user_skill_use(
+                    t6.user_skill_use,
+                ) != Some(crate::magic_constants::TRANSFORMATION_SIEGE)
+            })
     }
     /// Remove a skill from the saved magic map.
     ///
@@ -707,17 +721,56 @@ impl WorldState {
         }
 
         let mut removed = Vec::new();
+        let mut size_cleared = false;
         if let Some(mut handle) = self.sessions.get_mut(&sid) {
             for (key, skill_id) in &buff_keys {
                 if handle.buffs.remove(key).is_some() {
                     removed.push(*key);
+                    if *key == crate::buff_constants::BUFF_TYPE_SIZE {
+                        size_cleared = true;
+                    }
                 }
                 if remove_saved_magic {
                     handle.saved_magic_map.remove(skill_id);
                 }
             }
+            if size_cleared {
+                handle.size_effect = 0;
+            }
+        }
+        // A removed Bezoar / Rice cake must not leave the model enlarged or
+        // shrunk: nothing else will ever send the "back to normal" state.
+        if size_cleared {
+            self.broadcast_abnormal_normal(sid);
         }
         removed
+    }
+
+    /// Broadcast the "normal size" abnormal state (or the active transformation
+    /// skill) to the player's 3x3 region, including the player.
+    pub(crate) fn broadcast_abnormal_normal(&self, sid: SessionId) {
+        let Some((pos, event_room, abnormal)) = self.with_session(sid, |h| {
+            let abnormal = if h.transformation_type != 0 && h.transform_skill_id != 0 {
+                h.transform_skill_id
+            } else {
+                crate::magic_constants::ABNORMAL_NORMAL
+            };
+            (h.position, h.event_room, abnormal)
+        }) else {
+            return;
+        };
+        let mut pkt = Packet::new(Opcode::WizStateChange as u8);
+        pkt.write_u32(sid as u32);
+        pkt.write_u8(crate::state_change_constants::STATE_CHANGE_ABNORMAL);
+        pkt.write_u32(abnormal);
+        self.broadcast_to_3x3(
+            pos.zone_id,
+            pos.region_x,
+            pos.region_z,
+            Arc::new(pkt),
+            None,
+            event_room,
+        );
     }
 
     /// Clear all durational skills (DOTs/HOTs) from a session (InitType3 equivalent).
@@ -1643,9 +1696,10 @@ impl WorldState {
             return 0;
         }
 
-        if self.is_transformed(sid) {
-            return 0;
-        }
+        // An active transformation must not be re-applied (the entry is skipped
+        // below), but it must never block the *other* saved scrolls: before this
+        // every premium buff was lost whenever the player was transformed.
+        let already_transformed = self.is_transformed(sid);
 
         /// `BUFF_TYPE_HP_MP` (max HP/MP buff scrolls).
         const BUFF_TYPE_HP_MP_RECAST: i32 = 1;
@@ -1664,6 +1718,7 @@ impl WorldState {
                     // a transformation (e.g. a TS scroll) — restore it with its
                     // remaining duration instead of silently dropping it.
                     if filter_buff_type.is_none()
+                        && !already_transformed
                         && self.recast_saved_transformation(sid, *skill_id, *remaining_secs)
                     {
                         recast_count += 1;
@@ -1772,6 +1827,12 @@ impl WorldState {
                 );
             }
 
+            // Bezoar / Rice cake: the client forgot the model scale across the
+            // zone change / respawn, so re-send the size state with the icon.
+            crate::handler::magic_process::broadcast_size_state_change(
+                self, sid, &type4, *skill_id,
+            );
+
             recast_count += 1;
             if type4.buff_type == Some(BUFF_TYPE_HP_MP_RECAST)
                 || type4.max_hp.unwrap_or(0) > 0
@@ -1845,6 +1906,10 @@ impl WorldState {
             now_ms,
             remaining_secs as u64 * 1000,
         );
+        self.update_session(sid, |h| {
+            h.old_abnormal_type = h.abnormal_type;
+            h.abnormal_type = skill_id;
+        });
 
         let mut effecting_pkt = Packet::new(Opcode::WizMagicProcess as u8);
         effecting_pkt.write_u8(3); // MAGIC_EFFECTING
@@ -2584,19 +2649,54 @@ mod recast_saved_magic_tests {
     }
 
     #[tokio::test]
-    async fn test_recast_skips_when_transformed() {
+    async fn test_recast_while_transformed_keeps_buffs_and_skips_second_transform() {
         let (world, _rx) = setup_world();
         world.insert_magic_type4(make_type4(500100, 10, 300));
-        world.load_saved_magic(1, &[(500100, 300)]);
+        world.insert_magic_type6(make_type6(500300, 1, 777, 600));
+        world.load_saved_magic(1, &[(500100, 300), (500300, 400)]);
 
-        // Set transformed state (transformation_type != 0)
+        // Already transformed (e.g. by another scroll): buffs must still come
+        // back, the saved transformation must not replace the active one.
         world.update_session(1, |h| {
-            h.transformation_type = 1; // non-zero = transformed
+            h.transformation_type = 1;
+            h.transform_skill_id = 999;
         });
 
         let count = world.recast_saved_magic(1);
-        assert_eq!(count, 0);
-        assert_eq!(world.get_active_buffs(1).len(), 0);
+        assert_eq!(count, 1);
+        assert_eq!(world.get_active_buffs(1).len(), 1);
+        assert_eq!(world.with_session(1, |h| h.transform_skill_id).unwrap(), 999);
+    }
+
+    #[tokio::test]
+    async fn test_zone_change_sequence_restores_ts_and_buffs() {
+        let (world, _rx) = setup_world();
+        world.insert_magic_type4(make_type4(500100, 10, 300));
+        world.insert_magic_type6(make_type6(500300, 1, 777, 600));
+        world.load_saved_magic(1, &[(500100, 300), (500300, 400)]);
+        world.recast_saved_magic(1);
+        assert!(world.is_transformed(1));
+
+        // zone_change.rs: forget the transformation, wipe buffs, recast.
+        world.clear_transformation(1);
+        world.clear_all_buffs(1, false);
+        assert!(!world.is_transformed(1));
+        assert_eq!(world.recast_saved_magic(1), 2);
+        assert!(world.is_transformed(1));
+        assert_eq!(world.get_active_buffs(1).len(), 1);
+        assert_eq!(world.with_session(1, |h| h.abnormal_type).unwrap(), 500300);
+    }
+
+    #[tokio::test]
+    async fn test_clear_all_buffs_resets_size_effect() {
+        let (world, _rx) = setup_world();
+        world.insert_magic_type4(make_type4(500100, crate::buff_constants::BUFF_TYPE_SIZE, 300));
+        world.load_saved_magic(1, &[(500100, 300)]);
+        world.recast_saved_magic(1);
+        world.update_session(1, |h| h.size_effect = 2);
+
+        world.clear_all_buffs(1, false);
+        assert_eq!(world.with_session(1, |h| h.size_effect).unwrap(), 0);
     }
 
     #[tokio::test]
