@@ -49,6 +49,63 @@ pub const WORE_TYPE_UTC_ATTACK: i32 = 0x05;
 /// Under-castle defence wear (exact amount).
 pub const WORE_TYPE_UTC_DEFENCE: i32 = 0x06;
 
+/// True for kinds where durability is a real wear value (weapons, shields,
+/// bows, staves, armour). Everything else (boxes, quest items, scrolls,
+/// accessories, tools) has no meaningful durability.
+fn kind_has_wear_durability(kind: i32) -> bool {
+    use crate::inventory_constants::*;
+    matches!(
+        kind,
+        WEAPON_KIND_DAGGER
+            | WEAPON_KIND_1H_SWORD
+            | WEAPON_KIND_2H_SWORD
+            | WEAPON_KIND_1H_AXE
+            | WEAPON_KIND_2H_AXE
+            | WEAPON_KIND_1H_CLUB
+            | WEAPON_KIND_2H_CLUB
+            | WEAPON_KIND_1H_SPEAR
+            | WEAPON_KIND_2H_SPEAR
+            | WEAPON_KIND_SHIELD
+            | WEAPON_KIND_BOW
+            | WEAPON_KIND_CROSSBOW
+            | WEAPON_KIND_STAFF
+            | WEAPON_KIND_JAMADAR
+            | WEAPON_KIND_MACE
+            | 200
+            | 210
+            | 220
+            | 230
+            | 240
+    )
+}
+
+/// Durability value the client should be shown / the bag should hold.
+///
+/// A broken (0) durability only means something for weapons and armour whose
+/// template duration is above 1. Boxes, quest items, scrolls ... would
+/// otherwise show up red/broken after a zone change (the full item list is
+/// re-sent from memory). Kinds whose durability field carries another meaning
+/// (255 use-counter, 252 cospre timer, 151 pet, 250 seal) are left untouched.
+pub fn sanitized_item_durability(template: Option<&ko_db::models::Item>, raw: i16) -> i16 {
+    if raw > 0 {
+        return raw;
+    }
+    let Some(t) = template else { return raw };
+    let duration = t.duration.unwrap_or(0);
+    if duration <= 0 {
+        return raw;
+    }
+    let kind = t.kind.unwrap_or(0);
+    if matches!(kind, 255 | 252 | 151 | 250) {
+        return raw;
+    }
+    if duration <= 1 || !kind_has_wear_durability(kind) {
+        duration
+    } else {
+        raw
+    }
+}
+
 /// Weapon slots that take damage on ATTACK / UTC_ATTACK.
 const WEAPON_SLOTS: &[u8] = &[RIGHTHAND, LEFTHAND];
 /// Armour slots that take damage on DEFENCE / ACID_ALL / UTC_DEFENCE.
@@ -398,7 +455,7 @@ impl WorldState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::world::{UserItemSlot, WorldState};
     use ko_db::models::Item;
@@ -412,8 +469,32 @@ mod tests {
         (world, 1)
     }
 
+    #[test]
+    fn test_sanitized_durability_only_breaks_weapons_and_armor() {
+        // Box (kind 95, duration 1) stored at 0 -> fixed.
+        let boxx = make_item(1, 0, 1, 95);
+        assert_eq!(sanitized_item_durability(Some(&boxx), 0), 1);
+        // Quest item with a big duration and a non weapon/armor kind -> fixed too.
+        let quest = make_item(2, 0, 500, 97);
+        assert_eq!(sanitized_item_durability(Some(&quest), 0), 500);
+        // Weapon / armor with real duration stays broken at 0.
+        let sword = make_item(3, 0, 1000, 21);
+        assert_eq!(sanitized_item_durability(Some(&sword), 0), 0);
+        let armor = make_item(4, 0, 5000, 220);
+        assert_eq!(sanitized_item_durability(Some(&armor), 0), 0);
+        // Weapon with duration 1 is non-degradable -> never broken.
+        let odd = make_item(5, 0, 1, 21);
+        assert_eq!(sanitized_item_durability(Some(&odd), 0), 1);
+        // Non-zero values and unknown templates are untouched.
+        assert_eq!(sanitized_item_durability(Some(&sword), 37), 37);
+        assert_eq!(sanitized_item_durability(None, 0), 0);
+        // Special kinds keep their own meaning (255 use counter).
+        let scroll = make_item(6, 0, 10, 255);
+        assert_eq!(sanitized_item_durability(Some(&scroll), 0), 0);
+    }
+
     /// Helper: create a test item template with known durability.
-    fn make_item(num: i32, slot: i32, duration: i16, kind: i32) -> Item {
+    pub(crate) fn make_item(num: i32, slot: i32, duration: i16, kind: i32) -> Item {
         Item {
             num,
             extension: None,

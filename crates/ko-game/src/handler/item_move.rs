@@ -255,7 +255,10 @@ async fn send_inventory_snapshot_inner(
     for i in SLOT_MAX..SLOT_MAX + HAVE_MAX {
         let slot = inventory.get(i).cloned().unwrap_or_default();
         pkt.write_u32(slot.item_id);
-        pkt.write_u16(slot.durability as u16);
+        pkt.write_u16(super::durability::sanitized_item_durability(
+            world.get_item(slot.item_id).as_ref(),
+            slot.durability,
+        ) as u16);
         pkt.write_u16(slot.count);
         pkt.write_u8(slot.flag);
         pkt.write_u16(slot.remaining_rental_minutes()); // sRemainingRentalTime
