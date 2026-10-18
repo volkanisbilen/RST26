@@ -14,7 +14,13 @@ Optional (cosmetic):
       "[Box Breaker]". NOTE: they were built from the same Data directory as the two files
       above; do not mix them with the older client_patch\funclass_npc NPC tables.
 
-Rebuilt from the then-current "D:\ai\JstKO Client\Data" after the box rewards migration
+IMPORTANT: the Quest_Menu_us.tbl / Quest_Talk_us.tbl that were in "D:\ai\JstKO Client\Data" before this
+rebuild had been written by the old patch tool, which re-encoded every string as EUC-KR (non-Korean
+text became "&#NNNN;" entities, +15 % size). The tool now edits the tables byte-preserving
+(crates/ko-tbl-import/src/raw_tbl.rs) and checks on every load that the untouched table re-encodes
+to the exact source bytes. These files were therefore built from the clean originals
+Data\Quest_Menu_us.pre_patch2.bak / Quest_Talk_us.pre_patch2.bak (= the Data files minus our rows);
+replace the installed ones. Rebuilt after the box rewards migration
 (20261018320000) made 50 more boxes breakable (86 box buttons in total, ids 62201-62286; free id
 block 62201-62299, button text limit 100 chars). The NPC tables in optional_npc_name were rebuilt
 in the same run. If another change to one of these tables lands first, rebuild from the
