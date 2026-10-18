@@ -25,7 +25,7 @@ use crate::world::combat::CombatSnapshot;
 
 use crate::buff_constants::*;
 use crate::handler::dead;
-use crate::handler::durability::{WORE_TYPE_ATTACK, WORE_TYPE_DEFENCE};
+use crate::handler::durability::{WORE_TYPE_ATTACK, WORE_TYPE_DEFENCE, WORE_TYPE_REPAIR_ALL};
 use crate::handler::stealth;
 use crate::session::{ClientSession, SessionState};
 use crate::systems::buff_tick::build_buff_expired_packet;
@@ -131,6 +131,12 @@ fn gm_fixed_skill_damage(
     }
 }
 
+/// Skill IDs for the "Magic Hammer" / "Genie Hammer" repair-all consumables.
+/// Their `magic` rows are mis-typed as Type3 (damage) in the item data, with
+/// no connection to durability — handled directly in `handle()` instead of
+/// through the Type dispatch.
+const DURABILITY_REPAIR_SKILLS: [u32; 6] = [490202, 490153, 490155, 500100, 492082, 492092];
+
 // ── Main handler ──────────────────────────────────────────────────────────
 
 /// Handle WIZ_MAGIC_PROCESS (0x31) from the client.
@@ -209,6 +215,38 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             }
         }
 
+        return Ok(());
+    }
+
+    // Mirrors the PET_SUMMON special-case above (see DURABILITY_REPAIR_SKILLS doc).
+    if DURABILITY_REPAIR_SKILLS.contains(&skill_id) && b_opcode == MAGIC_EFFECTING {
+        let Some(skill) = world.get_magic(skill_id as i32) else {
+            return Ok(());
+        };
+        let item_id = resolve_consume_item(&skill);
+        if item_id != 0
+            && !NO_CONSUME_ITEMS.contains(&item_id)
+            && !world.check_exist_item(sid, item_id, 1)
+        {
+            world.send_to_session_owned(
+                sid,
+                build_skill_failed_packet(skill_id, caster_id_raw, target_id_raw, &s_data),
+            );
+            return Ok(());
+        }
+
+        world.item_wore_out(sid, WORE_TYPE_REPAIR_ALL, i32::MAX);
+        consume_item(&world, sid, &skill);
+
+        let mut ok_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        ok_pkt.write_u8(MAGIC_EFFECTING);
+        ok_pkt.write_u32(skill_id);
+        ok_pkt.write_u32(caster_id_raw as u32);
+        ok_pkt.write_u32(target_id_raw as u32);
+        for d in &s_data {
+            ok_pkt.write_u32(*d as u32);
+        }
+        world.send_to_session_owned(sid, ok_pkt);
         return Ok(());
     }
 
@@ -9333,6 +9371,20 @@ fn check_single_type_cooldown(
 mod tests {
     use super::*;
     use ko_protocol::{Opcode, Packet, PacketReader};
+
+    /// The Magic Hammer / Genie Hammer skill IDs, as confirmed against the
+    /// live item table (every "Magic Hammer"/"Genie Hammer" row with
+    /// kind=97 or kind=255 and a real effect1).
+    #[test]
+    fn test_durability_repair_skills_contains_known_hammers() {
+        for id in [490202u32, 490153, 490155, 500100, 492082, 492092] {
+            assert!(
+                DURABILITY_REPAIR_SKILLS.contains(&id),
+                "missing known repair-all skill id {id}"
+            );
+        }
+        assert_eq!(DURABILITY_REPAIR_SKILLS.len(), 6);
+    }
 
     /// Test MagicInstance::build_packet creates correct wire format.
     #[test]
