@@ -152,6 +152,39 @@ fn spawn_juraid_room_npcs(world: &WorldState) {
     }
 }
 
+/// Spawn one Forgotten Temple stage and return how many monsters really appeared.
+///
+/// Count what was spawned, not the table's `sid_count`: a summon row whose NPC template is missing
+/// spawns nothing, and counting its `sid_count` anyway left `monster_count` above zero for the rest
+/// of the run, so the temple could never be cleared (no victory, no rewards).
+pub(crate) fn spawn_forgotten_temple_stage(
+    world: &WorldState,
+    stage: u16,
+    spawn_list: &[(u16, i16, i16, i16, i16)],
+) -> u32 {
+    let mut total_count: u32 = 0;
+    for &(sid_id, sid_count, pos_x, pos_z, _range) in spawn_list {
+        let ids = world.spawn_event_npc(
+            sid_id,
+            true, // is_monster
+            crate::handler::forgotten_temple::ZONE_FORGOTTEN_TEMPLE,
+            pos_x as f32,
+            pos_z as f32,
+            sid_count.max(0) as u16,
+        );
+        if ids.is_empty() && sid_count > 0 {
+            tracing::warn!(
+                stage,
+                sid_id,
+                sid_count,
+                "Forgotten Temple: summon row skipped, NPC template missing"
+            );
+        }
+        total_count += ids.len() as u32;
+    }
+    total_count
+}
+
 /// Start the event system background task.
 /// Spawns a tokio task that calls [`event_tick_at`] every second,
 /// processing BDW, Juraid, and other room-based event state machines.
@@ -828,18 +861,8 @@ pub fn start_event_system_task(
                                     .collect()
                             };
 
-                            let mut total_count: u32 = 0;
-                            for &(sid_id, sid_count, pos_x, pos_z, _range) in &spawn_list {
-                                total_count += sid_count as u32;
-                                world.spawn_event_npc(
-                                    sid_id,
-                                    true, // is_monster
-                                    forgotten_temple::ZONE_FORGOTTEN_TEMPLE,
-                                    pos_x as f32,
-                                    pos_z as f32,
-                                    sid_count as u16,
-                                );
-                            }
+                            let total_count =
+                                spawn_forgotten_temple_stage(&world, stage, &spawn_list);
 
                             ft_state
                                 .monster_count
@@ -884,6 +907,11 @@ pub fn start_event_system_task(
                                 )
                             }
 
+                            // The stage monsters are event NPCs without a respawn: whatever is
+                            // still alive when the temple closes (time-out, GM close) would
+                            // otherwise stay in the zone for good and be there on the next run.
+                            world.despawn_room_npcs(forgotten_temple::ZONE_FORGOTTEN_TEMPLE, 0);
+
                             // Reset FT state
                             forgotten_temple::finish_event(ft_state);
 
@@ -914,6 +942,9 @@ pub fn start_event_system_task(
                             // Spawn all monsters from monster_under_the_castle table
                             // (sid, count, is_monster, x, y, z, dir, trap_number)
                             type UtcSpawnTuple = (i16, i16, bool, i16, i16, i16, i16, i16);
+                            // leftovers of an earlier run (e.g. from before the end-of-event
+                            // cleanup existed) must not be doubled up
+                            world.despawn_room_npcs(under_castle::ZONE_UNDER_CASTLE, 0);
                             let spawn_list: Vec<UtcSpawnTuple> = {
                                 let spawns = utc_state.monster_list.read().len();
                                 // Only spawn if not already spawned (empty list)
@@ -1004,6 +1035,11 @@ pub fn start_event_system_task(
                                     0.0,
                                 )
                             }
+
+                            // Remove the event's monsters, doors and exit portals. They are event
+                            // NPCs without a respawn; leaving them behind meant the next run
+                            // spawned a second full set on top of the surviving first one.
+                            world.despawn_room_npcs(under_castle::ZONE_UNDER_CASTLE, 0);
 
                             // Reset UTC state
                             utc_state.reset();
@@ -1225,10 +1261,23 @@ pub fn start_event_system_task(
                         // ── 2. Send reward letters to winners ────────────────
                         if let Some(pool) = world.db_pool() {
                             for (name, item_id) in &winners {
+                                // the letter hands the durability over as is, so take it from the
+                                // item table (an item that is not in the table cannot be claimed)
+                                let durability = world
+                                    .get_item(*item_id)
+                                    .map(|it| it.duration.unwrap_or(0).max(0) as u16)
+                                    .unwrap_or_else(|| {
+                                        tracing::warn!(
+                                            "[Lottery] reward item {} does not exist in the item table; {} cannot claim it",
+                                            item_id,
+                                            name
+                                        );
+                                        0
+                                    });
                                 match crate::handler::letter::create_system_letter(
                                     pool, "LOTTERY", name, "REWARD", "REWARD", *item_id,
                                     1, // count: C++ sets 1 for non-countable items
-                                    0, // durability: filled from item table at delivery
+                                    durability,
                                 )
                                 .await
                                 {
@@ -2192,8 +2241,9 @@ fn active_event_to_local_id(active_event: i16) -> i16 {
 ///   `ExpChange()`, `SendLoyaltyChange()`, `GoldGain()`.
 async fn grant_reward(world: &WorldState, sid: SessionId, reward: &AggregatedReward) {
     // Items
+    // A full bag mails the item instead of losing it.
     for &(item_id, count) in &reward.items {
-        if !world.give_item(sid, item_id, count) {
+        if !world.give_item_or_mail(sid, item_id, count, 0, "Event").delivered() {
             tracing::warn!(
                 "Failed to give item {}x{} to session {}",
                 item_id,
@@ -2283,10 +2333,16 @@ pub async fn distribute_ft_rewards(world: &WorldState) {
         } else {
             (FT_GREEN_CHEST, "Green Treasure Chest")
         };
-        let msg = if world.give_item(*sid, chest, FT_CHEST_COUNT) {
-            format!("Forgotten Temple cleared! Reward: {FT_CHEST_COUNT} {name}.")
-        } else {
-            format!("Forgotten Temple cleared! Your bag is full, {name} could not be given.")
+        let msg = match world.give_item_or_mail(*sid, chest, FT_CHEST_COUNT, 0, "Forgotten Temple") {
+            crate::reward_rules::Delivery::Bag => {
+                format!("Forgotten Temple cleared! Reward: {FT_CHEST_COUNT} {name}.")
+            }
+            crate::reward_rules::Delivery::Mail => {
+                format!("Forgotten Temple cleared! Reward: {FT_CHEST_COUNT} {name} (sent to your mailbox).")
+            }
+            crate::reward_rules::Delivery::Failed => {
+                format!("Forgotten Temple cleared! {name} could not be given. Please contact a GM.")
+            }
         };
         world.send_to_session_owned(*sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
         rewarded += 1;
@@ -2491,7 +2547,7 @@ pub async fn distribute_juraid_rewards(world: &WorldState, winner_results: &[(u8
             let rebirth_level = ch.rebirth_level;
             if let Some(gem_id) = juraid::juraid_winner_gem(level, rebirth_level) {
                 let gem_count = juraid::juraid_reward_gem_count(nation == winner_nation);
-                if !world.give_item(sid, gem_id, gem_count) {
+                if !world.give_item_or_mail(sid, gem_id, gem_count, 0, "Juraid Mountain").delivered() {
                     tracing::warn!(
                         sid,
                         gem_id,
@@ -2717,18 +2773,16 @@ pub async fn distribute_chaos_finish_exp(world: &crate::world::WorldState) {
 
                 if let Some((items, rw_exp, rw_loyalty, rw_cash, rw_noah)) = reward_data {
                     // Grant items (up to 5 slots)
+                    // (a full bag mails the item instead of losing it)
                     for (item_id, count, expiry) in &items {
-                        if *item_id != 0 {
-                            if *expiry > 0 {
-                                world.give_item_with_expiry(
-                                    *sid,
-                                    *item_id as u32,
-                                    *count as u16,
-                                    *expiry as u32,
-                                );
-                            } else {
-                                world.give_item(*sid, *item_id as u32, *count as u16);
-                            }
+                        if *item_id > 0 && *count > 0 {
+                            world.give_item_or_mail(
+                                *sid,
+                                *item_id as u32,
+                                (*count).min(u16::MAX as i32) as u16,
+                                (*expiry).max(0) as u32,
+                                "Chaos Dungeon",
+                            );
                         }
                     }
 
@@ -4220,6 +4274,17 @@ mod tests {
         let ch = world.get_character_info(1).unwrap();
         assert_eq!(ch.exp, 35_000); // 10_000 + 25_000
         assert_eq!(ch.loyalty, 1000); // 500 + 500
+    }
+
+    #[test]
+    fn test_ft_stage_spawn_counts_only_real_monsters() {
+        // A summon row whose template does not exist (live data: Crimson Wing 2223, Dark Stone
+        // 2423) must add nothing to the monster counter, otherwise the temple can never be cleared.
+        let world = WorldState::new();
+        let rows = [(2223u16, 5i16, 141i16, 101i16, 10i16), (2423, 2, 115, 160, 10)];
+        assert_eq!(spawn_forgotten_temple_stage(&world, 8, &rows), 0);
+        // negative / zero counts are harmless
+        assert_eq!(spawn_forgotten_temple_stage(&world, 8, &[(2903, -1, 1, 1, 1)]), 0);
     }
 
     // ── Distribute Integration Tests ─────────────────────────────────

@@ -1276,11 +1276,18 @@ async fn jigsaw_claim(
 ) -> anyhow::Result<()> {
     let grant = repo.claim_jigsaw(name, index as i16).await?;
     let success = if let Some(g) = grant {
-        session.world().give_item(
-            session.session_id(),
-            g.item_id as u32,
-            g.item_count.max(1) as u16,
-        )
+        // The claim is already committed in the database: a full bag must not eat the prize, so
+        // it is mailed instead.
+        session
+            .world()
+            .give_item_or_mail(
+                session.session_id(),
+                g.item_id as u32,
+                g.item_count.clamp(1, i16::MAX) as u16,
+                0,
+                "Jigsaw",
+            )
+            .delivered()
     } else {
         false
     };
@@ -1330,10 +1337,13 @@ async fn coin_action(
         .unwrap_or(repo.coin_state(name).await?);
     if state.points >= 8 {
         if let Some(grant) = repo.claim_coin(name, (event_type - 1) as i16).await? {
-            let _ = session.world().give_item(
+            // the claim is committed already: mail the prize when the bag is full
+            session.world().give_item_or_mail(
                 session.session_id(),
                 grant.item_id as u32,
-                grant.item_count.max(1) as u16,
+                grant.item_count.clamp(1, i16::MAX) as u16,
+                0,
+                "Coin Event",
             );
         }
     }
@@ -1404,7 +1414,16 @@ async fn marble_roll(
     if tile.item_id > 0 && tile.item_count > 0 {
         let world = session.world().clone();
         let sid = session.session_id();
-        let given = world.give_item(sid, tile.item_id as u32, tile.item_count as u16);
+        // the roll is already saved: a full bag mails the prize instead of losing it
+        let given = world
+            .give_item_or_mail(
+                sid,
+                tile.item_id as u32,
+                tile.item_count.clamp(1, i16::MAX as _) as u16,
+                0,
+                "Knight Marble",
+            )
+            .delivered();
         let item_name = world
             .get_item(tile.item_id as u32)
             .and_then(|i| i.str_name.clone())

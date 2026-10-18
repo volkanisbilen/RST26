@@ -301,6 +301,9 @@ pub fn gm_open(world: &WorldState, minutes: Option<u64>) -> &'static str {
     if st.phase != Phase::Idle {
         return "Ultima's Dungeon is already open or running.";
     }
+    if forgotten_temple_running(world) {
+        return "Ultima's Dungeon shares its map with the Forgotten Temple, which is running.";
+    }
     let minutes = minutes.unwrap_or(DEFAULT_REG_MINUTES).clamp(1, 120);
     st.phase = Phase::Registration;
     st.reg_deadline = now_unix() + minutes * 60;
@@ -349,8 +352,36 @@ pub fn gm_end(world: &WorldState) -> &'static str {
 
 // ── Room setup ───────────────────────────────────────────────────────────
 
+/// Ultima's Dungeon and the Forgotten Temple are both played on zone 55: the temple's kick-out,
+/// kill counter and rewards work on the whole zone, so the two events must never overlap.
+fn forgotten_temple_running(world: &WorldState) -> bool {
+    world
+        .forgotten_temple_state()
+        .is_active
+        .load(Ordering::Relaxed)
+}
+
+/// Is Ultima's Dungeon registering or running? (The Forgotten Temple refuses to open meanwhile.)
+pub fn is_busy() -> bool {
+    state().lock().phase != Phase::Idle
+}
+
 fn start_rooms(world: &WorldState, st: &mut State, now: u64) {
     let day = now / 86_400;
+    if forgotten_temple_running(world) {
+        for (sid, _) in &st.registrants {
+            notice(
+                world,
+                *sid,
+                "Ultima's Dungeon was cancelled: the Forgotten Temple is using the same map.",
+            );
+        }
+        announce_all(world, "Ultima's Dungeon was cancelled: the Forgotten Temple is using the same map.");
+        st.registrants.clear();
+        st.pending_bots = 0;
+        st.phase = Phase::Idle;
+        return;
+    }
     // re-validate: online, level, alive, ladder
     let mut valid: Vec<(SessionId, String)> = Vec::new();
     let mut any_gm = false;
@@ -785,10 +816,15 @@ fn finish_room(world: &WorldState, room: &mut Room, victory: bool, now: u64) {
                 continue;
             }
             let name = world.get_item(r.item_id).and_then(|i| i.str_name.clone()).unwrap_or_else(|| format!("#{}", r.item_id));
-            if world.give_rule_item(p.sid, r) {
-                notice(world, p.sid, &format!("Ultima's Dungeon reward: {name}."));
-            } else {
-                notice(world, p.sid, &format!("Your bag is full: {name} could not be given."));
+            // a full bag mails the reward (and says so) instead of dropping it
+            match world.give_rule_item_or_mail(p.sid, r, "Ultima") {
+                crate::reward_rules::Delivery::Bag => {
+                    notice(world, p.sid, &format!("Ultima's Dungeon reward: {name}."));
+                }
+                crate::reward_rules::Delivery::Mail => {}
+                crate::reward_rules::Delivery::Failed => {
+                    notice(world, p.sid, &format!("{name} could not be given. Please contact a GM."));
+                }
             }
         }
         if survivor {
@@ -796,9 +832,17 @@ fn finish_room(world: &WorldState, room: &mut Room, victory: bool, now: u64) {
             let share = damage.get(&p.sid).copied().unwrap_or(0) as i64 * 100 / total;
             for r in rules.iter().filter(|r| r.cond == "box") {
                 let chance = (share * 3).clamp(1, r.chance.clamp(1, 100) as i64);
-                if rand::thread_rng().gen_range(0..100) < chance && world.give_rule_item(p.sid, r) {
+                if rand::thread_rng().gen_range(0..100) < chance {
                     let name = world.get_item(r.item_id).and_then(|i| i.str_name.clone()).unwrap_or_else(|| format!("#{}", r.item_id));
-                    notice(world, p.sid, &format!("The boss box held {name}!"));
+                    match world.give_rule_item_or_mail(p.sid, r, "Ultima") {
+                        crate::reward_rules::Delivery::Bag => {
+                            notice(world, p.sid, &format!("The boss box held {name}!"));
+                        }
+                        crate::reward_rules::Delivery::Mail => {}
+                        crate::reward_rules::Delivery::Failed => {
+                            notice(world, p.sid, &format!("{name} could not be given. Please contact a GM."));
+                        }
+                    }
                 }
             }
         }

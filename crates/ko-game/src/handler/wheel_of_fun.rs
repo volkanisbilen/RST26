@@ -175,6 +175,11 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
             session.addr(),
             free_slots
         );
+        let notice = crate::systems::timed_notice::build_notice_packet(
+            7,
+            "[Wheel] You need at least 2 free inventory slots.",
+        );
+        session.send_packet(&notice).await?;
         return Ok(());
     }
 
@@ -184,13 +189,21 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
         return Ok(());
     }
 
-    // Give item
+    // Give item. The 350 KC are already gone at this point, so a failure must give them back
+    // (an item missing from the item table used to eat the spin without any result).
     if !world.give_item(sid, item_id, item_count) {
         warn!(
-            "[{}] WheelOfFun: give_item failed for item_id={}",
+            "[{}] WheelOfFun: give_item failed for item_id={}, refunding {} KC",
             session.addr(),
-            item_id
+            item_id,
+            WHEEL_SPIN_COST
         );
+        knight_cash::cash_gain(&world, session.pool(), sid, WHEEL_SPIN_COST as u32);
+        let notice = crate::systems::timed_notice::build_notice_packet(
+            7,
+            "[Wheel] The prize could not be given; your Knight Cash was refunded.",
+        );
+        session.send_packet(&notice).await?;
         return Ok(());
     }
 

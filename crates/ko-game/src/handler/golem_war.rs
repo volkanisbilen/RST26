@@ -42,11 +42,11 @@ const ITEM_DUAL_POTION: u32 = 811_182_000;
 #[allow(dead_code)]
 const ITEM_HEROS_VOW: u32 = 811_065_000;
 #[allow(dead_code)]
-const ITEM_EVENT_EMBLEM: u32 = 1_900_004_000;
+const ITEM_EVENT_EMBLEM: u32 = 1_900_004_106;
 #[allow(dead_code)]
 const ITEM_EMBLEM_VOUCHER_30D: u32 = 931_734_000;
 #[allow(dead_code)]
-const ITEM_LUNAR_WAR_BELT: u32 = 340_710_000;
+const ITEM_LUNAR_WAR_BELT: u32 = 340_710_124;
 
 static AUTO: AtomicBool = AtomicBool::new(false);
 
@@ -354,7 +354,8 @@ fn finish(world: &WorldState, st: &mut State) {
                 if r.chance < 100 && rng.gen_range(0..100) >= r.chance {
                     continue;
                 }
-                if world.give_rule_item(sid, r) && cond == "belt" {
+                // a full bag mails the reward instead of dropping it
+                if world.give_rule_item_or_mail(sid, r, "Fire & Ice").delivered() && cond == "belt" {
                     notify(sid, "[Fire & Ice] You found a special reward!");
                 }
             }

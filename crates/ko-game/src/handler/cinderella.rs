@@ -1201,7 +1201,14 @@ fn cinderella_finish(world: &WorldState) {
                 .cloned()
                 .collect();
             for item in items {
-                world.give_item(sid, item.item_id as u32, item.item_count.max(1) as u16);
+                // a full bag mails the prize instead of losing it
+                world.give_item_or_mail(
+                    sid,
+                    item.item_id as u32,
+                    item.item_count.clamp(1, u16::MAX as i32) as u16,
+                    0,
+                    "Fun Class",
+                );
             }
         }
     }

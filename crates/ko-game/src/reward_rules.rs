@@ -46,17 +46,17 @@ pub fn defaults(key: &str) -> Vec<RewardRule> {
         ],
         "golem" => vec![
             rule("golem", "win", 0, 100, 811_182_000, 3, 0),
-            rule("golem", "win", 0, 100, 1_900_004_000, 1, 1),
+            rule("golem", "win", 0, 100, 1_900_004_106, 1, 1),
             rule("golem", "win", 2, 100, 811_065_000, 22, 0),
             rule("golem", "win", 1, 100, 931_734_000, 1, 30),
             rule("golem", "lose", 0, 100, 811_182_000, 1, 0),
-            rule("golem", "lose", 0, 100, 1_900_004_000, 1, 1),
+            rule("golem", "lose", 0, 100, 1_900_004_106, 1, 1),
             rule("golem", "lose", 1, 100, 811_065_000, 22, 0),
             rule("golem", "draw", 0, 100, 811_182_000, 3, 0),
-            rule("golem", "draw", 0, 100, 1_900_004_000, 1, 1),
+            rule("golem", "draw", 0, 100, 1_900_004_106, 1, 1),
             rule("golem", "draw", 3, 100, 811_065_000, 22, 0),
             rule("golem", "draw", 1, 100, 931_734_000, 1, 30),
-            rule("golem", "belt", 1, 5, 340_710_000, 1, 0),
+            rule("golem", "belt", 1, 5, 340_710_124, 1, 0),
         ],
         "manes" => vec![
             rank_rule(1, 1, crate::systems::manes_survival::MANES_ORB_ITEM_ID, 150),
@@ -117,6 +117,133 @@ impl WorldState {
             self.give_item_with_expiry(sid, r.item_id, r.item_count, r.days as u32)
         } else {
             self.give_item(sid, r.item_id, r.item_count)
+        }
+    }
+
+    /// [`give_rule_item`](Self::give_rule_item), but an item the bag cannot take is mailed to the
+    /// player instead of being lost.
+    pub fn give_rule_item_or_mail(
+        &self,
+        sid: crate::zone::SessionId,
+        r: &RewardRule,
+        sender: &str,
+    ) -> Delivery {
+        self.give_item_or_mail(sid, r.item_id, r.item_count, r.days.max(0) as u32, sender)
+    }
+
+    /// Put an event reward into the bag. When it does not fit (full bag, overweight is not checked
+    /// by `give_item`) the item goes into a system letter, which keeps the expiry days, and the
+    /// player is told. `Delivery::Failed` means neither worked (unknown item, no database, no
+    /// async runtime); the reason is logged.
+    pub fn give_item_or_mail(
+        &self,
+        sid: crate::zone::SessionId,
+        item_id: u32,
+        count: u16,
+        days: u32,
+        sender: &str,
+    ) -> Delivery {
+        if item_id == 0 {
+            return Delivery::Bag;
+        }
+        let in_bag = if days > 0 {
+            self.give_item_with_expiry(sid, item_id, count, days)
+        } else {
+            self.give_item(sid, item_id, count)
+        };
+        if in_bag {
+            return Delivery::Bag;
+        }
+        let Some(item) = self.get_item(item_id) else {
+            tracing::warn!(sid, item_id, sender, "event reward skipped: item does not exist");
+            return Delivery::Failed;
+        };
+        let name = item.str_name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("#{item_id}"));
+        let duration = item.duration.unwrap_or(0).max(0) as u16;
+        let recipient = match self.with_session(sid, |h| h.character.as_ref().map(|c| c.name.clone())) {
+            Some(Some(n)) if !n.is_empty() => n,
+            _ => return Delivery::Failed,
+        };
+        let (Some(pool), Ok(handle)) = (self.db_pool().cloned(), tokio::runtime::Handle::try_current()) else {
+            tracing::warn!(sid, item_id, sender, "event reward could not be mailed: no database or runtime");
+            return Delivery::Failed;
+        };
+        let sender = sender.to_string();
+        handle.spawn(async move {
+            match crate::handler::letter::create_system_letter_ex(
+                &pool,
+                &sender,
+                &recipient,
+                "Event reward",
+                "Your bag was full. Take the reward from this letter.",
+                item_id,
+                count.max(1),
+                duration,
+                days,
+            )
+            .await
+            {
+                Ok(true) => tracing::info!(recipient = %recipient, item_id, count, "event reward mailed (bag full)"),
+                Ok(false) => tracing::warn!(recipient = %recipient, item_id, "event reward letter: recipient not found"),
+                Err(e) => tracing::warn!(recipient = %recipient, item_id, "event reward letter failed: {e}"),
+            }
+        });
+        self.send_to_session_owned(
+            sid,
+            crate::systems::timed_notice::build_notice_packet(
+                8,
+                &format!("Your bag is full: {name} was sent to your mailbox."),
+            ),
+        );
+        Delivery::Mail
+    }
+}
+
+/// Where an event reward item ended up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// In the player's bag.
+    Bag,
+    /// The bag was full; the item was mailed.
+    Mail,
+    /// Nowhere (see the log).
+    Failed,
+}
+
+impl Delivery {
+    /// The reward reached the player one way or the other.
+    pub fn delivered(self) -> bool {
+        !matches!(self, Delivery::Failed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_item_is_reported_not_silently_dropped() {
+        let world = WorldState::new();
+        // no such session / no such item: neither the bag nor the mail can take it
+        assert_eq!(world.give_item_or_mail(1, 123_456_789, 1, 0, "Test"), Delivery::Failed);
+        assert!(!Delivery::Failed.delivered());
+        assert!(Delivery::Bag.delivered());
+        assert!(Delivery::Mail.delivered());
+    }
+
+    #[test]
+    fn item_id_zero_is_a_noop_success() {
+        let world = WorldState::new();
+        assert_eq!(world.give_item_or_mail(1, 0, 1, 0, "Test"), Delivery::Bag);
+    }
+
+    #[test]
+    fn fire_and_ice_defaults_use_items_that_exist_in_the_item_table() {
+        // 1900004000 and 340710000 are not in the item table (the real ids carry the extension
+        // digits); the live event_reward_rule rows were fixed by migration 20261018170000.
+        for r in defaults("golem") {
+            assert_ne!(r.item_id, 1_900_004_000, "Event Emblem is item 1900004106");
+            assert_ne!(r.item_id, 340_710_000, "Lunar War Belt is item 340710124");
         }
     }
 }
