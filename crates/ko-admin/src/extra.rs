@@ -1137,6 +1137,7 @@ const ASSETS: [(&str, &str, &str); 12] = [
     ("chaotic.js", "text/javascript; charset=utf-8", include_str!("../assets/chaotic.js")),
     ("bot_loadout.js", "text/javascript; charset=utf-8", include_str!("../assets/bot_loadout.js")),
     ("field_bots.js", "text/javascript; charset=utf-8", include_str!("../assets/field_bots.js")),
+    ("info_panel.js", "text/javascript; charset=utf-8", include_str!("../assets/info_panel.js")),
 ];
 
 async fn static_file(Path(file): Path<String>) -> Response {

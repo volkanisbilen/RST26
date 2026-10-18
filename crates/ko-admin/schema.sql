@@ -221,3 +221,17 @@ INSERT INTO field_bot_zone (zone_id, enabled, karus_count, elmorad_count, level_
 VALUES (21, FALSE, 6, 6, 8, 45), (1, FALSE, 10, 0, 35, 60), (2, FALSE, 0, 10, 35, 60),
        (11, FALSE, 8, 0, 66, 80), (12, FALSE, 0, 8, 66, 80)
 ON CONFLICT (zone_id) DO NOTHING
+-- Right-top info list entries ("Bilgi Paneli" page); see migrations/20261018180000_info_panel_entry.sql.
+CREATE TABLE IF NOT EXISTS info_panel_entry (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sort_order            INTEGER      NOT NULL DEFAULT 0,
+    title                 VARCHAR(24)  NOT NULL,
+    description           VARCHAR(255) NOT NULL,
+    enabled               BOOLEAN      NOT NULL DEFAULT TRUE,
+    requires_clan_premium BOOLEAN      NOT NULL DEFAULT FALSE,
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT info_panel_entry_title_chk CHECK (char_length(btrim(title)) BETWEEN 1 AND 24),
+    CONSTRAINT info_panel_entry_desc_chk  CHECK (char_length(btrim(description)) BETWEEN 1 AND 255)
+)
+-- ;;
+CREATE INDEX IF NOT EXISTS idx_info_panel_entry_order ON info_panel_entry (sort_order, id)

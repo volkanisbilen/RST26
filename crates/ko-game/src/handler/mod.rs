@@ -80,6 +80,7 @@ pub mod hacktool;
 pub mod helmet;
 pub mod home;
 pub mod drop_box;
+pub mod info_panel;
 pub mod item_drop;
 pub mod solo_cape;
 pub mod slave_priest;

@@ -792,6 +792,9 @@ pub fn start_event_system_task(
             if now % 25 == 0 {
                 crate::handler::clan_premium::tick(&world);
             }
+            if now % 3 == 0 {
+                crate::handler::info_panel::tick(&world);
+            }
 
             // ── Ultima's Dungeon timer tick ──────────────────────────────
             crate::handler::ultima::tick(&world);
