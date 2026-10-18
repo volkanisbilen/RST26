@@ -86,7 +86,9 @@ pub const MAX_REWARD_ITEMS: usize = 4;
 /// Per-user lottery state (mirrors `_RIMA_LOOTERY_USER_INFO`).
 #[derive(Debug, Clone)]
 pub struct LotteryUserInfo {
-    /// In-game character name (uppercase).
+    /// In-game character name exactly as stored in `userdata` (the map key is the uppercase
+    /// form). The reward letter is addressed to this name: the recipient lookup is
+    /// case-sensitive, so an uppercased name found no recipient and no winner got a prize.
     pub name: String,
     /// Number of tickets purchased.
     pub ticket_count: u32,
@@ -474,7 +476,7 @@ pub async fn handle_join(
                 .participants
                 .entry(char_name.clone())
                 .or_insert_with(|| LotteryUserInfo {
-                    name: char_name.clone(),
+                    name: char_info.name.clone(),
                     ticket_count: 0,
                     is_gift: false,
                 });
@@ -718,8 +720,8 @@ pub fn lottery_timer_tick(lottery: &SharedLotteryProcess, now: u32) -> LotteryTi
         .filter_map(|(name, reward_idx)| {
             let item_id = proc.reward_items.get(reward_idx).copied().unwrap_or(0);
             if item_id > 0 {
-                // Mark participant as gifted
-                if let Some(p) = proc.participants.get_mut(&name) {
+                // Mark participant as gifted (the map is keyed by the uppercase name)
+                if let Some(p) = proc.participants.get_mut(&name.to_uppercase()) {
                     p.is_gift = true;
                 }
                 Some((name, item_id))
@@ -1413,6 +1415,37 @@ mod tests {
         // State should be reset
         let proc = lottery.read();
         assert!(!proc.lottery_start);
+    }
+
+    /// The winner letter is addressed to the winner's real (mixed-case) character name; the
+    /// recipient lookup is case-sensitive, so the uppercase map key must never leak into it.
+    #[test]
+    fn test_timer_tick_winner_keeps_character_name_case() {
+        let lottery = new_lottery_process();
+        {
+            let mut proc = lottery.write();
+            proc.lottery_start = true;
+            proc.timer_control = true;
+            proc.event_time = 3600;
+            proc.event_start_time = 1_000_000;
+            proc.event_process_time = 1_003_600;
+            proc.reward_items = [700_089_000, 0, 0, 0];
+            proc.user_join_counter = 1;
+            proc.participants.insert(
+                "COMEON".to_string(),
+                LotteryUserInfo {
+                    name: "ComeON".to_string(),
+                    ticket_count: 1,
+                    is_gift: false,
+                },
+            );
+        }
+        match lottery_timer_tick(&lottery, 1_003_600) {
+            LotteryTickResult::Expired { winners } => {
+                assert_eq!(winners, vec![("ComeON".to_string(), 700_089_000)]);
+            }
+            other => panic!("Expected Expired, got {:?}", other),
+        }
     }
 
     #[test]

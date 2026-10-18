@@ -1115,7 +1115,7 @@ impl ManesSurvivalManager {
             self.cleanup_temporary_items_for_session(world, sid);
             // every other reward of the rank is given at once (the orb below keeps its retry on exit)
             for r in matched.iter().filter(|r| r.item_id != MANES_ORB_ITEM_ID) {
-                if !world.give_rule_item(sid, r) {
+                if !world.give_rule_item_or_mail(sid, r, "Manes Survival").delivered() {
                     tracing::error!(sid, rank, item_id = r.item_id, "Manes Survival ranking reward could not be granted");
                 }
             }

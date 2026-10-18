@@ -453,11 +453,20 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 ))
                 .await?;
             if valid {
-                let magic_id = session
+                // The offer was validated above, but the magic table can be reloaded (web panel)
+                // between the offer and the pick: never panic the session on that.
+                let Some(magic_id) = session
                     .world()
                     .manes_survival_manager
                     .unlock_magic(session.session_id(), manes_magic_id)
-                    .expect("validated MANES_MAGIC row must map to MAGIC");
+                else {
+                    warn!(
+                        "[{}] Manes skill pick {} no longer maps to a MAGIC row",
+                        session.addr(),
+                        manes_magic_id
+                    );
+                    return Ok(());
+                };
                 if let Some(progress) = session
                     .world()
                     .manes_survival_manager

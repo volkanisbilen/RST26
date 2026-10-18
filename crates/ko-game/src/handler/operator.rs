@@ -6194,29 +6194,26 @@ fn handle_beef_open<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
 fn handle_beef_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
 
-    // Reset beef event state
-    world.update_beef_event(|e| {
-        e.is_active = false;
-        e.is_attackable = false;
-        e.is_monument_dead = false;
-        e.winner_nation = 0;
-        e.is_farming_play = false;
-        e.farming_end_time = 0;
-        e.loser_sign_time = 0;
-        e.is_loser_sign = false;
-    });
+    // Reset beef event state (also clears the Bifrost countdown the clients display)
+    super::bifrost::bifrost_reset(&world);
 
     let msg = "Beef Event sona erdi.";
     broadcast_war_system_chat(&world, msg);
 
-    // Kick players from Bifrost zone (zone 71) and Ronark Land (zone 21)
-    kick_out_zone_users(&world, 71); // ZONE_BIFROST
-    kick_out_zone_users(&world, 21); // ZONE_RONARK_LAND
+    // Only the Bifrost map is emptied. This used to kick zone 71 and zone 21 instead, which are
+    // Ronark Land and Moradon: closing the event threw every player out of the open PvP world
+    // and out of the capital.
+    for &zone in BEEF_CLOSE_KICK_ZONES {
+        kick_out_zone_users(&world, zone);
+    }
 
     info!("[{}] +beefclose: event closed", session.addr());
 
     Ok(())
 }
+
+/// Zones emptied by `+beefclose` (the event map only).
+const BEEF_CLOSE_KICK_ZONES: &[u16] = &[crate::world::ZONE_BIFROST];
 
 /// Helper: broadcast WAR_SYSTEM_CHAT to all players.
 fn broadcast_war_system_chat(world: &crate::world::WorldState, message: &str) {
@@ -6280,6 +6277,15 @@ fn handle_ft_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()
         return Ok(());
     }
 
+    // Ultima's Dungeon is played on the same map (zone 55): never run both at once.
+    if super::ultima::is_busy() {
+        send_help(
+            session,
+            "Ultima's Dungeon is registering or running on the same map; try again afterwards.",
+        );
+        return Ok(());
+    }
+
     // Read timer options from event_room_manager
     let opts = world.event_room_manager.ft_opts.read().clone();
 
@@ -6297,6 +6303,8 @@ fn handle_ft_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()
         return Ok(());
     }
 
+    // stale monsters of an earlier run would skew the kill counter of this one
+    world.despawn_room_npcs(super::forgotten_temple::ZONE_FORGOTTEN_TEMPLE, 0);
     ft.reset();
     ft.is_active
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -6349,6 +6357,8 @@ fn handle_ft_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     }
 
     kick_out_zone_users(&world, super::forgotten_temple::ZONE_FORGOTTEN_TEMPLE);
+    // stage monsters have no respawn: remove what is left so the next run starts clean
+    world.despawn_room_npcs(super::forgotten_temple::ZONE_FORGOTTEN_TEMPLE, 0);
 
     ft.reset();
 
@@ -6408,6 +6418,21 @@ async fn handle_lottery_start<C: GmCtx>(session: &mut C, args: &[&str]) -> anyho
         settings.reward_item3 as u32,
         settings.reward_item4 as u32,
     ];
+
+    // A prize that is not in the item table can never be claimed from its letter.
+    if let Some(missing) = reward_items
+        .iter()
+        .copied()
+        .find(|&id| id > 0 && world.get_item(id).is_none())
+    {
+        send_help(
+            session,
+            &format!(
+                "Lottery {id} not started: reward item {missing} does not exist in the item table. Fix lottery_event_settings first."
+            ),
+        );
+        return Ok(());
+    }
 
     let lottery = world.lottery_process();
 
@@ -8129,6 +8154,15 @@ mod tests {
         super::kick_out_zone_users(&world, 73); // ZONE_RONARK_LAND_BASE
         super::kick_out_zone_users(&world, 31); // ZONE_BIFROST
         super::kick_out_zone_users(&world, 75); // ZONE_KROWAZ_DOMINION
+    }
+
+    /// `+beefclose` (panel Stop, scheduled stop) must only empty the Bifrost map. It used to kick
+    /// zone 71 / zone 21 (Ronark Land / Moradon), sending every player there to the home zone.
+    #[test]
+    fn test_beef_close_only_kicks_bifrost() {
+        assert_eq!(super::BEEF_CLOSE_KICK_ZONES, &[crate::world::ZONE_BIFROST]);
+        assert!(!super::BEEF_CLOSE_KICK_ZONES.contains(&crate::world::ZONE_MORADON));
+        assert!(!super::BEEF_CLOSE_KICK_ZONES.contains(&crate::world::ZONE_RONARK_LAND));
     }
 
     /// Test kick zone constants for standard war.

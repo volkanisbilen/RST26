@@ -313,6 +313,11 @@ pub async fn publish_states(world: &Arc<WorldState>, pool: &DbPool) {
 
 // ── Automatic schedule ──────────────────────────────────────────────────
 
+/// A freshly started event reports "registration" or "active"; "idle" means the command refused.
+fn counts_as_idle_after_start(state: &str) -> bool {
+    state == "idle"
+}
+
 static LAST_MINUTE: AtomicI64 = AtomicI64::new(0);
 
 fn fired() -> &'static Mutex<HashMap<(i64, i64), ()>> {
@@ -365,10 +370,16 @@ pub fn tick(world: &Arc<WorldState>) {
                 }
             }
             let result = start(&world, &pool, &key, &arg, false).await;
-            let (ok, text) = match &result {
+            let (mut ok, mut text) = match &result {
                 Ok(t) => (true, t.clone()),
                 Err(e) => (false, e.clone()),
             };
+            // The GM commands answer "ok" for refusals too ("already active", "table empty", ...):
+            // an event whose state is still idle did not start, whatever the command said.
+            if ok && counts_as_idle_after_start(status(&world, &pool, &key).await.0.as_str()) {
+                ok = false;
+                text = format!("event did not start ({})", text.trim());
+            }
             if ok {
                 info!(event = %key, "scheduled event started: {text}");
             } else {
@@ -398,6 +409,13 @@ pub fn tick(world: &Arc<WorldState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_that_leaves_the_event_idle_is_not_a_start() {
+        assert!(counts_as_idle_after_start("idle"));
+        assert!(!counts_as_idle_after_start("registration"));
+        assert!(!counts_as_idle_after_start("active"));
+    }
 
     #[test]
     fn registry_keys_are_unique_and_short() {

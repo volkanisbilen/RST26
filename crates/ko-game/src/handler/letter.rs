@@ -737,6 +737,34 @@ pub async fn create_system_letter(
     item_count: u16,
     item_durability: u16,
 ) -> Result<bool, anyhow::Error> {
+    create_system_letter_ex(
+        pool,
+        sender,
+        recipient,
+        subject,
+        message,
+        item_id,
+        item_count,
+        item_durability,
+        0,
+    )
+    .await
+}
+
+/// Like [`create_system_letter`], with an expiry for the attached item: when the player takes the
+/// item out of the letter it expires `expiry_days` days later (0 = never).
+#[allow(clippy::too_many_arguments)]
+pub async fn create_system_letter_ex(
+    pool: &ko_db::DbPool,
+    sender: &str,
+    recipient: &str,
+    subject: &str,
+    message: &str,
+    item_id: u32,
+    item_count: u16,
+    item_durability: u16,
+    expiry_days: u32,
+) -> Result<bool, anyhow::Error> {
     let b_type: i16 = if item_id > 0 { 2 } else { 1 };
     let send_date = {
         let now = chrono::Utc::now();
@@ -758,7 +786,7 @@ pub async fn create_system_letter(
             item_count as i16,
             item_durability as i16,
             0, // serial
-            0, // expiry
+            expiry_days.min(i32::MAX as u32) as i32,
             0, // coins
             send_date,
         )
