@@ -1124,7 +1124,7 @@ async fn send_command(
     Ok(Json(json!({"ok":true,"id":id,"status":StatusCode::ACCEPTED.as_u16()})))
 }
 
-const ASSETS: [(&str, &str, &str); 14] = [
+const ASSETS: [(&str, &str, &str); 15] = [
     ("style.css", "text/css; charset=utf-8", include_str!("../assets/style.css")),
     ("core.js", "text/javascript; charset=utf-8", include_str!("../assets/core.js")),
     ("containers.js", "text/javascript; charset=utf-8", include_str!("../assets/containers.js")),
@@ -1139,6 +1139,7 @@ const ASSETS: [(&str, &str, &str); 14] = [
     ("field_bots.js", "text/javascript; charset=utf-8", include_str!("../assets/field_bots.js")),
     ("info_panel.js", "text/javascript; charset=utf-8", include_str!("../assets/info_panel.js")),
     ("event_bots.js", "text/javascript; charset=utf-8", include_str!("../assets/event_bots.js")),
+    ("server.js", "text/javascript; charset=utf-8", include_str!("../assets/server.js")),
 ];
 
 async fn static_file(Path(file): Path<String>) -> Response {

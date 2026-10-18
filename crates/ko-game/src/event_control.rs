@@ -245,8 +245,15 @@ pub async fn status(world: &Arc<WorldState>, pool: &DbPool, key: &str) -> (Strin
             }
         }
         "cr" => {
-            if world.collection_race_event().read().is_active {
-                out("active", String::new())
+            let cr = world.collection_race_event();
+            let cr = cr.read();
+            if cr.is_active {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as u32)
+                    .unwrap_or(0);
+                let left = cr.event_end_time.saturating_sub(now);
+                out("active", format!("{} · {} sn kaldı", cr.event_name, left))
             } else {
                 out("idle", String::new())
             }

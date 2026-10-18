@@ -169,11 +169,31 @@ PAGE.race=async function(main){
   const d=await api('/collection-race/config');
   const body=h('div');main.append(head('Collection Race','Etkinlik ayarları ve ödüller',h('button',{class:'btn primary',onclick:()=>settingDialog(null)},ico('plus'),'Yeni etkinlik')),body);
   const zname=id=>(d.zones.find(z=>z.id===id)||{}).name||('Bölge '+id);
+  /* live state: the game publishes "cr" as active with "<event name> · N sn kaldı" */
+  let crLive={state:'idle',detail:''},crServerOnline=true;
+  const crIsActive=s=>crLive.state==='active'&&(crLive.detail||'').startsWith(s.name);
+  async function crRefresh(){
+    try{const l=await api('/events/live',{quiet:true});const e=(l.events||[]).find(x=>x.key==='cr');
+      const n={state:e?e.state:'idle',detail:e?e.detail:''};crServerOnline=l.server_online;
+      crLive=n;if(!document.querySelector(".overlay"))draw();}catch(_){}
+  }
+  async function crStart(s){
+    const ev={key:'cr',name:s.name||('Etkinlik '+s.index),arg_required:true,arg_label:'Etkinlik ID'};
+    if(await evRun(ev,'start',String(s.index)))crRefresh();
+  }
+  async function crStop(s){
+    const ev={key:'cr',name:s.name||('Etkinlik '+s.index),arg_required:false,arg_label:''};
+    if(await evRun(ev,'stop',''))crRefresh();
+  }
   function draw(){
     clear(body).append(...d.settings.map(s=>{
       const rw=d.rewards.filter(r=>r.event_id===s.index);
+      const act=crIsActive(s);
       return h('div',{class:'card',style:'margin-bottom:14px'},h('div',{class:'row',style:'margin-bottom:10px'},ico('flag'),h('h2',{},s.name||('Etkinlik '+s.index)),h('span',{class:'chip'},'#'+s.index),h('span',{class:'chip blue'},zname(s.zone)),h('span',{class:'chip'},'Lv '+s.min_level+'–'+s.max_level),h('span',{class:'chip'},s.minutes+' dk'),
-        s.auto_start?h('span',{class:'chip ok'},'otomatik '+String(s.auto_hour).padStart(2,'0')+':'+String(s.auto_minute).padStart(2,'0')):null,h('span',{class:'grow'}),
+        s.auto_start?h('span',{class:'chip ok'},'otomatik '+String(s.auto_hour).padStart(2,'0')+':'+String(s.auto_minute).padStart(2,'0')):null,
+        act?h('span',{class:'chip ok'},'ÇALIŞIYOR · '+((crLive.detail||'').split(' · ')[1]||'')):null,h('span',{class:'grow'}),
+        h('button',{class:'btn sm primary',onclick:()=>crStart(s)},act?'Yeniden başlat':'Başlat'),
+        act?h('button',{class:'btn sm danger',onclick:()=>crStop(s)},'Durdur / Bitir'):null,
         h('button',{class:'btn sm',onclick:()=>settingDialog(s)},'Düzenle'),h('button',{class:'btn sm danger',onclick:async()=>{if(!await confirmBox('Etkinliği sil','Etkinlik ve ayarı silinecek.','Sil',true))return;try{await api('/collection-race/settings/'+s.index,{method:'DELETE'});toast('Silindi','ok');route()}catch(_){}}},ico('trash'))),
         h('div',{class:'row',style:'margin-bottom:10px'},s.targets.filter(t=>t.sid).map(t=>h('span',{class:'chip'},t.name+' ×'+t.count))),
         h('h4',{style:'margin:8px 0'},'Ödüller'),
@@ -205,7 +225,8 @@ PAGE.race=async function(main){
         const p={};for(const k of Object.keys(F))p[k]=k==='description'?F[k].value:Number(F[k].value);
         try{await api(r?'/collection-race/rewards/'+r.index:'/collection-race/rewards',{body:[ev,p]});toast('Kaydedildi','ok');close();route()}catch(_){}return true}}].filter(Boolean),'wide');
   }
-  draw();
+  draw();crRefresh();
+  const crTimer=setInterval(()=>{if(!main.isConnected){clearInterval(crTimer);return}crRefresh()},4000);
 };
 function npcPick(cb){
   const q=h('input',{placeholder:'NPC / canavar adı veya SID…',style:'width:100%'}),out=h('div',{class:'mlist',style:'margin-top:8px;max-height:50vh;overflow:auto'});let close;
@@ -372,8 +393,26 @@ PAGE.letters=async function(main){
   const f={recipient:h('input'),item_id:h('input',{type:'number',value:'0'}),count:h('input',{type:'number',value:'1'}),durability:h('input',{type:'number',value:'0'}),sender:h('input',{value:'Yönetim'}),subject:h('input',{value:'Ödül'}),message:h('input',{value:'İyi oyunlar!'})};
   const names={recipient:'Alıcı karakter',item_id:'Item ID',count:'Adet',durability:'Dayanıklılık',sender:'Gönderen',subject:'Konu',message:'Mesaj'};
   const lib=libraryPanel({onPick:it=>{f.item_id.value=it.id}});
+  /* recipient live search: prefix match after 1 letter, click to select */
+  const dd=h('div',{class:'mlist',style:'position:absolute;left:0;right:0;top:100%;z-index:20;margin:2px 0 0;background:var(--panel,#0b1736);border:1px solid #22407f;border-radius:9px;max-height:300px;overflow:auto;display:none'});
+  f.recipient.setAttribute('autocomplete','off');f.recipient.setAttribute('placeholder','Karakter adının ilk harflerini yaz…');
+  let searchSeq=0;
+  const hideDd=()=>{dd.style.display='none'};
+  f.recipient.addEventListener('input',debounce(async()=>{
+    const q=f.recipient.value.trim(),seq=++searchSeq;
+    if(!q){hideDd();return}
+    const r=await api('/char-search?q='+encodeURIComponent(q),{quiet:true}).catch(()=>[]);
+    if(seq!==searchSeq)return;
+    clear(dd);
+    if(!r.length){dd.append(h('div',{class:'mrow muted'},'Eşleşen karakter yok'))}
+    else r.forEach(c=>dd.append(h('div',{class:'mrow',onmousedown:e=>{e.preventDefault();f.recipient.value=c.name;searchSeq++;hideDd()}},
+      h('span',{class:'chip '+(c.online?'ok':'')},c.online?'çevrimiçi':'çevrimdışı'),h('b',{},c.name),h('small',{},'Lv '+c.level))));
+    dd.style.display='block';
+  },200));
+  f.recipient.addEventListener('blur',()=>setTimeout(hideDd,150));
+  f.recipient.addEventListener('keydown',e=>{if(e.key==='Escape')hideDd()});
   main.append(head('Mektup / Ödül','Mektup sistemiyle item gönder'),h('div',{class:'grid g2'},
-    h('div',{class:'card'},h('div',{class:'form'},Object.keys(f).map(k=>field(names[k],f[k],k==='message'))),h('div',{class:'hint',style:'margin:14px 0'},'Oyuncu çevrimiçi olsa da olmasa da mektubu alır.'),
+    h('div',{class:'card'},h('div',{class:'form'},Object.keys(f).map(k=>field(names[k],k==='recipient'?h('div',{style:'position:relative'},f.recipient,dd):f[k],k==='message'))),h('div',{class:'hint',style:'margin:14px 0'},'Oyuncu çevrimiçi olsa da olmasa da mektubu alır.'),
       h('button',{class:'btn primary',onclick:async()=>{try{await api('/letters/item',{body:{recipient:f.recipient.value.trim(),item_id:Number(f.item_id.value),count:Number(f.count.value),durability:Number(f.durability.value),sender:f.sender.value,subject:f.subject.value,message:f.message.value}});toast('Mektup gönderildi','ok')}catch(_){}}},ico('mail'),'Gönder')),
     h('div',{class:'card'},lib.el)));
 };

@@ -74,6 +74,10 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 .await
                 .map(|n| format!("{n} quest helper rows"))
                 .map_err(|e| e.to_string()),
+            "rankings" => {
+                world.reload_user_rankings(pool).await;
+                Ok("user rankings reloaded".into())
+            }
             "event_schedule" => {
                 world.reload_event_schedule(pool).await;
                 Ok("event schedule reloaded".into())
