@@ -146,6 +146,16 @@ pub fn is_replay_cooldown_expired(replay_time: i32, current_unix_time: i32) -> b
     replay_time == 0 || current_unix_time >= replay_time
 }
 
+/// Kill counter after one more matching kill, never above the target.
+///
+/// A counter that is already at (or, after the target was lowered by a
+/// rebalance, above) the target stays at the target, so the very next
+/// matching kill reaches the completion check instead of the quest being
+/// skipped forever.
+pub fn next_kill_count(current: i32, target: i32) -> i32 {
+    (current.max(0) + 1).min(target.max(1))
+}
+
 /// Get reward item IDs and counts from a daily quest definition.
 /// Returns (item_id, count) pairs for non-zero rewards.
 pub fn get_quest_rewards(quest: &DailyQuestRow) -> Vec<(i32, i32)> {
@@ -959,8 +969,8 @@ pub async fn update_daily_quest_count(world: &WorldState, sid: SessionId, monste
             continue;
         }
 
-        // Already at max kills
-        if uq.kill_count + 1 > def.kill_count {
+        // A target of 0 or less never completes (misconfigured row).
+        if def.kill_count <= 0 {
             continue;
         }
 
@@ -979,8 +989,10 @@ pub async fn update_daily_quest_count(world: &WorldState, sid: SessionId, monste
             continue;
         }
 
-        // Increment kill count
-        uq.kill_count += 1;
+        // Increment kill count. If the target was lowered below the stored
+        // progress (rebalance), the next matching kill completes the quest
+        // instead of leaving it stuck at "full" forever.
+        uq.kill_count = next_kill_count(uq.kill_count, def.kill_count);
         changed = true;
         changed_quest_ids.push(def.id);
         world.update_session(sid, |handle| {
@@ -1519,6 +1531,85 @@ mod tests {
         let rewards = get_quest_rewards(&quest);
         assert_eq!(rewards.len(), 1);
         assert_eq!(rewards[0], (900001000, 1000000));
+    }
+
+    #[test]
+    fn test_next_kill_count_counts_up_to_target() {
+        assert_eq!(next_kill_count(0, 160), 1);
+        assert_eq!(next_kill_count(158, 160), 159);
+        assert_eq!(next_kill_count(159, 160), 160);
+    }
+
+    #[test]
+    fn test_next_kill_count_lowered_target_still_completes() {
+        // progress 200, target lowered to 160 by the rebalance: the next kill
+        // lands exactly on the target so the completion check fires.
+        assert_eq!(next_kill_count(200, 160), 160);
+        assert_eq!(next_kill_count(160, 160), 160);
+        assert!(next_kill_count(200, 160) >= 160);
+    }
+
+    #[test]
+    fn test_next_kill_count_never_negative_or_zero_target() {
+        assert_eq!(next_kill_count(-5, 30), 1);
+        // a zero/negative target is rejected by the caller; the helper stays sane
+        assert_eq!(next_kill_count(0, 0), 1);
+    }
+
+    /// The rebalance migration is data: check its shape so a bad regeneration is caught.
+    #[test]
+    fn test_rebalance_migration_rows_are_sane() {
+        let sql =
+            include_str!("../../../../migrations/20261018140000_daily_quests_rebalance.sql");
+        let from = sql.find("FROM (VALUES").expect("values block");
+        let mut rows: Vec<Vec<i64>> = Vec::new();
+        for line in sql[from..].lines().skip(1) {
+            let t = line.trim();
+            if t.starts_with(") AS v(") {
+                break;
+            }
+            let t = t.trim_end_matches(',');
+            let Some(inner) = t.strip_prefix('(').and_then(|x| x.strip_suffix(')')) else {
+                continue;
+            };
+            let nums: Vec<i64> = inner
+                .split(',')
+                .map(|x| x.trim().parse().expect("number"))
+                .collect();
+            rows.push(nums);
+        }
+        assert_eq!(rows.len(), 200, "one row per quest");
+        for (i, r) in rows.iter().enumerate() {
+            // id, mob1, kills, (reward, count) x 4
+            assert_eq!(r.len(), 11);
+            assert_eq!(r[0], i as i64 + 1, "ids are 1..=200 in order");
+            assert!(r[1] > 0, "quest {} guards on its first monster", r[0]);
+            assert!((30..=300).contains(&r[2]), "quest {} kills {}", r[0], r[2]);
+            assert_eq!(r[2] % 5, 0, "quest {} kills rounded to 5", r[0]);
+            assert_eq!(r[3], ITEM_EXP as i64, "slot 1 is EXP");
+            assert_eq!(r[5], ITEM_GOLD as i64, "slot 2 is gold");
+            for slot in 0..4 {
+                let (item, count) = (r[3 + slot * 2], r[4 + slot * 2]);
+                assert!(item > 0 && count > 0, "quest {} slot {}", r[0], slot + 1);
+            }
+            // gold and EXP stay within the paid-out caps used elsewhere
+            assert!(r[4] <= 5_000_000, "quest {} exp {}", r[0], r[4]);
+            assert!(r[6] <= 500_000, "quest {} gold {}", r[0], r[6]);
+            // items 3 and 4 are real items or NP (Red/Blue Potion are 9001xx000 items), never a second EXP/gold/random slot
+            for slot in [2usize, 3] {
+                let item = r[3 + slot * 2];
+                assert!(
+                    ![ITEM_GOLD as i64, ITEM_EXP as i64, ITEM_RANDOM as i64].contains(&item),
+                    "quest {} slot {} item {}",
+                    r[0],
+                    slot + 1,
+                    item
+                );
+            }
+        }
+        // tougher targets never need more kills than much weaker ones inside the same band:
+        // quest 1 (Worm, lv 1-20) vs quest 10 (Orc Watcher, lv 30)
+        assert!(rows[0][2] > rows[9][2]);
     }
 
     #[test]

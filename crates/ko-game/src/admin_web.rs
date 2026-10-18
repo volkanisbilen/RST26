@@ -786,7 +786,7 @@ async fn collection_race_zone_valid(pool:&DbPool, zone:i16) -> Result<bool,ApiEr
 async fn collection_race_npc_valid(pool:&DbPool, sid:i16) -> Result<bool,ApiError> { sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM npc_template WHERE s_sid=$1)").bind(sid).fetch_one(pool).await.map_err(|_|ApiError::Internal) }
 async fn validate_collection_race_setting(pool:&DbPool, p:&CollectionRaceSettingEdit) -> Result<(),ApiError> {
     if p.name.trim().is_empty() || p.name.len()>30 || p.targets.len()!=3 || !(1..=83).contains(&p.min_level) || !(p.min_level..=83).contains(&p.max_level) || !(1..=1440).contains(&p.minutes) || !(1..=i16::MAX as i32).contains(&p.user_limit) || !(0..=23).contains(&p.auto_hour) || !(0..=59).contains(&p.auto_minute) || !collection_race_zone_valid(pool,p.zone).await? { return Err(ApiError::BadRequest); }
-    for target in &p.targets { if target.sid<0 || target.count<0 || (target.sid==0 && target.count!=0) || (target.sid>0 && target.count==0) { return Err(ApiError::BadRequest); } if target.sid>0 && !collection_race_npc_valid(pool,target.sid).await? { return Err(ApiError::BadRequest); } }
+    for target in &p.targets { if target.sid<0 || target.count<0 || (target.sid==0 && target.count!=0) || (target.sid>0 && target.count==0) { return Err(ApiError::BadRequest); } if target.sid>0 && target.sid as u16!=crate::handler::collection_race::CR_PK_BOT_KILL_PROTO_ID && !collection_race_npc_valid(pool,target.sid).await? { return Err(ApiError::BadRequest); } }
     Ok(())
 }
 async fn write_collection_race_setting(tx:&mut sqlx::Transaction<'_,sqlx::Postgres>, index:i16, p:&CollectionRaceSettingEdit, upsert:bool) -> Result<u64,ApiError> {
