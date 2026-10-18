@@ -4,7 +4,7 @@
 //! - 2 = UserInfoDetail (inspect player equipment/stats)
 //! - 3 = UserList (refresh, lower bandwidth)
 //! - 4 = RegionDelete (logout notification to nearby players)
-//! - 5 = User info view (equipment preview)
+//! - 5 = Equipment View (right-click context menu) — see `equipment_view.rs`
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use ko_protocol::{Opcode, Packet, PacketReader};
 
 use crate::session::{ClientSession, SessionState};
 
-use super::{HAVE_MAX, INVENTORY_COSP, SLOT_MAX};
+use super::{HAVE_MAX, SLOT_MAX};
 
 fn build_user_list_header(sub_opcode: u8, zone_id: u16, count: u16) -> Packet {
     let mut pkt = Packet::new(Opcode::WizUserInfo as u8);
@@ -182,10 +182,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // RegionDelete — logout notification to nearby players
             handle_region_delete(session)?;
         }
-        5 => {
-            // Right-click equipment view request: client sends the target
-            // character's socket ID, not a character name.
-            handle_get_user_info_view(session, &mut reader).await?;
+        super::equipment_view::SUB_EQUIPMENT_VIEW => {
+            super::equipment_view::handle(session, &mut reader).await?;
         }
         _ => {
             tracing::trace!(
@@ -196,67 +194,6 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
-    Ok(())
-}
-
-/// Handle the client's bottom-list right-click (equipment view) request.
-/// Native `HandleGetUserInfoView()` responds with the Character Seal preview
-/// packet layout, populated from the live character's current equipment.
-async fn handle_get_user_info_view(
-    session: &mut ClientSession,
-    reader: &mut PacketReader<'_>,
-) -> anyhow::Result<()> {
-    let Some(target_sid) = reader.read_u16() else {
-        return Ok(());
-    };
-    let world = session.world().clone();
-    let Some(target) = world.get_character_info(target_sid) else {
-        return Ok(());
-    };
-    let (inventory, skill_points) = world
-        .with_session(target_sid, |h| {
-            (
-                h.inventory.clone(),
-                h.character.as_ref().map(|c| c.skill_points.clone()),
-            )
-        })
-        .unwrap_or_default();
-    let skill_points = skill_points.unwrap_or_default();
-
-    let mut result = Packet::new(Opcode::WizItemUpgrade as u8);
-    result.write_u8(9); // ITEM_CHARACTER_SEAL
-    result.write_u8(4); // CharacterSealOpcodes::Preview
-    result.write_u8(1); // success
-    result.write_sbyte_string(&target.name);
-    result.write_u8(target.nation);
-    result.write_u8(target.race);
-    result.write_u16(target.class);
-    result.write_u8(target.level);
-    result.write_u32(target.loyalty);
-    for stat in [target.str, target.sta, target.dex, target.intel, target.cha] {
-        result.write_u8(stat as u8);
-    }
-    result.write_u32(target.gold);
-    result.write_u8(target.free_points as u8);
-    result.write_u8(skill_points.first().copied().unwrap_or(0)); // free skill points
-    result.write_u32(1); // skill flag, same as native HandleGetUserInfoView
-    for idx in [5usize, 6, 7, 8] {
-        result.write_u8(skill_points.get(idx).copied().unwrap_or(0));
-    }
-    for idx in 0..INVENTORY_COSP {
-        if let Some(item) = inventory.get(idx) {
-            result.write_u32(item.item_id);
-            result.write_i16(item.durability);
-            result.write_u16(item.count);
-            result.write_u8(item.flag);
-        } else {
-            result.write_u32(0);
-            result.write_i16(0);
-            result.write_u16(0);
-            result.write_u8(0);
-        }
-    }
-    session.send_packet(&result).await?;
     Ok(())
 }
 

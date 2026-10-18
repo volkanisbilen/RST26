@@ -66,6 +66,7 @@ pub mod rift_entry;
 pub mod durability;
 pub mod edit_box;
 pub mod enchant;
+pub mod equipment_view;
 pub mod event;
 pub mod exp_seal;
 pub mod ext_hook;
