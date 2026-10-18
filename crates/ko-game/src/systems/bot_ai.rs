@@ -2145,12 +2145,28 @@ fn apply_party_spacing(world: &WorldState, bot: &BotInstance, target_x: f32, tar
         }
     }
 
-    match push {
-        Some((nx, nz)) => (
-            target_x + nx * BOT_PARTY_SPACING_PUSH,
-            target_z + nz * BOT_PARTY_SPACING_PUSH,
-        ),
-        None => (target_x, target_z),
+    let Some((nx, nz)) = push else {
+        return (target_x, target_z);
+    };
+    let pushed_x = target_x + nx * BOT_PARTY_SPACING_PUSH;
+    let pushed_z = target_z + nz * BOT_PARTY_SPACING_PUSH;
+
+    // The push is a raw offset with no idea what's on the other side of it --
+    // on a clumped party near a wall it can land squarely on an unwalkable
+    // tile, which made every subsequent path step to the nudged point fail
+    // and the bot never actually move (it would cycle through its whole
+    // route doing nothing but failed steps, then "complete" and respawn in
+    // place, looking frozen). Only apply the nudge when it's still walkable;
+    // otherwise fall through to the un-nudged target so the bot keeps moving.
+    let walkable = world.get_zone(bot.zone_id).is_none_or(|zone| {
+        zone.map_data
+            .as_ref()
+            .is_none_or(|map| map.is_bot_movable(pushed_x, pushed_z))
+    });
+    if walkable {
+        (pushed_x, pushed_z)
+    } else {
+        (target_x, target_z)
     }
 }
 
