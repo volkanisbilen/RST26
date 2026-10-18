@@ -176,6 +176,7 @@ pub mod vanguard;
 pub mod version;
 pub mod vip_warehouse;
 pub mod virtual_server;
+pub mod voice_chat;
 pub mod warehouse;
 pub mod warp_list;
 pub mod webpage;
@@ -463,7 +464,7 @@ pub async fn dispatch(session: &mut ClientSession, packet: Packet) -> anyhow::Re
         Some(Opcode::WizGenderChange) => gender_change::handle(session, packet).await,
         Some(Opcode::WizExpSeal) => exp_seal::handle(session, packet).await,
         Some(Opcode::WizKurianSpChange) => Ok(()), // server→client only (Kurian SP update)
-        Some(Opcode::WizSound) => Ok(()),          // server→client only (area sound effect)
+        Some(Opcode::WizSound) => voice_chat::handle(session, packet).await, // party voice chat control (also used outbound for area sound effects — see voice_chat.rs)
         Some(Opcode::WizVanguard) => vanguard::handle(session, packet),
         Some(Opcode::WizPreset) => preset::handle(session, packet).await,
         Some(Opcode::WizClanWarehouse) => clan_warehouse::handle(session, packet).await,

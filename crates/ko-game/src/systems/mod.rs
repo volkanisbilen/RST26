@@ -34,6 +34,7 @@ pub mod regen;
 pub mod sp_regen;
 pub mod time_weather;
 pub mod timed_notice;
+pub mod voice_relay;
 pub mod war;
 pub mod zone_level_kick_tick;
 pub mod zone_rewards;

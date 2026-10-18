@@ -119,6 +119,15 @@ impl GameServer {
         bg_tasks.push(crate::admin_queue::start(self.world.clone(), self.pool.clone()));
         info!("Admin command queue started");
 
+        // Party voice chat relay — separate, unencrypted socket (see
+        // docs/reverse-engineering/2625/VOICE_CHAT_PROTOCOL.md). The address told
+        // to clients (handler::voice_chat::relay_public_addr) is configured
+        // independently via VOICE_RELAY_PUBLIC_IP since this normally binds 0.0.0.0.
+        let voice_relay_bind =
+            std::env::var("VOICE_RELAY_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:15500".to_string());
+        bg_tasks.push(crate::systems::voice_relay::start(voice_relay_bind));
+        info!("Voice chat relay TCP server started");
+
         bg_tasks.push(crate::systems::regen::start_regen_task(self.world.clone()));
         info!("HP/MP regen tick started");
 
