@@ -43,7 +43,7 @@ impl<'a> DailyQuestRepository<'a> {
     ) -> Result<Vec<UserDailyQuestRow>, sqlx::Error> {
         sqlx::query_as::<_, UserDailyQuestRow>(
             "SELECT character_id, quest_id, kill_count, status, replay_time \
-             FROM user_daily_quest WHERE character_id = $1 ORDER BY quest_id",
+             FROM user_daily_quest WHERE character_id = $1 AND is_selected = TRUE ORDER BY quest_id",
         )
         .bind(character_id)
         .fetch_all(self.pool)
@@ -53,12 +53,13 @@ impl<'a> DailyQuestRepository<'a> {
     /// Save (upsert) a single daily quest progress entry for a character.
     pub async fn save_user_quest(&self, row: &UserDailyQuestRow) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO user_daily_quest (character_id, quest_id, kill_count, status, replay_time) \
-             VALUES ($1, $2, $3, $4, $5) \
+            "INSERT INTO user_daily_quest (character_id, quest_id, kill_count, status, replay_time, is_selected) \
+             VALUES ($1, $2, $3, $4, $5, TRUE) \
              ON CONFLICT (character_id, quest_id) DO UPDATE SET \
                kill_count = EXCLUDED.kill_count, \
                status = EXCLUDED.status, \
-               replay_time = EXCLUDED.replay_time",
+               replay_time = EXCLUDED.replay_time, \
+               is_selected = TRUE",
         )
         .bind(&row.character_id)
         .bind(row.quest_id)
@@ -79,8 +80,9 @@ impl<'a> DailyQuestRepository<'a> {
         character_id: &str,
         entries: &[UserDailyQuestRow],
     ) -> Result<(), sqlx::Error> {
-        // Delete existing entries for this character
-        sqlx::query("DELETE FROM user_daily_quest WHERE character_id = $1")
+        // Replace only NPC-selected entries. Legacy auto-populated rows are
+        // deliberately left untouched and remain `is_selected = false`.
+        sqlx::query("DELETE FROM user_daily_quest WHERE character_id = $1 AND is_selected = TRUE")
             .bind(character_id)
             .execute(self.pool)
             .await?;
@@ -91,17 +93,32 @@ impl<'a> DailyQuestRepository<'a> {
 
         // Batch insert all entries in a single query
         let mut builder: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-            "INSERT INTO user_daily_quest (character_id, quest_id, kill_count, status, replay_time) ",
+            "INSERT INTO user_daily_quest (character_id, quest_id, kill_count, status, replay_time, is_selected) ",
         );
         builder.push_values(entries, |mut b, entry| {
             b.push_bind(character_id)
                 .push_bind(entry.quest_id)
                 .push_bind(entry.kill_count)
                 .push_bind(entry.status)
-                .push_bind(entry.replay_time);
+                .push_bind(entry.replay_time)
+                .push_bind(true);
         });
         builder.build().execute(self.pool).await?;
 
+        Ok(())
+    }
+
+    /// Delete one daily quest progress entry (player abandoned the quest).
+    pub async fn delete_user_quest(
+        &self,
+        character_id: &str,
+        quest_id: i16,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM user_daily_quest WHERE character_id = $1 AND quest_id = $2")
+            .bind(character_id)
+            .bind(quest_id)
+            .execute(self.pool)
+            .await?;
         Ok(())
     }
 

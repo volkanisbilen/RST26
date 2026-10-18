@@ -20,9 +20,14 @@
 //! wrapper computes the uncompressed size dynamically, so variable-length
 //! packets are handled correctly.
 
+use std::sync::Arc;
+
 use ko_protocol::{Opcode, Packet, PacketReader};
 
-use crate::npc::{write_npc_info, NPC_BAND};
+use crate::npc::{
+    build_npc_inout, is_native_moraranker_template, write_npc_info_base, NpcInstance, NpcTemplate,
+    NPC_BAND, NPC_IN,
+};
 use crate::session::ClientSession;
 
 /// Maximum NPCs per response (C++ MAX_SEND_NPCID).
@@ -46,6 +51,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     let mut result = Packet::new(Opcode::WizReqNpcIn as u8);
     let mut npc_packet_count: u16 = 0;
+    let mut native_ranker_inouts: Vec<(Arc<NpcInstance>, Arc<NpcTemplate>)> = Vec::new();
 
     // Reserve space for NPC count (will overwrite later)
     result.write_u16(0);
@@ -83,9 +89,15 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             None => continue,
         };
 
+        // Familiars keep their own (transformed) model/size
+        let template = world.npc_visual_template(&instance, &template);
+
         // Write per-NPC data: [u32 npcId] [GetNpcInfo]
         result.write_u32(npc_id);
-        write_npc_info(&mut result, &instance, &template);
+        write_npc_info_base(&mut result, &instance, &template);
+        if is_native_moraranker_template(&template) {
+            native_ranker_inouts.push((instance.clone(), template.clone()));
+        }
 
         npc_packet_count += 1;
 
@@ -111,6 +123,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             None => result,
         };
         session.send_packet(&to_send).await?;
+
+        for (instance, template) in native_ranker_inouts {
+            let pkt = build_npc_inout(NPC_IN, &instance, &template);
+            session.send_packet(&pkt).await?;
+        }
     }
 
     tracing::debug!(
@@ -211,7 +228,9 @@ mod tests {
     fn test_req_npcin_c2s_data_length() {
         let mut pkt = Packet::new(Opcode::WizReqNpcIn as u8);
         pkt.write_u16(5);
-        for i in 0..5u32 { pkt.write_u32(10000 + i); }
+        for i in 0..5u32 {
+            pkt.write_u32(10000 + i);
+        }
         assert_eq!(pkt.data.len(), 22); // 2 + 5*4
     }
 
@@ -238,7 +257,9 @@ mod tests {
         let mut count: u16 = 0;
         for _ in 0..200 {
             count += 1;
-            if count >= MAX_SEND_NPCID { break; }
+            if count >= MAX_SEND_NPCID {
+                break;
+            }
         }
         assert_eq!(count, MAX_SEND_NPCID);
     }

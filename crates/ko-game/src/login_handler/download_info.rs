@@ -47,7 +47,9 @@ pub async fn handle(session: &mut LoginSession, pkt: Packet) -> anyhow::Result<(
         response.write_u16(0);
         tracing::info!(
             "[{}] Client up to date (forced), client={}, server={}",
-            session.addr(), client_version, server_version
+            session.addr(),
+            client_version,
+            server_version
         );
     }
     if false {

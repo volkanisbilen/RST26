@@ -1,0 +1,48 @@
+209001626|20600100|Breastplate of the Great King
+209002626|20600200|Neck guard of the Great King
+209003626|20600300|Helmet of the Great King
+209004626|20600400|Gauntlet of the Great King
+209005626|20600500|Boots of the Great King
+249001627|24600100|Breast Armor of the Cool-Headed King
+249002627|24600200|Leg armor of the Cool-Headed King
+249003627|24600300|Bandana of the Cool-Headed King
+249004627|24600400|Gloves of the Cool-Headed King
+249005627|24600500|Boots of the Cool-Headed King
+269001628|26600100|Robe of the Intelligent King
+269002628|26600200|Kilt of the Intelligent King
+269003628|26600300|Head armor of the Intelligent King
+269004628|26600400|Hand armor of the Intelligent King
+269005628|26600500|Boots of the Intelligent King
+289001629|28600100|Breastplate of the Wise King
+289002629|28600200|Neck guard of the Wise King
+289003629|28600300|Helmet of the Wise King
+289004629|28600400|Gauntlet of the Wise King
+289005629|28600500|Boots of the Wise King
+310140024|31031000|Earrings of the Great King
+310140025|31031000|Earrings of the Cool-Headed King
+310140026|31031000|Earrings of the Intelligent King
+310140027|31031000|Earrings of the Wise King
+310160028|32041000|Rings of the Great King
+310160029|32041000|Rings of the Cool-Headed King
+310160030|32041000|Rings of the Intelligent King
+310160031|32041000|Rings of the Wise King
+310170032|33031000|Rings of the Great King
+310170033|33031000|Rings of the Cool-Headed King
+310170034|33031000|Rings of the Intelligent King
+310170035|33031000|Rings of the Wise King
+352900000|35290000|Trina's Piece ( Middle Class )
+353000000|35300000|Trina's Piece ( Low Class )
+354000000|35400000|Accessory Trina's Piece
+379016000|37922000|Upgrade Scroll
+379021000|37902100|Blessed Upgrade Scroll
+379117000|80000400|Scroll of Health
+379118000|80000500|Scroll of Agility
+379119000|80000600|Scroll of Intelligence
+379120000|80000700|Scroll of Magic Power
+379123000|37912300|Scroll of Armor 150
+379127000|37912700|Scroll of 1000 HP Up
+379128000|80001400|Scroll of Attack
+379129000|80001500|Speed-Up Potion
+379205000|37920500|Upgrade Scroll (Middle Class item)
+379221000|37901600|Upgrade Scroll (Low Class item)
+389015000|38901500|Water of bless

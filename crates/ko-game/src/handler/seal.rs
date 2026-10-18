@@ -259,12 +259,11 @@ async fn handle_unseal(
                 && inv[actual_slot].flag == ITEM_FLAG_SEALED
             {
                 let o = inv[actual_slot].original_flag;
-                inv[actual_slot].flag =
-                    if o == ITEM_FLAG_NOT_BOUND || o == ITEM_FLAG_BOUND {
-                        o
-                    } else {
-                        ITEM_FLAG_NONE
-                    };
+                inv[actual_slot].flag = if o == ITEM_FLAG_NOT_BOUND || o == ITEM_FLAG_BOUND {
+                    o
+                } else {
+                    ITEM_FLAG_NONE
+                };
                 inv[actual_slot].original_flag = 0;
                 true
             } else {

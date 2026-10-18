@@ -355,7 +355,7 @@ mod tests {
         // item_id / 1_000_000_000 must be < 4
         assert!(100_001_000u32 / 1_000_000_000 < 4); // type 0, valid
         assert!(1_100_001_000u32 / 1_000_000_000 < 4); // type 1, valid
-        // type 4+ would be invalid (item_id >= 4_000_000_000)
+                                                       // type 4+ would be invalid (item_id >= 4_000_000_000)
     }
 
     #[test]

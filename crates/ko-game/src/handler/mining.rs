@@ -195,17 +195,35 @@ fn count_item_in_bag(world: &WorldState, sid: SessionId, item_id: u32) -> u16 {
     total
 }
 
-/// Reduce durability of right-hand item by `amount`.
+/// Consume fractional durability and immediately synchronize the right-hand
+/// slot with the client. Item durability is an integer on the wire, so two
+/// successful mining attempts consume one point (0.5 per attempt).
 fn reduce_righthand_durability(world: &WorldState, sid: SessionId, amount: i16) {
+    let mut wear = amount.max(0) as u16;
+    if amount == 1 {
+        let apply_one = world
+            .with_session(sid, |h| !h.mining_half_wear_pending)
+            .unwrap_or(true);
+        world.update_session(sid, |h| h.mining_half_wear_pending = !h.mining_half_wear_pending);
+        wear = u16::from(apply_one);
+    }
+    let mut new_durability = None;
     world.update_inventory(sid, |inv| {
         if let Some(slot) = inv.get_mut(RIGHTHAND) {
             if slot.item_id != 0 && slot.durability > 0 {
-                slot.durability = (slot.durability - amount).max(0);
+                slot.durability = slot.durability.saturating_sub(wear as i16);
+                new_durability = Some(slot.durability.max(0) as u16);
                 return true;
             }
         }
         false
     });
+    if let Some(durability) = new_durability {
+        let mut pkt = Packet::new(Opcode::WizDuration as u8);
+        pkt.write_u8(RIGHTHAND as u8);
+        pkt.write_u16(durability);
+        world.send_to_session_owned(sid, pkt);
+    }
 }
 
 /// Perform weighted random selection from a list of mining/fishing items.
@@ -283,10 +301,13 @@ fn handle_mining_start(session: &mut ClientSession) -> anyhow::Result<()> {
     if result_code == MINING_RESULT_SUCCESS {
         world.update_session(sid, |h| {
             h.is_mining = true;
+            h.mining_half_wear_pending = false;
             h.last_mining_attempt = Instant::now();
         });
         pkt.write_u32(sid as u32);
-        let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+        let (pos, event_room) = world
+            .with_session(sid, |h| (h.position, h.event_room))
+            .unwrap_or_default();
         world.broadcast_to_3x3(
             pos.zone_id,
             pos.region_x,
@@ -378,7 +399,9 @@ async fn handle_mining_attempt(session: &mut ClientSession) -> anyhow::Result<()
         if let Some(item_def) = world.get_item(reward_item_id) {
             let weight = item_def.weight.unwrap_or(0) as u32;
             let (current_weight, max_weight) = world
-                .with_session(sid, |h| (h.equipped_stats.item_weight, h.equipped_stats.max_weight))
+                .with_session(sid, |h| {
+                    (h.equipped_stats.item_weight, h.equipped_stats.max_weight)
+                })
                 .unwrap_or((0, 0));
             if current_weight + weight > max_weight {
                 return Ok(());
@@ -404,13 +427,23 @@ async fn handle_mining_attempt(session: &mut ClientSession) -> anyhow::Result<()
             crate::handler::level::exp_change(&world, sid, exp).await;
         }
         effect = EFFECT_MINING_EXP;
+        let msg = format!("Mining: you gained {} experience.", exp);
+        world.send_to_session_owned(sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
     } else {
         world.give_item(sid, reward_item_id, 1);
         effect = EFFECT_MINING_ITEM;
+        let name = world
+            .get_item(reward_item_id)
+            .and_then(|i| i.str_name.clone())
+            .unwrap_or_else(|| format!("item {}", reward_item_id));
+        let msg = format!("Mining: you obtained {}.", name);
+        world.send_to_session_owned(sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
     }
 
-    // Reduce pickaxe durability by 150
-    reduce_righthand_durability(&world, sid, 150);
+    // Golden Pickaxe mining wear is 0.5 per successful attempt. Since the
+    // protocol stores an integer durability, the server applies one point on
+    // every second attempt and sends the updated value immediately.
+    reduce_righthand_durability(&world, sid, 1);
     world.set_user_ability(sid);
 
     // Broadcast success
@@ -420,7 +453,9 @@ async fn handle_mining_attempt(session: &mut ClientSession) -> anyhow::Result<()
     pkt.write_u32(sid as u32);
     pkt.write_u16(effect);
 
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     world.broadcast_to_3x3(
         pos.zone_id,
         pos.region_x,
@@ -450,6 +485,7 @@ pub(crate) fn stop_mining_internal(world: &Arc<WorldState>, sid: SessionId) {
 
     world.update_session(sid, |h| {
         h.is_mining = false;
+        h.mining_half_wear_pending = false;
     });
 
     // Broadcast stop to region: [u8 sub] [u16 1] [u32 id]
@@ -457,7 +493,9 @@ pub(crate) fn stop_mining_internal(world: &Arc<WorldState>, sid: SessionId) {
     pkt.write_u8(MINING_STOP);
     pkt.write_u16(1);
     pkt.write_u32(sid as u32);
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     world.broadcast_to_3x3(
         pos.zone_id,
         pos.region_x,
@@ -519,7 +557,9 @@ fn handle_betting_game(session: &mut ClientSession) -> anyhow::Result<()> {
     pkt.write_u8(npc_rand);
     pkt.write_u16(0);
 
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     world.broadcast_to_3x3(
         pos.zone_id,
         pos.region_x,
@@ -607,7 +647,9 @@ fn handle_fishing_start(session: &mut ClientSession) -> anyhow::Result<()> {
             h.last_mining_attempt = Instant::now();
         });
         pkt.write_u32(sid as u32);
-        let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+        let (pos, event_room) = world
+            .with_session(sid, |h| (h.position, h.event_room))
+            .unwrap_or_default();
         world.broadcast_to_3x3(
             pos.zone_id,
             pos.region_x,
@@ -698,7 +740,9 @@ async fn handle_fishing_attempt(session: &mut ClientSession) -> anyhow::Result<(
         if let Some(item_def) = world.get_item(reward_item_id) {
             let weight = item_def.weight.unwrap_or(0) as u32;
             let (current_weight, max_weight) = world
-                .with_session(sid, |h| (h.equipped_stats.item_weight, h.equipped_stats.max_weight))
+                .with_session(sid, |h| {
+                    (h.equipped_stats.item_weight, h.equipped_stats.max_weight)
+                })
                 .unwrap_or((0, 0));
             if current_weight + weight > max_weight {
                 return Ok(());
@@ -742,7 +786,9 @@ async fn handle_fishing_attempt(session: &mut ClientSession) -> anyhow::Result<(
     pkt.write_u32(sid as u32);
     pkt.write_u16(effect);
 
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     world.broadcast_to_3x3(
         pos.zone_id,
         pos.region_x,
@@ -779,7 +825,9 @@ pub(crate) fn stop_fishing_internal(world: &Arc<WorldState>, sid: SessionId) {
     pkt.write_u8(FISHING_STOP);
     pkt.write_u16(1);
     pkt.write_u32(sid as u32);
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     world.broadcast_to_3x3(
         pos.zone_id,
         pos.region_x,
@@ -829,7 +877,9 @@ async fn handle_soccer_kick(session: &mut ClientSession) -> anyhow::Result<()> {
         world.update_session(sid, |h| {
             h.is_mining = true;
         });
-        let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+        let (pos, event_room) = world
+            .with_session(sid, |h| (h.position, h.event_room))
+            .unwrap_or_default();
         world.broadcast_to_3x3(
             pos.zone_id,
             pos.region_x,

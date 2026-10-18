@@ -672,9 +672,7 @@ async fn handle_gold_op(
                 .get(&clan_id)
                 .map(|d| (d.gold & 0xFFFF) as u16)
                 .unwrap_or(0);
-            session
-                .send_packet(&build_gold_update(new_gold))
-                .await?;
+            session.send_packet(&build_gold_update(new_gold)).await?;
             debug!(
                 "[{}] WIZ_GUILD_BANK gold deposit: {} gold",
                 session.addr(),
@@ -716,9 +714,7 @@ async fn handle_gold_op(
                 .get(&clan_id)
                 .map(|d| (d.gold & 0xFFFF) as u16)
                 .unwrap_or(0);
-            session
-                .send_packet(&build_gold_update(new_gold))
-                .await?;
+            session.send_packet(&build_gold_update(new_gold)).await?;
             debug!(
                 "[{}] WIZ_GUILD_BANK gold withdraw: {} gold",
                 session.addr(),

@@ -64,7 +64,7 @@ use crate::handler::chat::{build_chat_packet, ChatType};
 use crate::handler::level::exp_change;
 use crate::session::ClientSession;
 use crate::systems::loyalty::send_loyalty_change;
-use crate::world::{WorldState, ITEM_GOLD};
+use crate::world::{WorldState, ITEM_GOLD, ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
 use crate::zone::SessionId;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,6 +96,15 @@ pub const CR_SLOTS: usize = 3;
 
 /// Number of reward slots per event (always 3, same as monster slots).
 pub const CR_REWARD_SLOTS: usize = 3;
+
+/// Reserved "proto_id" an admin can put in a CR target slot to mean "a kill in
+/// the PK zones (Ronark Land / Ardream / Ronark Land Base), real player or PK
+/// bot, counts toward this target" instead of a specific monster. The admin
+/// panel's target SID field is i16 (DB column `smallint`), so this has to fit
+/// that range -- `i16::MAX` rather than `u16::MAX`. `validate_collection_race_setting`
+/// (ko-admin, legacy.rs) special-cases this exact value to skip the normal
+/// "must be a real npc_template.s_sid" check.
+pub const CR_PK_BOT_KILL_PROTO_ID: u16 = i16::MAX as u16;
 
 use crate::world::{ITEM_COUNT, ITEM_EXP, ITEM_RANDOM};
 
@@ -258,9 +267,47 @@ pub fn build_start_packet(ev: &CollectionRaceEvent, duration_secs: u32, nation: 
     pkt.write_u16((ev.total_count as u32 * ev.rank_bug) as u16);
     pkt.write_u16(ev.user_limit);
     pkt.write_u8(nation);
-    pkt.write_sbyte_string(&ev.event_name);
+    pkt.write_string(&ev.event_name);
     pkt.write_u8(ev.zone_id);
     pkt
+}
+
+/// Append the optional proxy meta block (`u8 1`, target names + icons, reward names + icons,
+/// zone name) so the client panel shows monster/item names and item icons instead of ids.
+pub fn append_meta(pkt: &mut Packet, world: &WorldState, ev: &CollectionRaceEvent) {
+    pkt.write_u8(1);
+    for i in 0..CR_SLOTS {
+        let name = if ev.proto_ids[i] == 0 {
+            String::new()
+        } else {
+            world
+                .get_npc_template(ev.proto_ids[i], true)
+                .or_else(|| world.get_npc_template(ev.proto_ids[i], false))
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| format!("Monster {}", ev.proto_ids[i]))
+        };
+        pkt.write_string(&name);
+        pkt.write_u32(0);
+    }
+    for i in 0..CR_REWARD_SLOTS {
+        let id = ev.reward_item_ids[i];
+        let (name, icon) = match world.get_item(id) {
+            Some(it) => (
+                it.str_name.clone().unwrap_or_default(),
+                it.item_icon_id1.or(it.item_icon_id2).unwrap_or(0).max(0) as u32,
+            ),
+            None if id == ITEM_GOLD => ("Gold".to_string(), 0),
+            None if id == ITEM_EXP => ("Experience".to_string(), 0),
+            None => (String::new(), 0),
+        };
+        pkt.write_string(&name);
+        pkt.write_u32(icon);
+    }
+    let zone = world
+        .get_zone(ev.zone_id as u16)
+        .and_then(|z| z.zone_info.as_ref().map(|i| i.zone_name.clone()))
+        .unwrap_or_default();
+    pkt.write_string(&zone);
 }
 
 /// Build a CR refresh/game-entry packet (sub=0x01).
@@ -311,7 +358,7 @@ pub fn build_refresh_packet(
     pkt.write_u16((ev.total_count as u32 * ev.rank_bug) as u16);
     pkt.write_u16(ev.user_limit);
     pkt.write_u8(nation);
-    pkt.write_sbyte_string(&ev.event_name);
+    pkt.write_string(&ev.event_name);
     pkt.write_u8(ev.zone_id);
     pkt
 }
@@ -576,13 +623,10 @@ pub async fn send_on_game_entry(
                 let my_kills = user_entry.kill_counts;
                 let user_status = user_entry.user_status;
                 let remaining = ev.event_end_time.saturating_sub(now);
-                Some(build_refresh_packet(
-                    &ev,
-                    my_kills,
-                    user_status,
-                    remaining,
-                    nation,
-                ))
+                let mut pkt =
+                    build_refresh_packet(&ev, my_kills, user_status, remaining, nation);
+                append_meta(&mut pkt, &world, &ev);
+                Some(pkt)
             }
         }
         // ev dropped here
@@ -603,6 +647,37 @@ pub async fn send_on_game_entry(
 // ─────────────────────────────────────────────────────────────────────────────
 // NPC Kill Handling
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Credit a real (non-bot) opposing-nation player kill toward Collection Race,
+/// using the same PK-zone sentinel a PK bot kill uses (`CR_PK_BOT_KILL_PROTO_ID`'s
+/// doc comment always described this as covering "real player or PK bot" —
+/// only the bot half was ever wired up). Call this from every PvP kill
+/// resolution site (melee, skill damage) alongside the existing
+/// `set_who_killed_me`/`pvp_loyalty_on_death` calls.
+pub async fn credit_pk_zone_player_kill(
+    world: &WorldState,
+    killer_sid: SessionId,
+    victim_sid: SessionId,
+    zone_id: u16,
+) {
+    if !matches!(
+        zone_id,
+        ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
+    ) {
+        return;
+    }
+    let same_nation = world
+        .get_character_info(killer_sid)
+        .zip(world.get_character_info(victim_sid))
+        .is_some_and(|(killer, victim)| killer.nation == victim.nation);
+    if same_nation {
+        return;
+    }
+    let cr = world.collection_race_event().clone();
+    if let Err(e) = handle_kill(world, killer_sid, CR_PK_BOT_KILL_PROTO_ID, &cr).await {
+        warn!("CR handle_kill error (PK zone player kill): {}", e);
+    }
+}
 
 /// Process a monster kill by a player for the active Collection Race event.
 /// Called from `handle_npc_death` for the killer when an NPC dies.
@@ -1117,7 +1192,8 @@ pub fn gm_open(world: &WorldState, event_index: i16) -> Result<&'static str, &'s
             };
             if level >= ev.min_level && level <= ev.max_level {
                 let duration_secs = def.event_time_mins * 60;
-                let pkt = build_start_packet(&ev, duration_secs, nation);
+                let mut pkt = build_start_packet(&ev, duration_secs, nation);
+                append_meta(&mut pkt, world, &ev);
                 world.send_to_session_owned(sid, pkt);
 
                 // Reset per-user state
@@ -1132,6 +1208,29 @@ pub fn gm_open(world: &WorldState, event_index: i16) -> Result<&'static str, &'s
     }
 
     Ok("Collection Race start request sent.")
+}
+
+/// Send the start packet to every eligible online player and reset their per-user CR state.
+/// Used by `+cropen` after `start_event` so the client panel opens.
+pub fn broadcast_start(world: &WorldState, duration_secs: u32) {
+    let cr = world.collection_race_event();
+    let ev = cr.read();
+    for sid in world.all_ingame_session_ids() {
+        let (level, nation) = match world.get_character_info(sid) {
+            Some(c) => (c.level, c.nation),
+            None => continue,
+        };
+        if level < ev.min_level || level > ev.max_level {
+            continue;
+        }
+        let mut pkt = build_start_packet(&ev, duration_secs, nation);
+        append_meta(&mut pkt, world, &ev);
+        world.send_to_session_owned(sid, pkt);
+        world.update_session(sid, |h| {
+            h.cr_kill_counts = [0u16; CR_SLOTS];
+            h.cr_check_finish = false;
+        });
+    }
 }
 
 /// GM +crclose command: close the active Collection Race event.
@@ -1230,7 +1329,7 @@ mod tests {
         assert_eq!(r.read_u16(), Some(10)); // total(5) * rank_bug(2) = 10
         assert_eq!(r.read_u16(), Some(2500)); // user_limit
         assert_eq!(r.read_u8(), Some(2)); // nation
-        assert_eq!(r.read_sbyte_string(), Some("CR Test".to_string()));
+        assert_eq!(r.read_string(), Some("CR Test".to_string()));
         assert_eq!(r.read_u8(), Some(71)); // zone_id
 
         assert_eq!(r.remaining(), 0);

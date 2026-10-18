@@ -101,6 +101,8 @@ pub struct CindirellaPlayerState {
     pub original_stat_points: u16,
     /// Original inventory snapshot.
     pub original_inventory: Vec<UserItemSlot>,
+    /// Original skill point array (free points + the four skill pages).
+    pub original_skill_points: [u8; 10],
     // ── Event tracking ──
     /// Current event nation (can differ from original due to nation change).
     pub event_nation: u8,
@@ -135,6 +137,7 @@ impl Default for CindirellaPlayerState {
             original_stats: [0u8; 5],
             original_stat_points: 0u16,
             original_inventory: Vec::new(),
+            original_skill_points: [0u8; 10],
             event_nation: 0,
             selected_class: 0,
             kill_count: 0,
@@ -401,6 +404,103 @@ fn build_preset_skills(skill_pages: [i16; 4], free_skill_pts: i16) -> Packet {
 /// The event system requires WorldState integration to be fully functional.
 /// Currently validates packets and sub-opcodes, but event activation
 /// depends on GM commands setting up the event state.
+/// Zone the Fun Class runs in. C++ forces the mini maps (107 / 115); this client crashes while
+/// loading those maps (zones 107, 111, 115), so the old PvP / mini settings fall back to the
+/// Snow War map (110), which loads fine. Any other configured zone is kept.
+pub fn forced_event_zone(zone: u16) -> u16 {
+    match zone {
+        71..=73 | 107 | 115 => 110,
+        _ => zone,
+    }
+}
+
+/// Apply the DB stat / skill preset of the chosen class (cindwar_stat).
+fn apply_stat_preset(world: &WorldState, sid: SessionId, setting_id: u8, selected_class: u8) -> Option<ko_db::models::cinderella::CindwarStatRow> {
+    let sp = world.get_cindwar_stat_preset(setting_id as i16, (selected_class + 1) as i16);
+    world.update_character_stats(sid, |ch| {
+        // C++ clears the skills, then sets the preset pages when a preset exists
+        ch.skill_points = [0u8; 10];
+        if let Some(ref sp) = sp {
+            ch.str = sp.stat_str as u8;
+            ch.sta = sp.stat_sta as u8;
+            ch.dex = sp.stat_dex as u8;
+            ch.intel = sp.stat_int as u8;
+            ch.cha = sp.stat_cha as u8;
+            ch.free_points = sp.stat_freepoint as u16;
+            ch.skill_points[0] = sp.skill_freepoint as u8;
+            ch.skill_points[5] = sp.skill_page1 as u8;
+            ch.skill_points[6] = sp.skill_page2 as u8;
+            ch.skill_points[7] = sp.skill_page3 as u8;
+            ch.skill_points[8] = sp.skill_page4 as u8;
+        }
+    });
+    sp
+}
+
+/// Recalculate abilities, fill HP/MP and push the new identity (class, level, items, stats)
+/// to the player and to everyone who sees them (C++ SendMyInfo + UserInOut).
+async fn refresh_client(session: &mut ClientSession, world: &WorldState, sid: SessionId) -> anyhow::Result<()> {
+    world.update_character_stats(sid, |ch| {
+        ch.max_exp = world.get_exp_by_level(ch.level, 0);
+    });
+    world.set_user_ability(sid);
+    world.update_character_stats(sid, |ch| {
+        ch.hp = ch.max_hp;
+        ch.mp = ch.max_mp;
+    });
+    super::gamestart::send_myinfo_refresh(session).await?;
+    super::region::broadcast_user_appearance_update(world, sid);
+    Ok(())
+}
+
+/// C++ ZoneChange -> CindirellaSign: entering the event zone signs the player up with
+/// their current class; the client then opens the class window from the joinevent packet.
+pub async fn auto_join(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let (is_prepare, setting_id, e_kills, k_kills) = {
+        let event = world.cindwar_event();
+        if !event.is_on() {
+            return Ok(());
+        }
+        (event.prepare, event.setting_id, event.elmorad_kills, event.karus_kills)
+    };
+    if world.get_cindwar_player(sid).is_some_and(|p| p.event_user) {
+        return Ok(());
+    }
+    let class_code = world.get_character_info(sid).map(|c| c.class).unwrap_or(0);
+    let idx = get_class_index(class_code).unwrap_or(0);
+    cinderella_sign(session, &world, sid, idx, setting_id, is_prepare, e_kills, k_kills, now_unix()).await
+}
+
+/// Give the event players back their own identity (class, level, items, stats, skills).
+fn restore_player(world: &WorldState, sid: SessionId, ps: CindirellaPlayerState) {
+    world.set_inventory(sid, ps.original_inventory);
+    world.update_character_stats(sid, |ch| {
+        ch.class = ps.original_class;
+        ch.race = ps.original_race;
+        ch.nation = ps.original_nation;
+        ch.level = ps.original_level;
+        ch.exp = ps.original_exp.saturating_add(ps.gained_exp);
+        ch.gold = ps.original_gold.saturating_add(ps.gained_noah);
+        ch.str = ps.original_stats[0];
+        ch.sta = ps.original_stats[1];
+        ch.dex = ps.original_stats[2];
+        ch.intel = ps.original_stats[3];
+        ch.cha = ps.original_stats[4];
+        ch.free_points = ps.original_stat_points;
+        ch.skill_points = ps.original_skill_points;
+        ch.max_exp = world.get_exp_by_level(ps.original_level, 0);
+    });
+    world.set_user_ability(sid);
+    world.update_character_stats(sid, |ch| {
+        ch.hp = ch.max_hp;
+        ch.mp = ch.max_mp;
+    });
+    world.remove_cinderella_user(sid);
+    world.mark_cind_refresh_pending(sid);
+}
+
 pub async fn handle(session: &mut ClientSession, packet: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
         return Ok(());
@@ -590,6 +690,7 @@ async fn cinderella_sign(
         ],
         original_stat_points: char_info.free_points,
         original_inventory,
+        original_skill_points: char_info.skill_points,
         event_nation,
         selected_class,
         kill_count: 0,
@@ -619,18 +720,8 @@ async fn cinderella_sign(
         ch.gold = 0;
     });
 
-    // Apply stat preset
-    let stat_preset = world.get_cindwar_stat_preset(setting_id as i16, (selected_class + 1) as i16);
-    if let Some(ref sp) = stat_preset {
-        world.update_character_stats(sid, |ch| {
-            ch.str = sp.stat_str as u8;
-            ch.sta = sp.stat_sta as u8;
-            ch.dex = sp.stat_dex as u8;
-            ch.intel = sp.stat_int as u8;
-            ch.cha = sp.stat_cha as u8;
-            ch.free_points = sp.stat_freepoint as u16;
-        });
-    }
+    // Apply stat / skill preset
+    let stat_preset = apply_stat_preset(world, sid, setting_id, selected_class);
 
     // Apply preset items
     apply_preset_items(world, sid, setting_id, selected_class);
@@ -649,6 +740,8 @@ async fn cinderella_sign(
         class_pkt.write_u8(0);
     }
     session.send_packet(&class_pkt).await?;
+
+    refresh_client(session, world, sid).await?;
 
     // Calculate remaining time
     let remaining = {
@@ -761,21 +854,8 @@ async fn cinderella_cha_modify(
     // Apply preset items
     apply_preset_items(world, sid, setting_id, selected_class);
 
-    // Apply stat preset
-    let stat_preset = world.get_cindwar_stat_preset(setting_id as i16, (selected_class + 1) as i16);
-    if let Some(ref sp) = stat_preset {
-        world.update_character_stats(sid, |ch| {
-            ch.str = sp.stat_str as u8;
-            ch.sta = sp.stat_sta as u8;
-            ch.dex = sp.stat_dex as u8;
-            ch.intel = sp.stat_int as u8;
-            ch.cha = sp.stat_cha as u8;
-            ch.free_points = sp.stat_freepoint as u16;
-        });
-
-        // v2525: 0xB9 = WIZ_PET_STAT. Cannot send preset packets.
-        // Stats are applied to world state above; client refreshes on zone change.
-    }
+    // Apply stat / skill preset
+    let stat_preset = apply_stat_preset(world, sid, setting_id, selected_class);
 
     // Send WIZ_CLASS_CHANGE
     let mut class_pkt = Packet::new(Opcode::WizClassChange as u8);
@@ -788,6 +868,7 @@ async fn cinderella_cha_modify(
         class_pkt.write_u8(0);
     }
     session.send_packet(&class_pkt).await?;
+    refresh_client(session, world, sid).await?;
 
     Ok(())
 }
@@ -877,40 +958,16 @@ async fn handle_nation_change(
 
 /// Restore player's original data and clean up event participation.
 /// Called on disconnect, zone exit, or event end.
-pub fn cinderella_logout(world: &WorldState, sid: SessionId, _exit_game: bool) {
+pub fn cinderella_logout(world: &WorldState, sid: SessionId, exit_game: bool) {
     let ps = match world.remove_cindwar_player(sid) {
         Some(s) if s.event_user => s,
         _ => return,
     };
-
-    // Restore inventory
-    world.set_inventory(sid, ps.original_inventory);
-
-    // Restore character stats
-    world.update_character_stats(sid, |ch| {
-        ch.class = ps.original_class;
-        ch.race = ps.original_race;
-        ch.nation = ps.original_nation;
-        ch.level = ps.original_level;
-        ch.exp = ps.original_exp.saturating_add(ps.gained_exp);
-        ch.gold = ps.original_gold.saturating_add(ps.gained_noah);
-        ch.str = ps.original_stats[0];
-        ch.sta = ps.original_stats[1];
-        ch.dex = ps.original_stats[2];
-        ch.intel = ps.original_stats[3];
-        ch.cha = ps.original_stats[4];
-        ch.free_points = ps.original_stat_points;
-    });
-
-    // Remove from event user list
-    world.remove_cinderella_user(sid);
-
-    // Send finish packet
-    let finish = build_finish();
-    world.send_to_session_owned(sid, finish);
-
-    // v2525: 0xB9 = WIZ_PET_STAT. Cannot send preset packets.
-    // Original stats are restored in world state above; client refreshes on zone change.
+    restore_player(world, sid, ps);
+    if exit_game {
+        world.take_cind_refresh_pending(sid);
+    }
+    world.send_to_session_owned(sid, build_finish());
 }
 
 // ── KDA System ───────────────────────────────────────────────────────────
@@ -1017,6 +1074,13 @@ pub fn cinderella_timer_tick(world: &WorldState) {
             );
             crate::systems::timed_notice::build_notice_packet(8, &msg)
         };
+        // C++ CindirellaTown: everyone goes back to their base when the war starts
+        let zone = world.cinderella_zone_id();
+        for sid in world.cindwar_all_users() {
+            if world.get_position(sid).is_some_and(|p| p.zone_id == zone) {
+                super::zone_change::server_teleport_to_zone_force(world, sid, zone, 0.0, 0.0);
+            }
+        }
         let arc_starting = Arc::new(starting);
         let arc_chat = Arc::new(chat_fallback);
         for sid in world.cindwar_all_users() {
@@ -1053,9 +1117,23 @@ pub fn cinderella_timer_tick(world: &WorldState) {
     }
 }
 
-/// End the Cinderella War event — sort rankings, distribute rewards, cleanup.
+/// Send every player standing in the event zone to Moradon (C++ KickOutZoneUsers).
+pub fn kick_out_event_zone(world: &WorldState, zone_id: u16) {
+    if zone_id == 0 {
+        return;
+    }
+    for sid in world.all_ingame_session_ids() {
+        if world.get_position(sid).is_some_and(|p| p.zone_id == zone_id) {
+            world.mark_cind_refresh_pending(sid);
+            super::zone_change::server_teleport_to_zone(world, sid, crate::world::types::ZONE_MORADON, 0.0, 0.0);
+        }
+    }
+}
+
+/// End the Cinderella War event: rank, pay the DB rewards, give everyone their own
+/// character back and send the whole zone to Moradon (C++ CindirellaTimer finish block).
 fn cinderella_finish(world: &WorldState) {
-    // Collect all event users with KDA
+    let event_zone = world.cinderella_zone_id();
     let users = world.cindwar_all_users();
 
     // Sort by kill_count DESC, dead_count ASC
@@ -1067,14 +1145,12 @@ fn cinderella_finish(world: &WorldState) {
             Some((sid, ps.kill_count, ps.dead_count, nation))
         })
         .collect();
-
     rankings.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
 
-    // Distribute rewards (top 200 per nation, based on overall ranking)
-    let mut elmorad_rank = 0i16;
-    let mut karus_rank = 0i16;
-
-    for &(sid, _kills, _deaths, nation) in &rankings {
+    // Rank per nation (top 200 each)
+    let mut ranks: std::collections::HashMap<SessionId, i16> = std::collections::HashMap::new();
+    let (mut elmorad_rank, mut karus_rank) = (0i16, 0i16);
+    for &(sid, _, _, nation) in &rankings {
         let rank = if nation == 2 {
             elmorad_rank += 1;
             elmorad_rank
@@ -1082,79 +1158,66 @@ fn cinderella_finish(world: &WorldState) {
             karus_rank += 1;
             karus_rank
         };
-
-        if rank > 200 {
-            continue;
+        if rank <= 200 {
+            ranks.insert(sid, rank);
         }
+    }
 
-        // Apply reward (exp, gold, loyalty)
+    // exp / gold rewards ride on the restore (gained_*), the rest is paid afterwards
+    for (&sid, &rank) in &ranks {
         if let Some(reward) = world.get_cindwar_reward(rank) {
-            if reward.exp_count > 0 {
-                world.update_cindwar_player(sid, |s| {
-                    s.gained_exp = s.gained_exp.saturating_add(reward.exp_count as u64);
-                });
-            }
-            if reward.money_count > 0 {
-                world.update_cindwar_player(sid, |s| {
-                    s.gained_noah = s.gained_noah.saturating_add(reward.money_count as u32);
-                });
-            }
+            world.update_cindwar_player(sid, |s| {
+                s.gained_exp = s.gained_exp.saturating_add(reward.exp_count.max(0) as u64);
+                s.gained_noah = s.gained_noah.saturating_add(reward.money_count.max(0) as u32);
+            });
         }
     }
 
-    // Send finish + logout to all participants
-    let finish_pkt = build_finish();
-    // WIZ_CHAT fallback for vanilla v2525 client (drops ext_hook 0xE9)
-    let chat_finish = crate::systems::timed_notice::build_notice_packet(
-        8,
-        "[Fun Class] Event finished! Returning to original state...",
-    );
-    let arc_finish = Arc::new(finish_pkt);
-    let arc_chat_finish = Arc::new(chat_finish);
-    for sid in &users {
-        world.send_to_session_arc(*sid, Arc::clone(&arc_finish));
-        world.send_to_session_arc(*sid, Arc::clone(&arc_chat_finish));
+    let arc_finish = Arc::new(build_finish());
+    for &sid in &users {
+        world.send_to_session_arc(sid, Arc::clone(&arc_finish));
     }
 
-    // Restore all players (async-free version: just restore data, no packets)
-    for sid in &users {
-        // cinderella_logout is async, but for finish we just do data restore inline
-        if let Some(ps) = world.remove_cindwar_player(*sid) {
+    for &sid in &users {
+        if let Some(ps) = world.remove_cindwar_player(sid) {
             if ps.event_user {
-                world.set_inventory(*sid, ps.original_inventory);
-                world.update_character_stats(*sid, |ch| {
-                    ch.class = ps.original_class;
-                    ch.race = ps.original_race;
-                    ch.nation = ps.original_nation;
-                    ch.level = ps.original_level;
-                    ch.exp = ps.original_exp.saturating_add(ps.gained_exp);
-                    ch.gold = ps.original_gold.saturating_add(ps.gained_noah);
-                    ch.str = ps.original_stats[0];
-                    ch.sta = ps.original_stats[1];
-                    ch.dex = ps.original_stats[2];
-                    ch.intel = ps.original_stats[3];
-                    ch.cha = ps.original_stats[4];
-                    ch.free_points = ps.original_stat_points;
-                });
-                world.remove_cinderella_user(*sid);
-
-                // v2525: 0xB9 = WIZ_PET_STAT. Cannot send preset packets.
-                // Original stats are restored in world state above; client refreshes on zone change.
+                restore_player(world, sid, ps);
+            }
+        }
+        // loyalty / cash / items go to the restored character
+        if let Some(&rank) = ranks.get(&sid) {
+            if let Some(reward) = world.get_cindwar_reward(rank) {
+                if reward.loyalty_count > 0 {
+                    crate::systems::loyalty::send_loyalty_change(world, sid, reward.loyalty_count, false, true, false);
+                }
+                if reward.cash_count > 0 {
+                    world.update_session(sid, |h| h.knight_cash = h.knight_cash.saturating_add(reward.cash_count as u32));
+                }
+            }
+            let items: Vec<_> = world
+                .cindwar_reward_items()
+                .iter()
+                .filter(|i| i.rank_id == rank && i.item_id > 0)
+                .cloned()
+                .collect();
+            for item in items {
+                world.give_item(sid, item.item_id as u32, item.item_count.max(1) as u16);
             }
         }
     }
 
-    // Clear event state
+    // Clear event state, then empty the zone
     {
         let mut ev = world.cindwar_event_mut();
         *ev = CindirellaEventState::default();
     }
     world.set_cinderella_active(false, 0);
+    kick_out_event_zone(world, event_zone);
 
-    debug!(
-        "CindirellaWar: Event finished, {} participants processed",
-        users.len()
-    );
+    let pkt = super::chat::build_chat_packet(8, 0, 0, "**", "Fun Class has Finished. Have Fun.", 0, 0, 0);
+    world.broadcast_to_all(Arc::new(pkt), None);
+
+    debug!("CindirellaWar: Event finished, {} participants processed", users.len());
 }
 
 #[cfg(test)]

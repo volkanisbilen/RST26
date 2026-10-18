@@ -64,8 +64,8 @@ mod tests {
     #[test]
     fn test_captcha_c2s_answer_format() {
         let mut pkt = Packet::new(Opcode::WizCaptcha as u8);
-        pkt.write_u8(1);  // sub
-        pkt.write_u8(2);  // type
+        pkt.write_u8(1); // sub
+        pkt.write_u8(2); // type
         pkt.write_string("ABCD"); // captcha answer
 
         let mut r = PacketReader::new(&pkt.data);

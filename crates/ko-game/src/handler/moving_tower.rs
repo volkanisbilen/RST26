@@ -105,7 +105,9 @@ async fn handle_board_siege(session: &mut ClientSession) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     if pos.zone_id != ZONE_DELOS {
         debug!(
             "[{}] WIZ_MOVING_TOWER cmd=1: wrong zone {} (need ZONE_DELOS={})",
@@ -179,7 +181,9 @@ async fn handle_dismount_siege(
         return Ok(());
     }
 
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     if pos.zone_id != ZONE_DELOS {
         return Ok(());
     }
@@ -232,7 +236,9 @@ async fn handle_dismount_siege(
         event_room,
     );
 
-    session.send_packet(&build_dismount_siege_response()).await?;
+    session
+        .send_packet(&build_dismount_siege_response())
+        .await?;
 
     debug!(
         "[{}] WIZ_MOVING_TOWER cmd=2: dismounted siege tower at ({}, {})",
@@ -249,7 +255,9 @@ async fn handle_mount_npc_tower(session: &mut ClientSession, npc_id: u16) -> any
     let world = session.world().clone();
     let sid = session.session_id();
 
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     if pos.zone_id != ZONE_BATTLE6 {
         debug!(
             "[{}] WIZ_MOVING_TOWER cmd=16: wrong zone {} (need ZONE_BATTLE6={})",
@@ -402,7 +410,9 @@ async fn handle_dismount_npc_tower(session: &mut ClientSession) -> anyhow::Resul
     let world = session.world().clone();
     let sid = session.session_id();
 
-    let (pos, event_room) = world.with_session(sid, |h| (h.position, h.event_room)).unwrap_or_default();
+    let (pos, event_room) = world
+        .with_session(sid, |h| (h.position, h.event_room))
+        .unwrap_or_default();
     if pos.zone_id != ZONE_BATTLE6 {
         return Ok(());
     }

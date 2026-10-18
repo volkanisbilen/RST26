@@ -64,6 +64,10 @@ impl WorldState {
     /// `damage` is only used for `ACID_ALL`, `UTC_ATTACK`, and `UTC_DEFENCE` (exact amount);
     /// for `ATTACK` and `DEFENCE`, `rand(2..=5)` is used instead.
     pub fn item_wore_out(&self, sid: SessionId, wore_type: i32, damage: i32) {
+        // Manes plays with a temporary client-side loadout; the real equipment stays untouched.
+        if self.manes_survival_manager.is_participant_playing(sid) {
+            return;
+        }
         let worerate = match wore_type {
             WORE_TYPE_ACID_ALL | WORE_TYPE_UTC_ATTACK | WORE_TYPE_UTC_DEFENCE => damage,
             _ => {
@@ -92,9 +96,7 @@ impl WorldState {
         let mut recalc_needed = false;
 
         // Pre-fetch position + event_room once for broadcast (avoids per-slot DashMap reads)
-        let broadcast_ctx = self.with_session(sid, |h| {
-            (h.position, h.event_room)
-        });
+        let broadcast_ctx = self.with_session(sid, |h| (h.position, h.event_room));
 
         for &slot in slots {
             let idx = slot as usize;
@@ -107,6 +109,13 @@ impl WorldState {
                 Some(t) => t,
                 None => continue,
             };
+
+            // Items whose template durability is 1 (or less) are non-degradable
+            // by design; wearing them by 2-5 per hit/death would break them on
+            // the first event and turn them red.
+            if wore_type != WORE_TYPE_REPAIR_ALL && item_template.duration.unwrap_or(0) <= 1 {
+                continue;
+            }
 
             // Skip if item is already broken (durability <= 0) and not repairing
             if item_slot.durability <= 0 && wore_type != WORE_TYPE_REPAIR_ALL {
@@ -131,7 +140,14 @@ impl WorldState {
                 });
                 self.send_durability(sid, slot, max_dur as u16);
                 if let Some((ref pos, event_room)) = broadcast_ctx {
-                    self.send_user_look_change(sid, slot, item_slot.item_id, max_dur as u16, pos, event_room);
+                    self.send_user_look_change(
+                        sid,
+                        slot,
+                        item_slot.item_id,
+                        max_dur as u16,
+                        pos,
+                        event_room,
+                    );
                 }
                 recalc_needed = true;
                 continue;
@@ -170,7 +186,14 @@ impl WorldState {
                 // Trigger visual change at 65-69% or 25-29% thresholds
                 if (65..70).contains(&cur_percent) || (25..30).contains(&cur_percent) {
                     if let Some((ref pos, event_room)) = broadcast_ctx {
-                        self.send_user_look_change(sid, slot, item_slot.item_id, new_dur as u16, pos, event_room);
+                        self.send_user_look_change(
+                            sid,
+                            slot,
+                            item_slot.item_id,
+                            new_dur as u16,
+                            pos,
+                            event_room,
+                        );
                     }
                 }
             }
@@ -258,83 +281,96 @@ impl WorldState {
             ac_amount: i32,
             ac_pct: i32,
             ac_sour: i32,
-            elem_r_add: [i32; 7],   // [0]=unused, [1]=fire..[6]=poison
-            elem_r_pct: [i32; 7],   // percentage multipliers (default 100)
+            elem_r_add: [i32; 7], // [0]=unused, [1]=fire..[6]=poison
+            elem_r_pct: [i32; 7], // percentage multipliers (default 100)
         }
 
-        let Some((snap, stats)) = self.with_session(sid, |handle| {
-            let ch = match handle.character.as_ref() {
-                Some(c) => c,
-                None => return None,
-            };
+        let Some((snap, stats)) = self
+            .with_session(sid, |handle| {
+                let ch = match handle.character.as_ref() {
+                    Some(c) => c,
+                    None => return None,
+                };
 
-            // Single-pass buff aggregation
-            let mut attack_sum = 0i32;
-            let mut ac_amount = 0i32;
-            let mut ac_pct_mod = 0i32;
-            let mut ac_sour = 0i32;
-            let mut elem_add = [0i32; 7];
-            for b in handle.buffs.values() {
-                // attack_amount: exclude BUFF_TYPE_DAMAGE_DOUBLE (19)
-                if b.buff_type != 19 && b.attack != 0 {
-                    attack_sum += b.attack - 100;
+                // Single-pass buff aggregation
+                let mut attack_sum = 0i32;
+                let mut ac_amount = 0i32;
+                let mut ac_pct_mod = 0i32;
+                let mut ac_sour = 0i32;
+                let mut elem_add = [0i32; 7];
+                for b in handle.buffs.values() {
+                    // attack_amount: exclude BUFF_TYPE_DAMAGE_DOUBLE (19)
+                    if b.buff_type != 19 && b.attack != 0 {
+                        attack_sum += b.attack - 100;
+                    }
+                    // ac_amount: exclude BUFF_TYPE_WEAPON_AC (14)
+                    if b.buff_type != 14 {
+                        ac_amount = ac_amount.saturating_add(b.ac);
+                    }
+                    // ac_pct: exclude BUFF_TYPE_WEAPON_AC (14)
+                    if b.ac_pct != 0 && b.buff_type != 14 {
+                        ac_pct_mod += b.ac_pct - 100;
+                    }
+                    ac_sour = ac_sour.saturating_add(b.ac_sour);
+                    // Elemental resistance adds
+                    elem_add[1] = elem_add[1].saturating_add(b.fire_r);
+                    elem_add[2] = elem_add[2].saturating_add(b.cold_r);
+                    elem_add[3] = elem_add[3].saturating_add(b.lightning_r);
+                    elem_add[4] = elem_add[4].saturating_add(b.magic_r);
+                    elem_add[5] = elem_add[5].saturating_add(b.disease_r);
+                    elem_add[6] = elem_add[6].saturating_add(b.poison_r);
                 }
-                // ac_amount: exclude BUFF_TYPE_WEAPON_AC (14)
-                if b.buff_type != 14 {
-                    ac_amount = ac_amount.saturating_add(b.ac);
-                }
-                // ac_pct: exclude BUFF_TYPE_WEAPON_AC (14)
-                if b.ac_pct != 0 && b.buff_type != 14 {
-                    ac_pct_mod += b.ac_pct - 100;
-                }
-                ac_sour = ac_sour.saturating_add(b.ac_sour);
-                // Elemental resistance adds
-                elem_add[1] = elem_add[1].saturating_add(b.fire_r);
-                elem_add[2] = elem_add[2].saturating_add(b.cold_r);
-                elem_add[3] = elem_add[3].saturating_add(b.lightning_r);
-                elem_add[4] = elem_add[4].saturating_add(b.magic_r);
-                elem_add[5] = elem_add[5].saturating_add(b.disease_r);
-                elem_add[6] = elem_add[6].saturating_add(b.poison_r);
-            }
 
-            // Resistance percentage from session fields
-            let elem_pct = [
-                100i32,
-                handle.pct_fire_r as i32,
-                handle.pct_cold_r as i32,
-                handle.pct_lightning_r as i32,
-                handle.pct_magic_r as i32,
-                handle.pct_disease_r as i32,
-                handle.pct_poison_r as i32,
-            ];
+                // Resistance percentage from session fields
+                let elem_pct = [
+                    100i32,
+                    handle.pct_fire_r as i32,
+                    handle.pct_cold_r as i32,
+                    handle.pct_lightning_r as i32,
+                    handle.pct_magic_r as i32,
+                    handle.pct_disease_r as i32,
+                    handle.pct_poison_r as i32,
+                ];
 
-            let snap = BuffSnapshot {
-                max_hp: ch.max_hp as u16,
-                max_mp: ch.max_mp as u16,
-                attack_amount: (100 + attack_sum).max(1),
-                ac_amount,
-                ac_pct: 100 + ac_pct_mod,
-                ac_sour,
-                elem_r_add: elem_add,
-                elem_r_pct: elem_pct,
-            };
-            Some((snap, handle.equipped_stats.clone()))
-        }).flatten() else {
+                let snap = BuffSnapshot {
+                    max_hp: ch.max_hp as u16,
+                    max_mp: ch.max_mp as u16,
+                    attack_amount: (100 + attack_sum).max(1),
+                    ac_amount,
+                    ac_pct: 100 + ac_pct_mod,
+                    ac_sour,
+                    elem_r_add: elem_add,
+                    elem_r_pct: elem_pct,
+                };
+                Some((snap, handle.equipped_stats.clone()))
+            })
+            .flatten()
+        else {
             return;
         }; // DashMap lock released.
 
         // ── Compute final values from snapshot (no locks held) ───────────
-        let total_ac =
-            ((stats.total_ac as i32 * snap.ac_pct / 100) + snap.ac_amount - snap.ac_sour).max(0)
-                as u16;
-        let total_hit = (stats.total_hit as u32 * snap.attack_amount as u32 / 100) as u16;
+        let total_ac = ((stats.total_ac as i32 * snap.ac_pct / 100) + snap.ac_amount - snap.ac_sour)
+            .max(0) as u16;
+        let mut total_hit = (stats.total_hit as u32 * snap.attack_amount as u32 / 100) as u16;
+        if let Some(position) = self.get_position(sid) {
+            if crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&position.zone_id) {
+                if let Some(progress) = self.manes_survival_manager.progress(sid) {
+                    total_hit = (u32::from(total_hit)
+                        * u32::from(crate::systems::manes_survival::attack_scale_per_mille(
+                            progress.level,
+                        ))
+                        / 1_000)
+                        .clamp(1, u32::from(u16::MAX)) as u16;
+                }
+            }
+        }
 
         let res_bonus = stats.resistance_bonus as i32;
-        let compute_res =
-            |base: i16, attr: usize| -> u16 {
-                ((base as i32 + snap.elem_r_add[attr] + res_bonus) * snap.elem_r_pct[attr] / 100)
-                    .max(0) as u16
-            };
+        let compute_res = |base: i16, attr: usize| -> u16 {
+            ((base as i32 + snap.elem_r_add[attr] + res_bonus) * snap.elem_r_pct[attr] / 100).max(0)
+                as u16
+        };
 
         let mut pkt = Packet::new(Opcode::WizItemMove as u8);
         pkt.write_u8(1); // command

@@ -3,7 +3,7 @@
 //! All methods here populate DashMap/RwLock fields on an already-constructed
 //! WorldState by reading rows from PostgreSQL via repository pattern.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use ko_db::repositories::chaos_stone::ChaosStoneRepository;
 use ko_db::repositories::char_creation::CharCreationRepository;
 use ko_db::repositories::cinderella::CinderellaRepository;
 use ko_db::repositories::coefficient::CoefficientRepository;
+use ko_db::repositories::collection_race::CollectionRaceRepository;
 use ko_db::repositories::daily_quest::DailyQuestRepository;
 use ko_db::repositories::draki_tower::DrakiTowerRepository;
 use ko_db::repositories::dungeon_defence::DungeonDefenceRepository;
@@ -29,6 +30,7 @@ use ko_db::repositories::knights::KnightsRepository;
 use ko_db::repositories::knights_cape::KnightsCapeRepository;
 use ko_db::repositories::level_up::LevelUpRepository;
 use ko_db::repositories::magic::MagicRepository;
+use ko_db::repositories::manes_survival::ManesSurvivalRepository;
 use ko_db::repositories::mining::MiningRepository;
 use ko_db::repositories::monster_event::MonsterEventRepository;
 use ko_db::repositories::npc::NpcRepository;
@@ -45,17 +47,50 @@ use ko_db::repositories::zone_rewards::ZoneRewardsRepository;
 use ko_db::DbPool;
 use ko_protocol::smd::SmdFile;
 
+use crate::clan_constants::CLAN_TYPE_ACCREDITED5;
 use crate::npc::{NpcInstance, NpcTemplate};
+use crate::systems::daily_reset::get_knights_grade;
 use crate::zone::{calc_region, ObjectEventInfo, ZoneState};
 
 use super::{
     events_from_rows, is_gate_npc_type, is_guard_npc_type, map_act_type, zone_info_from_row,
     BurningFeatureRates, ElectionListEntry, KingSystem, KnightsAlliance, KnightsInfo,
-    NominationEntry, NpcAiState, NpcState, SiegeWarfare, WorldState, ZONE_ARDREAM,
-    ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+    NominationEntry, NpcAiState, NpcState, SiegeWarfare, WorldState,
 };
 
 impl WorldState {
+    /// Reload the live monster drop cache without restarting the game server.
+    /// Read the full result before touching the cache so a database error never
+    /// leaves the running world with a partially-cleared drop table.
+    pub async fn reload_monster_drop_tables(&self, pool: &DbPool) -> anyhow::Result<usize> {
+        let repo = ItemTablesRepository::new(pool);
+        let rows = repo.load_all_monster_items().await?;
+        let mut loaded_keys = HashSet::with_capacity(rows.len());
+        for row in rows.iter() {
+            loaded_keys.insert(row.s_index);
+            self.monster_items.insert(row.s_index, row.clone());
+        }
+        self.monster_items
+            .retain(|key, _| loaded_keys.contains(key));
+        tracing::info!(count = rows.len(), "monster_item live reload completed");
+        Ok(rows.len())
+    }
+
+    /// Reload item-group expansion data used by crafting and grouped drops.
+    pub async fn reload_make_item_groups(&self, pool: &DbPool) -> anyhow::Result<usize> {
+        let repo = ItemTablesRepository::new(pool);
+        let rows = repo.load_all_make_item_groups().await?;
+        let mut loaded_keys = HashSet::with_capacity(rows.len());
+        for row in rows.iter() {
+            loaded_keys.insert(row.group_num);
+            self.make_item_groups.insert(row.group_num, row.clone());
+        }
+        self.make_item_groups
+            .retain(|key, _| loaded_keys.contains(key));
+        tracing::info!(count = rows.len(), "make_item_group live reload completed");
+        Ok(rows.len())
+    }
+
     /// Load all startup DB tables into an already-constructed WorldState.
     ///
     /// This is the main loading entrypoint called by `WorldState::load()`.
@@ -114,6 +149,9 @@ impl WorldState {
 
         // ─── Bot System Loading ─────────────────────────────────────────────────
         self.load_bot_tables(pool).await;
+        if let Err(e) = crate::systems::bot_ai::reload_bot_loadout_overrides(pool).await {
+            tracing::warn!(error = %e, "bot_loadout_override tables not found or error; GM PK bots use fully automatic gear/stats/skills until a migration adds them");
+        }
 
         // ─── User Rankings (LoadUserRankings) ──────────────────────────────────
         self.reload_user_rankings(pool).await;
@@ -133,11 +171,23 @@ impl WorldState {
         // ─── NPC / Monster Loading ──────────────────────────────────────────────
         self.load_npcs_and_monsters(pool).await?;
 
+        // ─── Native MORANKER Statues (top 3 per nation by NP) ──────────────────
+        self.reload_moraranker(pool, false).await?;
+
+        // ─── Manes Survival Runtime Configuration ──────────────────────────────
+        if let Err(e) = self.load_manes_survival(pool).await {
+            tracing::warn!(
+                zone = 96,
+                error = %e,
+                "Manes Survival configuration failed to load; continuing without it"
+            );
+        }
+
         // ─── Knights (Clan) Loading ─────────────────────────────────────────────
         self.load_knights(pool).await?;
 
         // ─── Quest Table Loading ────────────────────────────────────────────────
-        self.load_quest_tables(pool).await?;
+        self.reload_quest_tables(pool).await?;
 
         // ─── Server Settings Loading ────────────────────────────────────────────
         self.load_server_settings(pool).await;
@@ -154,6 +204,10 @@ impl WorldState {
 
         // ─── Forgotten Temple / DD / Draki / Chaos Stone Loading ────────────────
         self.load_dungeon_tables(pool).await;
+
+        self.load_collection_race(pool).await;
+        let _ = self.reload_reward_rules(pool).await; // table made by the web panel, may not exist yet
+        crate::handler::slave_merchant::init(self, pool).await;
 
         // ─── Under The Castle / Daily Quest Loading ─────────────────────────────
         self.load_misc_event_tables(pool).await;
@@ -182,6 +236,62 @@ impl WorldState {
         // ─── Banish of Winner Loading ─────────────────────────────────────────
         self.load_banish_of_winner(pool).await;
 
+        Ok(())
+    }
+
+    async fn load_collection_race(&self, pool: &DbPool) {
+        let repository = CollectionRaceRepository::new(pool);
+        match repository.load_settings().await {
+            Ok(rows) => {
+                self.collection_race_settings.clear();
+                for row in &rows {
+                    self.collection_race_settings.insert(
+                        row.event_index,
+                        crate::handler::collection_race::CrEventDef {
+                            event_id: row.event_index,
+                            event_name: row.event_name.clone(),
+                            proto_ids: [
+                                row.unit1.max(0) as u16,
+                                row.unit2.max(0) as u16,
+                                row.unit3.max(0) as u16,
+                            ],
+                            kill_counts: [
+                                row.unit_count1.max(0) as u16,
+                                row.unit_count2.max(0) as u16,
+                                row.unit_count3.max(0) as u16,
+                            ],
+                            min_level: row.min_level.clamp(1, 255) as u8,
+                            max_level: row.max_level.clamp(1, 255) as u8,
+                            zone_id: row.event_zone.clamp(0, 255) as u8,
+                            event_time_mins: row.event_time.max(0) as u32,
+                            user_limit: row.user_limit.clamp(0, u16::MAX as i32) as u16,
+                            event_list_status: u8::from(row.is_repeat),
+                            auto_start: row.auto_start,
+                            auto_hour: row.auto_hour as i32,
+                            auto_minute: row.auto_minute as i32,
+                        },
+                    );
+                }
+                tracing::info!(count = rows.len(), "collection_race_settings loaded");
+            }
+            Err(error) => tracing::warn!("collection_race_settings failed to load: {error}"),
+        }
+    }
+    /// Load the validated zone-96 runtime spawn configuration.
+    async fn load_manes_survival(&self, pool: &DbPool) -> anyhow::Result<()> {
+        let repository = ManesSurvivalRepository::new(pool);
+        let rows = repository.load_spawns().await?;
+        let count = rows.len();
+        self.manes_survival_manager.set_spawns(rows)?;
+        let magic = repository.load_magic().await?;
+        let magic_count = magic.len();
+        self.manes_survival_manager.set_magic(magic)?;
+        tracing::info!(
+            spawns = count,
+            magic_rows = magic_count,
+            zone = 96,
+            "Manes Survival configuration loaded"
+        );
         Ok(())
     }
 
@@ -1212,11 +1322,13 @@ impl WorldState {
 
     /// Load NPC templates and spawn instances.
     async fn load_npcs_and_monsters(&self, pool: &DbPool) -> anyhow::Result<()> {
+        crate::monster_behavior::load();
+        crate::handler::solo_cape::load_all(pool).await;
         let npc_repo = NpcRepository::new(pool);
 
         let template_rows = npc_repo.load_all_templates().await?;
         for row in &template_rows {
-            let tmpl = Arc::new(NpcTemplate {
+            let mut tmpl = NpcTemplate {
                 s_sid: row.s_sid as u16,
                 is_monster: row.is_monster,
                 name: row.str_name.clone().unwrap_or_default(),
@@ -1260,7 +1372,9 @@ impl WorldState {
                 money: row.i_money.max(0) as u32,
                 item_table: row.s_item,
                 area_range: row.area_range,
-            });
+            };
+            crate::monster_behavior::adjust_template(&mut tmpl);
+            let tmpl = Arc::new(tmpl);
             self.npc_templates
                 .insert((tmpl.s_sid, tmpl.is_monster), tmpl);
         }
@@ -1333,7 +1447,7 @@ impl WorldState {
                     x,
                     y: 0.0,
                     z,
-                    direction: (spawn.direction as u8) % 8,
+                    direction: spawn.direction.rem_euclid(256) as u8,
                     region_x,
                     region_z,
                     gate_open: 0,
@@ -1355,7 +1469,11 @@ impl WorldState {
                 self.npc_instances.insert(nid, instance);
                 // Non-monster NPCs (merchants, event NPCs, etc.) never die in combat.
                 // If their template HP is 0, use 1 so is_npc_dead() doesn't filter them out.
-                let init_hp = if !tmpl.is_monster && tmpl.max_hp == 0 { 1 } else { tmpl.max_hp as i32 };
+                let init_hp = if !tmpl.is_monster && tmpl.max_hp == 0 {
+                    1
+                } else {
+                    tmpl.max_hp as i32
+                };
                 self.npc_hp.insert(nid, init_hp);
 
                 if tmpl.is_monster && tmpl.search_range > 0 {
@@ -1364,11 +1482,8 @@ impl WorldState {
                     } else {
                         30_000
                     };
-                    let has_friends = matches!(tmpl.act_type, 3 | 4)
-                        && !matches!(
-                            zone_id,
-                            ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
-                        );
+                    let (is_aggressive, attack_type, has_friends) =
+                        crate::monster_behavior::ai_flags(&tmpl, zone_id);
                     self.npc_ai.insert(
                         nid,
                         NpcAiState {
@@ -1382,7 +1497,7 @@ impl WorldState {
                             delay_ms: tmpl.stand_time as u64,
                             last_tick_ms: 0,
                             regen_time_ms: regen_ms,
-                            is_aggressive: !matches!(tmpl.act_type, 1..=4),
+                            is_aggressive,
                             zone_id,
                             region_x,
                             region_z,
@@ -1396,7 +1511,7 @@ impl WorldState {
                             skill_cooldown_ms: 0,
                             nation: tmpl.group,
                             is_tower_owner: false,
-                            attack_type: map_act_type(tmpl.act_type),
+                            attack_type,
                             last_combat_time_ms: 0,
                             duration_secs: 0,
                             spawned_at_ms: 0,
@@ -1635,7 +1750,11 @@ impl WorldState {
 
                 zone.add_npc(region_x, region_z, nid);
                 self.npc_instances.insert(nid, instance);
-                let init_hp = if tmpl.max_hp == 0 { 1 } else { tmpl.max_hp as i32 };
+                let init_hp = if tmpl.max_hp == 0 {
+                    1
+                } else {
+                    tmpl.max_hp as i32
+                };
                 self.npc_hp.insert(nid, init_hp);
                 obj_npc_count += 1;
             }
@@ -1687,12 +1806,34 @@ impl WorldState {
     async fn load_knights(&self, pool: &DbPool) -> anyhow::Result<()> {
         let knights_repo = KnightsRepository::new(pool);
         let knights_rows = knights_repo.load_all().await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         for row in &knights_rows {
+            let valid_mark =
+                row.s_mark_version > 0 && row.s_mark_len == 2400 && row.mark.len() == 2400;
+            if row.s_mark_version > 0 && !valid_mark {
+                tracing::warn!(
+                    clan_id = row.id_num,
+                    mark_version = row.s_mark_version,
+                    s_mark_len = row.s_mark_len,
+                    mark_bytes = row.mark.len(),
+                    "invalid clan mark ignored while loading knights"
+                );
+            }
             let info = KnightsInfo {
                 id: row.id_num as u16,
                 flag: row.flag as u8,
                 nation: row.nation as u8,
-                grade: 5,
+                // Accredited and Royal clan grades are rank-driven and the
+                // client expects grade 1 even before KNIGHTS_RATING reloads.
+                // Training/Promoted clans retain the point-based grade.
+                grade: if row.flag as u8 >= CLAN_TYPE_ACCREDITED5 {
+                    1
+                } else {
+                    get_knights_grade(row.points.max(0) as u32)
+                },
                 ranking: row.ranking as u8,
                 name: row.id_name.clone(),
                 chief: row.chief.clone(),
@@ -1707,14 +1848,18 @@ impl WorldState {
                 cape_r: row.b_cape_r as u8,
                 cape_g: row.b_cape_g as u8,
                 cape_b: row.b_cape_b as u8,
-                mark_version: row.s_mark_version as u16,
-                mark_data: if row.s_mark_len > 0 {
+                mark_version: if valid_mark {
+                    row.s_mark_version as u16
+                } else {
+                    0
+                },
+                mark_data: if valid_mark {
                     row.mark.clone()
                 } else {
                     Vec::new()
                 },
                 alliance: row.s_alliance_knights as u16,
-                castellan_cape: row.s_cast_cape >= 0 && row.b_cast_time > 0,
+                castellan_cape: row.s_cast_cape >= 0 && i64::from(row.b_cast_time) >= now,
                 cast_cape_id: row.s_cast_cape,
                 cast_cape_r: row.b_cast_cape_r as u8,
                 cast_cape_g: row.b_cast_cape_g as u8,
@@ -1748,9 +1893,39 @@ impl WorldState {
     }
 
     /// Load quest helper, monster, menu, and talk tables.
-    async fn load_quest_tables(&self, pool: &DbPool) -> anyhow::Result<()> {
+    pub async fn reload_quest_tables(&self, pool: &DbPool) -> anyhow::Result<usize> {
         let quest_repo = QuestRepository::new(pool);
         let helper_rows = quest_repo.load_quest_helpers().await?;
+        // Read collection requirements, never exchange rewards. Zone 19 is
+        // the shared Eslant quest catalogue (Beldan/Agata), not a live map.
+        let collection_items: Vec<i32> = sqlx::query_scalar(
+            "SELECT DISTINCT x.item FROM quest_helper q \
+             JOIN item_exchange e ON e.n_index=q.n_exchange_index \
+             CROSS JOIN LATERAL (VALUES \
+             (e.origin_item_num1,e.origin_item_count1), \
+             (e.origin_item_num2,e.origin_item_count2), \
+             (e.origin_item_num3,e.origin_item_count3), \
+             (e.origin_item_num4,e.origin_item_count4), \
+             (e.origin_item_num5,e.origin_item_count5)) x(item,qty) \
+             WHERE q.b_zone IN (1,11,12,19) AND x.item>=100000000 AND x.qty>0",
+        )
+        .fetch_all(pool)
+        .await?;
+        let monster_rows = quest_repo.load_quest_monsters().await?;
+        let qt_repo = QuestTextRepository::new(pool);
+        let menu_rows = qt_repo.load_quest_menus().await?;
+        let talk_rows = qt_repo.load_quest_talks().await?;
+        let closed_check_rows = qt_repo.load_quest_skills_closed_check().await?;
+        let open_set_up_rows = qt_repo.load_quest_skills_open_set_up().await?;
+
+        // All database reads succeeded; replace the in-memory snapshot now.
+        self.quest_npc_list.clear();
+        self.quest_helpers.clear();
+        self.quest_monsters.clear();
+        self.quest_menus.clear();
+        self.quest_talks.clear();
+        self.quest_skills_closed_check.clear();
+        self.quest_skills_open_set_up.clear();
         for row in &helper_rows {
             let n_index = row.n_index as u32;
             let npc_id = row.s_npc_id as u16;
@@ -1758,28 +1933,31 @@ impl WorldState {
             self.quest_helpers.insert(n_index, row.clone());
         }
         tracing::info!(count = helper_rows.len(), "quest_helper table loaded");
+        self.collection_drop_items.clear();
+        for item in collection_items {
+            self.collection_drop_items.insert(item as u32, ());
+        }
+        tracing::info!(
+            count = self.collection_drop_items.len(),
+            "Collection drop policy loaded: Luferson/Eslant x1.60; other monster items x1.15"
+        );
 
-        let monster_rows = quest_repo.load_quest_monsters().await?;
         for row in &monster_rows {
             self.quest_monsters
                 .insert(row.s_quest_num as u16, row.clone());
         }
         tracing::info!(count = monster_rows.len(), "quest_monster table loaded");
 
-        let qt_repo = QuestTextRepository::new(pool);
-        let menu_rows = qt_repo.load_quest_menus().await?;
         for row in &menu_rows {
             self.quest_menus.insert(row.i_num, row.clone());
         }
         tracing::info!(count = menu_rows.len(), "quest_menu table loaded");
 
-        let talk_rows = qt_repo.load_quest_talks().await?;
         for row in &talk_rows {
             self.quest_talks.insert(row.i_num, row.clone());
         }
         tracing::info!(count = talk_rows.len(), "quest_talk table loaded");
 
-        let closed_check_rows = qt_repo.load_quest_skills_closed_check().await?;
         for row in &closed_check_rows {
             self.quest_skills_closed_check
                 .insert(row.n_index, row.clone());
@@ -1789,7 +1967,6 @@ impl WorldState {
             "quest_skills_closed_check loaded"
         );
 
-        let open_set_up_rows = qt_repo.load_quest_skills_open_set_up().await?;
         for row in &open_set_up_rows {
             self.quest_skills_open_set_up
                 .insert(row.n_index, row.clone());
@@ -1798,7 +1975,7 @@ impl WorldState {
             count = open_set_up_rows.len(),
             "quest_skills_open_set_up loaded"
         );
-        Ok(())
+        Ok(helper_rows.len())
     }
 
     /// Load server settings, damage settings, burning features, home positions.
@@ -1985,6 +2162,89 @@ impl WorldState {
             }
             Err(e) => tracing::warn!("jackpot_settings table not found or error: {e}, skipping"),
         }
+    }
+
+    /// Re-read the event schedule tables (admin panel edits).
+    /// Hot reload of the reward tables edited in the web panel ("Ödül Merkezi").
+    pub async fn reload_reward_tables(&self, pool: &DbPool, what: &str) -> Result<String, String> {
+        match what {
+            "event_rewards" => {
+                let rows = EventScheduleRepository::new(pool).load_rewards().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.event_rewards.clear();
+                for r in rows {
+                    self.event_rewards.entry(r.local_id).or_default().push(r);
+                }
+                Ok(format!("{n} event reward rows"))
+            }
+            "chaos_rewards" => {
+                let rows = ChaosStoneRepository::new(pool).load_all_rewards().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                *self.chaos_stone_rewards.write() = rows;
+                Ok(format!("{n} chaos reward rows"))
+            }
+            "daily_quests" => {
+                let rows = DailyQuestRepository::new(pool).load_all_definitions().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.daily_quests.clear();
+                for row in rows {
+                    self.daily_quests.insert(row.id, row);
+                }
+                Ok(format!("{n} daily quests"))
+            }
+            "cinderella" => {
+                self.load_cinderella_war(pool).await;
+                Ok("cinderella rewards reloaded".into())
+            }
+            "zone_rewards" => {
+                self.load_zone_rewards(pool).await;
+                Ok("zone rewards reloaded".into())
+            }
+            "collection_race" => {
+                self.load_collection_race(pool).await;
+                Ok("collection race reloaded".into())
+            }
+            "reward_rules" => self.reload_reward_rules(pool).await.map(|n| format!("{n} reward rules")).map_err(|e| e.to_string()),
+            "send_messages" => {
+                let sched_repo = ko_db::repositories::scheduled_tasks::ScheduledTasksRepository::new(pool);
+                let rows = sched_repo.load_messages().await.map_err(|e| e.to_string())?;
+                let login_msgs: Vec<_> = rows.into_iter().filter(|m| m.send_type == 1).collect();
+                let n = login_msgs.len();
+                *self.send_messages.write() = login_msgs;
+                Ok(format!("{n} login messages"))
+            }
+            "item_exchange" => {
+                let rows = ItemTablesRepository::new(pool).load_all_item_exchanges().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.item_exchanges.clear();
+                for r in rows {
+                    self.item_exchanges.insert(r.n_index, r);
+                }
+                Ok(format!("{n} item_exchange rows"))
+            }
+            "pus" => {
+                let cash_shop_repo = CashShopRepository::new(pool);
+                let cats = cash_shop_repo.load_all_categories().await.map_err(|e| e.to_string())?;
+                let items = cash_shop_repo.load_all_items().await.map_err(|e| e.to_string())?;
+                self.pus_categories.clear();
+                self.pus_items_by_id.clear();
+                self.pus_items_by_category.clear();
+                for r in &cats {
+                    self.pus_categories.insert(r.category_id, r.clone());
+                }
+                let n = items.len();
+                for r in items {
+                    self.pus_items_by_id.insert(r.id, r.clone());
+                    self.pus_items_by_category.entry(r.category).or_default().push(r);
+                }
+                Ok(format!("{n} Power Up Store items"))
+            }
+            other => Err(format!("unknown reward table {other}")),
+        }
+    }
+
+    pub async fn reload_event_schedule(&self, pool: &DbPool) {
+        self.load_event_schedule(pool).await;
     }
 
     /// Load event schedule, vroom opts, FT opts, rewards.

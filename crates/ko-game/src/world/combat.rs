@@ -70,7 +70,11 @@ impl CombatSnapshot {
             6 => self.equipped_stats.poison_r as i32,
             _ => 0,
         };
-        let buff_r = self.buff_elem_r.get(attribute as usize).copied().unwrap_or(0);
+        let buff_r = self
+            .buff_elem_r
+            .get(attribute as usize)
+            .copied()
+            .unwrap_or(0);
         let resistance_bonus = self.equipped_stats.resistance_bonus as i32;
         let pct = match attribute {
             1 => self.pct_fire_r,
@@ -189,6 +193,18 @@ impl WorldState {
     ///
     pub fn apply_buff(&self, sid: SessionId, buff: ActiveBuff) {
         if let Some(mut handle) = self.sessions.get_mut(&sid) {
+            if matches!(buff.buff_type, 6 | 40) {
+                let replaced = handle.buffs.get(&buff.buff_type).map(|b| b.skill_id);
+                tracing::info!(
+                    "[sid={}] speed buff applied: buff_type={} skill_id={} duration={}s speed={} replaced_skill={:?}",
+                    sid,
+                    buff.buff_type,
+                    buff.skill_id,
+                    buff.duration_secs,
+                    buff.speed,
+                    replaced
+                );
+            }
             handle.buffs.insert(buff.buff_type, buff);
         }
     }
@@ -214,6 +230,22 @@ impl WorldState {
             48 | // BUFF_TYPE_FISHING
             171 // BUFF_TYPE_BATTLE_CRY
         )
+    }
+    /// Whether a currently saved item-scroll occupies this buff slot.
+    /// The legacy hard-coded lockable list covers stock scrolls, but custom
+    /// and newer item-group scrolls must receive the same debuff recovery.
+    pub fn has_saved_scroll_for_buff_type(&self, sid: SessionId, buff_type: i32) -> bool {
+        let Some(handle) = self.sessions.get(&sid) else {
+            return false;
+        };
+        handle.saved_magic_map.keys().any(|skill_id| {
+            self.get_magic(*skill_id as i32).is_some_and(|skill| {
+                crate::handler::magic_process::is_item_type4_scroll(&skill, *skill_id)
+                    && self
+                        .get_magic_type4(*skill_id as i32)
+                        .is_some_and(|t4| t4.buff_type.unwrap_or(0) == buff_type)
+            })
+        })
     }
     /// Check if the player currently has a debuff on the given buff type slot.
     ///
@@ -242,6 +274,22 @@ impl WorldState {
             }
         }
         false
+    }
+    /// Give one second back to a running buff (its timer stands still while paused).
+    pub fn pause_buff_second(&self, sid: SessionId, buff_type: i32) {
+        if let Some(mut handle) = self.sessions.get_mut(&sid) {
+            if let Some(buff) = handle.buffs.get_mut(&buff_type) {
+                if buff.duration_secs > 0 {
+                    buff.duration_secs = buff.duration_secs.saturating_add(1);
+                }
+                // the copy that is saved at logout runs on its own absolute clock: hold it back too,
+                // else the remaining time shrinks on every relog
+                let skill = buff.skill_id;
+                if let Some(expiry) = handle.saved_magic_map.get_mut(&skill) {
+                    *expiry = expiry.saturating_add(1000);
+                }
+            }
+        }
     }
     /// Get all active buffs for a session (cloned).
     pub fn get_active_buffs(&self, sid: SessionId) -> Vec<ActiveBuff> {
@@ -457,20 +505,25 @@ impl WorldState {
     /// Insert a skill into the saved magic map for persistence.
     ///
     pub fn insert_saved_magic(&self, sid: SessionId, skill_id: u32, duration_secs: u16) {
-        if skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID {
+        let is_item_scroll_buff = skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID
+            && self.get_magic(skill_id as i32).is_some_and(|skill| {
+                crate::handler::magic_process::should_persist_type4_magic(&skill, skill_id)
+            });
+        if skill_id == 0 || (skill_id <= Self::SAVED_MAGIC_MIN_SKILL_ID && !is_item_scroll_buff) {
             return;
         }
         if let Some(mut handle) = self.sessions.get_mut(&sid) {
-            if handle.saved_magic_map.contains_key(&skill_id) {
-                return;
-            }
-            if handle.saved_magic_map.len() >= Self::MAX_SAVED_MAGIC {
+            if !handle.saved_magic_map.contains_key(&skill_id)
+                && handle.saved_magic_map.len() >= Self::MAX_SAVED_MAGIC
+            {
                 return;
             }
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
+            // Re-applying the same scroll refreshes its active buff; refresh
+            // the persisted expiry too instead of keeping the older deadline.
             handle
                 .saved_magic_map
                 .insert(skill_id, now_ms + (duration_secs as u64) * 1000);
@@ -820,6 +873,15 @@ impl WorldState {
     /// Expired DOTs (tick_count >= tick_limit) are automatically cleared.
     ///
     pub fn process_dot_tick(&self) -> Vec<(SessionId, i16, bool)> {
+        self.process_dot_tick_with_casters()
+            .into_iter()
+            .map(|(sid, hp, expired, _caster)| (sid, hp, expired))
+            .collect()
+    }
+
+    /// Same as [`process_dot_tick`](Self::process_dot_tick) but also returns the session id
+    /// that applied each effect, so a DOT kill can credit its caster.
+    pub fn process_dot_tick_with_casters(&self) -> Vec<(SessionId, i16, bool, SessionId)> {
         let mut results = Vec::new();
         for mut entry in self.sessions.iter_mut() {
             let sid = *entry.key();
@@ -830,10 +892,11 @@ impl WorldState {
                 }
                 slot.tick_count += 1;
                 let hp = slot.hp_amount;
+                let caster = slot.caster_sid;
 
                 if slot.tick_count >= slot.tick_limit {
                     // DOT expired, clear the slot
-                    results.push((sid, hp, true));
+                    results.push((sid, hp, true, caster));
                     slot.used = false;
                     slot.skill_id = 0;
                     slot.hp_amount = 0;
@@ -841,7 +904,7 @@ impl WorldState {
                     slot.tick_limit = 0;
                     slot.caster_sid = 0;
                 } else {
-                    results.push((sid, hp, false));
+                    results.push((sid, hp, false, caster));
                 }
             }
         }
@@ -1358,7 +1421,11 @@ impl WorldState {
     ///
     /// Same logic as `get_plus_damage` but avoids DashMap session reads by using
     /// item IDs extracted during `snapshot_combat()`.
-    pub fn get_plus_damage_from_item_ids(&self, left_hand_item_id: u32, right_hand_item_id: u32) -> f64 {
+    pub fn get_plus_damage_from_item_ids(
+        &self,
+        left_hand_item_id: u32,
+        right_hand_item_id: u32,
+    ) -> f64 {
         let ds = match self.damage_settings.read().as_ref() {
             Some(ds) => ds.clone(),
             None => return 1.0,
@@ -1580,18 +1647,33 @@ impl WorldState {
             return 0;
         }
 
+        /// `BUFF_TYPE_HP_MP` (max HP/MP buff scrolls).
+        const BUFF_TYPE_HP_MP_RECAST: i32 = 1;
+
         let mut recast_count: u32 = 0;
+        let mut hp_buff_recast = false;
 
         for (skill_id, remaining_secs) in &entries {
             // Look up Type4 buff data for the skill
             let type4 = match self.get_magic_type4(*skill_id as i32) {
                 Some(t4) => t4,
                 None => {
-                    tracing::debug!(
-                        "[sid={}] recast_saved_magic: no type4 data for skill_id={}",
-                        sid,
-                        skill_id,
-                    );
+                    // InsertSavedMagic is called unconditionally for both Type4
+                    // buffs and Type6 transformations (see the Type6 cast handler
+                    // in magic_process.rs), so a saved entry with no Type4 row is
+                    // a transformation (e.g. a TS scroll) — restore it with its
+                    // remaining duration instead of silently dropping it.
+                    if filter_buff_type.is_none()
+                        && self.recast_saved_transformation(sid, *skill_id, *remaining_secs)
+                    {
+                        recast_count += 1;
+                    } else {
+                        tracing::debug!(
+                            "[sid={}] recast_saved_magic: no type4/type6 data for skill_id={}",
+                            sid,
+                            skill_id,
+                        );
+                    }
                     continue;
                 }
             };
@@ -1662,13 +1744,24 @@ impl WorldState {
             pkt.write_u32(*skill_id);
             pkt.write_u32(sid as u32);
             pkt.write_u32(sid as u32);
-            // 7 data words: all zeros (standard for recast)
-            for _ in 0..7 {
-                pkt.write_u32(0);
+            // Match a successful Type4 cast: result and remaining duration
+            // are required by the client to restore the scroll icon/timer.
+            for value in [
+                0,
+                1,
+                0,
+                *remaining_secs as u32,
+                0,
+                type4.speed.unwrap_or(0) as u32,
+                0,
+            ] {
+                pkt.write_u32(value);
             }
 
             // Broadcast to 3x3 region
-            if let Some((pos, sender_event_room)) = self.with_session(sid, |h| (h.position, h.event_room)) {
+            if let Some((pos, sender_event_room)) =
+                self.with_session(sid, |h| (h.position, h.event_room))
+            {
                 self.broadcast_to_3x3(
                     pos.zone_id,
                     pos.region_x,
@@ -1680,6 +1773,12 @@ impl WorldState {
             }
 
             recast_count += 1;
+            if type4.buff_type == Some(BUFF_TYPE_HP_MP_RECAST)
+                || type4.max_hp.unwrap_or(0) > 0
+                || type4.max_hp_pct.unwrap_or(100) > 100
+            {
+                hp_buff_recast = true;
+            }
             tracing::debug!(
                 "[sid={}] recast_saved_magic: restored skill_id={} buff_type={:?} remaining={}s",
                 sid,
@@ -1689,7 +1788,108 @@ impl WorldState {
             );
         }
 
+        if recast_count > 0 {
+            // The client learns the new max HP/MP from the item-move refresh; without it
+            // the restored scrolls show their icons but the bars keep the unbuffed maximum.
+            self.send_item_move_refresh(sid);
+
+            // C++ ExecuteType4: an HP/MP buff that is recast also restores HP to the new maximum.
+            if hp_buff_recast {
+                if let Some(ch) = self.get_character_info(sid) {
+                    if ch.hp > 0 {
+                        self.update_character_hp(sid, ch.max_hp);
+                        self.send_to_session_owned(
+                            sid,
+                            crate::systems::regen::build_hp_change_packet(ch.max_hp, ch.max_hp),
+                        );
+                    }
+                }
+            }
+        }
+
         recast_count
+    }
+
+    /// Restore a Type6 transformation from a saved-magic entry (see the
+    /// `None` branch in `recast_saved_magic_filtered`). Mirrors the broadcast
+    /// the original Type6 cast handler sends (magic_process.rs) so the client
+    /// rebuilds the transformed model after e.g. respawning from death.
+    fn recast_saved_transformation(
+        &self,
+        sid: SessionId,
+        skill_id: u32,
+        remaining_secs: u16,
+    ) -> bool {
+        let type6 = match self.get_magic_type6(skill_id as i32) {
+            Some(t6) => t6,
+            None => return false,
+        };
+        let transformation_type =
+            match crate::handler::magic_process::transformation_type_from_user_skill_use(
+                type6.user_skill_use,
+            ) {
+                Some(value) => value,
+                None => return false,
+            };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        self.set_transformation(
+            sid,
+            transformation_type,
+            type6.transform_id as u16,
+            skill_id,
+            now_ms,
+            remaining_secs as u64 * 1000,
+        );
+
+        let mut effecting_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        effecting_pkt.write_u8(3); // MAGIC_EFFECTING
+        effecting_pkt.write_u32(skill_id);
+        effecting_pkt.write_u32(sid as u32);
+        effecting_pkt.write_u32(sid as u32);
+        for value in [0u32, 1, 0, remaining_secs as u32, 0, 0, 0] {
+            effecting_pkt.write_u32(value);
+        }
+
+        let mut state_pkt = Packet::new(Opcode::WizStateChange as u8);
+        state_pkt.write_u32(sid as u32);
+        state_pkt.write_u8(crate::state_change_constants::STATE_CHANGE_TRANSFORMATION);
+        state_pkt.write_u32(skill_id);
+
+        if let Some((pos, sender_event_room)) =
+            self.with_session(sid, |h| (h.position, h.event_room))
+        {
+            self.broadcast_to_3x3(
+                pos.zone_id,
+                pos.region_x,
+                pos.region_z,
+                Arc::new(effecting_pkt),
+                None,
+                sender_event_room,
+            );
+            self.broadcast_to_3x3(
+                pos.zone_id,
+                pos.region_x,
+                pos.region_z,
+                Arc::new(state_pkt),
+                None,
+                sender_event_room,
+            );
+        }
+
+        tracing::info!(
+            "[sid={}] recast_saved_magic: restored transformation skill_id={} type={} remaining={}s",
+            sid,
+            skill_id,
+            transformation_type,
+            remaining_secs,
+        );
+
+        true
     }
 }
 
@@ -2115,6 +2315,39 @@ mod recast_saved_magic_tests {
         }
     }
 
+    /// Create a test MagicType6Row (transformation) with a given user_skill_use
+    /// (1=monster, 3/4/7=NPC, 0/5/6=siege — see transformation_type_from_user_skill_use).
+    fn make_type6(i_num: i32, user_skill_use: i32, transform_id: i32, duration: i32) -> MagicType6Row {
+        MagicType6Row {
+            i_num,
+            name: None,
+            description: None,
+            size: 100,
+            transform_id,
+            duration,
+            max_hp: 1000,
+            max_mp: 100,
+            speed: 0,
+            attack_speed: 0,
+            total_hit: 0,
+            total_ac: 0,
+            total_hit_rate: 0,
+            total_evasion_rate: 0,
+            total_fire_r: 0,
+            total_cold_r: 0,
+            total_lightning_r: 0,
+            total_magic_r: 0,
+            total_disease_r: 0,
+            total_poison_r: 0,
+            class: 0,
+            user_skill_use,
+            need_item: 0,
+            skill_success_rate: 100,
+            monster_friendly: 0,
+            nation: 0,
+        }
+    }
+
     /// Create a test MagicType4Row with only max_hp modifier.
     fn make_type4_hp_only(i_num: i32, buff_type: i32, max_hp: i32) -> MagicType4Row {
         MagicType4Row {
@@ -2295,6 +2528,35 @@ mod recast_saved_magic_tests {
     }
 
     #[tokio::test]
+    async fn test_recast_restores_transformation() {
+        let (world, _rx) = setup_world();
+        world.insert_magic_type6(make_type6(500300, 1, 777, 600));
+        world.load_saved_magic(1, &[(500300, 400)]);
+
+        let count = world.recast_saved_magic(1);
+        assert_eq!(count, 1);
+        assert!(world.is_transformed(1));
+        let (transform_id, skill_id, duration_ms) = world
+            .with_session(1, |h| (h.transform_id, h.transform_skill_id, h.transformation_duration))
+            .unwrap();
+        assert_eq!(transform_id, 777);
+        assert_eq!(skill_id, 500300);
+        assert_eq!(duration_ms, 400 * 1000);
+    }
+
+    #[tokio::test]
+    async fn test_recast_transformation_unknown_user_skill_use_is_skipped() {
+        let (world, _rx) = setup_world();
+        // user_skill_use=99 doesn't map to any transformation type.
+        world.insert_magic_type6(make_type6(500301, 99, 777, 600));
+        world.load_saved_magic(1, &[(500301, 400)]);
+
+        let count = world.recast_saved_magic(1);
+        assert_eq!(count, 0);
+        assert!(!world.is_transformed(1));
+    }
+
+    #[tokio::test]
     async fn test_recast_applies_max_hp_modifier() {
         let (world, _rx) = setup_world_with_character(1000, 500);
         world.insert_magic_type4(make_type4_hp_only(500100, 10, 100));
@@ -2358,7 +2620,7 @@ mod recast_saved_magic_tests {
 
     #[tokio::test]
     async fn test_recast_builds_magic_effecting_packet_format() {
-        // Verify the MAGIC_EFFECTING packet format is correct by building one manually.
+        // Verify the MAGIC_EFFECTING recast packet carries success and duration.
         // Broadcast delivery requires full zone setup (tested via integration tests),
         // but we verify the packet structure here.
         let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
@@ -2366,8 +2628,8 @@ mod recast_saved_magic_tests {
         pkt.write_u32(500100); // skill_id
         pkt.write_u32(1); // caster_id = sid
         pkt.write_u32(1); // target_id = sid
-        for _ in 0..7 {
-            pkt.write_u32(0); // data words
+        for value in [0, 1, 0, 120, 0, 100, 0] {
+            pkt.write_u32(value);
         }
 
         assert_eq!(pkt.opcode, Opcode::WizMagicProcess as u8);
@@ -2376,9 +2638,8 @@ mod recast_saved_magic_tests {
         assert_eq!(r.read_u32(), Some(500100));
         assert_eq!(r.read_u32(), Some(1));
         assert_eq!(r.read_u32(), Some(1));
-        // 7 data words of zero
-        for _ in 0..7 {
-            assert_eq!(r.read_u32(), Some(0));
+        for expected in [0, 1, 0, 120, 0, 100, 0] {
+            assert_eq!(r.read_u32(), Some(expected));
         }
     }
 
@@ -2982,7 +3243,7 @@ mod blink_duration_tests {
         // pct=0 → formula yields 0 (multiplicative)
         assert_eq!(snap.total_resistance(1), 0);
         // With pct=100: (10+100)*100/100 + 5*100/100 = 115
-        let mut snap2 = CombatSnapshot {
+        let snap2 = CombatSnapshot {
             equipped_stats: EquippedStats {
                 fire_r: 10,
                 resistance_bonus: 5,
@@ -2990,14 +3251,26 @@ mod blink_duration_tests {
             },
             buff_elem_r: [0, 100, 0, 0, 0, 0, 0],
             pct_fire_r: 100,
-            pct_cold_r: 0, pct_lightning_r: 0, pct_magic_r: 0,
-            pct_disease_r: 0, pct_poison_r: 0,
-            attack_amount: 0, player_attack_amount: 0,
-            ac_amount: 0, ac_pct: 0, ac_sour: 0,
-            block_physical: false, dagger_r_amount: 0, bow_r_amount: 0,
-            mirror_damage: false, mirror_damage_type: false, mirror_amount: 0,
-            right_hand_item_id: 0, left_hand_item_id: 0,
-            perk_levels: [0; 13], magic_attack_amount: 0,
+            pct_cold_r: 0,
+            pct_lightning_r: 0,
+            pct_magic_r: 0,
+            pct_disease_r: 0,
+            pct_poison_r: 0,
+            attack_amount: 0,
+            player_attack_amount: 0,
+            ac_amount: 0,
+            ac_pct: 0,
+            ac_sour: 0,
+            block_physical: false,
+            dagger_r_amount: 0,
+            bow_r_amount: 0,
+            mirror_damage: false,
+            mirror_damage_type: false,
+            mirror_amount: 0,
+            right_hand_item_id: 0,
+            left_hand_item_id: 0,
+            perk_levels: [0; 13],
+            magic_attack_amount: 0,
         };
         assert_eq!(snap2.total_resistance(1), 115);
     }
@@ -3066,14 +3339,26 @@ mod blink_duration_tests {
             equipped_stats: es,
             buff_elem_r: [0, 20, 0, 0, 0, 0, 0],
             pct_fire_r: 100,
-            pct_cold_r: 0, pct_lightning_r: 0, pct_magic_r: 0,
-            pct_disease_r: 0, pct_poison_r: 0,
-            attack_amount: 0, player_attack_amount: 0,
-            ac_amount: 0, ac_pct: 0, ac_sour: 0,
-            block_physical: false, dagger_r_amount: 0, bow_r_amount: 0,
-            mirror_damage: false, mirror_damage_type: false, mirror_amount: 0,
-            right_hand_item_id: 0, left_hand_item_id: 0,
-            perk_levels: [0; 13], magic_attack_amount: 0,
+            pct_cold_r: 0,
+            pct_lightning_r: 0,
+            pct_magic_r: 0,
+            pct_disease_r: 0,
+            pct_poison_r: 0,
+            attack_amount: 0,
+            player_attack_amount: 0,
+            ac_amount: 0,
+            ac_pct: 0,
+            ac_sour: 0,
+            block_physical: false,
+            dagger_r_amount: 0,
+            bow_r_amount: 0,
+            mirror_damage: false,
+            mirror_damage_type: false,
+            mirror_amount: 0,
+            right_hand_item_id: 0,
+            left_hand_item_id: 0,
+            perk_levels: [0; 13],
+            magic_attack_amount: 0,
         };
         // (50+20)*100/100 + 10*100/100 = 70 + 10 = 80
         assert_eq!(snap.total_resistance(1), 80);
@@ -3087,14 +3372,27 @@ mod blink_duration_tests {
         let snap = CombatSnapshot {
             equipped_stats: es,
             buff_elem_r: [0; 7],
-            pct_fire_r: 0, pct_cold_r: 50, pct_lightning_r: 0,
-            pct_magic_r: 0, pct_disease_r: 0, pct_poison_r: 0,
-            attack_amount: 0, player_attack_amount: 0,
-            ac_amount: 0, ac_pct: 0, ac_sour: 0,
-            block_physical: false, dagger_r_amount: 0, bow_r_amount: 0,
-            mirror_damage: false, mirror_damage_type: false, mirror_amount: 0,
-            right_hand_item_id: 0, left_hand_item_id: 0,
-            perk_levels: [0; 13], magic_attack_amount: 0,
+            pct_fire_r: 0,
+            pct_cold_r: 50,
+            pct_lightning_r: 0,
+            pct_magic_r: 0,
+            pct_disease_r: 0,
+            pct_poison_r: 0,
+            attack_amount: 0,
+            player_attack_amount: 0,
+            ac_amount: 0,
+            ac_pct: 0,
+            ac_sour: 0,
+            block_physical: false,
+            dagger_r_amount: 0,
+            bow_r_amount: 0,
+            mirror_damage: false,
+            mirror_damage_type: false,
+            mirror_amount: 0,
+            right_hand_item_id: 0,
+            left_hand_item_id: 0,
+            perk_levels: [0; 13],
+            magic_attack_amount: 0,
         };
         // (100+0)*50/100 + 0*50/100 = 50
         assert_eq!(snap.total_resistance(2), 50);
@@ -3106,14 +3404,27 @@ mod blink_duration_tests {
         let snap = CombatSnapshot {
             equipped_stats: EquippedStats::default(),
             buff_elem_r: [0; 7],
-            pct_fire_r: 100, pct_cold_r: 100, pct_lightning_r: 100,
-            pct_magic_r: 100, pct_disease_r: 100, pct_poison_r: 100,
-            attack_amount: 0, player_attack_amount: 0,
-            ac_amount: 0, ac_pct: 0, ac_sour: 0,
-            block_physical: false, dagger_r_amount: 0, bow_r_amount: 0,
-            mirror_damage: false, mirror_damage_type: false, mirror_amount: 0,
-            right_hand_item_id: 0, left_hand_item_id: 0,
-            perk_levels: [0; 13], magic_attack_amount: 0,
+            pct_fire_r: 100,
+            pct_cold_r: 100,
+            pct_lightning_r: 100,
+            pct_magic_r: 100,
+            pct_disease_r: 100,
+            pct_poison_r: 100,
+            attack_amount: 0,
+            player_attack_amount: 0,
+            ac_amount: 0,
+            ac_pct: 0,
+            ac_sour: 0,
+            block_physical: false,
+            dagger_r_amount: 0,
+            bow_r_amount: 0,
+            mirror_damage: false,
+            mirror_damage_type: false,
+            mirror_amount: 0,
+            right_hand_item_id: 0,
+            left_hand_item_id: 0,
+            perk_levels: [0; 13],
+            magic_attack_amount: 0,
         };
         // All 6 elements should be 0 with zero stats
         for attr in 1..=6u8 {
@@ -3149,12 +3460,20 @@ mod blink_duration_tests {
     fn test_is_lockable_scroll_types() {
         let lockable = [1, 2, 4, 6, 7, 48, 171];
         for bt in &lockable {
-            assert!(WorldState::is_lockable_scroll(*bt), "buff_type {} should be lockable", bt);
+            assert!(
+                WorldState::is_lockable_scroll(*bt),
+                "buff_type {} should be lockable",
+                bt
+            );
         }
         // Non-lockable types
         let not_lockable = [0, 3, 5, 8, 13, 14, 19, 22, 100, 170, 172];
         for bt in &not_lockable {
-            assert!(!WorldState::is_lockable_scroll(*bt), "buff_type {} should NOT be lockable", bt);
+            assert!(
+                !WorldState::is_lockable_scroll(*bt),
+                "buff_type {} should NOT be lockable",
+                bt
+            );
         }
     }
 

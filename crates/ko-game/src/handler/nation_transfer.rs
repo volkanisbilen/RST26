@@ -593,7 +593,14 @@ mod tests {
     /// Error codes are distinct and cover all validation paths.
     #[test]
     fn test_error_codes_distinct() {
-        let codes = [ERR_NONE, ERR_WAR_OPEN, ERR_IN_CLAN, ERR_IS_KING, ERR_TRANSFORMED, ERR_NO_ITEM];
+        let codes = [
+            ERR_NONE,
+            ERR_WAR_OPEN,
+            ERR_IN_CLAN,
+            ERR_IS_KING,
+            ERR_TRANSFORMED,
+            ERR_NO_ITEM,
+        ];
         for i in 0..codes.len() {
             for j in (i + 1)..codes.len() {
                 assert_ne!(codes[i], codes[j]);

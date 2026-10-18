@@ -171,12 +171,13 @@ impl<'a> AchieveRepository<'a> {
         recent: [i16; 3],
         cover_id: i16,
         skill_id: i16,
+        skill_title_row: i16,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO user_achieve_summary (str_user_id, play_time, monster_defeat_count,
              user_defeat_count, user_death_count, total_medal, recent_achieve_1, recent_achieve_2,
-             recent_achieve_3, cover_id, skill_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             recent_achieve_3, cover_id, skill_id, skill_title_row)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              ON CONFLICT (str_user_id) DO UPDATE SET
                 play_time = EXCLUDED.play_time,
                 monster_defeat_count = EXCLUDED.monster_defeat_count,
@@ -187,7 +188,8 @@ impl<'a> AchieveRepository<'a> {
                 recent_achieve_2 = EXCLUDED.recent_achieve_2,
                 recent_achieve_3 = EXCLUDED.recent_achieve_3,
                 cover_id = EXCLUDED.cover_id,
-                skill_id = EXCLUDED.skill_id",
+                skill_id = EXCLUDED.skill_id,
+                skill_title_row = EXCLUDED.skill_title_row",
         )
         .bind(char_name)
         .bind(play_time)
@@ -200,6 +202,7 @@ impl<'a> AchieveRepository<'a> {
         .bind(recent[2])
         .bind(cover_id)
         .bind(skill_id)
+        .bind(skill_title_row)
         .execute(self.pool)
         .await?;
         Ok(())

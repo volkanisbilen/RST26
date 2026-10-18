@@ -668,8 +668,7 @@ if (EVENT == 193) then
 	if(QuestStatusCheck == 2) then
 		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
 	else
-		RunQuestExchange(UID, 94);
-		SaveEvent(UID, 6082);
+		SelectMsg(UID, 5, 199, 6049, NPC, 4006, 7004, 4005, -1);
 	end
 end
 

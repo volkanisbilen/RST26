@@ -108,7 +108,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         PROMOTE_NOVICE => {
             let change_type = reader.read_u8().unwrap_or(0);
             let new_job = reader.read_u8().unwrap_or(0);
-            handle_job_change(session, change_type, new_job).await
+            handle_job_change(session, change_type, new_job, false).await
         }
         REB_STAT_CHANGE => {
             let rec_str = reader.read_u8().unwrap_or(0);
@@ -460,10 +460,11 @@ async fn handle_change_money_req(session: &mut ClientSession, sub_type: u8) -> a
 /// - 5 = error in newjob or class
 /// - 6 = already that class / no scroll
 /// - 7 = failed
-async fn handle_job_change(
+pub(crate) async fn handle_job_change(
     session: &mut ClientSession,
     change_type: u8,
     new_job: u8,
+    hook: bool,
 ) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
@@ -475,7 +476,7 @@ async fn handle_job_change(
 
     // Validate input.
     if !(1..=5).contains(&new_job) || (change_type != 0 && change_type != 1) {
-        send_job_change_fail(session, 5).await?;
+        job_change_fail(session, hook, 5, 5).await?;
         return Ok(());
     }
 
@@ -487,13 +488,13 @@ async fn handle_job_change(
     };
 
     if !has_item_in_inventory(&world, sid, scroll_id) {
-        send_job_change_fail(session, 6).await?;
+        job_change_fail(session, hook, 6, 2).await?;
         return Ok(());
     }
 
     // Cannot change to same job group.
     if is_same_job_group(char_info.class, new_job) {
-        send_job_change_fail(session, 6).await?;
+        job_change_fail(session, hook, 6, 3).await?;
         return Ok(());
     }
 
@@ -511,12 +512,14 @@ async fn handle_job_change(
 
     if has_equipment {
         // Send equipment-worn error with ALL_POINT_CHANGE sub-opcode format.
-        let mut resp = Packet::new(Opcode::WizClassChange as u8);
-        resp.write_u8(ALL_POINT_CHANGE);
-        resp.write_u8(4);
-        resp.write_i32(0);
-        session.send_packet(&resp).await?;
-        send_job_change_fail(session, 4).await?;
+        if !hook {
+            let mut resp = Packet::new(Opcode::WizClassChange as u8);
+            resp.write_u8(ALL_POINT_CHANGE);
+            resp.write_u8(4);
+            resp.write_i32(0);
+            session.send_packet(&resp).await?;
+        }
+        job_change_fail(session, hook, 4, 4).await?;
         return Ok(());
     }
 
@@ -532,14 +535,14 @@ async fn handle_job_change(
     let (new_class, new_race) = match result {
         Some((c, r)) => (c, r),
         None => {
-            send_job_change_fail(session, 5).await?;
+            job_change_fail(session, hook, 5, 5).await?;
             return Ok(());
         }
     };
 
     // Consume the scroll item.
     if !world.rob_item(sid, scroll_id, 1) {
-        send_job_change_fail(session, 6).await?;
+        job_change_fail(session, hook, 6, 2).await?;
         return Ok(());
     }
 
@@ -611,7 +614,11 @@ async fn handle_job_change(
     world.recast_saved_magic(sid);
 
     // Send job change success result (return value 1 from binary).
-    send_job_change_result(session, 1).await?;
+    if hook {
+        send_job_change_hook(session, 1).await?;
+    } else {
+        send_job_change_result(session, 1).await?;
+    }
 
     // Notify party members of class change.
     super::party::broadcast_party_class_change(&world, sid, new_class);
@@ -643,6 +650,38 @@ async fn handle_job_change(
     );
 
     Ok(())
+}
+
+/// Failure of a job change: the native result code, or the JstKO panel's (hook 0xF7, op 2).
+async fn job_change_fail(
+    session: &mut ClientSession,
+    hook: bool,
+    native: u8,
+    hook_code: u8,
+) -> anyhow::Result<()> {
+    if hook {
+        send_job_change_hook(session, hook_code).await
+    } else {
+        send_job_change_fail(session, native).await
+    }
+}
+
+/// `[0xE9][0xF7][2][result]`: 1 done, 2 no scroll, 3 already this class, 4 items equipped, 5 failed.
+async fn send_job_change_hook(session: &mut ClientSession, result: u8) -> anyhow::Result<()> {
+    let mut pkt = Packet::new(Opcode::EXT_HOOK_S2C);
+    pkt.write_u8(super::jobchange_hook::EXT_SUB_JOBCHANGE);
+    pkt.write_u8(2);
+    pkt.write_u8(result);
+    session.send_packet(&pkt).await
+}
+
+/// Scroll item for the JstKO panel's type (0 = 700112000, 1 = 700113000).
+pub(crate) fn job_change_scroll(change_type: u8) -> u32 {
+    if change_type == 0 {
+        ITEM_JOB_CHANGE
+    } else {
+        ITEM_JOB_CHANGE2
+    }
 }
 
 /// Send job change result packet.
@@ -736,7 +775,7 @@ pub(crate) fn is_mastered(class: u16) -> bool {
 }
 
 /// Check if an item exists in the inventory bag (slots 14-41).
-fn has_item_in_inventory(
+pub(crate) fn has_item_in_inventory(
     world: &crate::world::WorldState,
     sid: crate::zone::SessionId,
     item_id: u32,

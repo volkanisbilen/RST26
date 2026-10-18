@@ -106,11 +106,10 @@ if (EVENT == 535) then
 end
 --------------------------------
 if (EVENT == 536) then
-	ITEM_COUNTA = HowmuchItem(UID, 379041000);
-	ITEM_COUNTB = HowmuchItem(UID, 379040000);
-	ITEM_COUNTC = HowmuchItem(UID, 379042000);
-	ITEM_COUNTD = HowmuchItem(UID, 379236000);
-	if (ITEM_COUNTA > 0 and ITEM_COUNTB > 0 and ITEM_COUNTC > 0 and ITEM_COUNTD > 0) then
+	ITEM_COUNTA = HowmuchItem(UID, 810095000);
+	ITEM_COUNTB = HowmuchItem(UID, 810092000);
+	ITEM_COUNTC = HowmuchItem(UID, 810093000);
+	if (ITEM_COUNTA > 0 and ITEM_COUNTB > 0 and ITEM_COUNTC > 0) then
 		SelectMsg(UID, 4, 273, 4103, NPC, 4062, 537, 4063, 193);
 	else
 		if (ITEM_COUNTA < 1) then
@@ -119,8 +118,6 @@ if (EVENT == 536) then
 			SelectMsg(UID, 2, 273, 4099, NPC, 18, 539);
 		elseif (ITEM_COUNTC < 1) then
 			SelectMsg(UID, 2, 273, 4099, NPC, 18, 540);
-		elseif (ITEM_COUNTD < 1) then
-			SelectMsg(UID, 2, savenum, 4099, NPC, 18, 540);
 		end
 	end
 end
@@ -138,10 +135,7 @@ if (EVENT == 540) then
 end
 --------------------------------
 if (EVENT == 537) then
-	RobItem(UID, 379041000, 1)
-	RobItem(UID, 379040000, 1)
-	RobItem(UID, 379042000, 1)
-	RobItem(UID, 379236000, 1)
+	RunQuestExchange(UID, 462)
 	PromoteUser(UID)
 	SaveEvent(UID, 4101);
 	SelectMsg(UID, 2, savenum, 4093, NPC, 4064, 193);

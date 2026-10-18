@@ -379,7 +379,7 @@ async fn handle_monster_stone(
         let is_monster = row.b_type == 0;
         let count = row.s_count.max(1) as u16;
         let summon_type = if row.is_boss { 1u8 } else { 0u8 };
-        world.spawn_event_npc_ex(
+        world.spawn_event_npc_ex_with_direction(
             row.s_sid as u16,
             is_monster,
             zone_id as u16,
@@ -388,6 +388,7 @@ async fn handle_monster_stone(
             count,
             event_room_id,
             summon_type,
+            row.by_direction.clamp(0, u8::MAX as i16) as u8,
         );
     }
 
@@ -466,6 +467,12 @@ async fn handle_monster_stone(
 /// - result=1: success
 /// - result=4: fail
 async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
+    if super::ultima::registration_open() {
+        return super::ultima::temple_join(session).await;
+    }
+    if super::rift_entry::registration_open() {
+        return super::rift_entry::temple_join(session).await;
+    }
     debug!("[{}] WIZ_EVENT TEMPLE_EVENT_JOIN", session.addr());
 
     let world = session.world().clone();
@@ -476,6 +483,9 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         .event_room_manager
         .read_temple_event(|s| (s.active_event, s.allow_join, s.is_active));
 
+    // the client's join window is the Border Defence one (event id 4) when Juraid signs up
+    let client_event: i16 = if active_event == 100 { event_room::JURAID_WINDOW_EVENT_ID } else { active_event };
+
     // Check: player already signed up or in prison
     let player_zone = world.get_position(sid).map(|p| p.zone_id).unwrap_or(0);
 
@@ -483,7 +493,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -496,7 +506,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -506,7 +516,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -516,7 +526,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -527,7 +537,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
             let mut resp = Packet::new(Opcode::WizEvent as u8);
             resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
             resp.write_u8(4);
-            resp.write_i16(active_event);
+            resp.write_i16(client_event);
             session.send_packet(&resp).await?;
             return Ok(());
         }
@@ -545,7 +555,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
             let mut resp = Packet::new(Opcode::WizEvent as u8);
             resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
             resp.write_u8(4);
-            resp.write_i16(active_event);
+            resp.write_i16(client_event);
             session.send_packet(&resp).await?;
             return Ok(());
         }
@@ -573,7 +583,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
         let mut resp = Packet::new(Opcode::WizEvent as u8);
         resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
         resp.write_u8(4);
-        resp.write_i16(active_event);
+        resp.write_i16(client_event);
         session.send_packet(&resp).await?;
         return Ok(());
     }
@@ -592,7 +602,7 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
     let mut resp = Packet::new(Opcode::WizEvent as u8);
     resp.write_u8(sub_opcode::TEMPLE_EVENT_JOIN);
     resp.write_u8(1); // success
-    resp.write_i16(active_event);
+    resp.write_i16(client_event);
     session.send_packet(&resp).await?;
 
     tracing::info!(
@@ -617,6 +627,12 @@ async fn handle_temple_join(session: &mut ClientSession) -> anyhow::Result<()> {
 /// - result=1: success
 /// - result=4: fail
 async fn handle_temple_disband(session: &mut ClientSession) -> anyhow::Result<()> {
+    if super::ultima::registration_open() {
+        return super::ultima::temple_disband(session).await;
+    }
+    if super::rift_entry::registration_open() {
+        return super::rift_entry::temple_disband(session).await;
+    }
     debug!("[{}] WIZ_EVENT TEMPLE_EVENT_DISBAND", session.addr());
 
     let world = session.world().clone();
@@ -627,7 +643,7 @@ async fn handle_temple_disband(session: &mut ClientSession) -> anyhow::Result<()
         .event_room_manager
         .read_temple_event(|s| (s.active_event, s.is_active));
 
-    let active_event_u16 = active_event as u16;
+    let active_event_u16 = (if active_event == 100 { event_room::JURAID_WINDOW_EVENT_ID } else { active_event }) as u16;
 
     // Check: player in prison
     let player_zone = world.get_position(sid).map(|p| p.zone_id).unwrap_or(0);
@@ -759,6 +775,17 @@ async fn handle_draki_enter(
 
             // Load from DB (C++ LoadUserDrakiTowerData)
             let repo = ko_db::repositories::draki_tower::DrakiTowerRepository::new(session.pool());
+            match repo.reset_user_entrance_limit_if_due(&ch.name).await {
+                Ok(true) => tracing::info!(
+                    user = %ch.name,
+                    "Draki Tower entrance limit lazily reset for current 18:00 bucket"
+                ),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(
+                    user = %ch.name,
+                    "Draki Tower lazy entrance reset failed: {e}"
+                ),
+            }
             let user_data = match repo.load_user_data(&ch.name).await {
                 Ok(data) => data,
                 Err(e) => {
@@ -824,6 +851,21 @@ async fn handle_draki_enter(
         return Ok(());
     }
 
+    let (spawn_x, spawn_z) = draki_tower::dungeon_spawn_position(enter_dungeon);
+    if !super::zone_change::can_trigger_zone_change(
+        &world,
+        sid,
+        draki_tower::ZONE_DRAKI_TOWER,
+        spawn_x as f32,
+        spawn_z as f32,
+    ) {
+        tracing::warn!(user = %ch.name, room_zone = draki_tower::ZONE_DRAKI_TOWER, "Draki Tower entry rejected before consuming the entrance: destination warp is unavailable");
+        session
+            .send_packet(&send_err(draki_tower::ENTER_ERR_INTERNAL))
+            .await?;
+        return Ok(());
+    }
+
     // ── Find a free room ───────────────────────────────────────────────
     let room_id = {
         let rooms = world.draki_tower_rooms_read();
@@ -837,34 +879,6 @@ async fn handle_draki_enter(
             return Ok(());
         }
     };
-
-    // ── Consume entrance: decrement limit or remove certificate ────────
-    if entrance_limit > 0 {
-        let new_limit = entrance_limit.saturating_sub(1);
-        world.update_session(sid, |h| {
-            h.draki_entrance_limit = new_limit;
-        });
-        // Persist to DB (C++ UpdateDrakiTowerLimitLastUpdate)
-        let repo = ko_db::repositories::draki_tower::DrakiTowerRepository::new(session.pool());
-        if let Err(e) = repo.update_entrance_limit(&ch.name, new_limit as i16).await {
-            tracing::warn!("Failed to update Draki entrance limit for {}: {e}", ch.name);
-        }
-    } else {
-        // Remove one certificate item
-        world.update_session(sid, |h| {
-            if let Some(slot) = h
-                .inventory
-                .iter_mut()
-                .find(|s| s.item_id == draki_tower::CERTIFIKAOFDRAKI && s.count > 0)
-            {
-                slot.count -= 1;
-                if slot.count == 0 {
-                    slot.item_id = 0;
-                    slot.durability = 0;
-                }
-            }
-        });
-    }
 
     // ── Initialize room ────────────────────────────────────────────────
     let user_name = ch.name.clone();
@@ -902,10 +916,11 @@ async fn handle_draki_enter(
             0, // monster stage
         ) {
             if let Some(stage) = draki_tower::get_stage_at(&stages, stage_idx) {
+                let stage_is_monster = stage.draki_tower_npc_state == 0;
                 for m in draki_tower::get_monsters_for_stage(&monsters, stage.id) {
                     list.push((
                         m.monster_id as u16,
-                        m.is_monster,
+                        stage_is_monster,
                         m.pos_x as f32,
                         m.pos_z as f32,
                     ));
@@ -937,7 +952,6 @@ async fn handle_draki_enter(
     }
 
     // ── Zone change to Draki Tower ─────────────────────────────────────
-    let (spawn_x, spawn_z) = draki_tower::dungeon_spawn_position(enter_dungeon);
     super::zone_change::trigger_zone_change(
         session,
         draki_tower::ZONE_DRAKI_TOWER,
@@ -945,6 +959,49 @@ async fn handle_draki_enter(
         spawn_z as f32,
     )
     .await?;
+
+    // trigger_zone_change intentionally treats blocked/unknown destination
+    // zones as a no-op. Never start the tower UI, reserve the room, or charge
+    // an entry unless the server actually moved this session into zone 95.
+    if world.get_position(sid).map(|p| p.zone_id) != Some(draki_tower::ZONE_DRAKI_TOWER) {
+        world.despawn_room_npcs(draki_tower::ZONE_DRAKI_TOWER, room_id);
+        world.update_session(sid, |h| {
+            h.event_room = 0;
+            h.draki_room_id = 0;
+        });
+        if let Some(room) = world.draki_tower_rooms_write().get_mut(&room_id) {
+            room.reset();
+        }
+        session
+            .send_packet(&send_err(draki_tower::ENTER_ERR_INTERNAL))
+            .await?;
+        tracing::warn!(user = %ch.name, room_id, "Draki Tower zone transition did not complete; room released without charging the entry");
+        return Ok(());
+    }
+
+    // Only charge after the zone transition succeeds.
+    if entrance_limit > 0 {
+        let new_limit = entrance_limit.saturating_sub(1);
+        world.update_session(sid, |h| h.draki_entrance_limit = new_limit);
+        let repo = ko_db::repositories::draki_tower::DrakiTowerRepository::new(session.pool());
+        if let Err(e) = repo.update_entrance_limit(&ch.name, new_limit as i16).await {
+            tracing::warn!("Failed to update Draki entrance limit for {}: {e}", ch.name);
+        }
+    } else {
+        world.update_session(sid, |h| {
+            if let Some(slot) = h
+                .inventory
+                .iter_mut()
+                .find(|s| s.item_id == draki_tower::CERTIFIKAOFDRAKI && s.count > 0)
+            {
+                slot.count -= 1;
+                if slot.count == 0 {
+                    slot.item_id = 0;
+                    slot.durability = 0;
+                }
+            }
+        });
+    }
 
     // ── Send timer packets (BUG-9 fix: match C++ SendDrakiTempleDetail format) ──
     {
@@ -980,8 +1037,14 @@ async fn handle_draki_enter(
     }
 
     debug!(
-        "[sid={}] Draki Tower entered: dungeon={}, room={}, spawn=({},{})",
-        sid, enter_dungeon, room_id, spawn_x, spawn_z
+        "[sid={}] Draki Tower entered: dungeon={}, room={}, spawn=({},{}), spawned={}, monsters={}",
+        sid,
+        enter_dungeon,
+        room_id,
+        spawn_x,
+        spawn_z,
+        spawn_list.len(),
+        spawn_list.iter().filter(|(_, is_m, _, _)| *is_m).count()
     );
 
     Ok(())
@@ -1008,6 +1071,14 @@ async fn handle_draki_list(session: &mut ClientSession) -> anyhow::Result<()> {
     let user_draki_class = draki_tower::draki_class(ch.class);
 
     let repo = DrakiTowerRepository::new(session.pool());
+
+    if let Err(e) = repo.reset_user_entrance_limit_if_due(&user_name).await {
+        tracing::warn!(
+            "[{}] draki_tower lazy entrance reset failed for {}: {e}",
+            session.addr(),
+            user_name
+        );
+    }
 
     // Load all rift rankings and filter by user's class
     let all_ranks = match repo.load_rift_ranks().await {
@@ -1894,10 +1965,19 @@ mod tests {
     #[test]
     fn test_draki_tower_opcode_gaps() {
         // ENTER=33, LIST=34, TIMER=35 are contiguous
-        assert_eq!(sub_opcode::TEMPLE_DRAKI_TOWER_LIST - sub_opcode::TEMPLE_DRAKI_TOWER_ENTER, 1);
-        assert_eq!(sub_opcode::TEMPLE_DRAKI_TOWER_TIMER - sub_opcode::TEMPLE_DRAKI_TOWER_LIST, 1);
+        assert_eq!(
+            sub_opcode::TEMPLE_DRAKI_TOWER_LIST - sub_opcode::TEMPLE_DRAKI_TOWER_ENTER,
+            1
+        );
+        assert_eq!(
+            sub_opcode::TEMPLE_DRAKI_TOWER_TIMER - sub_opcode::TEMPLE_DRAKI_TOWER_LIST,
+            1
+        );
         // TOWN=38 skips OUT1(36) and OUT2(37)
-        assert_eq!(sub_opcode::TEMPLE_DRAKI_TOWER_TOWN - sub_opcode::TEMPLE_DRAKI_TOWER_TIMER, 3);
+        assert_eq!(
+            sub_opcode::TEMPLE_DRAKI_TOWER_TOWN - sub_opcode::TEMPLE_DRAKI_TOWER_TIMER,
+            3
+        );
     }
 
     /// Event types are non-contiguous i16 values.
@@ -1929,7 +2009,7 @@ mod tests {
         pkt.write_u8(sub_opcode::TEMPLE_EVENT);
         pkt.write_i16(-1); // no active event
         pkt.write_u16(0); // no remaining time
-        // sub(1) + active_event(2) + remain(2) = 5 bytes
+                          // sub(1) + active_event(2) + remain(2) = 5 bytes
         assert_eq!(pkt.data.len(), 5);
         assert_eq!(pkt.data[0], sub_opcode::TEMPLE_EVENT);
     }
@@ -1948,7 +2028,10 @@ mod tests {
     fn test_temple_event_join_disband_adjacent() {
         assert_eq!(sub_opcode::TEMPLE_EVENT_JOIN, 8);
         assert_eq!(sub_opcode::TEMPLE_EVENT_DISBAND, 9);
-        assert_eq!(sub_opcode::TEMPLE_EVENT_DISBAND - sub_opcode::TEMPLE_EVENT_JOIN, 1);
+        assert_eq!(
+            sub_opcode::TEMPLE_EVENT_DISBAND - sub_opcode::TEMPLE_EVENT_JOIN,
+            1
+        );
     }
 
     /// Server-sent sub-opcodes: FINISH (10) and COUNTER (16) are distinct from client sub-opcodes.
@@ -1956,7 +2039,10 @@ mod tests {
     fn test_server_sent_subopcodes_distinct() {
         assert_eq!(sub_opcode::TEMPLE_EVENT_FINISH, 10);
         assert_eq!(sub_opcode::TEMPLE_EVENT_COUNTER, 16);
-        assert_ne!(sub_opcode::TEMPLE_EVENT_FINISH, sub_opcode::TEMPLE_EVENT_COUNTER);
+        assert_ne!(
+            sub_opcode::TEMPLE_EVENT_FINISH,
+            sub_opcode::TEMPLE_EVENT_COUNTER
+        );
         // Both above client join/disband range
         assert!(sub_opcode::TEMPLE_EVENT_FINISH > sub_opcode::TEMPLE_EVENT_DISBAND);
         assert!(sub_opcode::TEMPLE_EVENT_COUNTER > sub_opcode::TEMPLE_EVENT_FINISH);
@@ -1971,9 +2057,13 @@ mod tests {
         assert_eq!(event_type::TEMPLE_EVENT_JURAD_MOUNTAIN, 100);
         assert_eq!(event_type::TEMPLE_EVENT_KNIGHT_BATTLE_ROYALE, 104);
         // Strictly increasing
-        assert!(event_type::TEMPLE_EVENT_BORDER_DEFENCE_WAR < event_type::TEMPLE_EVENT_MONSTER_STONE);
+        assert!(
+            event_type::TEMPLE_EVENT_BORDER_DEFENCE_WAR < event_type::TEMPLE_EVENT_MONSTER_STONE
+        );
         assert!(event_type::TEMPLE_EVENT_CHAOS < event_type::TEMPLE_EVENT_JURAD_MOUNTAIN);
-        assert!(event_type::TEMPLE_EVENT_JURAD_MOUNTAIN < event_type::TEMPLE_EVENT_KNIGHT_BATTLE_ROYALE);
+        assert!(
+            event_type::TEMPLE_EVENT_JURAD_MOUNTAIN < event_type::TEMPLE_EVENT_KNIGHT_BATTLE_ROYALE
+        );
     }
 
     /// Draki tower sub-opcodes: timer (35) sits between list (34) and town (38).

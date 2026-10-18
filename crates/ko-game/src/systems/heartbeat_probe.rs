@@ -80,7 +80,8 @@ mod tests {
     #[test]
     fn test_heartbeat_probe_packet_format() {
         let mut pkt = Packet::new(HEARTBEAT_PROBE_OPCODE);
-        pkt.data.extend_from_slice(&[0xAB; HEARTBEAT_PROBE_DATA_LEN]);
+        pkt.data
+            .extend_from_slice(&[0xAB; HEARTBEAT_PROBE_DATA_LEN]);
 
         assert_eq!(pkt.opcode, 0x02);
         assert!(!pkt.plaintext); // MUST be encrypted — v2600 decrypts everything

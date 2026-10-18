@@ -35,8 +35,8 @@ impl<'a> CashShopRepository<'a> {
     pub async fn load_all_items(&self) -> Result<Vec<PusItemRow>, sqlx::Error> {
         sqlx::query_as::<_, PusItemRow>(
             "SELECT id, item_id, item_name, item_title, price, send_type, \
-             buy_count, item_desc, category, price_type \
-             FROM pus_items ORDER BY category, id",
+             buy_count, item_desc, category, price_type, duration_days, sort_order \
+             FROM pus_items ORDER BY category, sort_order, id",
         )
         .fetch_all(self.pool)
         .await
@@ -122,6 +122,17 @@ impl<'a> CashShopRepository<'a> {
         .fetch_one(self.pool)
         .await?;
         Ok((row.0, row.1.unwrap_or(0)))
+    }
+
+    /// Adjust only TL. KC must not be rewritten by a GM TL grant.
+    pub async fn adjust_tl_balance(&self, account_id: &str, amount: i32) -> Result<Option<i32>, sqlx::Error> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "UPDATE tb_user SET bonus_cash_point = COALESCE(bonus_cash_point, 0)::bigint + $2 \
+             WHERE str_account_id = $1 \
+             AND COALESCE(bonus_cash_point, 0)::bigint + $2 BETWEEN 0 AND 2147483647 \
+             RETURNING bonus_cash_point",
+        ).bind(account_id).bind(amount as i64).fetch_optional(self.pool).await?;
+        Ok(row.map(|row| row.0))
     }
 
     /// Deduct amount from TL balance (bonus_cash_point).

@@ -143,7 +143,7 @@ async fn handle_list(
 
     for letter in &letters {
         response.write_u32(letter.letter_id as u32);
-        response.write_u8(u8::from(letter.b_status));
+        response.write_u8(letter.b_status as u8);
         // SByte strings for subject and sender (C++ uses SByte mode)
         response.write_sbyte_string(&letter.subject);
         response.write_sbyte_string(&letter.sender_name);
@@ -419,6 +419,7 @@ async fn handle_send(
         pkt.write_u16(0); // durability = 0
         pkt.write_u32(0); // reserved
         pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
         world.send_to_session_owned(sid, pkt);
 
         // Weight notification is integrated into set_user_ability().
@@ -614,6 +615,7 @@ async fn handle_get_item(
             pkt.write_u16(dur);
             pkt.write_u32(0); // reserved
             pkt.write_u32(exp); // expiration
+            pkt.write_u16(0); // v2625 SendStackChange trailing field
             world.send_to_session_owned(sid, pkt);
 
             // Weight notification is integrated into set_user_ability().

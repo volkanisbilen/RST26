@@ -1,5 +1,48 @@
 local NPC = 31508;
 
+-- Resolve every buff selection using the current level and balance, including
+-- callbacks from an already-open menu. Cast once and charge only on success.
+local level = CheckLevel(UID);
+local free = level <= 35 or HowmuchItem(UID, 900017000) > 0;
+local skills = {302344, level <= 35 and 302331 or (level <= 60 and 302332 or 302333),
+    level <= 35 and 302328 or (level <= 60 and 302329 or 302330), 490223};
+local selection = nil;
+if EVENT >= 207 and EVENT <= 218 then
+    selection = (EVENT - 207) % 4 + 1;
+elseif EVENT >= 220 and EVENT <= 223 then
+    selection = EVENT - 219;
+elseif EVENT >= 226 and EVENT <= 229 then
+    selection = EVENT - 225;
+end
+if selection ~= nil then
+    local price = free and 0 or (level <= 60 and 30000 or 50000);
+    if HowmuchItem(UID, 900000000) < price then
+        SelectMsg(UID, 2, -1, 9117, NPC, 18, -1);
+    elseif CastSkill(UID, skills[selection]) then
+        if price > 0 then GoldLose(UID, price); end
+        NpcMsg(UID, 9137);
+    end
+    return;
+end
+if EVENT == 200 then
+    SelectMsg(UID, 2, -1, free and 9113 or (level <= 60 and 9114 or 9115), NPC,
+        4161, free and 201 or (level <= 60 and 202 or 203), 4162, -1);
+    return;
+end
+if EVENT == 801 or EVENT == 802 or EVENT == 804 or EVENT == 805 or EVENT == 806 then
+    local price = free and 0 or (level <= 60 and 150000 or 200000);
+    if HowmuchItem(UID, 900000000) < price then
+        SelectMsg(UID, 2, -1, 9117, NPC, 18, -1);
+        return;
+    end
+    local applied = false;
+    for _, skill in ipairs(skills) do
+        if CastSkill(UID, skill) then applied = true; end
+    end
+    if applied and price > 0 then GoldLose(UID, price); end
+    return;
+end
+
 if (EVENT == 100) then
 	SelectMsg(UID, 3, -1, 9205, NPC, 7255, 200, 7316, 400, 8430, 600,8915,800);
 end
