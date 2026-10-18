@@ -745,6 +745,14 @@ pub fn start_event_system_task(
             crate::handler::golem_war::tick(&world);
             world.manes_survival_manager.tick(&world);
             crate::event_control::tick(&world);
+            // Collection Race: end the running event when its time is up, and start the
+            // scheduled one (collection_race_settings.auto_*).
+            crate::handler::collection_race::tick_timer(
+                &world,
+                world.collection_race_event(),
+                now as u32,
+            );
+            crate::handler::collection_race::auto_start_tick(&world);
             crate::handler::slave_priest::tick(&world);
             crate::handler::slave_merchant::tick(&world);
             crate::handler::client_integrity::tick(&world).await;

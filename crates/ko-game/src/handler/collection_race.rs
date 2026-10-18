@@ -1130,6 +1130,90 @@ pub fn tick_timer(world: &WorldState, cr: &SharedCollectionRaceEvent, now: u32) 
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Automatic start schedule
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every `collection_race_settings` row carries `auto_start` / `auto_hour` /
+// `auto_minute` (edited on the admin panel's Collection Race page). The row
+// fires every day at that server-local time -- the same clock the generic
+// `event_auto_schedule` table uses (`event_control::tick`). The table has no
+// weekday column, so "every day" is the only mode; twelve rows two hours apart
+// give twelve runs a day around the clock.
+//
+// Like the original C++ timer, a scheduled start is skipped while another
+// Collection Race is still running (it never replaces a running event), and when
+// two rows share the same minute the lowest `event_index` wins.
+
+/// Whether `def` is due at server-local `hour:minute` (all values validated).
+pub fn auto_start_due(def: &CrEventDef, hour: i32, minute: i32) -> bool {
+    def.auto_start
+        && (0..24).contains(&def.auto_hour)
+        && (0..60).contains(&def.auto_minute)
+        && def.auto_hour == hour
+        && def.auto_minute == minute
+        && def.event_time_mins > 0
+        && def
+            .proto_ids
+            .iter()
+            .zip(def.kill_counts.iter())
+            .any(|(&proto, &count)| proto != 0 && count != 0)
+}
+
+/// The event to start at `hour:minute`, if any (lowest event id on a tie).
+pub fn resolve_auto_start(defs: &[CrEventDef], hour: i32, minute: i32) -> Option<i16> {
+    defs.iter()
+        .filter(|def| auto_start_due(def, hour, minute))
+        .map(|def| def.event_id)
+        .min()
+}
+
+/// Last wall-clock minute (unix seconds / 60) the schedule was evaluated for.
+static LAST_AUTO_MINUTE: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(i64::MIN);
+
+/// Called from the one-second event tick; evaluates the schedule once per
+/// wall-clock minute and starts the due event through the same path as the
+/// admin panel / `+cropen` (`event_control::start("cr", <event index>)`).
+pub fn auto_start_tick(world: &Arc<WorldState>) {
+    use chrono::{Local, Timelike};
+    use std::sync::atomic::Ordering;
+
+    let now = Local::now();
+    let minute_key = now.timestamp() / 60;
+    if LAST_AUTO_MINUTE.swap(minute_key, Ordering::Relaxed) == minute_key {
+        return;
+    }
+
+    let defs: Vec<CrEventDef> = world
+        .collection_race_settings
+        .iter()
+        .map(|entry| entry.value().clone())
+        .collect();
+    let Some(event_id) = resolve_auto_start(&defs, now.hour() as i32, now.minute() as i32) else {
+        return;
+    };
+
+    if world.collection_race_event().read().is_active {
+        warn!(
+            "[CR] scheduled start of event {} skipped: another Collection Race is still running",
+            event_id
+        );
+        return;
+    }
+    let Some(pool) = world.db_pool().cloned() else {
+        return;
+    };
+
+    let world = world.clone();
+    tokio::spawn(async move {
+        match crate::event_control::start(&world, &pool, "cr", &event_id.to_string(), false).await {
+            Ok(text) => info!("[CR] scheduled start of event {}: {}", event_id, text),
+            Err(e) => warn!("[CR] scheduled start of event {} failed: {}", event_id, e),
+        }
+    });
+}
+
 /// Broadcast a packet to all eligible players (in level range).
 fn broadcast_to_eligible(world: &WorldState, pkt: &Packet, ev: &CollectionRaceEvent) {
     let arc_pkt = Arc::new(pkt.clone());
@@ -1782,6 +1866,194 @@ mod tests {
         assert_eq!(event.user_limit, 0);
         assert_eq!(event.event_end_time, 0);
         assert_eq!(event.zone_id, 0);
+    }
+
+    // ── Automatic start schedule / timer ───────────────────────────────────
+
+    fn scheduled_def(event_id: i16, hour: i32, minute: i32) -> CrEventDef {
+        CrEventDef {
+            event_id,
+            event_name: format!("CR {event_id}"),
+            proto_ids: [CR_PK_BOT_KILL_PROTO_ID, 0, 0],
+            kill_counts: [30, 0, 0],
+            min_level: 1,
+            max_level: 83,
+            zone_id: 71,
+            event_time_mins: 90,
+            user_limit: 5000,
+            event_list_status: 1,
+            auto_start: true,
+            auto_hour: hour,
+            auto_minute: minute,
+        }
+    }
+
+    /// The live schedule: twelve events, one every two hours at HH:15.
+    fn twelve_a_day() -> Vec<CrEventDef> {
+        (1..=12)
+            .map(|i| scheduled_def(i as i16, (i - 1) * 2, 15))
+            .collect()
+    }
+
+    #[test]
+    fn test_auto_start_due_matches_exact_minute_only() {
+        let def = scheduled_def(3, 4, 15);
+        assert!(auto_start_due(&def, 4, 15));
+        assert!(!auto_start_due(&def, 4, 14));
+        assert!(!auto_start_due(&def, 4, 16));
+        assert!(!auto_start_due(&def, 5, 15));
+        assert!(!auto_start_due(&def, 16, 15));
+    }
+
+    #[test]
+    fn test_auto_start_due_requires_flag_and_valid_fields() {
+        let mut def = scheduled_def(1, 0, 15);
+        def.auto_start = false;
+        assert!(!auto_start_due(&def, 0, 15));
+
+        // -1 is the "unset" sentinel the C++ port used; out-of-range values never fire
+        for (h, m) in [(-1, 15), (24, 15), (0, -1), (0, 60)] {
+            let d = scheduled_def(1, h, m);
+            assert!(!auto_start_due(&d, h, m), "{h}:{m} must never fire");
+        }
+
+        // an event with no time or no kill target would start and end instantly
+        let mut no_time = scheduled_def(1, 0, 15);
+        no_time.event_time_mins = 0;
+        assert!(!auto_start_due(&no_time, 0, 15));
+        let mut no_target = scheduled_def(1, 0, 15);
+        no_target.kill_counts = [0, 0, 0];
+        assert!(!auto_start_due(&no_target, 0, 15));
+        let mut no_proto = scheduled_def(1, 0, 15);
+        no_proto.proto_ids = [0, 0, 0];
+        assert!(!auto_start_due(&no_proto, 0, 15));
+    }
+
+    #[test]
+    fn test_resolve_auto_start_lowest_event_id_wins_on_tie() {
+        let defs = vec![
+            scheduled_def(9, 8, 15),
+            scheduled_def(4, 8, 15),
+            scheduled_def(6, 8, 15),
+        ];
+        assert_eq!(resolve_auto_start(&defs, 8, 15), Some(4));
+        assert_eq!(resolve_auto_start(&defs, 8, 16), None);
+        assert_eq!(resolve_auto_start(&[], 8, 15), None);
+    }
+
+    #[test]
+    fn test_twelve_events_fire_every_two_hours_around_the_clock() {
+        let defs = twelve_a_day();
+        let mut fired: Vec<(i32, i32, i16)> = Vec::new();
+        for hour in 0..24 {
+            for minute in 0..60 {
+                if let Some(id) = resolve_auto_start(&defs, hour, minute) {
+                    fired.push((hour, minute, id));
+                }
+            }
+        }
+        assert_eq!(fired.len(), 12, "exactly 12 runs a day");
+        for (n, &(hour, minute, id)) in fired.iter().enumerate() {
+            assert_eq!(hour, n as i32 * 2, "run {n} starts on an even hour");
+            assert_eq!(minute, 15);
+            assert_eq!(id as usize, n + 1, "event ids rotate in order");
+        }
+        // gaps of exactly two hours, including the wrap 22:15 -> 00:15
+        for pair in fired.windows(2) {
+            assert_eq!(pair[1].0 - pair[0].0, 2);
+        }
+        assert_eq!((fired[0].0 + 24) - fired[11].0, 2);
+    }
+
+    #[test]
+    fn test_scheduled_event_fits_inside_the_two_hour_slot() {
+        // 90-minute events leave a 30-minute gap; the next start therefore never
+        // meets a still-running event.
+        let defs = twelve_a_day();
+        assert!(defs.iter().all(|d| d.event_time_mins < 120));
+    }
+
+    #[test]
+    fn test_migration_schedule_matches_the_twelve_a_day_pattern() {
+        // The data migration is the source of truth for the live schedule: it must
+        // list events 1..=12 on 00:15, 02:15 ... 22:15.
+        let sql = include_str!(
+            "../../../../migrations/20261018140000_collection_race_schedule_rewards.sql"
+        );
+        let start = sql
+            .find("-- SCHEDULE-BEGIN")
+            .expect("schedule marker (begin)");
+        let end = sql.find("-- SCHEDULE-END").expect("schedule marker (end)");
+        let mut slots: Vec<(i32, i32)> = Vec::new();
+        for line in sql[start..end].lines() {
+            let t = line.trim().trim_end_matches(',');
+            if let Some(rest) = t.strip_prefix('(') {
+                let nums: Vec<i32> = rest
+                    .trim_end_matches(')')
+                    .split(',')
+                    .filter_map(|x| x.trim().parse().ok())
+                    .collect();
+                if nums.len() == 3 {
+                    slots.push((nums[0], nums[1] * 100 + nums[2]));
+                }
+            }
+        }
+        assert_eq!(slots.len(), 12);
+        for (i, &(event, hhmm)) in slots.iter().enumerate() {
+            assert_eq!(event, i as i32 + 1);
+            assert_eq!(hhmm, i as i32 * 200 + 15, "event {event} at HH:15 on an even hour");
+        }
+    }
+
+    #[test]
+    fn test_tick_timer_ends_the_event_exactly_when_time_is_up() {
+        let world = crate::world::WorldState::new();
+        let cr = new_collection_race_event();
+        let def = scheduled_def(1, 0, 15);
+        assert!(start_event(&cr, &def, &[], 1, 10_000));
+        assert_eq!(cr.read().event_end_time, 10_000 + 90 * 60);
+
+        // one second before the end: still running
+        tick_timer(&world, &cr, 10_000 + 90 * 60 - 1);
+        assert!(cr.read().is_active);
+
+        // at the end: closed and reset
+        tick_timer(&world, &cr, 10_000 + 90 * 60);
+        assert!(!cr.read().is_active);
+        assert_eq!(cr.read().event_end_time, 0);
+        // a closed event stays closed
+        tick_timer(&world, &cr, 10_000 + 90 * 60 + 5);
+        assert!(!cr.read().is_active);
+    }
+
+    #[test]
+    fn test_tick_timer_late_tick_still_closes() {
+        let world = crate::world::WorldState::new();
+        let cr = new_collection_race_event();
+        assert!(start_event(&cr, &scheduled_def(2, 2, 15), &[], 1, 50_000));
+        tick_timer(&world, &cr, 50_000 + 90 * 60 + 3600);
+        assert!(!cr.read().is_active);
+    }
+
+    #[test]
+    fn test_tick_timer_announcement_does_not_close() {
+        let world = crate::world::WorldState::new();
+        let cr = new_collection_race_event();
+        assert!(start_event(&cr, &scheduled_def(2, 2, 15), &[], 1, 50_000));
+        // 15 minutes before the end is only an announcement
+        tick_timer(&world, &cr, 50_000 + 90 * 60 - 900);
+        assert!(cr.read().is_active);
+    }
+
+    #[test]
+    fn test_start_event_rejects_oversized_rewards() {
+        let cr = new_collection_race_event();
+        let def = scheduled_def(1, 0, 15);
+        // box counts above 9999 and gold/exp above 9 999 999 are refused
+        assert!(!start_event(&cr, &def, &[(999_915_000, 10_000, 0, 100, 0)], 1, 1));
+        assert!(!start_event(&cr, &def, &[(ITEM_GOLD, 10_000_000, 0, 100, 0)], 1, 1));
+        assert!(!cr.read().is_active);
+        assert!(start_event(&cr, &def, &[(999_915_000, 2, 0, 60, 0)], 1, 1));
     }
 
     /// CR hide packet is same size as end packet (minimal 2-byte body).
