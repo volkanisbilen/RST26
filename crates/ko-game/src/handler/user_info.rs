@@ -53,6 +53,19 @@ fn build_user_list_entry(
     pkt
 }
 
+/// The 2625 client colors each row of the bottom-left list by the nation byte
+/// it receives, using fixed colors (1 = blue, 2 = red; the viewer's own name is
+/// yellow). To show same-nation players in blue and the opposing nation in red
+/// for every viewer, send a viewer-relative value instead of the real nation.
+/// (The client uses this byte for nothing but the row color.)
+fn list_color_nation(viewer_nation: u8, other_nation: u8) -> u8 {
+    if viewer_nation == other_nation {
+        1
+    } else {
+        2
+    }
+}
+
 fn world_coord_to_short(coord: f32) -> u16 {
     (coord * 10.0).round().clamp(0.0, u16::MAX as f32) as u16
 }
@@ -79,12 +92,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
             let world = session.world().clone();
             let sid = session.session_id();
-            let (pos, my_event_room, my_authority) = world
+            let (pos, my_event_room, my_authority, my_nation) = world
                 .with_session(sid, |h| {
                     (
                         h.position,
                         h.event_room,
                         h.character.as_ref().map(|c| c.authority),
+                        h.character.as_ref().map(|c| c.nation).unwrap_or(0),
                     )
                 })
                 .unwrap_or_default();
@@ -135,7 +149,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                         distance,
                         build_user_list_entry(
                             &other_char.name,
-                            other_char.nation,
+                            list_color_nation(my_nation, other_char.nation),
                             other_pos.x,
                             other_pos.z,
                             other_char.knights_id,
@@ -154,7 +168,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                         distance,
                         build_user_list_entry(
                             &bot.name,
-                            bot.nation,
+                            list_color_nation(my_nation, bot.nation),
                             bot.x,
                             bot.z,
                             bot.knights_id,
@@ -417,6 +431,15 @@ pub fn build_region_delete_packet(name: &str) -> Packet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_color_nation_is_viewer_relative() {
+        // same nation -> 1 (client draws blue), enemy -> 2 (client draws red)
+        assert_eq!(list_color_nation(1, 1), 1);
+        assert_eq!(list_color_nation(2, 2), 1);
+        assert_eq!(list_color_nation(1, 2), 2);
+        assert_eq!(list_color_nation(2, 1), 2);
+    }
     use ko_protocol::{Opcode, Packet, PacketReader};
 
     #[test]
