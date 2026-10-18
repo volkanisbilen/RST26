@@ -63,11 +63,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                     ch.knights
                 );
                 {
-            let mut r = Packet::new(Opcode::WizDelChar as u8);
-            r.write_u8(0);
-            r.write_u8(0xFF_u8);
-            session.send_packet(&r).await?;
-        }
+                    let mut r = Packet::new(Opcode::WizDelChar as u8);
+                    r.write_u8(0);
+                    r.write_u8(0xFF_u8);
+                    session.send_packet(&r).await?;
+                }
                 return Ok(());
             }
         }
@@ -149,21 +149,19 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             );
         }
         Ok(false) => {
-            {
             let mut r = Packet::new(Opcode::WizDelChar as u8);
             r.write_u8(0);
             r.write_u8(0xFF_u8);
             session.send_packet(&r).await?;
-        }
         }
         Err(e) => {
             tracing::error!("[{}] DB error deleting character: {}", session.addr(), e);
             {
-            let mut r = Packet::new(Opcode::WizDelChar as u8);
-            r.write_u8(0);
-            r.write_u8(0xFF_u8);
-            session.send_packet(&r).await?;
-        }
+                let mut r = Packet::new(Opcode::WizDelChar as u8);
+                r.write_u8(0);
+                r.write_u8(0xFF_u8);
+                session.send_packet(&r).await?;
+            }
         }
     }
 
@@ -245,11 +243,13 @@ mod tests {
     #[test]
     fn test_delchar_response_data_length() {
         let mut success = Packet::new(Opcode::WizDelChar as u8);
-        success.write_u8(1); success.write_u8(0);
+        success.write_u8(1);
+        success.write_u8(0);
         assert_eq!(success.data.len(), 2);
 
         let mut fail = Packet::new(Opcode::WizDelChar as u8);
-        fail.write_u8(0); fail.write_u8(0xFF);
+        fail.write_u8(0);
+        fail.write_u8(0xFF);
         assert_eq!(fail.data.len(), 2);
     }
 
@@ -258,7 +258,8 @@ mod tests {
     fn test_delchar_all_valid_slots() {
         for idx in 0..=2u8 {
             let mut pkt = Packet::new(Opcode::WizDelChar as u8);
-            pkt.write_u8(1); pkt.write_u8(idx);
+            pkt.write_u8(1);
+            pkt.write_u8(idx);
             assert_eq!(pkt.data[1], idx);
         }
     }

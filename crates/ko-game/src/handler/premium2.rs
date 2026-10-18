@@ -104,10 +104,7 @@ pub fn build_msg_2() -> Packet {
 /// Stores the pending tax in session state and sends the init panel.
 /// When the player clicks "OK", the C2S handler deducts gold.
 /// - `tax_amount`: Gold to charge (displayed in text_id 10228)
-pub async fn initiate_gate_tax(
-    session: &mut ClientSession,
-    tax_amount: u32,
-) -> anyhow::Result<()> {
+pub async fn initiate_gate_tax(session: &mut ClientSession, tax_amount: u32) -> anyhow::Result<()> {
     if tax_amount == 0 {
         return Ok(());
     }
@@ -157,9 +154,7 @@ async fn handle_confirm(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
 
     // Read pending tax, then clear it.
-    let tax = world
-        .with_session(sid, |h| h.pending_gate_tax)
-        .unwrap_or(0);
+    let tax = world.with_session(sid, |h| h.pending_gate_tax).unwrap_or(0);
     if tax > 0 {
         world.update_session(sid, |h| {
             h.pending_gate_tax = 0;
@@ -168,15 +163,15 @@ async fn handle_confirm(session: &mut ClientSession) -> anyhow::Result<()> {
 
     if tax == 0 {
         // No pending tax — send error message (string 10235).
-        debug!("[{}] WIZ_PREMIUM2 confirm with no pending tax", session.addr());
+        debug!(
+            "[{}] WIZ_PREMIUM2 confirm with no pending tax",
+            session.addr()
+        );
         return session.send_packet(&build_msg_1()).await;
     }
 
     // Check if player has enough gold.
-    let gold = world
-        .get_character_info(sid)
-        .map(|ch| ch.gold)
-        .unwrap_or(0);
+    let gold = world.get_character_info(sid).map(|ch| ch.gold).unwrap_or(0);
 
     if gold < tax {
         // Not enough gold — send error message (string 10229).
@@ -196,10 +191,7 @@ async fn handle_confirm(session: &mut ClientSession) -> anyhow::Result<()> {
         }
     });
 
-    let new_gold = world
-        .get_character_info(sid)
-        .map(|ch| ch.gold)
-        .unwrap_or(0);
+    let new_gold = world.get_character_info(sid).map(|ch| ch.gold).unwrap_or(0);
 
     // Send gold change to client.
     let mut gold_pkt = Packet::new(Opcode::WizGoldChange as u8);

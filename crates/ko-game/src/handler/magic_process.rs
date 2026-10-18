@@ -25,15 +25,15 @@ use crate::world::combat::CombatSnapshot;
 
 use crate::buff_constants::*;
 use crate::handler::dead;
-use crate::handler::durability::{WORE_TYPE_ATTACK, WORE_TYPE_DEFENCE};
+use crate::handler::durability::{WORE_TYPE_ATTACK, WORE_TYPE_DEFENCE, WORE_TYPE_REPAIR_ALL};
 use crate::handler::stealth;
 use crate::session::{ClientSession, SessionState};
 use crate::systems::buff_tick::build_buff_expired_packet;
 #[cfg(test)]
 use crate::world::NATION_ELMORAD;
 use crate::world::{
-    ActiveBuff, CharacterInfo, NpcBuffEntry, WorldState, NATION_KARUS, USER_DEAD, USER_SITDOWN,
-    ZONE_BATTLE2, ZONE_BATTLE3, ZONE_CHAOS_DUNGEON, ZONE_DELOS, ZONE_DUNGEON_DEFENCE,
+    ActiveBuff, CharacterInfo, NpcBuffEntry, Position, WorldState, NATION_KARUS, USER_DEAD,
+    USER_SITDOWN, ZONE_BATTLE2, ZONE_BATTLE3, ZONE_CHAOS_DUNGEON, ZONE_DELOS, ZONE_DUNGEON_DEFENCE,
     ZONE_FORGOTTEN_TEMPLE, ZONE_KNIGHT_ROYALE, ZONE_SNOW_BATTLE, ZONE_UNDER_CASTLE,
 };
 use crate::zone::SessionId;
@@ -43,10 +43,11 @@ use crate::inventory_constants::{LEFTHAND, RIGHTHAND};
 use crate::magic_constants::{
     ABNORMAL_BLINKING, ABNORMAL_DWARF, ABNORMAL_GIANT, ABNORMAL_GIANT_TARGET, ABNORMAL_NORMAL,
     MAGIC_CANCEL, MAGIC_CANCEL2, MAGIC_CANCEL_TRANSFORMATION, MAGIC_CASTING,
-    MAGIC_DURATION_EXPIRED, MAGIC_EFFECTING, MAGIC_FAIL, MAGIC_FLYING, MAGIC_TYPE4_EXTEND,
-    MORAL_ALL, MORAL_AREA_ALL, MORAL_AREA_ENEMY, MORAL_AREA_FRIEND, MORAL_ENEMY,
-    MORAL_FRIEND_EXCEPTME, MORAL_FRIEND_WITHME, MORAL_PARTY, MORAL_PARTY_ALL, MORAL_SELF,
-    MORAL_SELF_AREA, SKILLMAGIC_FAIL_ATTACKZERO, SKILLMAGIC_FAIL_NOEFFECT,
+    MAGIC_DURATION_EXPIRED, MAGIC_EFFECTING, MAGIC_FAIL, MAGIC_FLYING, MAGIC_TRANSFORM_LIST,
+    MAGIC_TYPE4_EXTEND, MORAL_ALL, MORAL_AREA_ALL, MORAL_AREA_ENEMY, MORAL_AREA_FRIEND,
+    MORAL_ENEMY, MORAL_FRIEND_EXCEPTME, MORAL_FRIEND_WITHME, MORAL_PARTY, MORAL_PARTY_ALL,
+    MORAL_SELF, MORAL_SELF_AREA, SKILLMAGIC_FAIL_ATTACKZERO, SKILLMAGIC_FAIL_NOEFFECT,
+    USER_STATUS_DOT, USER_STATUS_POISON, USER_STATUS_SPEED,
 };
 use crate::npc_type_constants::{
     NPC_BIFROST_MONUMENT, NPC_BORDER_MONUMENT, NPC_CLAN_WAR_MONUMENT, NPC_DESTROYED_ARTIFACT,
@@ -54,10 +55,15 @@ use crate::npc_type_constants::{
     NPC_OBJECT_FLAG, NPC_PARTNER_TYPE, NPC_PHOENIX_GATE, NPC_PRISON, NPC_PVP_MONUMENT, NPC_REFUGEE,
     NPC_SOCCER_BAAL, NPC_SPECIAL_GATE, NPC_TREE, NPC_VICTORY_GATE,
 };
-use crate::state_change_constants::{STATE_CHANGE_ABNORMAL, STATE_CHANGE_WEAPONS_DISABLED};
+use crate::state_change_constants::{
+    STATE_CHANGE_ABNORMAL, STATE_CHANGE_TRANSFORMATION, STATE_CHANGE_WEAPONS_DISABLED,
+};
 
 /// Snow Battle event snowball skill — only this skill is allowed during Snow Battle.
 const SNOW_EVENT_SKILL: u32 = 490077;
+
+/// GM test damage override for direct skill hits.
+const GM_FIXED_DAMAGE: i16 = 30000;
 
 use crate::npc::NPC_BAND;
 
@@ -68,6 +74,7 @@ use crate::magic_constants::{TRANSFORMATION_MONSTER, TRANSFORMATION_NPC, TRANSFO
 /// Parsed WIZ_MAGIC_PROCESS packet — mirrors `MagicInstance`.
 /// C++ stores caster/target as `int32` — we must preserve the full 32-bit values
 /// to avoid truncation when broadcasting back to clients.
+#[derive(Clone, Copy)]
 struct MagicInstance {
     #[allow(dead_code)]
     opcode: u8,
@@ -98,6 +105,38 @@ impl MagicInstance {
     }
 }
 
+fn gm_fixed_skill_damage(
+    world: &WorldState,
+    caster_sid: SessionId,
+    skill_id: u32,
+    damage: i16,
+) -> i16 {
+    // Type 3 is the authoritative damage path for mage spells.  Keeping the
+    // historical GM 30k override here made every mage spell ignore the TBL
+    // damage and resistance data, which also made live balancing impossible.
+    // Physical/legacy GM test skills retain their existing override.
+    let is_type3 = world
+        .get_magic(skill_id as i32)
+        .is_some_and(|skill| skill.type1 == Some(3) || skill.type2 == Some(3));
+    if is_type3 {
+        return damage;
+    }
+    if world
+        .get_character_info(caster_sid)
+        .is_some_and(|ch| ch.authority == 0)
+    {
+        GM_FIXED_DAMAGE
+    } else {
+        damage
+    }
+}
+
+/// Skill IDs for the "Magic Hammer" / "Genie Hammer" repair-all consumables.
+/// Their `magic` rows are mis-typed as Type3 (damage) in the item data, with
+/// no connection to durability — handled directly in `handle()` instead of
+/// through the Type dispatch.
+const DURABILITY_REPAIR_SKILLS: [u32; 6] = [490202, 490153, 490155, 500100, 492082, 492092];
+
 // ── Main handler ──────────────────────────────────────────────────────────
 
 /// Handle WIZ_MAGIC_PROCESS (0x31) from the client.
@@ -124,9 +163,39 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         *d = reader.read_u32().unwrap_or(0) as i32;
     }
 
+    // v2615 sends transformation cancellation as a one-byte sub-packet.
+    // Handle it before skill/caster validation because those fields are absent.
+    if b_opcode == MAGIC_CANCEL_TRANSFORMATION {
+        cancel_transformation(&world, sid);
+        return Ok(());
+    }
+
     // Pet summon skill: Type 9 state_change=8 is not stealth.
     // Route it to the runtime pet NPC spawn path.
     if skill_id == 500117 && b_opcode == MAGIC_EFFECTING {
+        tracing::info!("[sid={}] PET_SUMMON skill 500117 received, routing to pet summon", sid);
+        let summon_skill = world.get_magic(500117);
+
+        // The summon item (use_item of the skill) is required and is spent when a familiar
+        // actually appears; moving an already summoned pet next to the owner costs nothing.
+        if let Some(skill) = summon_skill.as_ref() {
+            let item_id = resolve_consume_item(skill);
+            if item_id != 0
+                && !NO_CONSUME_ITEMS.contains(&item_id)
+                && !world.check_exist_item(sid, item_id, 1)
+            {
+                world.send_to_session_owned(
+                    sid,
+                    build_skill_failed_packet(skill_id, caster_id_raw, target_id_raw, &s_data),
+                );
+                return Ok(());
+            }
+        }
+
+        let runtime_before = world
+            .with_session(sid, |h| h.pet_data.as_ref().is_some_and(|p| p.nid != 0))
+            .unwrap_or(false);
+
         let empty_data: [u8; 0] = [];
         let mut pet_reader = PacketReader::new(&empty_data);
 
@@ -137,6 +206,47 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         )
         .await?;
 
+        let runtime_after = world
+            .with_session(sid, |h| h.pet_data.as_ref().is_some_and(|p| p.nid != 0))
+            .unwrap_or(false);
+        if !runtime_before && runtime_after {
+            if let Some(skill) = summon_skill.as_ref() {
+                consume_item(&world, sid, skill);
+            }
+        }
+
+        return Ok(());
+    }
+
+    // Mirrors the PET_SUMMON special-case above (see DURABILITY_REPAIR_SKILLS doc).
+    if DURABILITY_REPAIR_SKILLS.contains(&skill_id) && b_opcode == MAGIC_EFFECTING {
+        let Some(skill) = world.get_magic(skill_id as i32) else {
+            return Ok(());
+        };
+        let item_id = resolve_consume_item(&skill);
+        if item_id != 0
+            && !NO_CONSUME_ITEMS.contains(&item_id)
+            && !world.check_exist_item(sid, item_id, 1)
+        {
+            world.send_to_session_owned(
+                sid,
+                build_skill_failed_packet(skill_id, caster_id_raw, target_id_raw, &s_data),
+            );
+            return Ok(());
+        }
+
+        world.item_wore_out(sid, WORE_TYPE_REPAIR_ALL, i32::MAX);
+        consume_item(&world, sid, &skill);
+
+        let mut ok_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        ok_pkt.write_u8(MAGIC_EFFECTING);
+        ok_pkt.write_u32(skill_id);
+        ok_pkt.write_u32(caster_id_raw as u32);
+        ok_pkt.write_u32(target_id_raw as u32);
+        for d in &s_data {
+            ok_pkt.write_u32(*d as u32);
+        }
+        world.send_to_session_owned(sid, ok_pkt);
         return Ok(());
     }
 
@@ -162,7 +272,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // v2600: target_id is u32 (NOT truncated to i16 like old C++ server).
     // PCAP verified: NPC target IDs like 49886 exceed i16 range.
     // -1 (no target) is sent as 0xFFFFFFFF which maps to -1 as i32.
-    let target_id = target_id_raw;
+    let mut target_id = target_id_raw;
 
     // ── Special skill target validation ──────────────────────────────
     // Skills 109035/110035/209035/210035 must have target=-1 (no target).
@@ -186,6 +296,26 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             return Ok(());
         }
     };
+    let is_unlocked_manes_magic = world
+        .manes_survival_manager
+        .has_unlocked_magic(sid, skill_id);
+    let is_manes_offensive_magic = is_unlocked_manes_magic
+        && matches!(
+            skill.moral.unwrap_or(0),
+            MORAL_ENEMY | MORAL_AREA_ENEMY | MORAL_ALL | MORAL_AREA_ALL
+        );
+
+    // Ground-target AOE packets from v2615 may encode "no entity target" as
+    // 0 instead of -1.  Entity validation below would otherwise interpret 0
+    // as a player session and reject Inferno/Nova before Type3 execution.
+    if target_id == 0
+        && matches!(
+            skill.moral.unwrap_or(0),
+            MORAL_AREA_ENEMY | MORAL_AREA_FRIEND | MORAL_AREA_ALL
+        )
+    {
+        target_id = -1;
+    }
 
     let mut instance = MagicInstance {
         opcode: b_opcode,
@@ -418,6 +548,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Applies to all opcodes EXCEPT: TYPE4_EXTEND, CANCEL, CANCEL_TRANSFORMATION, FAIL.
     // Type-9 skills (stealth) are also excluded per C++ (bType[0] != 9).
     let skill_type = skill.type1.unwrap_or(0) as u8;
+    let is_scroll_buff = matches!(skill.item_group, Some(9 | 255))
+        && skill_type == 4
+        && skill.use_item.unwrap_or(0) > 0;
     let (has_instant_cast, on_cooldown) = world
         .with_session(sid, |h| {
             let cd = h
@@ -429,7 +562,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         })
         .unwrap_or((false, false));
     if skill_type != 9
-        && !has_instant_cast
+        && (!has_instant_cast || is_manes_offensive_magic || is_scroll_buff)
         && b_opcode != MAGIC_TYPE4_EXTEND
         && b_opcode != MAGIC_CANCEL
         && b_opcode != MAGIC_CANCEL2
@@ -452,7 +585,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         let type2 = skill.type2.unwrap_or(0) as u8;
         let item_group = skill.item_group.unwrap_or(0) as u8;
         let valid_type = matches!(type1, 1 | 3 | 4 | 5 | 6 | 7);
-        if valid_type && skill_id < 400000 && item_group != 255 && b_opcode != MAGIC_FAIL {
+        if valid_type
+            && (skill_id < 400000 || is_unlocked_manes_magic)
+            && item_group != 255
+            && b_opcode != MAGIC_FAIL
+        {
             // C++ MagicInstance.cpp:1744-1747,1980 — existspeed bypass for bType[0] only
             // pType4 is only set when bType[0]==4 && bType[1]==0; otherwise nullptr.
             let existspeed = b_opcode == MAGIC_TYPE4_EXTEND
@@ -487,6 +624,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         && b_opcode != MAGIC_CANCEL_TRANSFORMATION
         && skill_id < 300000
         && caster.nation != (skill_id / 100000) as u8
+        && !is_unlocked_manes_magic
     {
         let fail_pkt = instance.build_fail_packet();
         world.send_to_session_owned(sid, fail_pkt);
@@ -519,7 +657,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     {
         let s_skill = skill.skill.unwrap_or(0);
         let iclass = s_skill / 10;
-        if s_skill != 0 && iclass != 0 && !check_skill_class(iclass, caster.class) {
+        if s_skill != 0
+            && iclass != 0
+            && !check_skill_class(iclass, caster.class)
+            && !is_unlocked_manes_magic
+        {
             let fail_pkt = instance.build_fail_packet();
             world.send_to_session_owned(sid, fail_pkt);
             return Ok(());
@@ -535,7 +677,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     if instance.target_id != -1 {
         if (instance.target_id as u32) >= NPC_BAND {
             let npc_id = instance.target_id as u32;
-            if world.is_npc_dead(npc_id) {
+            // Runtime bots are visible as user models but deliberately take
+            // the NPC combat path. They have no entry in `npc_hp`, where a
+            // missing entry means dead; resolve their own live state first.
+            let target_is_dead = world
+                .get_bot(npc_id)
+                .map(|bot| bot.hp <= 0 || bot.presence == crate::world::BotPresence::Dead)
+                .unwrap_or_else(|| world.is_npc_dead(npc_id));
+            if target_is_dead {
                 return Ok(());
             }
         } else {
@@ -558,7 +707,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             let npc_id = instance.target_id as u32;
             if let Some(npc) = world.get_npc_instance(npc_id) {
                 if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-                    if tmpl.group == 3 {
+                    // Runtime event NPCs may override their template nation.
+                    // Monster Stone support NPCs are sent as neutral nation 3
+                    // without mutating their global map templates.
+                    if tmpl.group == 3 || npc.nation == 3 {
                         let fail_pkt = instance.build_fail_packet();
                         world.send_to_session_owned(sid, fail_pkt);
                         return Ok(());
@@ -686,7 +838,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // Type2 skills consume arrows (bNeedArrow count, or 1 for throwing knives).
             // If the skill has a use_item (arrow/knife), check inventory and consume.
             let use_item = skill.use_item.unwrap_or(0) as u32;
-            if use_item != 0 {
+            if use_item != 0 && !is_unlocked_manes_magic {
                 if let Some(type2) = world.get_magic_type2(skill_id as i32) {
                     let mut count = type2.need_arrow.unwrap_or(0) as u16;
                     // Throwing knives: NeedArrow=0 means consume 1
@@ -726,6 +878,31 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         MAGIC_EFFECTING => {
             // Phase 3: Execute the actual skill effect
 
+            // v2615 transformation-selection items first request the client list.
+            // These rows use type1=0, type2!=0 and a non-zero item ID.
+            if skill.type1.unwrap_or(0) == 0
+                && skill.type2.unwrap_or(0) != 0
+                && skill.use_item.unwrap_or(0) != 0
+                && !matches!(caster_pos.zone_id, 71..=73)
+            {
+                let required_item = skill.use_item.unwrap_or(0) as u32;
+                if world.check_exist_item(sid, required_item, 1) {
+                    let mut list_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+                    list_pkt.write_u8(MAGIC_TRANSFORM_LIST);
+                    list_pkt.write_u32(skill_id);
+                    world.send_to_session_owned(sid, list_pkt);
+                    tracing::info!(
+                        "[sid={}] MagicProcess: opened transformation list skill={} item={}",
+                        sid,
+                        skill_id,
+                        required_item,
+                    );
+                } else {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                }
+                return Ok(());
+            }
+
             // ── Cast position validation ──────────────────────────────
             // If the skill has NO flying effect, validate position on EFFECTING phase.
             if skill.flying_effect.unwrap_or(0) == 0 {
@@ -740,7 +917,39 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 }
             }
 
+            // MANES_MAGIC contains several offensive rows with zero/very short
+            // recast values because the original Survival runtime supplies its
+            // own gate. Keep a 900 ms minimum gap between casts. Event skills never
+            // miss: the table's success rate (30 % for the mage skills) made most
+            // casts fail with "Missed".
+            if is_manes_offensive_magic {
+                const MANES_MIN_RECAST_MS: u64 = 900;
+                let ready_again = std::time::Instant::now()
+                    + std::time::Duration::from_millis(MANES_MIN_RECAST_MS);
+                world.update_session(sid, |h| {
+                    let slot = h.skill_cooldowns.entry(skill_id).or_insert(ready_again);
+                    if *slot < ready_again {
+                        *slot = ready_again;
+                    }
+                });
+            }
+
             // Check mana for non-type2 skills (type2 already deducted in FLYING)
+            if skill_type == 8
+                && b_opcode == MAGIC_EFFECTING
+                && world.get_magic_type8(skill.magic_num).is_some_and(|t8| {
+                    (t8.warp_type == 25
+                        && type8_warp25_destination(&world, sid, &instance, &skill).is_none())
+                        || (t8.warp_type == 27
+                            && type8_warp27_destination(&world, sid, &instance, &skill).is_none())
+                        || (t8.warp_type == 12
+                            && type8_warp12_target(&world, sid, &instance, &skill).is_none())
+                })
+            {
+                world.send_to_session_owned(sid, instance.build_fail_packet());
+                return Ok(());
+            }
+
             if skill_type != 2
                 && !check_and_deduct_mana(&world, sid, &caster, &skill, instance.target_id)
             {
@@ -774,7 +983,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // Before executing the skill, verify the player has the required
             // consumable item. Type 2 (archer) and type 6 skills skip this.
             // Arrow items (391010000) are already consumed in MAGIC_FLYING.
-            if skill_type != 2 && skill_type != 6 {
+            if skill_type != 2 && skill_type != 6 && !is_unlocked_manes_magic {
                 let use_item_pre = skill.use_item.unwrap_or(0) as u32;
                 if use_item_pre != 0 && use_item_pre != 391010000 {
                     let consume_id = resolve_consume_item(&skill);
@@ -789,23 +998,117 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 }
             }
 
+            // Dual Recovery Potion is a custom item row whose client-side
+            // animation can succeed even when a server data-table profile is
+            // incomplete. Resolve it by either its magic ID or required item
+            // ID, then apply the exact HP/MP amounts and consume the item in
+            // this authoritative EFFECTING phase.
+            let dual_potion_item = skill.use_item.unwrap_or(0) as u32;
+            if b_opcode == MAGIC_EFFECTING
+                && skill.item_group.unwrap_or(0) == 9
+                && (matches!(skill.magic_num, 811_182 | 811_183)
+                    || matches!(dual_potion_item, 811_182_000 | 811_183_000))
+            {
+                let potion_id = if matches!(dual_potion_item, 811_182_000 | 811_183_000) {
+                    dual_potion_item
+                } else if skill.magic_num == 811_183 {
+                    811_183_000
+                } else {
+                    811_182_000
+                };
+                if !world.check_exist_item(sid, potion_id, 1) {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                    return Ok(());
+                }
+
+                const DUAL_POTION_REUSE_MS: u128 = 2400;
+                if world
+                    .with_session(sid, |h| {
+                        h.last_potion_time.elapsed().as_millis() < DUAL_POTION_REUSE_MS
+                    })
+                    .unwrap_or(false)
+                {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                    return Ok(());
+                }
+
+                let Some(before) = world.get_character_info(sid) else {
+                    return Ok(());
+                };
+                if !world.rob_item(sid, potion_id, 1) {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                    return Ok(());
+                }
+                world.update_session(sid, |h| h.last_potion_time = std::time::Instant::now());
+
+                let hp_gain = if world.is_undead(sid) { -720 } else { 720 };
+                let new_hp = (before.hp + hp_gain).clamp(0, before.max_hp);
+                let new_mp = if before.hp > 0 {
+                    (before.mp + 1920).min(before.max_mp)
+                } else {
+                    before.mp
+                };
+                world.update_character_hp(sid, new_hp);
+                world.update_character_mp(sid, new_mp);
+                world.send_to_session_owned(
+                    sid,
+                    crate::systems::regen::build_hp_change_packet(before.max_hp, new_hp),
+                );
+                world.send_to_session_owned(
+                    sid,
+                    crate::systems::regen::build_mp_change_packet(before.max_mp, new_mp),
+                );
+                crate::handler::party::broadcast_party_hp(&world, sid);
+                instance.data[1] = 1;
+                instance.data[3] = hp_gain as i32;
+                let effect = instance.build_packet(MAGIC_EFFECTING);
+                broadcast_to_caster_region(&world, sid, &effect);
+                send_target_hp_update(&world, sid, sid, 0);
+                tracing::info!(
+                    sid,
+                    potion_id,
+                    hp_gain = new_hp - before.hp,
+                    mp_gain = new_mp - before.mp,
+                    "Dual Recovery Potion applied and consumed"
+                );
+                return Ok(());
+            }
+
             // Execute the skill based on type
             if !execute_skill(&world, sid, &mut instance, &skill).await {
                 return Ok(());
             }
 
+            // Second effect of dual-type skills (damage + slow/stun, hit + DOT).
+            let secondary = secondary_skill_type(&world, &skill);
+            if secondary != 0 {
+                dispatch_skill_type(&world, sid, &mut instance, &skill, secondary).await;
+            }
+
             // ── Consume item after successful cast ──────────────────
             // Called for all non-type2 skills (type2 = heal/buff, no item consumed)
-            if skill_type != 2 {
+            if skill_type != 2 && !is_unlocked_manes_magic {
                 consume_item(&world, sid, &skill);
             }
 
             // ── Set cooldown after successful cast ──────────────────
             // Formula: expiry = UNIXTIME2 + (sReCastTime * 90)ms
             let recast_time = skill.recast_time.unwrap_or(0);
-            if recast_time > 0 && !has_instant_cast {
+            let configured_recast_ms = recast_time.max(0) as u64 * 90;
+            // Consumable buffs with a zero recast value can otherwise be
+            // replayed repeatedly by queued client packets (consuming several
+            // scrolls in one click). Keep a short server-side floor even for
+            // instant-cast characters.
+            let recast_ms = if is_scroll_buff {
+                configured_recast_ms.max(1000)
+            } else if is_manes_offensive_magic {
+                configured_recast_ms.max(900)
+            } else {
+                configured_recast_ms
+            };
+            if recast_ms > 0 && (!has_instant_cast || is_manes_offensive_magic || is_scroll_buff) {
                 let now = std::time::Instant::now();
-                let expiry = now + std::time::Duration::from_millis(recast_time as u64 * 90);
+                let expiry = now + std::time::Duration::from_millis(recast_ms);
                 world.update_session(sid, |h| {
                     h.skill_cooldowns.insert(skill_id, expiry);
                     // Periodic cleanup: remove expired entries to prevent unbounded growth
@@ -890,7 +1193,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                     let buff_type = t4.buff_type.unwrap_or(0);
                     // C++ checks: !isDebuff() — debuffs have buff_type in debuff range
                     // isDebuff() = buff_type between 100-200 (debuff range)
-                    let is_debuff = (100..=200).contains(&buff_type);
+                    let is_debuff = (100..=200).contains(&buff_type) && buff_type != super::slave_priest::SP_BUFF_TYPE;
                     if buff_type > 0 && !is_debuff {
                         // of lockable scrolls while debuffed on same slot
                         if skill_id > 500000
@@ -908,7 +1211,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                                 removed.is_buff,
                             );
                             let expired_pkt = build_buff_expired_packet(buff_type as u8);
-                            broadcast_to_caster_region(&world, sid, &expired_pkt);
+                            world.send_to_session_owned(sid, expired_pkt);
                             world.set_user_ability(sid);
                             world.send_item_move_refresh(sid);
                         }
@@ -919,15 +1222,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
             // Type6Cancel — cancel transformation
             if world.is_transformed(sid) && world.get_magic_type6(skill.magic_num).is_some() {
-                world.clear_transformation(sid);
-                // Send MAGIC_CANCEL_TRANSFORMATION to caster
-                let mut cancel_pkt = Packet::new(Opcode::WizMagicProcess as u8);
-                cancel_pkt.write_u8(MAGIC_CANCEL_TRANSFORMATION);
-                world.send_to_session_owned(sid, cancel_pkt);
-                world.set_user_ability(sid);
-                world.send_item_move_refresh(sid);
-                // Remove saved magic for the transform skill
-                world.remove_saved_magic(sid, skill_id);
+                cancel_transformation(&world, sid);
             }
 
             // Type9Cancel — cancel stealth/lupine
@@ -1024,6 +1319,46 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     }
 
     Ok(())
+}
+
+/// Cancel the active Type 6 transformation and fully restore the character.
+/// v2615 can request this without a skill ID in a one-byte packet.
+fn cancel_transformation(world: &WorldState, sid: SessionId) {
+    let transform_skill_id = world
+        .with_session(sid, |h| {
+            (h.transformation_type != 0).then_some(h.transform_skill_id)
+        })
+        .flatten();
+    let Some(transform_skill_id) = transform_skill_id else {
+        return;
+    };
+
+    world.clear_transformation(sid);
+
+    world.update_session(sid, |h| {
+        h.old_abnormal_type = h.abnormal_type;
+        h.abnormal_type = ABNORMAL_NORMAL;
+    });
+
+    let mut cancel_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+    cancel_pkt.write_u8(MAGIC_CANCEL_TRANSFORMATION);
+    world.send_to_session_owned(sid, cancel_pkt);
+
+    let mut state_pkt = Packet::new(Opcode::WizStateChange as u8);
+    state_pkt.write_u32(sid as u32);
+    state_pkt.write_u8(STATE_CHANGE_TRANSFORMATION);
+    state_pkt.write_u32(0);
+    broadcast_to_caster_region(world, sid, &state_pkt);
+
+    world.set_user_ability(sid);
+    world.send_item_move_refresh(sid);
+    world.remove_saved_magic(sid, transform_skill_id);
+
+    tracing::info!(
+        "[sid={}] MagicProcess: transformation cancelled skill={}",
+        sid,
+        transform_skill_id,
+    );
 }
 
 // ── Pre-instance skill failed packet ──────────────────────────────────────
@@ -1206,6 +1541,44 @@ async fn execute_skill(
         }
     }
 
+    dispatch_skill_type(world, caster_sid, instance, skill, skill_type).await
+}
+
+/// Second effect of a dual-type skill (C++ `ExecuteSkill(pSkill.bType[1])`), e.g. an
+/// attack that also slows (Type4) or poisons (Type3).
+///
+/// The seeded magic table stores that second type in `etc` (3 or 4) and leaves
+/// `type2` at 0, so `etc` is honoured only for attack skills (Type1/2/3) whose
+/// matching Type3/Type4 detail row exists.
+fn secondary_skill_type(world: &WorldState, skill: &MagicRow) -> u8 {
+    let primary = skill.type1.unwrap_or(0);
+    let explicit = skill.type2.unwrap_or(0);
+    if explicit != 0 {
+        return if matches!(explicit, 3 | 4) && explicit != primary {
+            explicit as u8
+        } else {
+            0
+        };
+    }
+    if !matches!(primary, 1..=3) {
+        return 0;
+    }
+    match skill.etc.unwrap_or(0) {
+        3 if primary != 3 && world.get_magic_type3(skill.magic_num).is_some() => 3,
+        4 if world.get_magic_type4(skill.magic_num).is_some() => 4,
+        // Beast Hiding style skills: attack plus a stealth effect.
+        9 if primary == 1 && world.get_magic_type9(skill.magic_num).is_some() => 9,
+        _ => 0,
+    }
+}
+
+async fn dispatch_skill_type(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &mut MagicInstance,
+    skill: &MagicRow,
+    skill_type: u8,
+) -> bool {
     match skill_type {
         1 => execute_type1(world, caster_sid, instance, skill).await,
         2 => execute_type2(world, caster_sid, instance, skill).await,
@@ -1269,7 +1642,7 @@ async fn execute_type1(
                 .and_then(|n| world.get_npc_template(n.proto_id, n.is_monster))
                 .map(|tmpl| {
                     // War buff: nation NPCs get AC × 1.2 during war (ChangeAbility).
-                    let raw_ac = world.get_npc_war_ac(&tmpl);
+                    let raw_ac = world.apply_npc_buff_ac(npc_id, world.get_npc_war_ac(&tmpl));
                     (raw_ac as f64 * world.get_mon_def_multiplier()) as i32
                 })
                 .unwrap_or(0);
@@ -1302,11 +1675,12 @@ async fn execute_type1(
         // Add skill's additional damage (if not blocked by block_physical)
         let add_damage = type1_data.add_damage.unwrap_or(0) as i16;
         let mut damage = base_melee.saturating_add(add_damage);
+        damage = scale_monster_damage(world, damage);
 
         // Apply iADPtoNPC modifier
         let adp_npc = type1_data.add_dmg_perc_to_npc.unwrap_or(0);
         if adp_npc != 0 {
-            damage = ((damage as i32 * adp_npc) / 100) as i16;
+            damage = ((damage as i32 * adp_npc) / 100).clamp(0, 32000) as i16;
         }
 
         let caster_zone = world
@@ -1327,6 +1701,15 @@ async fn execute_type1(
             0
         };
         apply_skill_damage_to_npc(world, caster_sid, npc_id, instance, damage, skill, 0).await;
+
+        // Direct physical skills used against bot entities follow the NPC HP
+        // path, but unlike player targets that path does not emit the finishing
+        // MAGIC_EFFECTING packet. Without it the 2625 client can show the cast
+        // animation while dropping the actual hit response (notably Hell Blade
+        // and Cry Echo/Battle Cry's linked attack). Complete the cast just as we
+        // do for player-target Type-1 skills.
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
         return true;
     }
 
@@ -1627,10 +2010,11 @@ async fn execute_type1_aoe(
         );
 
         // C++ line 3287-3288: if (!pTarget->m_bBlockPhysical) damage += sAdditionalDamage
+        // C++ Unit::GetDamage returns 0 for targets with a complete physical block.
         let mut damage = if !world.has_block_physical(target_sid) {
             base_damage.saturating_add(s_add_damage)
         } else {
-            base_damage
+            0
         };
 
         // C++ line 3290-3293: Chaos Dungeon fixed damage
@@ -1641,7 +2025,7 @@ async fn execute_type1_aoe(
                 100
             };
         }
-
+        damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
         if damage <= 0 {
             continue;
         }
@@ -1735,6 +2119,11 @@ async fn execute_type1_aoe(
     }
 
     // ── AOE NPC targets (event_room filtered) ────────────────────────
+    // Defer Manes level/vitals packets until the single AOE MAGIC_EFFECTING
+    // result has completed. Sending them inside the per-target loop interleaves
+    // WIZ_LEVEL_CHANGE/HP/MP with one unfinished area-skill transaction.
+    let mut manes_progress_changed = false;
+    let mut manes_dead_npcs = Vec::new();
     let nearby_npcs = world.get_nearby_npc_ids(
         caster_pos.zone_id,
         caster_pos.region_x,
@@ -1747,6 +2136,15 @@ async fn execute_type1_aoe(
             Some(n) => n,
             None => continue,
         };
+
+        if npc.zone_id == crate::systems::juraid::ZONE_JURAID
+            && crate::systems::juraid::is_juraid_monument(npc.proto_id)
+            && world
+                .get_character_info(caster_sid)
+                .is_none_or(|ch| ch.nation == crate::systems::juraid::monument_nation(npc.proto_id))
+        {
+            continue;
+        }
 
         if !npc.is_monster {
             continue;
@@ -1767,7 +2165,10 @@ async fn execute_type1_aoe(
         // Compute damage against NPC
         let npc_ac = world
             .get_npc_template(npc.proto_id, npc.is_monster)
-            .map(|tmpl| (tmpl.ac as f64 * world.get_mon_def_multiplier()) as i32)
+            .map(|tmpl| {
+                let raw_ac = world.apply_npc_buff_ac(npc_id, tmpl.ac as i32);
+                (raw_ac as f64 * world.get_mon_def_multiplier()) as i32
+            })
             .unwrap_or(0);
 
         let base_damage = compute_type1_hit_damage(
@@ -1783,6 +2184,7 @@ async fn execute_type1_aoe(
 
         // sAddDamage applies to NPCs as well (no block_physical check for NPCs in C++)
         let mut damage = base_damage.saturating_add(s_add_damage);
+        damage = scale_monster_damage(world, damage);
 
         // Chaos Dungeon fixed damage
         if caster_pos.zone_id == ZONE_CHAOS_DUNGEON {
@@ -1792,6 +2194,8 @@ async fn execute_type1_aoe(
                 100
             };
         }
+        damage = super::attack::scale_manes_magic_damage(world, caster_sid, &npc, damage);
+        damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
 
         if damage <= 0 {
             continue;
@@ -1803,26 +2207,87 @@ async fn execute_type1_aoe(
         world.record_npc_damage(npc_id, caster_sid, damage as i32);
 
         // Durability loss
-        world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, damage as i32);
+        if !super::attack::is_manes_survival_npc(&npc) {
+            world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, damage as i32);
+        }
 
         if new_hp > 0 {
             world.notify_npc_damaged(npc_id, caster_sid);
         } else if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-            super::attack::handle_npc_death(world, caster_sid, npc_id, &npc, &tmpl).await;
+            let is_manes = super::attack::is_manes_survival_npc(&npc);
+            super::attack::handle_npc_death(world, caster_sid, npc_id, &npc, &tmpl, is_manes).await;
+            if is_manes {
+                manes_dead_npcs.push(npc_id);
+            }
         }
 
         // Send HP bar update
         if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-            let mut hp_pkt = Packet::new(Opcode::WizTargetHp as u8);
-            hp_pkt.write_u32(npc_id);
-            hp_pkt.write_u8(0);
-            hp_pkt.write_u32(tmpl.max_hp);
-            hp_pkt.write_u32(new_hp.max(0) as u32);
-            hp_pkt.write_u32(-(damage as i32) as u32); // negative = damage dealt
-            hp_pkt.write_u32(0);
-            hp_pkt.write_u8(0);
+            let hp_pkt = super::target_hp::build_target_hp_packet(
+                npc_id,
+                0,
+                tmpl.max_hp,
+                new_hp.max(0) as u32,
+                -(damage as i32),
+                -(damage as i32),
+            );
             world.send_to_session_owned(caster_sid, hp_pkt);
+            if tmpl.s_sid == crate::systems::manes_survival::DARK_DRAGON_SID as u16 {
+                world.manes_survival_manager.broadcast_dark_dragon_status(
+                    world,
+                    npc.zone_id,
+                    crate::systems::manes_survival::DARK_DRAGON_UI_NAME,
+                    tmpl.max_hp,
+                    new_hp.max(0) as u32,
+                );
+            }
+            if new_hp <= 0 && super::attack::is_manes_survival_npc(&npc) {
+                manes_progress_changed = true;
+            }
         }
+    }
+
+    // PK bots are player-like entities stored separately from ordinary NPCs.
+    // Type-1 ground skills (including warrior Passion/AOE attacks) must include
+    // enemy bots in the same zone and range; route damage through the shared bot
+    // handler so HP, score, death and regeneration stay consistent.
+    for bot in world.get_bots_in_zone_live(caster_pos.zone_id) {
+        if !bot.is_alive() || bot.nation == caster.nation {
+            continue;
+        }
+
+        let dx = caster_pos.x - bot.x;
+        let dz = caster_pos.z - bot.z;
+        if dx * dx + dz * dz >= dist_range_sq {
+            continue;
+        }
+
+        let mut damage = compute_type1_hit_damage(
+            caster_total_hit,
+            0,
+            type1_data,
+            caster_hitrate,
+            1.0,
+            attack_amount,
+            player_attack_amount,
+            &mut rng,
+        )
+        .saturating_add(s_add_damage);
+
+        if caster_pos.zone_id == ZONE_CHAOS_DUNGEON {
+            damage = if instance.skill_id == 490226 {
+                1000
+            } else {
+                100
+            };
+        }
+        damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
+        if damage <= 0 {
+            continue;
+        }
+
+        any_hit = true;
+        apply_skill_damage_to_npc(world, caster_sid, bot.id, instance, damage, skill, 0).await;
     }
 
     // C++ line 3314: sData[3] — attack-zero indicator
@@ -1832,9 +2297,18 @@ async fn execute_type1_aoe(
         0
     };
 
-    // Broadcast effect packet once for the AOE
+    // Broadcast the one effect packet that completes the AOE transaction.
     let pkt = instance.build_packet(MAGIC_EFFECTING);
     broadcast_to_caster_region(world, caster_sid, &pkt);
+    for npc_id in manes_dead_npcs {
+        super::attack::broadcast_npc_death(world, caster_sid, npc_id);
+    }
+
+    // All killed targets have already contributed to the authoritative Manes
+    // progress. Synchronize the resulting level/vitals once, after 0x31.
+    if manes_progress_changed {
+        super::attack::flush_manes_progress(world, caster_sid);
+    }
 
     true
 }
@@ -1873,12 +2347,24 @@ async fn execute_type2(
             None => return false,
         };
 
+        // Archery (Type2) skills against NPCs had no range check at all, letting any
+        // such skill — including multi-arrow Multiple Shot / Arrow Shower — land from
+        // any distance. C++ MagicInstance.cpp:3122: total_range = (sAddRange * range /
+        // 100)^2, where `range` is the caster's equipped bow's own range for any skill
+        // with NeedArrow > 0 (sAddRange=100 for these, i.e. exactly the bow's range) —
+        // NOT the generic skill.range/is_staff_skill formula used elsewhere, which is
+        // what the first attempt at this used and was too strict.
+        if !check_type2_npc_range(world, caster_sid, npc_id, &type2_data, skill) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+
         let npc_ac = {
             let npc = world.get_npc_instance(npc_id);
             npc.and_then(|n| world.get_npc_template(n.proto_id, n.is_monster))
                 .map(|tmpl| {
                     // War buff: nation NPCs get AC × 1.2 during war (ChangeAbility).
-                    let raw_ac = world.get_npc_war_ac(&tmpl);
+                    let raw_ac = world.apply_npc_buff_ac(npc_id, world.get_npc_war_ac(&tmpl));
                     (raw_ac as f64 * world.get_mon_def_multiplier()) as i32
                 })
                 .unwrap_or(0)
@@ -1897,6 +2383,15 @@ async fn execute_type2(
             None => return false,
         };
         let mut rng = rand::rngs::StdRng::from_entropy();
+
+        // Multi-arrow skills (Multiple Shot/Arrow Shower) are multi-TARGET, not
+        // multi-hit-on-one-target: the client fires NeedArrow separate arrows, each
+        // potentially at a different nearby NPC, sending one EFFECTING call per arrow
+        // that actually connects (C++ MagicInstance.cpp:3029-3038 — "the client chooses
+        // the target(s) to be hit by the arrows"). This handler already runs once per
+        // such call with its own target_id, so a single hit here is correct; looping
+        // NeedArrow hits onto this one call's target multiplied damage on top of the
+        // client's own separate calls instead of spreading it across targets.
         let mut damage = compute_type2_hit_damage(
             t2_npc_snap.equipped_stats.total_hit,
             npc_ac,
@@ -1908,9 +2403,10 @@ async fn execute_type2(
             &mut rng,
         );
 
+        damage = scale_monster_damage(world, damage);
         let adp_npc = type2_data.add_dmg_perc_to_npc.unwrap_or(0);
         if adp_npc != 0 {
-            damage = ((damage as i32 * adp_npc as i32) / 100) as i16;
+            damage = ((damage as i32 * adp_npc as i32) / 100).clamp(0, 32000) as i16;
         }
         instance.data[3] = if damage == 0 {
             SKILLMAGIC_FAIL_ATTACKZERO
@@ -2040,6 +2536,207 @@ async fn execute_type2(
 
 // ── Type 3: Magic attack / heal / DOT ─────────────────────────────────────
 
+/// Resolve ground-target coordinates across the v2603 and v2615 layouts.
+///
+/// Older packets encode X/Z in tenths of a world unit.  The v2615 client can
+/// send the same fields as direct world units.  Both representations are
+/// unambiguous in normal play because the valid cast point is the candidate
+/// nearest to the caster.
+fn resolve_aoe_center(raw_x: i32, raw_z: i32, caster_x: f32, caster_z: f32) -> (f32, f32) {
+    if raw_x == 0 && raw_z == 0 {
+        return (caster_x, caster_z);
+    }
+
+    let direct = (
+        if raw_x == 0 { caster_x } else { raw_x as f32 },
+        if raw_z == 0 { caster_z } else { raw_z as f32 },
+    );
+    let tenths = (
+        if raw_x == 0 {
+            caster_x
+        } else {
+            raw_x as f32 / 10.0
+        },
+        if raw_z == 0 {
+            caster_z
+        } else {
+            raw_z as f32 / 10.0
+        },
+    );
+
+    let direct_dist = (direct.0 - caster_x).powi(2) + (direct.1 - caster_z).powi(2);
+    let tenths_dist = (tenths.0 - caster_x).powi(2) + (tenths.1 - caster_z).powi(2);
+
+    if direct_dist < tenths_dist {
+        direct
+    } else {
+        tenths
+    }
+}
+
+/// C++ `Unit::GetDamage` multiplies the damage dealt to monsters by `montakedamage`,
+/// for skills as well as normal attacks.
+fn scale_monster_damage(world: &WorldState, damage: i16) -> i16 {
+    if damage <= 0 {
+        return damage;
+    }
+    ((damage as f64 * world.get_mon_take_damage_multiplier()) as i32).clamp(0, 32000) as i16
+}
+
+/// Heal the caster by the HP a drain skill took (Blood Drain, Vampiric Touch, Thorns).
+fn drain_heal_caster(world: &WorldState, caster_sid: SessionId, amount: i16) {
+    if amount <= 0 {
+        return;
+    }
+    let Some(ch) = world.get_character_info(caster_sid) else {
+        return;
+    };
+    if ch.hp <= 0 || ch.res_hp_type == USER_DEAD {
+        return;
+    }
+    let new_hp = (ch.hp as i32 + amount as i32).min(ch.max_hp as i32) as i16;
+    world.update_character_hp(caster_sid, new_hp);
+    world.send_to_session_owned(
+        caster_sid,
+        crate::systems::regen::build_hp_change_packet(ch.max_hp, new_hp),
+    );
+    crate::handler::party::broadcast_party_hp(world, caster_sid);
+}
+
+/// Total DOT damage for direct types whose `sTimeDamage` is used raw by C++:
+/// 19 uses it per total as-is, 18 (Anger Explosion) is `time_damage * duration/2`.
+fn raw_dot_damage(direct_type: i32, time_damage: i32, duration: i32) -> Option<i16> {
+    match direct_type {
+        19 => Some((-time_damage).clamp(0, 32000) as i16),
+        18 => Some((-(time_damage * (duration / 2).max(1))).clamp(0, 32000) as i16),
+        _ => None,
+    }
+}
+
+/// Party members a `MORAL_PARTY_ALL` self-cast reaches: alive, same zone and
+/// within `radius` of the caster (radius 0 = unlimited). Falls back to the caster.
+fn collect_party_all_targets(
+    world: &WorldState,
+    caster_sid: SessionId,
+    radius: f32,
+    skip: impl Fn(SessionId) -> bool,
+) -> Vec<SessionId> {
+    let mut targets: Vec<SessionId> = Vec::with_capacity(8);
+    let party = world
+        .get_character_info(caster_sid)
+        .and_then(|c| c.party_id)
+        .and_then(|pid| world.get_party(pid));
+    if let Some(party) = party {
+        let caster_pos = world.get_position(caster_sid);
+        for &msid in party.members.iter().flatten() {
+            if world.is_player_dead(msid) || skip(msid) {
+                continue;
+            }
+            if msid != caster_sid && radius > 0.0 {
+                if let (Some(cp), Some(tp)) = (&caster_pos, world.get_position(msid)) {
+                    if cp.zone_id != tp.zone_id {
+                        continue;
+                    }
+                    let dx = cp.x - tp.x;
+                    let dz = cp.z - tp.z;
+                    if (dx * dx + dz * dz).sqrt() > radius {
+                        continue;
+                    }
+                }
+            }
+            targets.push(msid);
+        }
+    }
+    if targets.is_empty() {
+        targets.push(caster_sid);
+    }
+    targets
+}
+
+/// Applies a Type3 friendly heal (HP/MP direct part plus HOT) to one target.
+/// Returns false when the target is missing or dead.
+#[allow(clippy::too_many_arguments)]
+fn apply_type3_friendly_heal(
+    world: &WorldState,
+    caster_sid: SessionId,
+    target_sid: SessionId,
+    skill_id: u32,
+    direct_type: i32,
+    first_damage: i32,
+    time_damage: i32,
+    duration: i32,
+    dual_potion_mp: i16,
+) -> bool {
+    let Some(target) = world.get_character_info(target_sid) else {
+        return false;
+    };
+    if target.res_hp_type == USER_DEAD || target.hp <= 0 {
+        return false;
+    }
+
+    let heal_amount = first_damage.unsigned_abs() as i16;
+    if heal_amount > 0 {
+        match direct_type {
+            1 | 0 => {
+                let is_target_undead = world.is_undead(target_sid);
+                let new_hp = if is_target_undead {
+                    (target.hp - heal_amount).max(0)
+                } else {
+                    (target.hp + heal_amount).min(target.max_hp)
+                };
+                world.update_character_hp(target_sid, new_hp);
+
+                let hp_pkt = crate::systems::regen::build_hp_change_packet(target.max_hp, new_hp);
+                world.send_to_session_owned(target_sid, hp_pkt);
+                crate::handler::party::broadcast_party_hp(world, target_sid);
+
+                if is_target_undead && new_hp <= 0 {
+                    dead::broadcast_death(world, target_sid);
+                }
+            }
+            2 => {
+                if target.hp > 0 {
+                    let new_mp = (target.mp + heal_amount).min(target.max_mp);
+                    world.update_character_mp(target_sid, new_mp);
+
+                    let mp_pkt =
+                        crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
+                    world.send_to_session_owned(target_sid, mp_pkt);
+                }
+            }
+            _ => {}
+        }
+        if dual_potion_mp > 0 && target.hp > 0 {
+            let new_mp = (target.mp + dual_potion_mp).min(target.max_mp);
+            world.update_character_mp(target_sid, new_mp);
+            let mp_pkt = crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
+            world.send_to_session_owned(target_sid, mp_pkt);
+        }
+    }
+
+    // HOT (undead: HOT becomes DOT)
+    if time_damage > 0 && duration > 0 {
+        let tick_count = (duration / 2).max(1) as u8;
+        let raw_per_tick = if direct_type == 14 {
+            // HP Booster: heal per tick scales with the caster's level (C++ ExecuteType3).
+            let level = world
+                .get_character_info(caster_sid)
+                .map(|c| c.level as f32)
+                .unwrap_or(1.0);
+            (((level * (1.0 + level / 30.0)) as i32) + 3).clamp(0, i16::MAX as i32) as i16
+        } else {
+            (time_damage / tick_count as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        };
+        let hp_per_tick = if world.is_undead(target_sid) {
+            -raw_per_tick
+        } else {
+            raw_per_tick
+        };
+        world.add_durational_skill(target_sid, skill_id, hp_per_tick, tick_count, caster_sid);
+    }
+    true
+}
+
 /// Execute Type 3 skill — magical damage, healing, or DOT/HOT.
 /// Handles direct damage, healing, and durational (DOT/HOT) effects.
 /// DOT effects are registered via `world.add_durational_skill()` and
@@ -2063,6 +2760,20 @@ async fn execute_type3(
     let time_damage = type3_data.time_damage.unwrap_or(0);
     let duration = type3_data.duration.unwrap_or(0);
     let direct_type = type3_data.direct_type.unwrap_or(0);
+    // Dual Recovery Potions use the normal Type 3 HP potion profile while
+    // carrying the MP amount in time_damage. Keep this narrowly scoped to the
+    // two item-backed magic rows; other Type 3 semantics remain unchanged.
+    let dual_potion_item = matches!(skill.use_item, Some(811_182_000 | 811_183_000));
+    let dual_potion_magic = matches!(skill.magic_num, 811_182 | 811_183);
+    let dual_potion_mp = if (dual_potion_magic || dual_potion_item)
+        && skill.item_group.unwrap_or(0) == 9
+        && moral == MORAL_SELF
+        && direct_type == 1
+    {
+        time_damage.unsigned_abs().min(i16::MAX as u32) as i16
+    } else {
+        0
+    };
 
     // Applies when: (directType==1 || directType==2) && firstDamage > 0
     // Only for potions: skillID > 400000, bType[1]==0, bMoral==MORAL_SELF, bItemGroup==9
@@ -2115,6 +2826,18 @@ async fn execute_type3(
         }
     }
 
+    // Anger Explosion needs a full anger gauge and empties it (C++ ExecuteType3).
+    if direct_type == 18 {
+        let full = world
+            .get_character_info(caster_sid)
+            .is_some_and(|c| c.anger_gauge >= crate::handler::arena::MAX_ANGER_GAUGE);
+        if !full {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        crate::handler::arena::reset_anger_gauge(world, caster_sid);
+    }
+
     instance.data[1] = 1;
 
     // ── Type3 skip for players with active DOT in temple event zones ──
@@ -2147,6 +2870,56 @@ async fn execute_type3(
     }
 
     // ── Healing (self or friendly target) ───────────────────────────
+    // Handle the custom dual-recovery items explicitly. Their Type-3 row
+    // describes the HP restoration as first_damage and the MP restoration as
+    // time_damage; the generic potion path treats time_damage as HOT ticks and
+    // can therefore show a successful use without applying the MP amount.
+    if dual_potion_mp > 0 && moral == MORAL_SELF && first_damage > 0 {
+        let caster = match world.get_character_info(caster_sid) {
+            Some(ch) => ch,
+            None => return false,
+        };
+        let heal_amount = first_damage.unsigned_abs().min(i16::MAX as u32) as i16;
+        let is_undead = world.is_undead(caster_sid);
+        let new_hp = if is_undead {
+            (caster.hp - heal_amount).max(0)
+        } else {
+            (caster.hp + heal_amount).min(caster.max_hp)
+        };
+        let new_mp = if caster.hp > 0 {
+            (caster.mp + dual_potion_mp).min(caster.max_mp)
+        } else {
+            caster.mp
+        };
+        world.update_character_hp(caster_sid, new_hp);
+        world.update_character_mp(caster_sid, new_mp);
+        world.send_to_session_owned(
+            caster_sid,
+            crate::systems::regen::build_hp_change_packet(caster.max_hp, new_hp),
+        );
+        world.send_to_session_owned(
+            caster_sid,
+            crate::systems::regen::build_mp_change_packet(caster.max_mp, new_mp),
+        );
+        crate::handler::party::broadcast_party_hp(world, caster_sid);
+        instance.data[1] = 1;
+        instance.data[3] = heal_amount as i32;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        send_target_hp_update(world, caster_sid, caster_sid, 0);
+        if is_undead && new_hp <= 0 {
+            dead::broadcast_death(world, caster_sid);
+        }
+        tracing::debug!(
+            "[sid={}] dual recovery potion magic={} restored hp={} mp={}",
+            caster_sid,
+            skill.magic_num,
+            new_hp.saturating_sub(caster.hp),
+            new_mp.saturating_sub(caster.mp)
+        );
+        return true;
+    }
+
     if moral == MORAL_SELF || moral == MORAL_SELF_AREA {
         let caster = match world.get_character_info(caster_sid) {
             Some(ch) => ch,
@@ -2189,6 +2962,12 @@ async fn execute_type3(
                     }
                 }
                 _ => {}
+            }
+            if dual_potion_mp > 0 && caster.hp > 0 {
+                let new_mp = (caster.mp + dual_potion_mp).min(caster.max_mp);
+                world.update_character_mp(caster_sid, new_mp);
+                let mp_pkt = crate::systems::regen::build_mp_change_packet(caster.max_mp, new_mp);
+                world.send_to_session_owned(caster_sid, mp_pkt);
             }
         }
 
@@ -2241,6 +3020,44 @@ async fn execute_type3(
             }
         }
 
+        // Group cast (target -1): like C++ ExecuteType3, heal the caster and every
+        // party member in range instead of only one target.
+        if (moral == MORAL_PARTY_ALL || moral == MORAL_PARTY) && instance.target_id < 0 {
+            let radius = type3_data.radius.unwrap_or(0) as f32;
+            let stacking_hot = duration > 0 && direct_type == 1;
+            let targets = collect_party_all_targets(world, caster_sid, radius, |sid| {
+                stacking_hot && world.has_active_hot(sid)
+            });
+            let heal_amount = first_damage.unsigned_abs() as i16;
+            instance.data[1] = 1;
+            instance.data[3] = heal_amount as i32;
+            for &t_sid in &targets {
+                if !apply_type3_friendly_heal(
+                    world,
+                    caster_sid,
+                    t_sid,
+                    instance.skill_id,
+                    direct_type,
+                    first_damage,
+                    time_damage,
+                    duration,
+                    dual_potion_mp,
+                ) {
+                    continue;
+                }
+                let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+                pkt.write_u8(MAGIC_EFFECTING);
+                pkt.write_u32(instance.skill_id);
+                pkt.write_u32(instance.caster_id as u32);
+                pkt.write_u32(t_sid as u32);
+                for d in &instance.data {
+                    pkt.write_u32(*d as u32);
+                }
+                broadcast_to_caster_region(world, caster_sid, &pkt);
+            }
+            return true;
+        }
+
         let target_id = instance.target_id;
         let target_sid = if target_id < 0 {
             caster_sid
@@ -2268,60 +3085,17 @@ async fn execute_type3(
         }
 
         let heal_amount = first_damage.unsigned_abs() as i16;
-        if heal_amount > 0 {
-            match direct_type {
-                // DirectType 1: HP heal (default path)
-                1 | 0 => {
-                    let is_target_undead = world.is_undead(target_sid);
-                    let new_hp = if is_target_undead {
-                        (target.hp - heal_amount).max(0)
-                    } else {
-                        (target.hp + heal_amount).min(target.max_hp)
-                    };
-                    world.update_character_hp(target_sid, new_hp);
-
-                    let hp_pkt =
-                        crate::systems::regen::build_hp_change_packet(target.max_hp, new_hp);
-                    world.send_to_session_owned(target_sid, hp_pkt);
-                    crate::handler::party::broadcast_party_hp(world, target_sid);
-
-                    if is_target_undead && new_hp <= 0 {
-                        dead::broadcast_death(world, target_sid);
-                    }
-                }
-                // DirectType 2: MP heal — C++ MagicInstance.cpp:4099-4103
-                2 => {
-                    if target.hp > 0 {
-                        let new_mp = (target.mp + heal_amount).min(target.max_mp);
-                        world.update_character_mp(target_sid, new_mp);
-
-                        let mp_pkt =
-                            crate::systems::regen::build_mp_change_packet(target.max_mp, new_mp);
-                        world.send_to_session_owned(target_sid, mp_pkt);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Register HOT if time_damage > 0 and duration > 0 (undead: HOT becomes DOT)
-        if time_damage > 0 && duration > 0 {
-            let tick_count = (duration / 2).max(1) as u8;
-            let raw_per_tick =
-                (time_damage / tick_count as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            let hp_per_tick = if world.is_undead(target_sid) {
-                -raw_per_tick
-            } else {
-                raw_per_tick
-            };
-            world.add_durational_skill(
-                target_sid,
-                instance.skill_id,
-                hp_per_tick,
-                tick_count,
-                caster_sid,
-            );
-        }
+        apply_type3_friendly_heal(
+            world,
+            caster_sid,
+            target_sid,
+            instance.skill_id,
+            direct_type,
+            first_damage,
+            time_damage,
+            duration,
+            dual_potion_mp,
+        );
 
         instance.data[3] = heal_amount as i32;
 
@@ -2353,7 +3127,14 @@ async fn execute_type3(
             let use_magic_formula = first_damage < 0
                 && (direct_type == 1 || direct_type == 8)
                 && instance.skill_id < 400000;
-            let mut magic_damage = if use_magic_formula {
+            let mut magic_damage = if direct_type == 13 {
+                // Durability-damage skills never hurt monsters.
+                0
+            } else if direct_type == 9 && first_damage > 0 {
+                // Blood Drain / Vampiric Touch: percentage of the monster's current HP.
+                let npc_hp = world.get_npc_hp(npc_id).unwrap_or(0);
+                ((first_damage * npc_hp) / 100).clamp(0, 32000) as i16
+            } else if use_magic_formula {
                 let npc_ctx = build_npc_ctx(world, npc_id, attr, caster_sid);
                 let mut rng = rand::rngs::StdRng::from_entropy();
                 compute_magic_damage(&caster, first_damage, mag_atk, &npc_ctx, &mut rng)
@@ -2392,7 +3173,11 @@ async fn execute_type3(
                 };
                 let npc_ctx = build_npc_ctx(world, npc_id, attr, caster_sid);
                 let mut rng = rand::rngs::StdRng::from_entropy();
-                let duration_damage = if time_damage < 0 && attr != 4 {
+                let duration_damage = if let Some(raw) =
+                    raw_dot_damage(direct_type, time_damage, duration)
+                {
+                    raw
+                } else if time_damage < 0 && attr != 4 {
                     compute_magic_damage(&caster_for_dot, time_damage, mag_atk, &npc_ctx, &mut rng)
                 } else {
                     (-time_damage).max(0) as i16
@@ -2495,8 +3280,10 @@ async fn execute_type3(
         // Hoist caster magic attack buff — used by both direct damage and DOT paths
         let caster_mag_atk = world.get_buff_magic_attack_amount(caster_sid);
 
+        // Durational skills (duration != 0) skip the direct-type switch in C++:
+        // only the first damage is applied and then the DOT is registered.
         match direct_type {
-            2 => {
+            2 if duration == 0 => {
                 // Player target: change MP by sFirstDamage amount
                 let target_refresh = world
                     .get_character_info(target_sid)
@@ -2504,21 +3291,41 @@ async fn execute_type3(
                 let new_mp = (target_refresh.mp as i32 + first_damage)
                     .clamp(0, target_refresh.max_mp as i32) as i16;
                 world.update_character_mp(target_sid, new_mp);
+                world.send_to_session_owned(
+                    target_sid,
+                    crate::systems::regen::build_mp_change_packet(target_refresh.max_mp, new_mp),
+                );
                 instance.data[3] = first_damage;
                 let pkt = instance.build_packet(MAGIC_EFFECTING);
                 broadcast_to_caster_region(world, caster_sid, &pkt);
                 send_target_hp_update(world, caster_sid, target_sid, first_damage.abs());
                 return true;
             }
-            5 => {
-                let damage = if first_damage < 100 {
-                    // Percentage of current HP
-                    (first_damage as i32 * target.hp as i32) / -100
+            5 | 9 if duration == 0 => {
+                // 5: percentage of the target's HP; 9 (Blood Drain, Vampiric Touch) also
+                // heals the caster by the HP taken.
+                let damage = if first_damage > 0 && first_damage < 100 {
+                    (first_damage * target.hp as i32 / 100).clamp(0, 32000)
+                } else if first_damage < 0 && first_damage > -100 {
+                    (-first_damage * target.hp as i32 / 100).clamp(0, 32000)
                 } else {
-                    // Percentage of max HP (over 100 = heal based on max)
-                    (target.max_hp as i32 * (first_damage as i32 - 100)) / 100
+                    // 100 and above is a max-HP percentage heal in C++, not damage.
+                    0
                 } as i16;
                 apply_skill_damage(world, caster_sid, target_sid, instance, damage).await;
+                if direct_type == 9 {
+                    drain_heal_caster(world, caster_sid, damage);
+                }
+            }
+            13 if duration == 0 => {
+                // Durability skills (Exceed Break): 50% chance to wear weapon and armor.
+                if rand::thread_rng().gen_bool(0.5) {
+                    world.item_wore_out(target_sid, WORE_TYPE_ATTACK, first_damage.abs());
+                    world.item_wore_out(target_sid, WORE_TYPE_DEFENCE, first_damage.abs());
+                }
+                let pkt = instance.build_packet(MAGIC_EFFECTING);
+                broadcast_to_caster_region(world, caster_sid, &pkt);
+                return true;
             }
             _ => {
                 // direct_type 1/8, negative first_damage, and skill < 400000.
@@ -2551,6 +3358,10 @@ async fn execute_type3(
                         damage, &caster, &target, world, caster_sid, target_sid,
                     );
                     apply_skill_damage(world, caster_sid, target_sid, instance, damage).await;
+                    if direct_type == 8 {
+                        // Fire/Static Thorn: the caster absorbs the damage dealt.
+                        drain_heal_caster(world, caster_sid, damage);
+                    }
                 } else {
                     let mut raw_damage = (-first_damage).max(0) as i16;
                     let adp_user = type3_data.add_dmg_perc_to_user.unwrap_or(0);
@@ -2558,6 +3369,9 @@ async fn execute_type3(
                         raw_damage = ((raw_damage as i32 * adp_user as i32) / 100) as i16;
                     }
                     apply_skill_damage(world, caster_sid, target_sid, instance, raw_damage).await;
+                    if direct_type == 8 {
+                        drain_heal_caster(world, caster_sid, raw_damage);
+                    }
                 }
             }
         }
@@ -2578,7 +3392,11 @@ async fn execute_type3(
                 None => return true,
             };
             let dot_attr = type3_data.attribute.unwrap_or(0) as u8;
-            let duration_damage = if time_damage < 0 && dot_attr != 4 {
+            let duration_damage = if let Some(raw) =
+                raw_dot_damage(direct_type, time_damage, duration)
+            {
+                raw
+            } else if time_damage < 0 && dot_attr != 4 {
                 let dot_ctx = build_player_ctx(
                     world,
                     target_sid,
@@ -2601,13 +3419,24 @@ async fn execute_type3(
                 (-time_damage).max(0) as i16
             };
             let hp_per_tick = -(duration_damage.unsigned_abs() as i16 / tick_count as i16).max(1);
-            world.add_durational_skill(
+            if world.add_durational_skill(
                 target_sid,
                 instance.skill_id,
                 hp_per_tick,
                 tick_count,
                 caster_sid,
-            );
+            ) {
+                send_type3_inflict_status(world, target_sid, dot_attr);
+                tracing::debug!(
+                    caster_sid,
+                    target_sid,
+                    skill_id = instance.skill_id,
+                    hp_per_tick,
+                    tick_count,
+                    attribute = dot_attr,
+                    "mage Type3 DOT registered"
+                );
+            }
         }
         return true;
     }
@@ -2658,17 +3487,16 @@ async fn execute_type3(
             && (direct_type == 1 || direct_type == 8)
             && instance.skill_id < 400000;
 
-        // AOE center: use sData[0]/sData[2] as X/Z if provided, else caster position
-        let aoe_x = if instance.data[0] != 0 {
-            instance.data[0] as f32 / 10.0
-        } else {
-            caster_pos.x
-        };
-        let aoe_z = if instance.data[2] != 0 {
-            instance.data[2] as f32 / 10.0
-        } else {
-            caster_pos.z
-        };
+        // v2603 packets use tenths of a world unit while v2615 ground-target
+        // packets can carry world units directly.  Select the representation
+        // that resolves closest to the caster, instead of always dividing by
+        // ten and moving the damage area to an unrelated map coordinate.
+        let (aoe_x, aoe_z) = resolve_aoe_center(
+            instance.data[0],
+            instance.data[2],
+            caster_pos.x,
+            caster_pos.z,
+        );
 
         let radius_sq = radius * radius;
 
@@ -2857,9 +3685,13 @@ async fn execute_type3(
                     );
                     d = apply_magic_class_bonus(d, &caster, &target, world, caster_sid, target_sid);
                     d
+                } else if direct_type == 18 {
+                    // Anger Explosion hits for its raw sTimeDamage.
+                    (-time_damage).clamp(0, 32000) as i16
                 } else {
                     (-first_damage).max(0) as i16
                 };
+                let damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
                 aoe_target_damage = damage as i32;
                 let new_hp = (target.hp - damage).max(0);
                 world.update_character_hp(target_sid, new_hp);
@@ -2945,7 +3777,11 @@ async fn execute_type3(
                     if caster_pos.zone_id == ZONE_CHAOS_DUNGEON {
                         tick_count = (tick_count as u16 * 2).min(255) as u8;
                     }
-                    let duration_damage = if time_damage < 0 && aoe_attr != 4 {
+                    let duration_damage = if let Some(raw) =
+                        raw_dot_damage(direct_type, time_damage, duration)
+                    {
+                        raw
+                    } else if time_damage < 0 && aoe_attr != 4 {
                         let aoe_dot_ctx = build_player_ctx(
                             world,
                             target_sid,
@@ -2967,17 +3803,89 @@ async fn execute_type3(
                     };
                     let hp_per_tick =
                         -(duration_damage.unsigned_abs() as i16 / tick_count as i16).max(1);
-                    world.add_durational_skill(
+                    if world.add_durational_skill(
                         target_sid,
                         instance.skill_id,
                         hp_per_tick,
                         tick_count,
                         caster_sid,
-                    );
+                    ) {
+                        send_type3_inflict_status(world, target_sid, aoe_attr);
+                    }
                 }
             }
 
             send_target_hp_update(world, caster_sid, target_sid, aoe_target_damage);
+        }
+
+        // Runtime PK bots live in `world.bots`, not in the player session or
+        // NPC instance indexes traversed by the loops above/below. Include
+        // them explicitly so Nova/Inferno and other hostile Type3 areas use
+        // the same direct-damage and DOT paths as ordinary NPC targets.
+        if moral == MORAL_AREA_ENEMY && !caster_in_genie_aoe {
+            let nearby_bots = world.get_bots_in_zone_live(caster_pos.zone_id);
+            for bot in nearby_bots {
+                if !bot.is_alive() || bot.nation == caster.nation {
+                    continue;
+                }
+
+                let dx = aoe_x - bot.x;
+                let dz = aoe_z - bot.z;
+                if radius_sq > 0.0 && dx * dx + dz * dz > radius_sq {
+                    continue;
+                }
+
+                let bot_ctx = build_npc_ctx(world, bot.id, aoe_attr, caster_sid);
+                let mut bot_damage = if aoe_use_magic_formula {
+                    compute_magic_damage(&caster, first_damage, mag_atk_aoe, &bot_ctx, &mut aoe_rng)
+                } else {
+                    (-first_damage).max(0) as i16
+                };
+                let adp_npc = type3_data.add_dmg_perc_to_npc.unwrap_or(0);
+                if adp_npc != 0 {
+                    bot_damage = ((bot_damage as i32 * adp_npc as i32) / 100) as i16;
+                }
+
+                apply_skill_damage_to_npc(
+                    world, caster_sid, bot.id, instance, bot_damage, skill, aoe_attr,
+                )
+                .await;
+
+                if time_damage != 0
+                    && duration > 0
+                    && world
+                        .get_bot(bot.id)
+                        .is_some_and(|target| target.is_alive())
+                {
+                    let mut tick_count = (duration / 2).clamp(1, 255) as u8;
+                    if caster_pos.zone_id == ZONE_CHAOS_DUNGEON {
+                        tick_count = (tick_count as u16 * 2).min(255) as u8;
+                    }
+                    let duration_damage = if time_damage < 0 && aoe_attr != 4 {
+                        compute_magic_damage(
+                            &caster,
+                            time_damage,
+                            mag_atk_aoe,
+                            &bot_ctx,
+                            &mut aoe_rng,
+                        )
+                    } else {
+                        (-time_damage).max(0) as i16
+                    };
+                    let hp_per_tick =
+                        -(duration_damage.unsigned_abs() as i16 / tick_count as i16).max(1);
+                    world.add_npc_dot(
+                        bot.id,
+                        crate::world::NpcDotSlot {
+                            skill_id: instance.skill_id,
+                            hp_amount: hp_per_tick,
+                            tick_count: 0,
+                            tick_limit: tick_count,
+                            caster_sid,
+                        },
+                    );
+                }
+            }
         }
 
         // get_nearby_session_ids excludes caster, so we heal caster separately here.
@@ -3029,6 +3937,10 @@ async fn execute_type3(
         // ── AOE NPC damage ──────────────────────────────────────────
         // includes NPCs in AOE targeting. We iterate nearby NPCs and apply damage.
         // (only player-to-player), so only MORAL_AREA_ENEMY hits NPCs.
+        // Manes progress is accumulated per kill but emitted only after the
+        // single area MAGIC_EFFECTING result below.
+        let mut manes_progress_changed = false;
+        let mut manes_dead_npcs = Vec::new();
         if moral == MORAL_AREA_ENEMY {
             let nearby_npcs = world.get_nearby_npc_ids(
                 caster_pos.zone_id,
@@ -3042,6 +3954,15 @@ async fn execute_type3(
                     Some(n) => n,
                     None => continue,
                 };
+
+                if npc.zone_id == crate::systems::juraid::ZONE_JURAID
+                    && crate::systems::juraid::is_juraid_monument(npc.proto_id)
+                    && world.get_character_info(caster_sid).is_none_or(|ch| {
+                        ch.nation == crate::systems::juraid::monument_nation(npc.proto_id)
+                    })
+                {
+                    continue;
+                }
 
                 // Must be a monster (not friendly NPC)
                 if !npc.is_monster {
@@ -3071,9 +3992,16 @@ async fn execute_type3(
                         &aoe_npc_ctx,
                         &mut aoe_rng,
                     )
+                } else if direct_type == 18 {
+                    // Anger Explosion hits for its raw sTimeDamage.
+                    (-time_damage).clamp(0, 32000) as i16
                 } else {
                     (-first_damage).max(0) as i16
                 };
+                let npc_damage =
+                    super::attack::scale_manes_magic_damage(world, caster_sid, &npc, npc_damage);
+                let npc_damage =
+                    gm_fixed_skill_damage(world, caster_sid, instance.skill_id, npc_damage);
 
                 // Apply damage to NPC
                 let new_hp = (npc_hp - npc_damage as i32).max(0);
@@ -3081,36 +4009,99 @@ async fn execute_type3(
                 world.record_npc_damage(npc_id, caster_sid, npc_damage as i32);
 
                 // Durability loss
-                world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, npc_damage as i32);
+                if !super::attack::is_manes_survival_npc(&npc) {
+                    world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, npc_damage as i32);
+                }
 
                 if new_hp > 0 {
                     world.notify_npc_damaged(npc_id, caster_sid);
                 } else {
                     // NPC died
                     if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-                        super::attack::handle_npc_death(world, caster_sid, npc_id, &npc, &tmpl)
-                            .await;
+                        let is_manes = super::attack::is_manes_survival_npc(&npc);
+                        super::attack::handle_npc_death(
+                            world, caster_sid, npc_id, &npc, &tmpl, is_manes,
+                        )
+                        .await;
+                        if is_manes {
+                            manes_dead_npcs.push(npc_id);
+                        }
                     }
+                }
+
+                // Area DOTs (poison clouds, Anger Explosion) tick on monsters too.
+                if new_hp > 0 && time_damage != 0 && duration > 0 {
+                    let mut tick_count = (duration / 2).clamp(1, 255) as u8;
+                    if caster_pos.zone_id == ZONE_CHAOS_DUNGEON {
+                        tick_count = (tick_count as u16 * 2).min(255) as u8;
+                    }
+                    let dot_total = if let Some(raw) =
+                        raw_dot_damage(direct_type, time_damage, duration)
+                    {
+                        raw
+                    } else if time_damage < 0 && aoe_attr != 4 {
+                        let dot_ctx = build_npc_ctx(world, npc_id, aoe_attr, caster_sid);
+                        compute_magic_damage(
+                            &caster,
+                            time_damage,
+                            mag_atk_aoe,
+                            &dot_ctx,
+                            &mut aoe_rng,
+                        )
+                    } else {
+                        (-time_damage).max(0) as i16
+                    };
+                    let hp_per_tick =
+                        -(dot_total.unsigned_abs() as i16 / tick_count as i16).max(1);
+                    world.add_npc_dot(
+                        npc_id,
+                        crate::world::NpcDotSlot {
+                            skill_id: instance.skill_id,
+                            hp_amount: hp_per_tick,
+                            tick_count: 0,
+                            tick_limit: tick_count,
+                            caster_sid,
+                        },
+                    );
                 }
 
                 // Send HP bar update
                 if let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) {
-                    let mut hp_pkt = Packet::new(Opcode::WizTargetHp as u8);
-                    hp_pkt.write_u32(npc_id);
-                    hp_pkt.write_u8(0);
-                    hp_pkt.write_u32(tmpl.max_hp);
-                    hp_pkt.write_u32(new_hp.max(0) as u32);
-                    hp_pkt.write_u32(-(npc_damage as i32) as u32); // negative = damage dealt
-                    hp_pkt.write_u32(0);
-                    hp_pkt.write_u8(0);
+                    let hp_pkt = super::target_hp::build_target_hp_packet(
+                        npc_id,
+                        0,
+                        tmpl.max_hp,
+                        new_hp.max(0) as u32,
+                        -(npc_damage as i32),
+                        -(npc_damage as i32),
+                    );
                     world.send_to_session_owned(caster_sid, hp_pkt);
+                    if tmpl.s_sid == crate::systems::manes_survival::DARK_DRAGON_SID as u16 {
+                        world.manes_survival_manager.broadcast_dark_dragon_status(
+                            world,
+                            npc.zone_id,
+                            crate::systems::manes_survival::DARK_DRAGON_UI_NAME,
+                            tmpl.max_hp,
+                            new_hp.max(0) as u32,
+                        );
+                    }
+                    if new_hp <= 0 && super::attack::is_manes_survival_npc(&npc) {
+                        manes_progress_changed = true;
+                    }
                 }
             }
         }
 
-        // Broadcast the effect to region
+        // Complete the AOE transaction before sending any Manes level/vitals
+        // packets. This keeps multi-target results contiguous for the v2615 client.
         let pkt = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &pkt);
+        for npc_id in manes_dead_npcs {
+            super::attack::broadcast_npc_death(world, caster_sid, npc_id);
+        }
+        if manes_progress_changed {
+            super::attack::flush_manes_progress(world, caster_sid);
+        }
         return true;
     }
 
@@ -3124,6 +4115,18 @@ async fn execute_type3(
     let pkt = instance.build_packet(MAGIC_EFFECTING);
     broadcast_to_caster_region(world, caster_sid, &pkt);
     true
+}
+
+/// Tell the 2625 client (and party UI) that a harmful Type3 effect started.
+/// Attribute 6 is poison resistance; all other harmful duration attributes
+/// use the generic DOT state, matching `SendUserStatusUpdate()` in GameServer.
+fn send_type3_inflict_status(world: &WorldState, target_sid: SessionId, attribute: u8) {
+    let status = if attribute == 6 {
+        USER_STATUS_POISON
+    } else {
+        USER_STATUS_DOT
+    };
+    crate::systems::buff_tick::send_user_status_update_packet(world, target_sid, status, 1);
 }
 
 /// Target type for magic damage formula differentiation.
@@ -3145,13 +4148,8 @@ struct MagicDamageContext {
     target_class: u16,
     /// Target's AC buff amount
     target_ac_amount: i32,
-    /// Whether the target is in a war zone.
-    is_war_zone: bool,
     /// DamageSettings from DB (class multipliers, mon_take_damage, mage_magic_damage).
     damage_settings: Option<ko_db::models::DamageSettingsRow>,
-    /// Mage weapon quality multiplier (`getplusdamage()` — MagicInstance.cpp:6694-6744).
-    /// 1.0 = no bonus (default / non-weapon).
-    plus_damage: f64,
     /// Caster's weapon base damage for magic formula
     /// Staff damage for mages, weapon damage for warriors/kurians, 0 for others.
     righthand_damage: i16,
@@ -3205,17 +4203,12 @@ fn get_npc_target_resistance(world: &WorldState, npc_id: u32, attribute: u8) -> 
 /// per call (3 from `get_player_target_resistance` + 1 from `get_buff_ac_amount`).
 fn build_player_ctx(
     world: &WorldState,
-    target_sid: SessionId,
+    _target_sid: SessionId,
     target_snap: &CombatSnapshot,
     target: &CharacterInfo,
     attribute: u8,
     caster_sid: SessionId,
 ) -> MagicDamageContext {
-    let is_war = world
-        .get_position(target_sid)
-        .and_then(|p| world.get_zone(p.zone_id))
-        .map(|z| z.is_war_zone())
-        .unwrap_or(false);
     let caster_class = world
         .get_character_info(caster_sid)
         .map(|c| c.class)
@@ -3226,9 +4219,7 @@ fn build_player_ctx(
         target_total_r: target_snap.total_resistance(attribute),
         target_class: target.class,
         target_ac_amount: target_snap.ac_amount,
-        is_war_zone: is_war,
         damage_settings: world.get_damage_settings(),
-        plus_damage: world.get_plus_damage(caster_sid),
         righthand_damage: rh_dmg,
         attribute_damage: attr_dmg,
         attribute,
@@ -3242,11 +4233,6 @@ fn build_npc_ctx(
     attribute: u8,
     caster_sid: SessionId,
 ) -> MagicDamageContext {
-    let is_war = world
-        .get_position(caster_sid)
-        .and_then(|p| world.get_zone(p.zone_id))
-        .map(|z| z.is_war_zone())
-        .unwrap_or(false);
     let caster_class = world
         .get_character_info(caster_sid)
         .map(|c| c.class)
@@ -3257,9 +4243,7 @@ fn build_npc_ctx(
         target_total_r: get_npc_target_resistance(world, npc_id, attribute),
         target_class: 0,
         target_ac_amount: 0,
-        is_war_zone: is_war,
         damage_settings: world.get_damage_settings(),
-        plus_damage: world.get_plus_damage(caster_sid),
         righthand_damage: rh_dmg,
         attribute_damage: attr_dmg,
         attribute,
@@ -3269,15 +4253,13 @@ fn build_npc_ctx(
 /// Compute magic damage from the `sFirstDamage`/`sTimeDamage` value.
 /// Formula steps (matching C++ order):
 /// 1. CHA scaling for mages (line 6305)
-/// 2. sMagicAmount multiplier (line 6306)
-/// 3. Resistance formula: 485×total_hit/(total_r+510) vs players, 555×total_hit/(total_r+515) vs NPCs
-/// 4. DamageSettings class multiplier (PvP) or montakedamage (PvE)
-/// 5. Randomization: rand(0,damage)×0.3 + damage×0.85 − sMagicAmount
-/// 6. Warrior magic vs NPC zeroing (int32(0.50f) = 0)
-///    - 6a: Weapon damage reduction (line 6616-6619) — subtracts weapon-based damage
+/// 2. sMagicAmount multiplier (mage base +170)
+/// 3. Resistance formula: 485×total_hit/(total_r+510)
+/// 4. Class coefficient multiplier (PvP only)
+/// 5. Randomization: rand(0,damage/2)×0.1 + damage×0.85 − sMagicAmount
+/// 6. Weapon damage reduction (line 6616-6619) — subtracts weapon-based damage
 /// 7. Warrior no-weapon halving + AC boost
-/// 8. Mage magic damage multiplier
-/// 9. War zone /3 vs non-war /2
+/// 8. Player targets /3 (NPC damage is not divided)
 /// 10. MAX_DAMAGE cap (32000)
 fn compute_magic_damage(
     caster: &CharacterInfo,
@@ -3313,7 +4295,9 @@ fn compute_magic_damage(
 
     // ── Step 2: sMagicAmount multiplier ───────────────────────────────
     // C++ line 6304-6306
-    let s_magic_amount = magic_attack_amount + 100;
+    // Current GameServer reference uses +170 for mage spell damage.  The old
+    // +100 baseline under-scaled every fire/ice/lightning and DOT spell.
+    let s_magic_amount = magic_attack_amount + if is_mage { 170 } else { 100 };
     total_hit = total_hit * s_magic_amount / 100;
 
     if total_hit == 0 {
@@ -3321,46 +4305,34 @@ fn compute_magic_damage(
     }
 
     // ── Step 3: Core resistance formula ───────────────────────────────
-    // C++ line 6498 (vs player): damage = 485 * total_hit / (total_r + 510)
-    // C++ line 6582 (vs NPC):    damage = 555 * total_hit / (total_r + 515)
-    let mut damage: i32 = match ctx.target_kind {
-        MagicTargetKind::Player => 485 * total_hit / (ctx.target_total_r + 510),
-        MagicTargetKind::Npc => 555 * total_hit / (ctx.target_total_r + 515),
-    };
+    let mut damage: i32 = 485 * total_hit / (ctx.target_total_r + 510);
 
     // ── Step 4: DamageSettings class multiplier ───────────────────────
-    // C++ line 6503-6515 (PvP): dm *= mageTOxxx
-    // C++ line 6585 (PvE):     dm *= montakedamage
-    if let Some(ref ds) = ctx.damage_settings {
-        match ctx.target_kind {
-            MagicTargetKind::Player => {
-                let mult = get_mage_class_multiplier(ds, ctx.target_class);
-                damage = (damage as f64 * mult) as i32;
-            }
-            MagicTargetKind::Npc => {
-                damage = (damage as f64 * ds.mon_take_damage as f64) as i32;
-            }
+    // The class coefficient applies only to player targets.  The previous PvE
+    // `mon_take_damage` multiplier is not part of the mage Type3 formula.
+    if ctx.target_kind == MagicTargetKind::Player {
+        if let Some(ref ds) = ctx.damage_settings {
+            let mult = get_mage_class_multiplier(ds, ctx.target_class);
+            damage = (damage as f64 * mult) as i32;
         }
     }
 
     // ── Step 5: Randomization ─────────────────────────────────────────
     // C++ line 6597-6598:
-    //   random = myrand(0, damage);
-    //   damage = int32(random * 0.3f + damage * 0.85f) - sMagicAmount;
+    //   random = myrand(0, damage / 2);
+    //   damage = int32(random * 0.1f + damage * 0.85f) - sMagicAmount;
     // C++ myrand(0, negative) swaps: myrand(negative, 0)
     let random = if damage != 0 {
-        let (lo, hi) = if damage > 0 { (0, damage) } else { (damage, 0) };
+        let half = damage / 2;
+        let (lo, hi) = if half > 0 { (0, half) } else { (half, 0) };
         rng.gen_range(lo..=hi)
     } else {
         0
     };
-    damage = (random as f32 * 0.3 + damage as f32 * 0.85) as i32 - s_magic_amount;
+    damage = (random as f32 * 0.1 + damage as f32 * 0.85) as i32 - s_magic_amount;
 
-    // ── Step 6: Warrior magic vs NPC zeroing ──────────────────────────
-    // C++ line 6603-6604: damage *= int32(0.50f) → int32(0.50f) = 0 → damage = 0
-    if is_warrior && ctx.target_kind == MagicTargetKind::Npc {
-        damage = 0;
-    }
+    // The `damage *= int32(0.50f)` warrior-vs-NPC zeroing exists only in the
+    // `#if 0` branch of C++ GetMagicDamage; the active branch does not have it.
 
     // ── Step 6.5: Weapon damage reduction ───────────────────────────────
     // For player casters (not NPC): subtract weapon-based damage from magic damage.
@@ -3377,38 +4349,19 @@ fn compute_magic_damage(
         damage -= (rh_part + attr_part) as i32;
     }
 
-    // ── Step 7+8: Warrior/Mage mods with C++ baa ordering ─────────────
-    // C++ line 6624: `double baa = damage;` captures BEFORE warrior mods.
-    // Warrior halving modifies `damage`, mage multiplier modifies `baa`.
-    // C++ line 6683: `damage = (int32)baa;` overwrites — warrior halving is dead code in C++.
-    // We replicate the C++ behavior exactly: baa captures pre-warrior value.
-    let mut baa = damage as f64;
-
-    // C++ line 6628-6637: warrior halving (modifies `damage`, not `baa` — dead code in C++)
-    if is_warrior {
+    // Weaponless warriors deal half damage (C++: isWarrior && righthand_damage == 0).
+    if is_warrior && ctx.righthand_damage == 0 {
         damage /= 2;
-        if ctx.target_kind == MagicTargetKind::Player && ctx.target_ac_amount < 100 {
-            damage += damage * 30 / 100;
-        }
     }
 
-    // C++ line 6645-6651: mage multiplier (modifies `baa`, not `damage`)
-    if is_mage && damage != 0 {
-        if let Some(ref ds) = ctx.damage_settings {
-            baa *= ds.mage_magic_damage as f64;
-        }
-        baa *= ctx.plus_damage;
-    }
-
-    // C++ line 6683: `damage = (int32)baa;` — overwrites damage with baa
-    damage = baa as i32;
-
-    // ── Step 9: War zone halving ──────────────────────────────────────
-    // C++ line 6685-6688
-    if ctx.is_war_zone {
+    // Player targets are divided by three; NPC targets retain full PvE damage.
+    if ctx.target_kind == MagicTargetKind::Player {
         damage /= 3;
-    } else {
-        damage /= 2;
+    }
+
+    // Warrior bonus against low-AC players is applied after the /3 step.
+    if is_warrior && ctx.target_kind == MagicTargetKind::Player && ctx.target_ac_amount < 100 {
+        damage += damage * 30 / 100;
     }
 
     // ── Step 10: Convert from negative domain to positive return ─────
@@ -3510,6 +4463,16 @@ fn apply_magic_class_bonus(
 
 // ── Type 4: Buffs / Debuffs ──────────────────────────────────────────────
 
+pub(crate) fn is_item_type4_scroll(skill: &MagicRow, _skill_id: u32) -> bool {
+    skill.type1 == Some(4)
+        && matches!(skill.item_group, Some(9 | 255))
+        && skill.use_item.unwrap_or(0) > 0
+}
+
+pub(crate) fn should_persist_type4_magic(skill: &MagicRow, skill_id: u32) -> bool {
+    skill_id > 500_000 || is_item_type4_scroll(skill, skill_id)
+}
+
 /// Execute Type 4 skill — apply buff or debuff.
 /// Creates an `ActiveBuff` from the `MagicType4Row` data and applies it
 /// to the target via `world.apply_buff()`. Overwrites any existing buff
@@ -3531,8 +4494,34 @@ fn execute_type4(
 
     let moral = skill.moral.unwrap_or(0);
 
+    // Flash items are instant stack increments, not duration-zero Type4 buffs.
+    // Handle only real casts here: saved-magic recasts must never add stacks.
+    if type4_data.buff_type == Some(BUFF_TYPE_FISHING) {
+        if !crate::systems::flash::use_flash(
+            world,
+            caster_sid,
+            type4_data.special_amount.unwrap_or(0),
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        return true;
+    }
+
     // ── Self-buff ───────────────────────────────────────────────────
-    if moral == MORAL_SELF {
+    // Item scroll morals 8 and 31..=36 have no dedicated branch in C++ either:
+    // with no explicit target the buff lands on the caster.
+    if moral == MORAL_SELF || moral == 8 || (31..=36).contains(&moral) {
+        // C++ CheckType4Prerequisites: a buff of the same type that is already
+        // active cannot be cast again. Failing here keeps the scroll item.
+        if type4_buff_already_active(world, caster_sid, &type4_data) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+
         let duration = type4_data.duration.unwrap_or(0).max(0) as u16;
 
         instance.data[1] = 1; // bResult = success
@@ -3561,8 +4550,8 @@ fn execute_type4(
         broadcast_kaul_state_change(world, caster_sid, &type4_data, instance.skill_id);
         broadcast_size_state_change(world, caster_sid, &type4_data, instance.skill_id);
         broadcast_buff_state_change_on_apply(world, caster_sid, &type4_data, instance.skill_id);
-        // Persist scroll buffs (skill_id > 500000) across logout/zone change
-        if instance.skill_id > 500000 {
+        // Persist both high-ID custom buffs and ordinary item-group scrolls.
+        if should_persist_type4_magic(skill, instance.skill_id) {
             world.insert_saved_magic(caster_sid, instance.skill_id, duration);
         }
 
@@ -3716,21 +4705,9 @@ fn execute_type4(
             }
         }
 
-        {
-            let bt = type4_data.buff_type.unwrap_or(0);
-            if bt == BUFF_TYPE_SPEED && world.has_buff(target_sid, BUFF_TYPE_SPEED2) {
-                return false;
-            }
-            if bt == BUFF_TYPE_SPEED2 && world.has_buff(target_sid, BUFF_TYPE_SPEED) {
-                return false;
-            }
-        }
-
-        {
-            let bt = type4_data.buff_type.unwrap_or(0);
-            if bt > 0 && world.has_buff(target_sid, bt) {
-                return false;
-            }
+        if type4_buff_already_active(world, target_sid, &type4_data) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
         }
 
         let duration = type4_data.duration.unwrap_or(0).max(0) as u16;
@@ -3918,18 +4895,12 @@ fn execute_type4(
 
                     // newrand = rand + (percentagerate * 3)
                     // if icelightrate > newrand → debuff applies, else resisted
-                    let icelightrate = skill.icelightrate.unwrap_or(0) as i32;
-                    if icelightrate > 0 {
-                        let newrand = rand_val + (percentagerate * 3);
-                        if icelightrate <= newrand {
-                            // Debuff resisted — broadcast no-effect
-                            instance.data[1] = 0;
-                            let pkt = instance.build_packet(MAGIC_EFFECTING);
-                            broadcast_to_caster_region(world, caster_sid, &pkt);
-                            return true;
-                        }
-                    } else {
-                        // the skill cannot apply the debuff at all
+                    if !ice_light_speed_succeeds(
+                        skill.icelightrate.unwrap_or(0) as i32,
+                        percentagerate,
+                        rand_val,
+                    ) {
+                        // Debuff resisted — broadcast no-effect
                         instance.data[1] = 0;
                         let pkt = instance.build_packet(MAGIC_EFFECTING);
                         broadcast_to_caster_region(world, caster_sid, &pkt);
@@ -3966,6 +4937,7 @@ fn execute_type4(
         broadcast_kaul_state_change(world, target_sid, &type4_data, instance.skill_id);
         broadcast_size_state_change(world, target_sid, &type4_data, instance.skill_id);
         broadcast_buff_state_change_on_apply(world, target_sid, &type4_data, instance.skill_id);
+        send_type4_debuff_inflict_status(world, target_sid, &type4_data);
         return true;
     }
 
@@ -3996,7 +4968,11 @@ fn execute_type4(
             None => return false,
         };
 
-        // Self-area: always include caster
+        // Self-area: always include caster (unless the same buff is already active)
+        if moral == MORAL_SELF_AREA && type4_buff_already_active(world, caster_sid, &type4_data) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
         if moral == MORAL_SELF_AREA {
             let buff = create_active_buff(
                 instance.skill_id,
@@ -4015,22 +4991,18 @@ fn execute_type4(
             // BUG-3 fix: recalculate derived stats after self-area buff
             world.set_user_ability(caster_sid);
             // Persist scroll self-area buffs across logout/zone change
-            if instance.skill_id > 500000 {
+            if should_persist_type4_magic(skill, instance.skill_id) {
                 let sa_duration = type4_data.duration.unwrap_or(0).max(0) as u16;
                 world.insert_saved_magic(caster_sid, instance.skill_id, sa_duration);
             }
         }
 
-        let aoe_x = if instance.data[0] != 0 {
-            instance.data[0] as f32 / 10.0
-        } else {
-            caster_pos.x
-        };
-        let aoe_z = if instance.data[2] != 0 {
-            instance.data[2] as f32 / 10.0
-        } else {
-            caster_pos.z
-        };
+        let (aoe_x, aoe_z) = resolve_aoe_center(
+            instance.data[0],
+            instance.data[2],
+            caster_pos.x,
+            caster_pos.z,
+        );
 
         for target_sid in nearby {
             let target = match world.get_character_info(target_sid) {
@@ -4203,12 +5175,22 @@ fn execute_type4(
                             let mut rng = rand::thread_rng();
                             rng.gen_range(0..=10000)
                         };
-                        let icelightrate = skill.icelightrate.unwrap_or(0) as i32;
-                        if icelightrate <= 0 || icelightrate <= rand_val + (percentagerate * 3) {
+                        if !ice_light_speed_succeeds(
+                            skill.icelightrate.unwrap_or(0) as i32,
+                            percentagerate,
+                            rand_val,
+                        ) {
                             continue; // Debuff resisted for this AOE target
                         }
                     }
                 }
+            }
+
+            // Buffs (non-debuff area skills) never stack on a target that has them;
+            // debuffs refresh instead.
+            if moral != MORAL_AREA_ENEMY && type4_buff_already_active(world, target_sid, &type4_data)
+            {
+                continue;
             }
 
             // M3: Break stealth on AOE hit for enemy targets
@@ -4237,9 +5219,66 @@ fn execute_type4(
             broadcast_kaul_state_change(world, target_sid, &type4_data, instance.skill_id);
             broadcast_size_state_change(world, target_sid, &type4_data, instance.skill_id);
             broadcast_buff_state_change_on_apply(world, target_sid, &type4_data, instance.skill_id);
+
+            // Every affected player gets its own MAGIC_EFFECTING (target = that player) so the
+            // buff/debuff icon shows on their client, and debuffs raise the status indicator
+            // that cure skills rely on (C++ BuildAndSendSkillPacket per target).
+            let mut per_target = *instance;
+            per_target.target_id = target_sid as i32;
+            per_target.data[1] = 1;
+            per_target.data[3] = type4_data.duration.unwrap_or(0).max(0);
+            per_target.data[5] = type4_data.speed.unwrap_or(0);
+            broadcast_to_caster_region(world, caster_sid, &per_target.build_packet(MAGIC_EFFECTING));
+            if moral == MORAL_AREA_ENEMY {
+                send_type4_debuff_inflict_status(world, target_sid, &type4_data);
+            }
             // Persist scroll buffs on AOE targets
-            if instance.skill_id > 500000 {
+            if should_persist_type4_magic(skill, instance.skill_id) {
                 world.insert_saved_magic(target_sid, instance.skill_id, duration);
+            }
+        }
+
+        // Area debuffs also hit monsters (C++ collects NPCs from the surrounding regions).
+        let npc_buff_type = type4_data.buff_type.unwrap_or(0);
+        if moral == MORAL_AREA_ENEMY && npc_buff_type > 0 && npc_buff_type != BUFF_TYPE_FREEZE {
+            // C++: speed/stun style debuffs reach 3 units further on NPC targets.
+            let npc_radius = if matches!(
+                npc_buff_type,
+                BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2 | BUFF_TYPE_STUN
+            ) {
+                radius + 3.0
+            } else {
+                radius
+            };
+            let npc_radius_sq = npc_radius * npc_radius;
+            let npc_duration = type4_data.duration.unwrap_or(0).max(0) as u32;
+            for npc_id in world.get_nearby_npc_ids(
+                caster_pos.zone_id,
+                caster_pos.region_x,
+                caster_pos.region_z,
+                caster_event_room,
+            ) {
+                let Some(npc) = world.get_npc_instance(npc_id) else {
+                    continue;
+                };
+                if !npc.is_monster || !matches!(world.get_npc_hp(npc_id), Some(hp) if hp > 0) {
+                    continue;
+                }
+                let ndx = aoe_x - npc.x;
+                let ndz = aoe_z - npc.z;
+                if npc_radius_sq > 0.0 && ndx * ndx + ndz * ndz > npc_radius_sq {
+                    continue;
+                }
+                world.apply_npc_buff(
+                    npc_id,
+                    NpcBuffEntry {
+                        skill_id: instance.skill_id,
+                        buff_type: npc_buff_type,
+                        start_time: std::time::Instant::now(),
+                        duration_secs: npc_duration,
+                    },
+                );
+                world.notify_npc_damaged(npc_id, caster_sid);
             }
         }
 
@@ -4262,6 +5301,15 @@ fn execute_type4(
     true
 }
 
+/// C++ `CheckIceLightSpeed`: the SPEED/SPEED2/STUN debuff lands when
+/// `icelightrate > rand(0..=10000) + resist% * 3`. Skill rows without an
+/// explicit rate (0, as in the seeded magic table) are treated as the maximum
+/// rate so slows, freezes and stuns still apply and only resistance reduces them.
+fn ice_light_speed_succeeds(icelightrate: i32, resist_percent: i32, rand_val: i32) -> bool {
+    let rate = if icelightrate > 0 { icelightrate } else { 10000 };
+    rate > rand_val + resist_percent * 3
+}
+
 /// Check whether a skill ID is a "rush" skill that bypasses debuff resistance.
 /// Rush skills: warrior charge variants (114509, 115509, 214509, 215509).
 fn is_rush_skill(skill_id: u32) -> bool {
@@ -4279,17 +5327,8 @@ fn grant_type4_buff_to_target(
     type4_data: &ko_db::models::MagicType4Row,
     duration: u16,
 ) {
-    // SPEED / SPEED2 mutual exclusion
-    let bt = type4_data.buff_type.unwrap_or(0);
-    if bt == BUFF_TYPE_SPEED && world.has_buff(target_sid, BUFF_TYPE_SPEED2) {
-        return;
-    }
-    if bt == BUFF_TYPE_SPEED2 && world.has_buff(target_sid, BUFF_TYPE_SPEED) {
-        return;
-    }
-
-    // Duplicate buff rejection
-    if bt > 0 && world.has_buff(target_sid, bt) {
+    // Same-type buff already active (or SPEED/SPEED2 conflict): skip this member.
+    if type4_buff_already_active(world, target_sid, type4_data) {
         return;
     }
 
@@ -4310,9 +5349,175 @@ fn grant_type4_buff_to_target(
     world.set_user_ability(target_sid);
     // This sends total_hit with buff multipliers so the client shows the updated attack value.
     world.send_item_move_refresh(target_sid);
-    if instance.skill_id > 500000 {
+    if should_persist_type4_magic(skill, instance.skill_id) {
         world.insert_saved_magic(target_sid, instance.skill_id, duration);
     }
+}
+
+/// Tell a debuffed player's client (and party UI) that a harmful Type4 effect started:
+/// slows use the SPEED indicator, every other debuff the POISON one (C++ ExecuteType4).
+fn send_type4_debuff_inflict_status(
+    world: &WorldState,
+    target_sid: SessionId,
+    type4_data: &ko_db::models::MagicType4Row,
+) {
+    let status = if matches!(
+        type4_data.buff_type.unwrap_or(0),
+        BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2
+    ) {
+        USER_STATUS_SPEED
+    } else {
+        USER_STATUS_POISON
+    };
+    crate::systems::buff_tick::send_user_status_update_packet(world, target_sid, status, 1);
+}
+
+/// True when `target_sid` already has a Type4 buff of the same type (or the
+/// conflicting SPEED/SPEED2 pair), so the cast must be refused.
+pub(crate) fn type4_buff_already_active(
+    world: &WorldState,
+    target_sid: SessionId,
+    type4_data: &ko_db::models::MagicType4Row,
+) -> bool {
+    let bt = type4_data.buff_type.unwrap_or(0);
+    if bt <= 0 {
+        return false;
+    }
+    (bt == BUFF_TYPE_SPEED && world.has_buff(target_sid, BUFF_TYPE_SPEED2))
+        || (bt == BUFF_TYPE_SPEED2 && world.has_buff(target_sid, BUFF_TYPE_SPEED))
+        || world.has_buff(target_sid, bt)
+}
+
+/// Apply a legitimate Type-4 support skill cast by a runtime bot.
+///
+/// Runtime bots are not backed by `ClientSession`, so they cannot enter the
+/// normal client-originated MagicInstance pipeline. This adapter still uses
+/// the loaded magic/type4 rows, normal ActiveBuff storage and stat refresh;
+/// it only supplies the bot as the packet caster.
+pub(crate) fn apply_bot_type4_support(
+    world: &WorldState,
+    bot_id: u32,
+    target_sid: SessionId,
+    skill_id: u32,
+) -> bool {
+    let Some(skill) = world.get_magic(skill_id as i32) else {
+        return false;
+    };
+    let Some(type4) = world.get_magic_type4(skill_id as i32) else {
+        return false;
+    };
+    let buff_type = type4.buff_type.unwrap_or(0);
+    if buff_type > 0 && world.has_buff(target_sid, buff_type) {
+        return false;
+    }
+    if world.is_player_dead(target_sid) {
+        return false;
+    }
+
+    let duration = type4.duration.unwrap_or(0).max(0) as u16;
+    let caster_sid = bot_id as SessionId;
+    let buff = create_active_buff(skill_id, caster_sid, &type4, true);
+    world.apply_buff(target_sid, buff);
+    apply_type4_stats(
+        world,
+        target_sid,
+        &type4,
+        skill.skill.unwrap_or(0),
+        skill_id,
+    );
+    world.set_user_ability(target_sid);
+    world.send_item_move_refresh(target_sid);
+
+    let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+    pkt.write_u8(MAGIC_EFFECTING);
+    pkt.write_u32(skill_id);
+    pkt.write_u32(bot_id);
+    pkt.write_u32(target_sid as u32);
+    let data = [0, 1, 0, duration as i32, 0, type4.speed.unwrap_or(0), 0];
+    for value in data {
+        pkt.write_u32(value as u32);
+    }
+
+    if let Some((pos, event_room)) = world.with_session(target_sid, |h| (h.position, h.event_room))
+    {
+        world.broadcast_to_region_sync(
+            pos.zone_id,
+            pos.region_x,
+            pos.region_z,
+            Arc::new(pkt),
+            None,
+            event_room,
+        );
+    }
+    true
+}
+
+/// Apply a Type-4 support skill cast by an interactive NPC (Lua `CastSkill`).
+///
+/// C++ routes Lua casts through `CNpc::CastSkill()`.  Keep the same observable
+/// result here: store the authoritative buff, refresh derived stats, emit all
+/// special Type-4 state packets and broadcast MAGIC_EFFECTING with the NPC as
+/// caster.  This deliberately shares the normal Type-4 application path
+/// instead of duplicating only the visual animation in the Lua binding.
+pub(crate) fn apply_npc_type4_support(
+    world: &WorldState,
+    npc_id: u32,
+    target_sid: SessionId,
+    skill_id: u32,
+    zone_id: u16,
+    region_x: u16,
+    region_z: u16,
+    event_room: u16,
+) -> bool {
+    let Some(skill) = world.get_magic(skill_id as i32) else {
+        return false;
+    };
+    let Some(type4) = world.get_magic_type4(skill_id as i32) else {
+        return false;
+    };
+    if world.is_player_dead(target_sid) {
+        return false;
+    }
+
+    let duration = type4.duration.unwrap_or(0).max(0) as u16;
+    let buff = create_active_buff(skill_id, npc_id as SessionId, &type4, true);
+    world.apply_buff(target_sid, buff);
+    apply_type4_stats(
+        world,
+        target_sid,
+        &type4,
+        skill.skill.unwrap_or(0),
+        skill_id,
+    );
+    world.set_user_ability(target_sid);
+    world.send_item_move_refresh(target_sid);
+    broadcast_size_state_change(world, target_sid, &type4, skill_id);
+    broadcast_kaul_state_change(world, target_sid, &type4, skill_id);
+    broadcast_buff_state_change_on_apply(world, target_sid, &type4, skill_id);
+
+    let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+    pkt.write_u8(MAGIC_EFFECTING);
+    pkt.write_u32(skill_id);
+    pkt.write_u32(npc_id);
+    pkt.write_u32(target_sid as u32);
+    let data = [0, 1, 0, duration as i32, 0, type4.speed.unwrap_or(0), 0];
+    for value in data {
+        pkt.write_u32(value as u32);
+    }
+    world.broadcast_to_region_sync(zone_id, region_x, region_z, Arc::new(pkt), None, event_room);
+
+    tracing::info!(
+        target_sid,
+        npc_id,
+        skill_id,
+        buff_type = type4.buff_type.unwrap_or(0),
+        attack = type4.attack.unwrap_or(0),
+        ac = type4.ac.unwrap_or(0),
+        speed = type4.speed.unwrap_or(0),
+        duration,
+        "NPC Type-4 buff applied"
+    );
+    true
 }
 
 /// Create an `ActiveBuff` from a `MagicType4Row`.
@@ -4848,6 +6053,90 @@ fn check_skill_range(
         return false;
     }
 
+    let effective_range = resolve_skill_range(world, caster_sid, skill, target_sid);
+    if effective_range == 0 {
+        return true;
+    }
+
+    let dx = caster_pos.x - target_pos.x;
+    let dz = caster_pos.z - target_pos.z;
+    let dist_sq = dx * dx + dz * dz;
+    let range_sq = (effective_range as f32) * (effective_range as f32);
+
+    dist_sq <= range_sq
+}
+
+/// Type2 (archery) range check against an NPC target.
+/// C++ MagicInstance.cpp:3100-3129: for a skill that needs arrows (NeedArrow > 0), the
+/// max distance is driven by the caster's *equipped bow's own range*, not the skill
+/// table's `range` column — `total_range = (sAddRange * bow_range / 100)^2`. Only
+/// NeedArrow == 0 skills (throwing knives) fall back to the skill's own range field.
+/// This never had an NPC-target check at all before, which is what let every Type2
+/// skill — not just the multi-arrow ones — land from any distance.
+fn check_type2_npc_range(
+    world: &WorldState,
+    caster_sid: SessionId,
+    npc_id: u32,
+    type2_data: &MagicType2Row,
+    skill: &MagicRow,
+) -> bool {
+    let caster_pos = match world.get_position(caster_sid) {
+        Some(p) => p,
+        None => return false,
+    };
+    // Runtime bots share the NPC id band but live in `world.bots`, not the
+    // NPC instance map.
+    let (target_zone, target_x, target_z) = match world.get_npc_instance(npc_id) {
+        Some(n) => (n.zone_id, n.x, n.z),
+        None => match world.get_bot(npc_id) {
+            Some(b) => (b.zone_id, b.x, b.z),
+            None => return false,
+        },
+    };
+
+    if caster_pos.zone_id != target_zone {
+        return false;
+    }
+
+    let effective_range =
+        type2_skill_range(type2_data, skill, super::attack::get_weapon_range(world, caster_sid));
+    if effective_range <= 0.0 {
+        return true;
+    }
+
+    let dx = caster_pos.x - target_x;
+    let dz = caster_pos.z - target_z;
+    let dist_sq = dx * dx + dz * dz;
+
+    dist_sq <= effective_range * effective_range
+}
+
+/// Effective Type2 (archery) range for a caster whose equipped bow range is
+/// `weapon_range` (0 = unlimited). Shared by player casts and runtime bots.
+pub(crate) fn type2_skill_range(
+    type2_data: &MagicType2Row,
+    skill: &MagicRow,
+    weapon_range: f32,
+) -> f32 {
+    let need_arrow = type2_data.need_arrow.unwrap_or(0);
+    let add_range = type2_data.add_range.unwrap_or(100).max(0) as f32;
+    let base = if need_arrow > 0 {
+        weapon_range
+    } else {
+        skill.range.unwrap_or(0) as f32
+    };
+    add_range * base / 100.0
+}
+
+/// Resolve the effective skill range (0 = unlimited) per C++ MagicInstance.cpp:241-273.
+/// `target_sid` is only consulted for the PID-6200 drain-skill override; pass 0 for NPC
+/// targets (that override is session-only and never applies to them).
+pub(crate) fn resolve_skill_range(
+    world: &WorldState,
+    caster_sid: SessionId,
+    skill: &MagicRow,
+    target_sid: SessionId,
+) -> i32 {
     let base_range = skill.range.unwrap_or(0) as i32;
     let skill_id = skill.magic_num as u32;
     let type1 = skill.type1.unwrap_or(0);
@@ -4903,20 +6192,19 @@ fn check_skill_range(
         skill_range
     };
 
+    // C++ MagicInstance.cpp:279 only checks distance when the resolved range is non-zero
+    // (cast-time skills with `range 0`, e.g. archery, have no limit).
+    if skill_range == 0 {
+        return 0;
+    }
+
     // Item 391010000 special range
     // C++ line 273
-    let effective_range = if use_item == 391010000 {
+    if use_item == 391010000 {
         55
     } else {
         skill_range
-    };
-
-    let dx = caster_pos.x - target_pos.x;
-    let dz = caster_pos.z - target_pos.z;
-    let dist_sq = dx * dx + dz * dz;
-    let range_sq = (effective_range as f32) * (effective_range as f32);
-
-    dist_sq <= range_sq
+    }
 }
 
 /// Check if the target is NPC with proto_id 6200 (used for drain skill range override).
@@ -5138,13 +6426,14 @@ fn compute_type1_hit_damage(
             // C++ line 452-455:
             //   random = myrand(0, damage);  // damage == temp_hit at this point
             //   damage = (short)((temp_hit + 0.3f * random) + 0.99f);
+            // C++ Unit.cpp:361 — skills use `myrand(0, damage / 10)`.
             let random = if temp_hit > 0 {
-                rng.gen_range(0..=temp_hit)
+                rng.gen_range(0..=(temp_hit / 10))
             } else {
                 0
             };
             let damage = (temp_hit as f32 + 0.3 * random as f32 + 0.99) as i32;
-            damage.max(1) as i16
+            damage.clamp(1, 32000) as i16
         }
         _ => 0,
     }
@@ -5212,18 +6501,21 @@ fn compute_type2_hit_damage(
         (temp_hit_b as f32 * (s_add_damage / 100.0)) as i32
     };
 
+    // C++ Unit.cpp:340 — archery skills get `temp_hit = int32(temp_hit * 1.8)`.
+    let temp_hit = (temp_hit as f64 * 1.8) as i32;
+
     match result {
         GREAT_SUCCESS | SUCCESS | NORMAL => {
-            // C++ line 452, 457:
-            //   random = myrand(0, damage);  // damage == temp_hit at this point
+            // C++ Unit.cpp:361-365:
+            //   random = myrand(0, damage / 10);  // damage == temp_hit at this point
             //   damage = (short)(((temp_hit * 0.6f) + 1.0f * random) + 0.99f);
             let random = if temp_hit > 0 {
-                rng.gen_range(0..=temp_hit)
+                rng.gen_range(0..=(temp_hit / 10))
             } else {
                 0
             };
             let damage = (temp_hit as f32 * 0.6 + 1.0 * random as f32 + 0.99) as i32;
-            damage.max(1) as i16
+            damage.clamp(1, 32000) as i16
         }
         _ => 0,
     }
@@ -5337,6 +6629,7 @@ async fn apply_skill_damage(
         None => return,
     };
 
+    let damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
     if damage <= 0 {
         // Broadcast effect with 0 damage
         let pkt = instance.build_packet(MAGIC_EFFECTING);
@@ -5444,6 +6737,8 @@ async fn apply_skill_damage(
         }
     }
 
+    effective_damage =
+        gm_fixed_skill_damage(world, caster_sid, instance.skill_id, effective_damage);
     let new_hp = (target.hp - effective_damage).max(0);
     world.update_character_hp(target_sid, new_hp);
 
@@ -5457,8 +6752,8 @@ async fn apply_skill_damage(
     crate::handler::party::broadcast_party_hp(world, target_sid);
 
     // ── Equipment durability loss ─────────────────────────────────────
-    world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, damage as i32);
-    world.item_wore_out(target_sid, WORE_TYPE_DEFENCE, damage as i32);
+    world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, effective_damage as i32);
+    world.item_wore_out(target_sid, WORE_TYPE_DEFENCE, effective_damage as i32);
 
     try_reflect_damage(world, caster_sid, target_sid, damage).await;
 
@@ -5560,6 +6855,15 @@ async fn apply_skill_damage(
         // ── PvP loyalty (NP) change ─────────────────────────────────
         dead::pvp_loyalty_on_death(world, caster_sid, target_sid);
 
+        // ── Collection Race (PK zone player kill) ────────────────────
+        super::collection_race::credit_pk_zone_player_kill(
+            world,
+            caster_sid,
+            target_sid,
+            victim_zone,
+        )
+        .await;
+
         // ── Rivalry / Anger Gauge (magic kill path) ─────────────────
         {
             let now_secs = std::time::SystemTime::now()
@@ -5617,14 +6921,14 @@ async fn apply_skill_damage(
     broadcast_to_caster_region(world, caster_sid, &pkt);
 
     // Send HP update
-    send_target_hp_update(world, caster_sid, target_sid, damage as i32);
+    send_target_hp_update(world, caster_sid, target_sid, effective_damage as i32);
 
     tracing::debug!(
         "[sid={}] MagicProcess: skill={} target={} damage={} new_hp={}",
         caster_sid,
         instance.skill_id,
         target_sid,
-        damage,
+        effective_damage,
         new_hp
     );
 }
@@ -5757,16 +7061,14 @@ fn send_target_hp_update(
         None => return,
     };
 
-    let mut response = Packet::new(Opcode::WizTargetHp as u8);
-    response.write_u32(target_sid as u32);
-    response.write_u8(0);
-    response.write_u32(ch.max_hp as u32);
-    response.write_u32(ch.hp.max(0) as u32);
-    // C++ sends negative amount for damage, positive for heal. Client uses sign for display:
-    // negative = "X damage dealt", positive = "X HP received", 0 = no display
-    response.write_u32((-damage) as u32);
-    response.write_u32(0);
-    response.write_u8(0);
+    let response = super::target_hp::build_target_hp_packet(
+        target_sid as u32,
+        0,
+        ch.max_hp as u32,
+        ch.hp.max(0) as u32,
+        -damage,
+        -damage,
+    );
 
     world.send_to_session_owned(caster_sid, response);
 }
@@ -5780,7 +7082,7 @@ async fn apply_skill_damage_to_npc(
     npc_id: u32,
     instance: &MagicInstance,
     damage: i16,
-    _skill: &MagicRow,
+    skill: &MagicRow,
     attribute_type: u8,
 ) {
     // ── Bot target: apply damage, send HP update, handle death ─────
@@ -5792,6 +7094,8 @@ async fn apply_skill_damage_to_npc(
             return;
         }
 
+        let damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
+
         // Apply damage — clamp to [0, max_hp]
         let new_hp = (bot.hp - damage).max(0);
         world.update_bot(npc_id, |b| {
@@ -5799,21 +7103,55 @@ async fn apply_skill_damage_to_npc(
             b.last_attacker_id = caster_sid as i32;
         });
 
-        // Send WIZ_TARGET_HP to caster
-        let mut target_hp_pkt = ko_protocol::Packet::new(ko_protocol::Opcode::WizTargetHp as u8);
-        target_hp_pkt.write_u32(npc_id);
-        target_hp_pkt.write_u8(0); // echo
-        target_hp_pkt.write_u32(bot.max_hp as u32);
-        target_hp_pkt.write_u32(new_hp as u32);
-        target_hp_pkt.write_u32((-damage) as u32); // negative = damage dealt
-        target_hp_pkt.write_u32(0);
-        target_hp_pkt.write_u8(0);
-        world.send_to_session_owned(caster_sid, target_hp_pkt);
+        // v2625 reads the Ronark Land score delta from the *second* trailing
+        // dword of WIZ_TARGET_HP. Keep every damage path on the centralized
+        // builder so magic attacks against bots cannot silently bypass it.
+        let target_hp_pkt = super::target_hp::build_target_hp_packet(
+            npc_id,
+            0,
+            bot.max_hp as u32,
+            new_hp as u32,
+            -(damage as i32),
+            -(damage as i32),
+        );
+        world.broadcast_to_3x3(
+            bot.zone_id,
+            bot.region_x,
+            bot.region_z,
+            Arc::new(target_hp_pkt),
+            None,
+            0,
+        );
 
         // Handle death
         if new_hp <= 0 {
             let now_ms = crate::systems::bot_ai::tick_ms();
             crate::systems::bot_ai::bot_on_death(world, npc_id, now_ms);
+
+            // Same PK-zone-kill-counts-for-CR hook as the melee bot-death path
+            // in attack.rs — skill kills on bots were missing it entirely.
+            if matches!(
+                bot.zone_id,
+                crate::world::types::ZONE_RONARK_LAND
+                    | crate::world::types::ZONE_ARDREAM
+                    | crate::world::types::ZONE_RONARK_LAND_BASE
+            ) {
+                let cr = world.collection_race_event().clone();
+                if let Err(e) = super::collection_race::handle_kill(
+                    world,
+                    caster_sid,
+                    super::collection_race::CR_PK_BOT_KILL_PROTO_ID,
+                    &cr,
+                )
+                .await
+                {
+                    tracing::warn!("CR handle_kill error (PK bot skill kill): {}", e);
+                }
+
+                // Same party-NP hook as the melee bot-death path in attack.rs
+                // — skill kills on bots were missing it entirely too.
+                crate::systems::loyalty::pvp_loyalty_on_bot_kill(world, caster_sid, bot.nation);
+            }
         }
 
         tracing::debug!(
@@ -5834,10 +7172,45 @@ async fn apply_skill_damage_to_npc(
         None => return,
     };
 
+    // Full Moon Rift: Gluttony cannot be hurt by magic.
+    if npc.is_monster && npc.proto_id == super::dungeon_defence::GLUTTONY {
+        return;
+    }
+
+    // Fire & Ice: only the other nation's golems can be hurt, and golems take 30% from area skills.
+    if super::golem_war::is_golem(npc_id) {
+        if !super::golem_war::can_attack(world, caster_sid, npc_id) {
+            return;
+        }
+    }
+    let damage = if super::golem_war::is_golem(npc_id)
+        && matches!(skill.moral, Some(crate::magic_constants::MORAL_AREA_ENEMY) | Some(crate::magic_constants::MORAL_AREA_ALL))
+    {
+        ((damage as i32) * 30 / 100).max(1) as i16
+    } else {
+        damage
+    };
+
     let tmpl = match world.get_npc_template(npc.proto_id, npc.is_monster) {
         Some(t) => t,
         None => return,
     };
+
+    if npc.zone_id == crate::systems::juraid::ZONE_JURAID
+        && crate::systems::juraid::is_juraid_monument(npc.proto_id)
+        && world
+            .get_character_info(caster_sid)
+            .is_none_or(|ch| ch.nation == crate::systems::juraid::monument_nation(npc.proto_id))
+    {
+        tracing::debug!(
+            caster_sid,
+            monument_sid = npc.proto_id,
+            "Blocked magic attack against own Juraid monument"
+        );
+        return;
+    }
+
+    let damage = super::attack::scale_manes_magic_damage(world, caster_sid, &npc, damage);
 
     // NPC type validation — certain NPCs are immune to magic skills
     {
@@ -5858,8 +7231,10 @@ async fn apply_skill_damage_to_npc(
         let is_csw_door = tmpl.npc_type == NPC_GATE && matches!(npc.proto_id, 561..=563);
 
         if tmpl.npc_type == NPC_DESTROYED_ARTIFACT || is_csw_door {
-            let csw = world.csw_event().blocking_read();
-            let siege = world.siege_war().blocking_read();
+            // This path runs inside the async skill handler. Blocking an
+            // Tokio worker here panics exactly when Center Artifact is hit.
+            let csw = world.csw_event().read().await;
+            let siege = world.siege_war().read().await;
             let caster_clan = world
                 .get_character_info(caster_sid)
                 .map(|ch| ch.knights_id)
@@ -5881,7 +7256,15 @@ async fn apply_skill_damage_to_npc(
                     return;
                 }
             }
-            if tmpl.npc_type == NPC_PVP_MONUMENT || tmpl.npc_type == NPC_CLAN_WAR_MONUMENT {
+            if tmpl.npc_type == NPC_PVP_MONUMENT {
+                let caster_nation = world
+                    .get_character_info(caster_sid)
+                    .map(|ch| ch.nation)
+                    .unwrap_or(0);
+                if world.get_pvp_monument_nation(npc.zone_id) == caster_nation {
+                    return;
+                }
+            } else if tmpl.npc_type == NPC_CLAN_WAR_MONUMENT {
                 let caster_nation = world
                     .get_character_info(caster_sid)
                     .map(|ch| ch.nation)
@@ -5918,7 +7301,7 @@ async fn apply_skill_damage_to_npc(
         }
 
         // Neutral peaceful NPCs (group/nation == 3) cannot be magic-attacked
-        if tmpl.group == 3 {
+        if tmpl.group == 3 || npc.nation == 3 {
             return;
         }
     }
@@ -5929,6 +7312,7 @@ async fn apply_skill_damage_to_npc(
         _ => return,
     };
 
+    let damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
     if damage <= 0 {
         let pkt = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &pkt);
@@ -5941,7 +7325,9 @@ async fn apply_skill_damage_to_npc(
     world.record_npc_damage(npc_id, caster_sid, damage as i32);
 
     // ── Caster weapon durability loss ────────────────────────────────
-    world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, damage as i32);
+    if !super::attack::is_manes_survival_npc(&npc) {
+        world.item_wore_out(caster_sid, WORE_TYPE_ATTACK, damage as i32);
+    }
 
     // Notify NPC AI about damage (reactive aggro — C++ ChangeTarget)
     if new_hp > 0 {
@@ -5958,25 +7344,52 @@ async fn apply_skill_damage_to_npc(
     if new_hp <= 0 {
         // NPC died — delegate to shared death handler for consistent behavior
         // (death broadcast, party XP, loot, AI state cleanup)
-        super::attack::handle_npc_death(world, caster_sid, npc_id, &npc, &tmpl).await;
+        super::attack::handle_npc_death(
+            world,
+            caster_sid,
+            npc_id,
+            &npc,
+            &tmpl,
+            super::attack::is_manes_survival_npc(&npc),
+        )
+        .await;
     }
 
     // Broadcast skill effect
-    let pkt = instance.build_packet(MAGIC_EFFECTING);
+    let mut effect_instance = *instance;
+    if super::attack::is_manes_survival_npc(&npc) && skill.type1.unwrap_or(0) == 3 {
+        effect_instance.data[3] = -(damage as i32);
+    }
+    let pkt = effect_instance.build_packet(MAGIC_EFFECTING);
     broadcast_to_caster_region(world, caster_sid, &pkt);
 
     // Send HP bar update with actual damage for console display
     // C++ sends negative amount (damage dealt), client uses sign for display:
     // negative = "X damage dealt", positive = "X HP received"
-    let mut hp_pkt = Packet::new(Opcode::WizTargetHp as u8);
-    hp_pkt.write_u32(npc_id);
-    hp_pkt.write_u8(0);
-    hp_pkt.write_u32(tmpl.max_hp);
-    hp_pkt.write_u32(new_hp.max(0) as u32);
-    hp_pkt.write_u32((-(damage as i32)) as u32);
-    hp_pkt.write_u32(0);
-    hp_pkt.write_u8(0);
+    let hp_pkt = super::target_hp::build_target_hp_packet(
+        npc_id,
+        0,
+        tmpl.max_hp,
+        new_hp.max(0) as u32,
+        -(damage as i32),
+        -(damage as i32),
+    );
     world.send_to_session_owned(caster_sid, hp_pkt);
+    if tmpl.s_sid == crate::systems::manes_survival::DARK_DRAGON_SID as u16 {
+        world.manes_survival_manager.broadcast_dark_dragon_status(
+            world,
+            npc.zone_id,
+            crate::systems::manes_survival::DARK_DRAGON_UI_NAME,
+            tmpl.max_hp,
+            new_hp.max(0) as u32,
+        );
+    }
+    if new_hp <= 0 {
+        if super::attack::is_manes_survival_npc(&npc) {
+            super::attack::broadcast_npc_death(world, caster_sid, npc_id);
+        }
+        super::attack::flush_manes_progress(world, caster_sid);
+    }
 
     tracing::debug!(
         "[sid={}] MagicProcess NPC target={}: damage={}, new_hp={}/{}",
@@ -6071,6 +7484,46 @@ const TYPE5_LIFE_CRYSTAL: i32 = 6;
 /// - 4 (RESURRECTION_SELF): Self-resurrection (specific skill IDs)
 /// - 5 (REMOVE_BLESS): Remove HP/MP buff
 /// - 6 (LIFE_CRYSTAL): Self-resurrection via life crystal
+/// Remove a player's harmful DOT effects and clear the client's DOT indicator.
+fn cure_type3_dots(world: &WorldState, target_sid: SessionId) -> bool {
+    let removed = world.clear_harmful_dots(target_sid);
+    if removed {
+        // MAGIC_DURATION_EXPIRED with 200 removes the DOT visual.
+        let mut dot_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        dot_pkt.write_u8(MAGIC_DURATION_EXPIRED);
+        dot_pkt.write_u8(200);
+        world.send_to_session_owned(target_sid, dot_pkt);
+    }
+    removed
+}
+
+/// Slave Priest cure: harmful DOTs and Type4 debuffs.
+pub(crate) fn cure_player(world: &WorldState, target_sid: SessionId) {
+    cure_type3_dots(world, target_sid);
+    cure_type4_debuffs(world, target_sid);
+}
+
+/// Remove all Type4 debuffs from a player, with per-type cleanup and expiry notices for the
+/// owner only, then restore scroll buffs the debuffs had displaced.
+fn cure_type4_debuffs(world: &WorldState, target_sid: SessionId) -> Vec<i32> {
+    let removed_types = world.remove_debuffs(target_sid);
+    for buff_type in &removed_types {
+        crate::systems::buff_tick::buff_type_cleanup(world, target_sid, *buff_type, false);
+        world.send_to_session_owned(target_sid, build_buff_expired_packet(*buff_type as u8));
+    }
+    for buff_type in &removed_types {
+        if WorldState::is_lockable_scroll(*buff_type)
+            || world.has_saved_scroll_for_buff_type(target_sid, *buff_type)
+        {
+            world.recast_lockable_scrolls(target_sid, *buff_type);
+        }
+    }
+    if !removed_types.is_empty() {
+        world.set_user_ability(target_sid);
+    }
+    removed_types
+}
+
 async fn execute_type5(
     world: &WorldState,
     caster_sid: SessionId,
@@ -6087,6 +7540,25 @@ async fn execute_type5(
 
     let sub_type = type5_data.r#type.unwrap_or(0);
     let target_id = instance.target_id;
+
+    // Group cure (target -1, party-wide moral, e.g. Bless of God): every party member in range.
+    if target_id < 0
+        && matches!(sub_type, TYPE5_REMOVE_TYPE3 | TYPE5_REMOVE_TYPE4)
+        && skill.moral.unwrap_or(0) == MORAL_PARTY_ALL
+    {
+        let radius = skill.range.unwrap_or(0).max(0) as f32;
+        for member in collect_party_all_targets(world, caster_sid, radius, |_| false) {
+            if sub_type == TYPE5_REMOVE_TYPE3 {
+                cure_type3_dots(world, member);
+            } else {
+                cure_type4_debuffs(world, member);
+            }
+        }
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        return true;
+    }
 
     // Single-target case
     let target_sid = if target_id < 0 || (target_id as u32) >= NPC_BAND {
@@ -6106,15 +7578,7 @@ async fn execute_type5(
 
     match sub_type {
         TYPE5_REMOVE_TYPE3 => {
-            // Remove all harmful DOT effects (negative hp_amount)
-            let removed = world.clear_harmful_dots(target_sid);
-            if removed {
-                // Send MAGIC_DURATION_EXPIRED with type 200 to remove DOT visual
-                let mut dot_pkt = Packet::new(Opcode::WizMagicProcess as u8);
-                dot_pkt.write_u8(MAGIC_DURATION_EXPIRED);
-                dot_pkt.write_u8(200); // C++ uses 200 for DOT removal
-                world.send_to_session_owned(target_sid, dot_pkt);
-            }
+            let removed = cure_type3_dots(world, target_sid);
             tracing::debug!(
                 "[sid={}] MagicProcess Type 5: REMOVE_TYPE3 target={} removed={}",
                 caster_sid,
@@ -6124,22 +7588,7 @@ async fn execute_type5(
         }
 
         TYPE5_REMOVE_TYPE4 => {
-            // Remove all type 4 debuffs
-            let removed_types = world.remove_debuffs(target_sid);
-            for buff_type in &removed_types {
-                let expired_pkt = build_buff_expired_packet(*buff_type as u8);
-                broadcast_to_caster_region(world, caster_sid, &expired_pkt);
-            }
-            // after debuff removal. For each removed debuff type, if it's lockable,
-            // recast the original scroll buff from saved magic.
-            for buff_type in &removed_types {
-                if WorldState::is_lockable_scroll(*buff_type) {
-                    world.recast_lockable_scrolls(target_sid, *buff_type);
-                }
-            }
-            if !removed_types.is_empty() {
-                world.set_user_ability(target_sid);
-            }
+            let removed_types = cure_type4_debuffs(world, target_sid);
             tracing::debug!(
                 "[sid={}] MagicProcess Type 5: REMOVE_TYPE4 target={} removed={} debuffs",
                 caster_sid,
@@ -6312,9 +7761,21 @@ async fn execute_type5(
 
         TYPE5_REMOVE_BLESS => {
             // Remove HP/MP buff (buff_type for HP_MP bless)
-            let removed = world.remove_buff(target_sid, 50); // BUFF_TYPE_HP_MP = 50
+            const BUFF_TYPE_HP_MP: i32 = 1;
+            let removed = world.remove_buff(target_sid, BUFF_TYPE_HP_MP);
             if removed.is_some() {
+                crate::systems::buff_tick::buff_type_cleanup(
+                    world,
+                    target_sid,
+                    BUFF_TYPE_HP_MP,
+                    true,
+                );
+                world.send_to_session_owned(
+                    target_sid,
+                    build_buff_expired_packet(BUFF_TYPE_HP_MP as u8),
+                );
                 world.set_user_ability(target_sid);
+                world.send_item_move_refresh(target_sid);
             }
             tracing::debug!(
                 "[sid={}] MagicProcess Type 5: REMOVE_BLESS target={}",
@@ -6346,7 +7807,7 @@ async fn execute_type5(
 /// 2. Initialize stealth (reset invisibility)
 /// 3. Cure DOT & Poison status effects
 /// 4. Activate blink (10s invulnerability)
-fn post_resurrection_sequence(world: &WorldState, sid: SessionId, zone_id: u16) {
+pub(crate) fn post_resurrection_sequence(world: &WorldState, sid: SessionId, zone_id: u16) {
     // ── 1. Broadcast INOUT_RESPAWN to 3×3 region ─────────────────────
     if let Some((pos, my_char, event_room)) =
         world.with_session(sid, |h| (h.position, h.character.clone(), h.event_room))
@@ -6365,6 +7826,9 @@ fn post_resurrection_sequence(world: &WorldState, sid: SessionId, zone_id: u16) 
         let ac = my_clan
             .as_ref()
             .and_then(|ki| crate::handler::region::resolve_alliance_cape(ki, world));
+        let is_king = my_char
+            .as_ref()
+            .is_some_and(|ch| world.is_king(ch.nation, &ch.name));
         let inout_pkt = crate::handler::region::build_user_inout_with_clan(
             crate::handler::region::INOUT_RESPAWN,
             sid,
@@ -6372,6 +7836,7 @@ fn post_resurrection_sequence(world: &WorldState, sid: SessionId, zone_id: u16) 
             &pos,
             my_clan.as_ref(),
             ac,
+            is_king,
             my_invis,
             my_abnormal,
             &my_bs,
@@ -6497,6 +7962,14 @@ fn execute_type6(
         .map(|p| p.zone_id)
         .unwrap_or(0);
 
+    // Type 6 is exempt from the generic item check, so direct v2615 scrolls
+    // must be validated here before applying their transformation.
+    let required_item = resolve_consume_item(skill);
+    if required_item != 0 && !world.check_exist_item(caster_sid, required_item, 1) {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    }
+
     // ── Zone-specific transformation validation ──────────────────────
     // user_skill_use values follow the C++ TransformationSkillUse enum:
     //   0 = Siege, 1 = Monster, 3 = NPC, 4 = Special,
@@ -6558,19 +8031,18 @@ fn execute_type6(
         return false;
     }
 
-    let duration = type6_data.duration as u16;
+    let duration = type6_data.duration.clamp(0, u16::MAX as i32) as u16;
     let transform_id = type6_data.transform_id;
 
     // Determine transformation type from user_skill_use
-    let transformation_type = match type6_data.user_skill_use {
-        1 => TRANSFORMATION_MONSTER,       // TransformationSkillUseMonster
-        2 | 5 => TRANSFORMATION_NPC,       // TransformationSkillUseNPC / MamaPag
-        3 | 4 | 6 => TRANSFORMATION_SIEGE, // Siege / MovingTower / OreadsGuard
-        _ => {
-            send_skill_failed(world, caster_sid, instance);
-            return false;
-        }
-    };
+    let transformation_type =
+        match transformation_type_from_user_skill_use(type6_data.user_skill_use) {
+            Some(value) => value,
+            None => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
 
     // Store transformation state on the session
     let now_ms = std::time::SystemTime::now()
@@ -6587,10 +8059,22 @@ fn execute_type6(
         duration as u64 * 1000, // C++ stores in milliseconds
     );
 
-    // Store transformation state on the character
-    world.update_character_stats(caster_sid, |ch| {
-        ch.res_hp_type = 3; // Transformed state (C++ StateChangeServerDirect(3, nSkillID))
+    // A GM must first be made visible, otherwise its entity is absent from
+    // the region when the client rebuilds the transformation model.
+    if caster.authority == 0 {
+        let mut visible_pkt = Packet::new(Opcode::WizStateChange as u8);
+        visible_pkt.write_u32(caster_sid as u32);
+        visible_pkt.write_u8(5);
+        visible_pkt.write_u32(1);
+        broadcast_to_caster_region(world, caster_sid, &visible_pkt);
+    }
+
+    world.update_session(caster_sid, |h| {
+        h.old_abnormal_type = h.abnormal_type;
+        h.abnormal_type = skill.magic_num as u32;
     });
+
+    // res_hp_type must remain untouched: value 3 means USER_DEAD here.
 
     // C++ line 5192-5194: sData[1]=1, sData[3]=duration, SendSkill()
     instance.data[1] = 1;
@@ -6599,11 +8083,11 @@ fn execute_type6(
     let pkt = instance.build_packet(MAGIC_EFFECTING);
     broadcast_to_caster_region(world, caster_sid, &pkt);
 
-    // Broadcast state change (transformation) to region
-    // C++ line 5190: StateChangeServerDirect(3, nSkillID)
+    // v2615 client sub_8544D0: state 0x13 resolves this skill ID through
+    // sub_9173E0 and rebuilds the character as the Type6 transform model.
     let mut state_pkt = Packet::new(Opcode::WizStateChange as u8);
     state_pkt.write_u32(caster_sid as u32);
-    state_pkt.write_u8(3); // type 3 = transformation
+    state_pkt.write_u8(STATE_CHANGE_TRANSFORMATION);
     state_pkt.write_u32(skill.magic_num as u32);
     broadcast_to_caster_region(world, caster_sid, &state_pkt);
 
@@ -6624,6 +8108,18 @@ fn execute_type6(
 }
 
 // ── Type 7: Summon / CC ─────────────────────────────────────────────────
+
+/// Map the v2615 Skill_Magic_6 `user_skill_use` enum to runtime state.
+pub(crate) fn transformation_type_from_user_skill_use(user_skill_use: i32) -> Option<u8> {
+    Some(match user_skill_use {
+        1 => TRANSFORMATION_MONSTER,
+        // NPC, Special (event/snowman), and MamaPag.
+        3 | 4 | 7 => TRANSFORMATION_NPC,
+        // Siege, OreadsGuard, and MovingTower.
+        0 | 5 | 6 => TRANSFORMATION_SIEGE,
+        _ => return None,
+    })
+}
 
 /// Execute Type 7 skill -- summoning / crowd control / target change.
 /// Handles target-change effects, NPC sleep/stun, and NPC damage.
@@ -6648,32 +8144,57 @@ async fn execute_type7(
     instance.data[1] = 1;
 
     let target_id = instance.target_id;
+    let sleep_ms = type7_data.duration.max(0) as u64 * 1000;
 
     if target_id >= 0 {
-        let target_is_npc = (target_id as u32) >= NPC_BAND;
-
-        if target_is_npc && damage > 0 {
-            // Apply damage to NPC target
+        if (target_id as u32) >= NPC_BAND {
             let npc_id = target_id as u32;
-            apply_skill_damage_to_npc(world, caster_sid, npc_id, instance, damage, skill, 0).await;
+            if damage > 0 {
+                apply_skill_damage_to_npc(world, caster_sid, npc_id, instance, damage, skill, 0)
+                    .await;
+            }
+            // Target change type 2 = sleep/stun NPC
+            if target_change == 2 {
+                put_npc_to_sleep(world, caster_sid, npc_id, sleep_ms);
+            }
         }
-
-        // Target change type 2 = sleep/stun NPC
-        if target_change == 2 && (target_id as u32) >= NPC_BAND {
-            let npc_id = target_id as u32;
-            // Set NPC to fainted/sleeping state
-            let mut state_pkt = Packet::new(Opcode::WizStateChange as u8);
-            state_pkt.write_u32(npc_id);
-            state_pkt.write_u8(1); // type 1 = general state
-            state_pkt.write_u32(4); // value 4 = stunned/sleeping
-            broadcast_to_caster_region(world, caster_sid, &state_pkt);
-
-            tracing::debug!(
-                "[sid={}] MagicProcess Type 7: sleep NPC {} for {}s",
-                caster_sid,
-                npc_id,
-                type7_data.duration
-            );
+    } else if let Some(caster_pos) = world.get_position(caster_sid) {
+        // Area cast (Provoke, Sleep Carpet/Wing): every monster inside the radius.
+        let (cx, cz) = resolve_aoe_center(
+            instance.data[0],
+            instance.data[2],
+            caster_pos.x,
+            caster_pos.z,
+        );
+        let radius = type7_data.radius as f32;
+        let event_room = world.get_event_room(caster_sid);
+        for npc_id in world.get_nearby_npc_ids(
+            caster_pos.zone_id,
+            caster_pos.region_x,
+            caster_pos.region_z,
+            event_room,
+        ) {
+            let Some(npc) = world.get_npc_instance(npc_id) else {
+                continue;
+            };
+            if !npc.is_monster || !matches!(world.get_npc_hp(npc_id), Some(hp) if hp > 0) {
+                continue;
+            }
+            let dx = cx - npc.x;
+            let dz = cz - npc.z;
+            if radius > 0.0 && dx * dx + dz * dz > radius * radius {
+                continue;
+            }
+            if damage > 0 {
+                apply_skill_damage_to_npc(world, caster_sid, npc_id, instance, damage, skill, 0)
+                    .await;
+            }
+            if target_change == 2 {
+                put_npc_to_sleep(world, caster_sid, npc_id, sleep_ms);
+            } else {
+                // Provoke: the monster turns on the caster.
+                world.notify_npc_damaged(npc_id, caster_sid);
+            }
         }
     }
 
@@ -6690,6 +8211,24 @@ async fn execute_type7(
     );
 
     true
+}
+
+/// Put a living monster to sleep: tell clients and switch its AI to `Sleeping`
+/// until `now + sleep_ms` (the AI wakes it into `Fighting`).
+fn put_npc_to_sleep(world: &WorldState, caster_sid: SessionId, npc_id: u32, sleep_ms: u64) {
+    if !matches!(world.get_npc_hp(npc_id), Some(hp) if hp > 0) {
+        return;
+    }
+    let mut state_pkt = Packet::new(Opcode::WizStateChange as u8);
+    state_pkt.write_u32(npc_id);
+    state_pkt.write_u8(1); // type 1 = general state
+    state_pkt.write_u32(4); // value 4 = stunned/sleeping
+    broadcast_to_caster_region(world, caster_sid, &state_pkt);
+
+    world.update_npc_ai(npc_id, |s| {
+        s.state = crate::world::NpcState::Sleeping;
+        s.fainting_until_ms = s.last_tick_ms.saturating_add(sleep_ms);
+    });
 }
 
 // ── Type 8: Teleport / Knockback ────────────────────────────────────────
@@ -6714,43 +8253,341 @@ fn execute_type8(
 
     let warp_type = type8_data.warp_type;
 
-    // WARP_RESURRECTION (1): teleport to bind point
-    if warp_type == 1 {
-        let target_sid = if instance.target_id < 0 {
-            caster_sid
-        } else {
-            instance.target_id as SessionId
-        };
-
-        let target = match world.get_character_info(target_sid) {
-            Some(ch) => ch,
+    // Type 25 is used by Descent and Wild Advent (2625 Skill_Magic_8.tbl).
+    // The older Rust fallback treated every unrecognized warp type as a
+    // knockback, so these skills played an effect but never moved the caster.
+    if warp_type == 25 {
+        let destination = match type8_warp25_destination(world, caster_sid, instance, skill) {
+            Some(pos) => pos,
             None => {
                 send_skill_failed(world, caster_sid, instance);
                 return false;
             }
         };
 
-        // Teleport to bind zone
-        tracing::debug!(
-            "[sid={}] MagicProcess Type 8: warp to bind zone={} x={} z={}",
-            target_sid,
-            target.bind_zone,
-            target.bind_x,
-            target.bind_z
-        );
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        if !crate::handler::region::relocate_user_within_zone(
+            world,
+            caster_sid,
+            destination.x,
+            destination.y,
+            destination.z,
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        return true;
+    }
+
+    // Type 27 is used by the TBL-defined summon/teleport skills. C++ requires
+    // an enabled teleport zone, same zone and same nation before moving caster
+    // to the target's current position.
+    if warp_type == 27 {
+        let destination = match type8_warp27_destination(world, caster_sid, instance, skill) {
+            Some(pos) => pos,
+            None => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
 
         instance.data[1] = 1;
-        // Broadcast the effect before warping
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        if !crate::handler::region::relocate_user_within_zone(
+            world,
+            caster_sid,
+            destination.x,
+            destination.y,
+            destination.z,
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        return true;
+    }
+
+    // Type 12 summons an eligible party member to the caster. These are the
+    // 2625 client-table friend-summon skills (109004/110004/209004/210004,
+    // 490042 and 490050); restrictions mirror MagicInstance::ExecuteType8.
+    if warp_type == 12 {
+        let targets: Vec<SessionId> = if skill.magic_num == 490050 {
+            type8_warp12_party(world, caster_sid, skill)
+        } else {
+            type8_warp12_target(world, caster_sid, instance, skill).into_iter().collect()
+        };
+        if targets.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let Some(destination) = world.get_position(caster_sid) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        let mut moved = 0;
+        for target_sid in targets {
+            if crate::handler::region::relocate_user_within_zone(world, target_sid, destination.x, destination.y, destination.z) {
+                moved += 1;
+            }
+        }
+        if moved == 0 {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        return true;
+    }
+
+    // Type 21 is the monster-summon scroll/staff family. The source server
+    // chooses uniformly from the corresponding summon-list class.
+    if warp_type == 21 {
+        let summon_type = match skill.magic_num {
+            490088 | 490093 | 490096 | 490097 | 500202 => 1,
+            492015 => 2,
+            _ => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
+        let Some(position) = world.get_position(caster_sid) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+        let summons = world.get_monster_summons_by_type(summon_type);
+        if summons.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let selected = rand::thread_rng().gen_range(0..summons.len());
+        let spawned = world.spawn_event_npc(
+            summons[selected].s_sid as u16,
+            true,
+            position.zone_id,
+            position.x,
+            position.z,
+            1,
+        );
+        if spawned.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        return true;
+    }
+
+    // v2625 Skill_Magic_8 uses warp type 26 for Blink (older DB snapshots
+    // used 20).  The client sends the already-resolved destination in
+    // sData[0]/sData[2], in tenths of a world unit.  Previously this path
+    // fell through to the knockback branch and only played the animation.
+    if warp_type == 20 || warp_type == 26 {
+        let pos = match world.get_position(caster_sid) {
+            Some(pos) => pos,
+            None => {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+        };
+        let blink_allowed = world
+            .get_zone(pos.zone_id)
+            .and_then(|zone| zone.zone_info.clone())
+            .is_some_and(|info| info.abilities.blink_zone);
+        let dest_x = instance.data[0] as f32 / 10.0;
+        let dest_z = instance.data[2] as f32 / 10.0;
+        let destination_valid = world
+            .get_zone(pos.zone_id)
+            .is_some_and(|zone| zone.is_valid_position(dest_x, dest_z));
+        if !blink_allowed || !destination_valid {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+
+        instance.data[1] = 1;
+        let effect = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &effect);
+        if !crate::handler::region::relocate_user_within_zone(
+            world, caster_sid, dest_x, pos.y, dest_z,
+        ) {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+
+        tracing::info!(
+            caster_sid,
+            skill_id = instance.skill_id,
+            warp_type,
+            zone_id = pos.zone_id,
+            dest_x,
+            dest_z,
+            "mage Blink applied"
+        );
+        return true;
+    }
+
+    // WARP_RESURRECTION (1): teleport to bind point
+    if warp_type == 1 {
+        // Gate / Escape / Bind scroll: send the target(s) to their bind point in the
+        // current zone, or to a random start position when no bind point is set.
+        let targets: Vec<SessionId> = if instance.target_id >= 0 {
+            vec![instance.target_id as SessionId]
+        } else if skill.moral.unwrap_or(0) == MORAL_PARTY_ALL {
+            collect_party_all_targets(world, caster_sid, type8_data.radius as f32, |_| false)
+        } else {
+            vec![caster_sid]
+        };
+
+        let mut moves: Vec<(SessionId, f32, f32, f32)> = Vec::with_capacity(targets.len());
+        for target_sid in targets {
+            let (Some(target), Some(pos)) = (
+                world.get_character_info(target_sid),
+                world.get_position(target_sid),
+            ) else {
+                continue;
+            };
+            if target.res_hp_type == USER_DEAD || target.hp <= 0 {
+                continue;
+            }
+            // C++: bind object of the current zone, else the nation's start position
+            // (plus a random offset inside the start range).
+            let dest = if target.bind_zone as u16 == pos.zone_id
+                && (target.bind_x != 0.0 || target.bind_z != 0.0)
+            {
+                Some((target.bind_x, target.bind_z))
+            } else if let Some(start) = world.get_start_position(pos.zone_id) {
+                let (bx, bz) = if target.nation == 1 {
+                    (start.karus_x, start.karus_z)
+                } else {
+                    (start.elmorad_x, start.elmorad_z)
+                };
+                let mut rng = rand::thread_rng();
+                let ox = if start.range_x > 0 {
+                    rng.gen_range(0..=start.range_x)
+                } else {
+                    0
+                };
+                let oz = if start.range_z > 0 {
+                    rng.gen_range(0..=start.range_z)
+                } else {
+                    0
+                };
+                Some(((bx + ox) as f32, (bz + oz) as f32))
+            } else {
+                world.get_start_position_random(pos.zone_id)
+            };
+            if let Some((x, z)) = dest {
+                moves.push((target_sid, x, pos.y, z));
+            }
+        }
+        if moves.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        for (target_sid, x, y, z) in moves {
+            crate::handler::region::relocate_user_within_zone(world, target_sid, x, y, z);
+        }
+        return true;
+    }
+
+    // Warp 3 (invasion scrolls) and 28 are no-ops in C++: the cast simply succeeds.
+    if matches!(warp_type, 3 | 28) {
+        instance.data[1] = 1;
         let pkt = instance.build_packet(MAGIC_EFFECTING);
         broadcast_to_caster_region(world, caster_sid, &pkt);
         return true;
     }
 
-    // Knockback: apply kick_distance in the direction from caster to target
+    // Warp 2: Bifrost chamber transport scrolls (490301-490307) and the Battle2 recall.
+    if warp_type == 2 {
+        let (Some(pos), Some(caster)) = (
+            world.get_position(caster_sid),
+            world.get_character_info(caster_sid),
+        ) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+        let destination: Option<(f32, f32)> = if caster.res_hp_type == USER_DEAD || caster.hp <= 0
+        {
+            None
+        } else if pos.zone_id == 31 {
+            // ZONE_BIFROST: fixed chamber coordinates.
+            match skill.magic_num {
+                490301 => Some((227.0, 819.0)),
+                490302 => Some((770.0, 818.0)),
+                490303 => Some((671.0, 355.0)),
+                490304 => Some((498.0, 396.0)),
+                490305 => Some((102.0, 140.0)),
+                490306 => Some((440.0, 188.0)),
+                490307 => Some((712.0, 183.0)),
+                _ => None,
+            }
+        } else if pos.zone_id == ZONE_BATTLE2 && (490301..=490307).contains(&skill.magic_num) {
+            if caster.nation == NATION_KARUS {
+                Some((394.0, 632.0))
+            } else {
+                Some((600.0, 340.0))
+            }
+        } else {
+            None
+        };
+        let Some((x, z)) = destination else {
+            instance.data[1] = 0;
+            let pkt = instance.build_packet(MAGIC_EFFECTING);
+            broadcast_to_caster_region(world, caster_sid, &pkt);
+            return false;
+        };
+        instance.data[1] = 1;
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        crate::handler::region::relocate_user_within_zone(world, caster_sid, x, pos.y, z);
+        return true;
+    }
+
+    // Warp 30 (Kurian Rush) and 31 (Kurian Pull): player-vs-player only. The client does the
+    // movement; the server confirms (Pull succeeds on a 6-in-11 roll like C++).
+    if warp_type == 30 || warp_type == 31 {
+        let target_id = instance.target_id;
+        let valid = target_id >= 0
+            && (target_id as u32) < NPC_BAND
+            && (warp_type == 30 || target_id as SessionId != caster_sid)
+            && world
+                .get_character_info(target_id as SessionId)
+                .is_some_and(|t| t.res_hp_type != USER_DEAD && t.hp > 0);
+        if !valid {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let success = warp_type == 30 || rand::thread_rng().gen_range(0..=10) <= 5;
+        instance.data[1] = i32::from(success);
+        let pkt = instance.build_packet(MAGIC_EFFECTING);
+        broadcast_to_caster_region(world, caster_sid, &pkt);
+        return true;
+    }
+
+    // Only the explicitly implemented knockback subtype may use the generic
+    // kick-distance calculation. Other warp types are summons, event warps,
+    // pulls, or special mechanics and must not be mis-executed as knockback.
+    if warp_type != 29 {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    }
+
+    // Soccer ball movement: apply kick_distance in the direction from caster
+    // to target (the special socket/move-result behavior is not represented by
+    // this generic player-only handler, so reject non-NPC targets below).
     let kick_dist = type8_data.kick_distance as f32;
     if kick_dist > 0.0 {
         let target_id = instance.target_id;
-        if target_id >= 0 {
+        if target_id >= 0 && (target_id as u32) >= NPC_BAND {
             let target_sid = target_id as SessionId;
             let caster_pos = world.get_position(caster_sid);
             let target_pos = world.get_position(target_sid);
@@ -6780,9 +8617,188 @@ fn execute_type8(
         }
     }
 
+    if kick_dist <= 0.0 || (instance.target_id as u32) < NPC_BAND {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    }
+
     instance.data[1] = 1;
     let pkt = instance.build_packet(MAGIC_EFFECTING);
     broadcast_to_caster_region(world, caster_sid, &pkt);
+    true
+}
+
+/// Validate the C++ MagicInstance::ExecuteType8 warp-type-25 prerequisites
+/// and return the target position if the caster may teleport to them.
+fn type8_warp25_destination(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &MagicInstance,
+    skill: &MagicRow,
+) -> Option<Position> {
+    let target_sid = u16::try_from(instance.target_id).ok()?;
+    if instance.target_id < 0 || (instance.target_id as u32) >= NPC_BAND {
+        return None;
+    }
+
+    let caster = world.get_character_info(caster_sid)?;
+    let target = world.get_character_info(target_sid)?;
+    let caster_pos = world.get_position(caster_sid)?;
+    let target_pos = world.get_position(target_sid)?;
+    if caster_sid == target_sid || caster_pos.zone_id != target_pos.zone_id {
+        return None;
+    }
+
+    let type8 = world.get_magic_type8(skill.magic_num)?;
+    let dx = target_pos.x - caster_pos.x;
+    let dz = target_pos.z - caster_pos.z;
+    let max_distance = type8.radius.max(0) as f32;
+    if max_distance <= 0.0 || (dx * dx + dz * dz).sqrt() > max_distance {
+        return None;
+    }
+
+    match skill.moral.unwrap_or(0) {
+        MORAL_PARTY => {
+            if caster.party_id.is_none() || caster.party_id != target.party_id {
+                return None;
+            }
+        }
+        MORAL_ENEMY => {
+            if !crate::handler::attack::is_hostile_to(
+                world,
+                caster_sid,
+                &caster,
+                &caster_pos,
+                target_sid,
+                &target,
+                &target_pos,
+            ) {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+
+    // C++ allows Wild Advent outside a teleport-enabled zone; Descent still
+    // obeys the zone's teleport flag.
+    if !matches!(skill.magic_num, 108770 | 208770)
+        && !world
+            .get_zone(caster_pos.zone_id)
+            .and_then(|zone| zone.zone_info.clone())
+            .is_some_and(|info| info.abilities.teleport)
+    {
+        return None;
+    }
+
+    let valid_destination = world
+        .get_zone(target_pos.zone_id)
+        .is_some_and(|zone| zone.is_valid_position(target_pos.x, target_pos.z));
+    valid_destination.then_some(target_pos)
+}
+
+/// Validate C++ warp-type-27 requirements and return the caster destination.
+fn type8_warp27_destination(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &MagicInstance,
+    skill: &MagicRow,
+) -> Option<Position> {
+    let target_sid = u16::try_from(instance.target_id).ok()?;
+    if instance.target_id < 0 || (instance.target_id as u32) >= NPC_BAND {
+        return None;
+    }
+    let caster = world.get_character_info(caster_sid)?;
+    let target = world.get_character_info(target_sid)?;
+    let caster_pos = world.get_position(caster_sid)?;
+    let target_pos = world.get_position(target_sid)?;
+    if caster_pos.zone_id != target_pos.zone_id || caster.nation != target.nation {
+        return None;
+    }
+    if skill.magic_num == 500038
+        && (crate::world::ZONE_SPBATTLE_MIN..=crate::world::ZONE_SPBATTLE_MAX)
+            .contains(&caster_pos.zone_id)
+    {
+        return None;
+    }
+    if !world
+        .get_zone(caster_pos.zone_id)
+        .and_then(|zone| zone.zone_info.clone())
+        .is_some_and(|info| info.abilities.teleport)
+    {
+        return None;
+    }
+    world
+        .get_zone(target_pos.zone_id)
+        .is_some_and(|zone| zone.is_valid_position(target_pos.x, target_pos.z))
+        .then_some(target_pos)
+}
+
+/// Validate the C++ friend-summon Type 12 gates and return the party target.
+fn type8_warp12_target(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &MagicInstance,
+    skill: &MagicRow,
+) -> Option<SessionId> {
+    if skill.magic_num == 490050 {
+        // "Call Party": every party member comes, there is no single target
+        return type8_warp12_party(world, caster_sid, skill).first().copied();
+    }
+    let target_sid = u16::try_from(instance.target_id).ok()?;
+    if instance.target_id < 0 || (instance.target_id as u32) >= NPC_BAND {
+        return None;
+    }
+    type8_warp12_check(world, caster_sid, target_sid, skill).then_some(target_sid)
+}
+
+/// The party members a "Call Party" (490050) brings to the caster.
+fn type8_warp12_party(world: &WorldState, caster_sid: SessionId, skill: &MagicRow) -> Vec<SessionId> {
+    let Some(party) = world.get_party_id(caster_sid).and_then(|p| world.get_party(p)) else {
+        return Vec::new();
+    };
+    party
+        .active_members()
+        .into_iter()
+        .filter(|&m| m != caster_sid && type8_warp12_check(world, caster_sid, m, skill))
+        .collect()
+}
+
+fn type8_warp12_check(world: &WorldState, caster_sid: SessionId, target_sid: SessionId, skill: &MagicRow) -> bool {
+    let (Some(caster), Some(target)) = (world.get_character_info(caster_sid), world.get_character_info(target_sid)) else {
+        return false;
+    };
+    let (Some(caster_pos), Some(target_pos)) = (world.get_position(caster_sid), world.get_position(target_sid)) else {
+        return false;
+    };
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if caster_sid == target_sid
+        || caster_pos.zone_id != target_pos.zone_id
+        || caster.party_id.is_none()
+        || caster.party_id != target.party_id
+        || world.is_player_dead(target_sid)
+        || world.is_player_blinking(target_sid, now_unix)
+    {
+        return false;
+    }
+
+    let Some(zone) = world.get_zone(caster_pos.zone_id) else { return false };
+    let Some(info) = zone.zone_info.as_ref() else { return false };
+    let abilities = &info.abilities;
+    match skill.magic_num {
+        490042 => return false, // Monster summon counterpart is not a friend-call skill.
+        490050 if !abilities.calling_friend => {
+            tracing::warn!("Call Party refused: zone {} has calling_friend off", caster_pos.zone_id);
+            return false;
+        }
+        109004 | 110004 | 209004 | 210004 if !abilities.teleport_friend => return false,
+        _ => {}
+    }
+    if matches!(skill.magic_num, 490042 | 490050) && caster_pos.zone_id == ZONE_FORGOTTEN_TEMPLE {
+        return false;
+    }
     true
 }
 
@@ -6867,6 +8883,93 @@ fn execute_type9(
         }
     }
 
+    // See-invisible states (3 Cat's Eyes, 4 Lupine Eyes): tell the client(s) to reveal
+    // stealthed units within the radius; state 4 also covers the caster's party.
+    if state_change == 3 || state_change == 4 {
+        let mut reveal_pkt = Packet::new(Opcode::WizStealth as u8);
+        reveal_pkt.write_u8(1);
+        reveal_pkt.write_u16(type9_data.radius.unwrap_or(0).max(0) as u16);
+
+        let mut recipients: Vec<SessionId> = vec![caster_sid];
+        if state_change == 4 {
+            recipients =
+                collect_party_all_targets(world, caster_sid, 0.0, |_| false);
+        }
+        instance.data[1] = 1;
+        instance.data[3] = duration;
+        for member in recipients {
+            world.send_to_session_owned(member, reveal_pkt.clone());
+            if member != caster_sid {
+                // Give each party member the skill icon as well.
+                let mut icon = *instance;
+                icon.target_id = member as i32;
+                world.send_to_session_owned(member, icon.build_packet(MAGIC_EFFECTING));
+            }
+        }
+        world.send_to_session_owned(caster_sid, instance.build_packet(MAGIC_EFFECTING));
+        return true;
+    }
+
+    // Guard / monster summons (9 Guard Summon, 7 summon scrolls): spawn the monster next to the
+    // caster for `duration` seconds on the caster's side.
+    if matches!(state_change, 7 | 9 | 10..=13) {
+        let (summon_count, timed) = type9_summon_params(skill.magic_num);
+        let monster = type9_data.monster_num.unwrap_or(0);
+        let (Some(pos), Some(caster)) = (
+            world.get_position(caster_sid),
+            world.get_character_info(caster_sid),
+        ) else {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        };
+        if monster <= 0 || monster > u16::MAX as i32 {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let summon_type = if state_change == 9 { 7 } else { 0 };
+        let spawned = world.spawn_event_npc_ex(
+            monster as u16,
+            true,
+            pos.zone_id,
+            pos.x,
+            pos.z,
+            summon_count,
+            world.get_event_room(caster_sid),
+            summon_type,
+        );
+        if spawned.is_empty() {
+            send_skill_failed(world, caster_sid, instance);
+            return false;
+        }
+        let nation = if state_change == 9 {
+            caster.nation
+        } else {
+            type9_data.nation_change.unwrap_or(0).clamp(0, 3) as u8
+        };
+        for nid in spawned {
+            if duration > 0 && timed {
+                world.set_npc_duration(nid, duration.clamp(0, u16::MAX as i32) as u16, 0);
+            }
+            if nation != 0 {
+                world.update_npc_ai(nid, |s| s.nation = nation);
+                world.set_npc_nation(nid, nation);
+            }
+        }
+        instance.data[1] = 1;
+        instance.data[3] = duration;
+        world.send_to_session_owned(caster_sid, instance.build_packet(MAGIC_EFFECTING));
+        return true;
+    }
+
+    // Only the stealth states (1/2) mark the caster invisible. Secrecy (5) and the
+    // summon states (8, 10..13) must not hide the caster.
+    if !(state_change == 1 || state_change == 2) {
+        instance.data[1] = 1;
+        instance.data[3] = duration;
+        world.send_to_session_owned(caster_sid, instance.build_packet(MAGIC_EFFECTING));
+        return true;
+    }
+
     // Apply stealth as a buff for tracking purposes
     // buff_type 100 is used for invisibility/stealth
     let stealth_buff = ActiveBuff {
@@ -6931,6 +9034,19 @@ fn execute_type9(
     let pkt = instance.build_packet(MAGIC_EFFECTING);
     world.send_to_session_owned(caster_sid, pkt);
     true
+}
+
+/// Monster count and whether the summons despawn after `duration` for a Type9 summon skill,
+/// mirroring the per-skill `SpawnEventNpc` calls in C++ `ExecuteType9`.
+fn type9_summon_params(skill_id: i32) -> (u16, bool) {
+    match skill_id {
+        502014 | 502019 | 502015 => (5, false),
+        502022 | 502013 | 502024 | 502023 => (4, false),
+        502025 => (3, false),
+        502026 | 502027 | 502017 | 502018 | 502021 | 502031 | 502028 | 502029 | 502030
+        | 502016 | 502020 => (1, false),
+        _ => (1, true),
+    }
 }
 
 /// Check if a buff_type represents a debuff.
@@ -7102,13 +9218,13 @@ fn consume_item(
 // ── Magic Type Cooldown Helpers ──────────────────────────────────────────
 
 /// Default minimum interval between same-type casts (ms).
-const TYPE_COOLDOWN_DEFAULT_MS: u128 = 575;
+const TYPE_COOLDOWN_DEFAULT_MS: u128 = 550;
 
 /// Interval for instant melee/archer on first catch (ms).
-const TYPE_COOLDOWN_INSTANT_MELEE_MS: u128 = 650;
+const TYPE_COOLDOWN_INSTANT_MELEE_MS: u128 = 600;
 
 /// Interval for instant melee/archer after t_catch (ms).
-const TYPE_COOLDOWN_CATCH_MS: u128 = 400;
+const TYPE_COOLDOWN_CATCH_MS: u128 = 380;
 
 /// Staff skill minimum interval (ms).
 const PLAYER_SKILL_REQUEST_INTERVAL_MS: u128 = 800;
@@ -7255,6 +9371,20 @@ fn check_single_type_cooldown(
 mod tests {
     use super::*;
     use ko_protocol::{Opcode, Packet, PacketReader};
+
+    /// The Magic Hammer / Genie Hammer skill IDs, as confirmed against the
+    /// live item table (every "Magic Hammer"/"Genie Hammer" row with
+    /// kind=97 or kind=255 and a real effect1).
+    #[test]
+    fn test_durability_repair_skills_contains_known_hammers() {
+        for id in [490202u32, 490153, 490155, 500100, 492082, 492092] {
+            assert!(
+                DURABILITY_REPAIR_SKILLS.contains(&id),
+                "missing known repair-all skill id {id}"
+            );
+        }
+        assert_eq!(DURABILITY_REPAIR_SKILLS.len(), 6);
+    }
 
     /// Test MagicInstance::build_packet creates correct wire format.
     #[test]
@@ -7449,9 +9579,7 @@ mod tests {
             target_total_r: 0,
             target_class: 1, // warrior target
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: None,
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1, // fire (default)
@@ -7573,27 +9701,20 @@ mod tests {
         );
     }
 
-    /// Test war zone divides by 3 instead of 2.
+    /// Mage Type3 damage is not modified by zone type.
     #[test]
     fn test_compute_magic_damage_war_zone_halving() {
         let ch = make_test_character(103, 20, 20, 20, 20, 80); // mage
         let ctx_normal = make_test_ctx(MagicTargetKind::Player);
-        let mut ctx_war = make_test_ctx(MagicTargetKind::Player);
-        ctx_war.is_war_zone = true;
+        let ctx_war = make_test_ctx(MagicTargetKind::Player);
         let mut rng1 = rand::rngs::StdRng::seed_from_u64(42);
         let dmg_normal = compute_magic_damage(&ch, -500, 0, &ctx_normal, &mut rng1);
         let mut rng2 = rand::rngs::StdRng::seed_from_u64(42);
         let dmg_war = compute_magic_damage(&ch, -500, 0, &ctx_war, &mut rng2);
-        // War zone /3 vs non-war /2, so war < normal
-        assert!(
-            dmg_war < dmg_normal,
-            "War zone damage should be less: war={}, normal={}",
-            dmg_war,
-            dmg_normal
-        );
+        assert_eq!(dmg_war, dmg_normal);
     }
 
-    /// Test NPC target formula uses 555/515 constants.
+    /// Test NPC targets retain full PvE damage while players are divided by 3.
     #[test]
     fn test_compute_magic_damage_npc_target_formula() {
         let ch = make_test_character(103, 20, 20, 20, 20, 80); // mage
@@ -7608,15 +9729,22 @@ mod tests {
         assert!(dmg_npc > 0, "Mage vs NPC should deal damage: {}", dmg_npc);
     }
 
-    /// Test warrior magic vs NPC target is zeroed.
+    /// A party-all cast with no party (or unknown caster) falls back to the caster.
     #[test]
-    fn test_compute_magic_damage_warrior_vs_npc_zero() {
+    fn test_collect_party_all_targets_falls_back_to_caster() {
+        let world = WorldState::new();
+        let targets = collect_party_all_targets(&world, 7, 30.0, |_| false);
+        assert_eq!(targets, vec![7]);
+    }
+
+    /// Warrior magic vs NPC is not zeroed (the zeroing is only in C++'s `#if 0` branch).
+    #[test]
+    fn test_compute_magic_damage_warrior_vs_npc_not_zero() {
         let ch = make_test_character(101, 90, 60, 30, 20, 10); // warrior
         let ctx = make_test_ctx(MagicTargetKind::Npc);
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
         let damage = compute_magic_damage(&ch, -200, 0, &ctx, &mut rng);
-        // C++ int32(0.50f) = 0, so damage should be 0
-        assert_eq!(damage, 0, "Warrior magic vs NPC should be 0");
+        assert!(damage > 0, "Warrior magic vs NPC should deal damage: {}", damage);
     }
 
     /// Test MAX_DAMAGE cap (32000).
@@ -7676,9 +9804,7 @@ mod tests {
             target_total_r: 0,
             target_class: 101, // warrior
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: Some(ds.clone()),
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1,
@@ -7688,9 +9814,7 @@ mod tests {
             target_total_r: 0,
             target_class: 103, // mage
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: Some(ds),
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1,
@@ -7774,7 +9898,7 @@ mod tests {
         // Expected contribution for rh=100, attr=0, level=60:
         //   rh_part = 100 * 0.8 + (100 * 60 / 60) = 80 + 100 = 180
         //   attr_part = 0
-        //   total = 180, after /2 = ~90
+        //   total = 180, player target /3 = ~60
         let mut rng1 = rand::rngs::StdRng::seed_from_u64(42);
         let dmg_rh100 = compute_magic_damage(&ch, -500, 0, &ctx, &mut rng1);
 
@@ -7785,8 +9909,8 @@ mod tests {
         // C++ negative domain: weapon makes damage more negative → more positive after negate
         let diff = dmg_rh100 - dmg_rh0;
         assert!(
-            (85..=95).contains(&diff),
-            "Weapon contribution for rh=100 should be ~90 after /2: diff={}",
+            (55..=65).contains(&diff),
+            "Weapon contribution for rh=100 should be ~60 after player /3: diff={}",
             diff
         );
     }
@@ -8111,12 +10235,36 @@ mod tests {
 
     #[test]
     fn test_transformation_type_from_user_skill_use() {
-        // user_skill_use=1 => TransformationMonster
-        assert_eq!(1u8, TRANSFORMATION_MONSTER);
-        // user_skill_use=2 => TransformationNPC
-        assert_eq!(2u8, TRANSFORMATION_NPC);
-        // user_skill_use=3 => TransformationSiege
-        assert_eq!(3u8, TRANSFORMATION_SIEGE);
+        assert_eq!(
+            transformation_type_from_user_skill_use(1),
+            Some(TRANSFORMATION_MONSTER)
+        );
+        for value in [3, 4, 7] {
+            assert_eq!(
+                transformation_type_from_user_skill_use(value),
+                Some(TRANSFORMATION_NPC)
+            );
+        }
+        for value in [0, 5, 6] {
+            assert_eq!(
+                transformation_type_from_user_skill_use(value),
+                Some(TRANSFORMATION_SIEGE)
+            );
+        }
+        assert_eq!(transformation_type_from_user_skill_use(2), None);
+        assert_eq!(transformation_type_from_user_skill_use(0xFF), None);
+    }
+
+    #[test]
+    fn test_transform_list_packet_format() {
+        let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        pkt.write_u8(MAGIC_TRANSFORM_LIST);
+        pkt.write_u32(472001);
+
+        let mut reader = PacketReader::new(&pkt.data);
+        assert_eq!(reader.read_u8(), Some(9));
+        assert_eq!(reader.read_u32(), Some(472001));
+        assert_eq!(reader.remaining(), 0);
     }
 
     #[test]
@@ -8135,6 +10283,48 @@ mod tests {
         assert_eq!(r.read_u32(), Some(1)); // sid
         assert_eq!(r.read_u8(), Some(3)); // type
         assert_eq!(r.read_u32(), Some(450001)); // skill_id as abnormal
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn test_gm_transform_visibility_packet_format() {
+        let mut pkt = Packet::new(Opcode::WizStateChange as u8);
+        pkt.write_u32(1);
+        pkt.write_u8(5);
+        pkt.write_u32(1);
+
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u32(), Some(1));
+        assert_eq!(r.read_u8(), Some(5));
+        assert_eq!(r.read_u32(), Some(1));
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn test_v2615_transformation_state_packet_format() {
+        let mut pkt = Packet::new(Opcode::WizStateChange as u8);
+        pkt.write_u32(42);
+        pkt.write_u8(STATE_CHANGE_TRANSFORMATION);
+        pkt.write_u32(500564);
+
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u32(), Some(42));
+        assert_eq!(r.read_u8(), Some(0x13));
+        assert_eq!(r.read_u32(), Some(500564));
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn test_v2615_transformation_reset_packet_format() {
+        let mut pkt = Packet::new(Opcode::WizStateChange as u8);
+        pkt.write_u32(42);
+        pkt.write_u8(STATE_CHANGE_TRANSFORMATION);
+        pkt.write_u32(0);
+
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u32(), Some(42));
+        assert_eq!(r.read_u8(), Some(0x13));
+        assert_eq!(r.read_u32(), Some(0));
         assert_eq!(r.remaining(), 0);
     }
 
@@ -8512,9 +10702,7 @@ mod tests {
             target_total_r: 0,
             target_class: 1,
             target_ac_amount: 0,
-            is_war_zone: false,
             damage_settings: None,
-            plus_damage: 1.0,
             righthand_damage: 0,
             attribute_damage: 0,
             attribute: 1,
@@ -10239,6 +12427,24 @@ mod tests {
         let dist_sq = dx * dx + dz * dz;
 
         assert!(dist_sq <= radius_sq); // 100 <= 225
+    }
+
+    #[test]
+    fn test_aoe_center_accepts_v2603_tenths() {
+        let center = resolve_aoe_center(1_050, 2_050, 100.0, 200.0);
+        assert_eq!(center, (105.0, 205.0));
+    }
+
+    #[test]
+    fn test_aoe_center_accepts_v2615_world_units() {
+        let center = resolve_aoe_center(105, 205, 100.0, 200.0);
+        assert_eq!(center, (105.0, 205.0));
+    }
+
+    #[test]
+    fn test_aoe_center_zero_data_falls_back_to_caster() {
+        let center = resolve_aoe_center(0, 0, 100.0, 200.0);
+        assert_eq!(center, (100.0, 200.0));
     }
 
     #[test]
@@ -12433,6 +14639,25 @@ mod tests {
             skill_check: None,
             icelightrate: None,
         }
+    }
+
+    #[test]
+    fn test_item_group_nine_scroll_is_saved_but_class_buff_is_not() {
+        let mut skill = make_test_magic(490053, MORAL_SELF);
+        skill.type1 = Some(4);
+        skill.item_group = Some(9);
+        skill.use_item = Some(389053000);
+        assert!(should_persist_type4_magic(&skill, 490053));
+        let world = crate::world::WorldState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(1, tx);
+        world.insert_magic(skill.clone());
+        world.insert_saved_magic(1, 490053, 1800);
+        assert!(world.has_saved_magic(1, 490053));
+        skill.use_item = None;
+        assert!(!should_persist_type4_magic(&skill, 490053));
+        skill.item_group = Some(0);
+        assert!(!should_persist_type4_magic(&skill, 112615));
     }
 
     #[test]

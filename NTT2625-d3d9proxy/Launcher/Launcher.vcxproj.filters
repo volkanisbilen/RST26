@@ -1,0 +1,210 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Resource Files\NLauncher">
+      <UniqueIdentifier>{553f5e37-20a1-49bc-9a81-1c7446d9f25d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\assets">
+      <UniqueIdentifier>{6af45b24-3aa9-4b3a-b347-c43f71a695a2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\N3SDK">
+      <UniqueIdentifier>{410ec149-9d2b-4e95-8b5d-be94c3d639d1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Engine">
+      <UniqueIdentifier>{4402d992-96cd-4ebc-beee-933cda736ab3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Engine">
+      <UniqueIdentifier>{94940ea8-4c28-4046-874b-c430ce71c47e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\ftpclient">
+      <UniqueIdentifier>{e5682fc5-2509-4e45-996c-41f0e8e608a7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\json">
+      <UniqueIdentifier>{2ed9f7e5-99b1-416a-9382-336031683a1f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\zlib">
+      <UniqueIdentifier>{c6194689-c74a-4871-80ab-b316b3187978}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Socket">
+      <UniqueIdentifier>{4009be7e-191f-4dd1-93bb-a9967a7da18b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\SHACrcMd5">
+      <UniqueIdentifier>{a91977f1-4c76-4aa6-a119-1f01da3377ac}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\HDR">
+      <UniqueIdentifier>{b202375c-e5db-4cc2-858a-e20fc89074ff}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="LauncherEngine.cpp">
+      <Filter>Source Files\Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="ftpclient\FTPClient.cpp">
+      <Filter>Header Files\ftpclient</Filter>
+    </ClCompile>
+    <ClCompile Include="zlib\zip.c">
+      <Filter>Header Files\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="Launcher.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="APISocket.cpp">
+      <Filter>Header Files\Socket</Filter>
+    </ClCompile>
+    <ClCompile Include="JvCryption.cpp">
+      <Filter>Header Files\Socket</Filter>
+    </ClCompile>
+    <ClCompile Include="CRC.cpp">
+      <Filter>Source Files\SHACrcMd5</Filter>
+    </ClCompile>
+    <ClCompile Include="sha.cpp">
+      <Filter>Source Files\SHACrcMd5</Filter>
+    </ClCompile>
+    <ClCompile Include="hdr.cpp">
+      <Filter>Header Files\HDR</Filter>
+    </ClCompile>
+    <ClCompile Include="GDIHelper.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="DynamicWinsock.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="types.h">
+      <Filter>Header Files\N3SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="ByteBuffer.h">
+      <Filter>Header Files\N3SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="Packet.h">
+      <Filter>Header Files\N3SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="LauncherEngine.h">
+      <Filter>Header Files\Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="stdafx.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ftpclient\FTPClient.h">
+      <Filter>Header Files\ftpclient</Filter>
+    </ClInclude>
+    <ClInclude Include="xorstr.h">
+      <Filter>Header Files\N3SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib\zip.h">
+      <Filter>Header Files\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="zlib\miniz.h">
+      <Filter>Header Files\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="APISocket.h">
+      <Filter>Header Files\Socket</Filter>
+    </ClInclude>
+    <ClInclude Include="JvCryption.h">
+      <Filter>Header Files\Socket</Filter>
+    </ClInclude>
+    <ClInclude Include="crc32.h">
+      <Filter>Header Files\Socket</Filter>
+    </ClInclude>
+    <ClInclude Include="CRC.h">
+      <Filter>Source Files\SHACrcMd5</Filter>
+    </ClInclude>
+    <ClInclude Include="MD5.h">
+      <Filter>Source Files\SHACrcMd5</Filter>
+    </ClInclude>
+    <ClInclude Include="sha.hpp">
+      <Filter>Source Files\SHACrcMd5</Filter>
+    </ClInclude>
+    <ClInclude Include="hdr.h">
+      <Filter>Header Files\HDR</Filter>
+    </ClInclude>
+    <ClInclude Include="gif.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GDIHelper.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Header.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Remap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DynamicWinsock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Launcher.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="launcher.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="bitmap1.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="loading.gif">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="NLauncher\home-hover.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\home.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\launcher-bg.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\option-hover.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\option.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\progress.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\progress0.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\start-hover.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\start.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\x-hover.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+    <Image Include="NLauncher\x.png">
+      <Filter>Resource Files\NLauncher</Filter>
+    </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="cursor_normal.cur">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="cursor_click.cur">
+      <Filter>Resource Files</Filter>
+    </None>
+  </ItemGroup>
+</Project>

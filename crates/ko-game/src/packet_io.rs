@@ -316,14 +316,19 @@ async fn read_packet_aes_inner<R: AsyncReadExt + Unpin>(
     if strip_seq {
         // Game server C2S: [xor_seq:u8] [opcode:u8] [data...]
         if plaintext.len() < 2 {
-            anyhow::bail!("AES decrypted payload too short for seq+opcode: {} bytes", plaintext.len());
+            anyhow::bail!(
+                "AES decrypted payload too short for seq+opcode: {} bytes",
+                plaintext.len()
+            );
         }
         let seq = plaintext[0];
         let opcode = plaintext[1];
         let data = plaintext[2..].to_vec();
         tracing::debug!(
             "AES C2S decrypted: seq={} opcode=0x{:02X} data_len={}",
-            seq, opcode, data.len()
+            seq,
+            opcode,
+            data.len()
         );
         Ok(Packet::with_data(opcode, data))
     } else {
@@ -332,7 +337,8 @@ async fn read_packet_aes_inner<R: AsyncReadExt + Unpin>(
         let data = plaintext[1..].to_vec();
         tracing::debug!(
             "AES C2S decrypted (no seq): opcode=0x{:02X} data_len={}",
-            opcode, data.len()
+            opcode,
+            data.len()
         );
         Ok(Packet::with_data(opcode, data))
     }
@@ -371,10 +377,17 @@ pub async fn send_packet_aes<W: AsyncWriteExt + Unpin>(
 
     // ── Wire-level hex dump (Sprint 15 debug) ──────────────────────
     {
-        let wire: String = frame.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+        let wire: String = frame
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
         tracing::info!(
             "WIRE S2C [AES] pre-auth opcode=0x{:02X} payload={} wire_len={}: {}",
-            packet.opcode, payload_len, frame.len(), wire,
+            packet.opcode,
+            payload_len,
+            frame.len(),
+            wire,
         );
     }
 
@@ -513,7 +526,9 @@ mod tests {
         let mut cursor = std::io::Cursor::new(wire);
         let crypto = JvCryption::new();
         let mut seq = 0u32;
-        let pkt = read_packet_from(&mut cursor, &crypto, &mut seq).await.unwrap();
+        let pkt = read_packet_from(&mut cursor, &crypto, &mut seq)
+            .await
+            .unwrap();
         assert_eq!(pkt.opcode, 0x42);
         assert_eq!(pkt.data, vec![0x01, 0x02]);
     }
@@ -532,7 +547,9 @@ mod tests {
         let mut cursor = std::io::Cursor::new(wire);
         let crypto = JvCryption::new();
         let mut seq = 0u32;
-        assert!(read_packet_from(&mut cursor, &crypto, &mut seq).await.is_err());
+        assert!(read_packet_from(&mut cursor, &crypto, &mut seq)
+            .await
+            .is_err());
     }
 
     /// Invalid footer rejects packet.
@@ -547,7 +564,9 @@ mod tests {
         let mut cursor = std::io::Cursor::new(wire);
         let crypto = JvCryption::new();
         let mut seq = 0u32;
-        assert!(read_packet_from(&mut cursor, &crypto, &mut seq).await.is_err());
+        assert!(read_packet_from(&mut cursor, &crypto, &mut seq)
+            .await
+            .is_err());
     }
 
     /// Zero payload length rejects packet.
@@ -561,7 +580,9 @@ mod tests {
         let mut cursor = std::io::Cursor::new(wire);
         let crypto = JvCryption::new();
         let mut seq = 0u32;
-        assert!(read_packet_from(&mut cursor, &crypto, &mut seq).await.is_err());
+        assert!(read_packet_from(&mut cursor, &crypto, &mut seq)
+            .await
+            .is_err());
     }
 
     /// Opcode-only packet (1 byte payload, no data).
@@ -576,7 +597,9 @@ mod tests {
         let mut cursor = std::io::Cursor::new(wire);
         let crypto = JvCryption::new();
         let mut seq = 0u32;
-        let pkt = read_packet_from(&mut cursor, &crypto, &mut seq).await.unwrap();
+        let pkt = read_packet_from(&mut cursor, &crypto, &mut seq)
+            .await
+            .unwrap();
         assert_eq!(pkt.opcode, 0xAB);
         assert!(pkt.data.is_empty());
     }

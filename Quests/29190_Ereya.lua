@@ -6,8 +6,18 @@ end
 
 if (EVENT == 101) then
 	Check = CheckUnderTheCastleOpen(UID);
-	if (Check == true) then
-		EVENT = 102
+	-- Rust's CheckUnderTheCastleOpen binding returns 0/1, while the
+	-- historical C++ binding returned a Lua boolean.
+	if (Check == 1) then
+		-- The historical Lua VM re-entered the script after assigning EVENT.
+		-- Rust executes one requested event per invocation, so complete the
+		-- entry branch here instead of assigning EVENT = 102.
+		Count = CheckUnderTheCastleUserCount(UID);
+		if (Count < 300) then
+			ZoneChange(UID, 86, 69, 64);
+		else
+			SelectMsg(UID, 2, -1, 10542, NPC, 10, -1);
+		end
 		else
 		SelectMsg(UID, 2, -1, 11792, NPC, 10, -1);
 	end

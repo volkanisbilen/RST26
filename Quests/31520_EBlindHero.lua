@@ -294,8 +294,16 @@ if (EVENT == 101) then
 	if(QuestStatusCheck == 2) then
 		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
 	else
-		RunQuestExchange(UID, 3035);
-		SaveEvent(UID, 11440);
+		Class = CheckClass(UID);
+		if (Class == 1 or Class == 5 or Class == 6 or Class == 13 or Class == 14 or Class == 15) then
+			SelectMsg(UID, 5, 548, 10148, NPC, 4006, 880, 4005, -1);
+		elseif (Class == 2 or Class == 7 or Class == 8) then
+			SelectMsg(UID, 5, 548, 10148, NPC, 4006, 881, 4005, -1);
+		elseif (Class == 3 or Class == 9 or Class == 10) then
+			SelectMsg(UID, 5, 548, 10148, NPC, 4006, 882, 4005, -1);
+		elseif (Class == 4 or Class == 11 or Class == 12) then
+			SelectMsg(UID, 5, 548, 10148, NPC, 4006, 883, 4005, -1);
+		end
 	end
 end
 

@@ -133,20 +133,17 @@ if (EVENT == 535) then
 end
 
 if (EVENT == 536) then
-	ITEM01 = HowmuchItem(UID, 330310014); --- Kekuri Ring
-	ITEM02 = HowmuchItem(UID, 379046000); --- Harpy Tüyü
-	ITEM03 = HowmuchItem(UID, 379044000); --- Zombie Eye 50x
-	ITEM04 = HowmuchItem(UID, 379236000); --- Magic Jewel Powder 2x
-	if (ITEM01 > 0 and ITEM02 > 0 and ITEM03 > 49 and ITEM04 > 1) then
+	ITEM01 = HowmuchItem(UID, 810095000);
+	ITEM02 = HowmuchItem(UID, 810091000);
+	ITEM03 = HowmuchItem(UID, 810092000);
+	if (ITEM01 > 0 and ITEM02 > 0 and ITEM03 > 0) then
 		SelectMsg(UID, 4, 273, 4111, NPC, 4006, 537, 4005, -1);
 	else
 		if (ITEM01 < 1) then
 			SelectMsg(UID, 2, 273, 4109, NPC, 18, 538);
 		elseif (ITEM02 < 1) then
 			SelectMsg(UID, 2, 273, 4109, NPC, 18, 539);
-		elseif (ITEM03 < 50) then
-			SelectMsg(UID, 2, 273, 4109, NPC, 18, 540);
-		elseif (ITEM04 < 2) then
+		elseif (ITEM03 < 1) then
 			SelectMsg(UID, 2, 273, 4109, NPC, 18, 540);
 		end
 	end
@@ -618,8 +615,7 @@ if (EVENT == 193) then
 	if(QuestStatusCheck == 2) then
 		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
 	else
-		RunQuestExchange(UID, 3015);
-		SaveEvent(UID, 11179);
+		SelectMsg(UID, 5, 528, 20025, NPC, 22, 1307, 27, -1);
 	end
 end
 
@@ -749,4 +745,3 @@ if (EVENT == 1506) then
 		SaveEvent(UID, 12107);
 	end
 end
-

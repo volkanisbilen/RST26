@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>JstKO Yönetim Paneli</title>
+<link rel="stylesheet" href="/jstkoadminpanel/static/style.css">
+</head>
+<body>
+<div id="login">
+  <div class="login-bg"></div>
+  <form class="login-card" id="loginForm">
+    <div class="logo"><svg viewBox="0 0 32 32" width="44" height="44"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#60a5fa"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs><path d="M16 2 28 8v9c0 7-5 11-12 13C9 28 4 24 4 17V8z" fill="none" stroke="url(#lg)" stroke-width="2.2" stroke-linejoin="round"/><path d="M11 15l4 4 7-8" fill="none" stroke="url(#lg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <h1>JstKO Yönetim Paneli</h1>
+    <p class="muted">Doğrudan veritabanına bağlıdır; oyun sunucusu kapalıyken de çalışır.</p>
+    <label for="lu">Kullanıcı adı</label>
+    <input id="lu" autocomplete="username" required autofocus>
+    <label for="lp">Parola</label>
+    <input id="lp" type="password" autocomplete="current-password" required>
+    <button class="btn primary lg" type="submit">Giriş yap</button>
+  </form>
+</div>
+<div id="app">
+  <aside id="side"><div id="navhost"></div></aside>
+  <div id="scrim"></div>
+  <div id="shell">
+    <header id="top">
+      <button class="icon-btn" id="burger" aria-label="Menü"></button>
+      <button class="searchbox" id="cmdk"><span class="ico" data-i="search"></span><span>Ara…</span><kbd>Ctrl K</kbd></button>
+      <span class="chip" id="srv"></span>
+      <span class="grow"></span>
+      <span class="muted sm hide-s" id="clock"></span>
+      <button class="avatar" id="who" aria-label="Hesap"></button>
+    </header>
+    <main id="main"></main>
+  </div>
+</div>
+<div id="toasts"></div>
+<div id="tip" role="tooltip"></div>
+<script src="/jstkoadminpanel/static/core.js"></script>
+<script src="/jstkoadminpanel/static/containers.js"></script>
+<script src="/jstkoadminpanel/static/drops.js"></script>
+<script src="/jstkoadminpanel/static/mapedit.js"></script>
+<script src="/jstkoadminpanel/static/pages.js"></script>
+<script src="/jstkoadminpanel/static/events.js"></script>
+<script src="/jstkoadminpanel/static/pus.js"></script>
+<script src="/jstkoadminpanel/static/rewards.js"></script>
+<script src="/jstkoadminpanel/static/chaotic.js"></script>
+<script src="/jstkoadminpanel/static/bot_loadout.js"></script>
+</body>
+</html>

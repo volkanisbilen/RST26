@@ -21,7 +21,7 @@
 
 use ko_protocol::{Opcode, Packet, PacketReader};
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::session::{ClientSession, SessionState};
 
@@ -97,9 +97,62 @@ const GENIE_ACTIVATED: u8 = 7;
 /// Status: genie active.
 const GENIE_STATUS_ACTIVE: u8 = 1;
 
-/// Size of genie options blob (bytes).
-/// v2600 sniff verified: 46 bytes (was 256 in older protocol versions).
-const GENIE_OPTIONS_SIZE: usize = 46;
+/// No skills: two u16 fields and 42 option bytes (v2615 B19360/B1A4B0).
+const GENIE_OPTIONS_DEFAULT_SIZE: usize = 46;
+/// Full v2615 layout with all 32 skill slots populated.
+const GENIE_OPTIONS_MAX_SIZE: usize = 174;
+
+// v2615 B19360 writes, B1A4B0 reads: u16 count, count*u32 skills,
+// u16(42), 42 option bytes. Never truncate this variable-size structure.
+fn valid_options(data: &[u8]) -> bool {
+    if data.len() < 4 || data.len() > GENIE_OPTIONS_MAX_SIZE {
+        return false;
+    }
+    let count = u16::from_le_bytes([data[0], data[1]]) as usize;
+    let offset = 2 + count * 4;
+    count <= 32 && data.len() == offset + 44 && data[offset..offset + 2] == [42, 0]
+}
+
+/// The JstKO client saves the game's own options padded to 180 bytes followed by its own 220 byte block
+/// (genie leader / go range / party code / mob list): 400 bytes in total (`DLL genie_hg.cpp`).
+const HG_NATIVE_LEN: usize = 180;
+const HG_BLOCK_LEN: usize = 220;
+const HG_BLOB_LEN: usize = HG_NATIVE_LEN + HG_BLOCK_LEN;
+/// Hook sub-opcode of the genie channel (`E9 ED`), op 4 carries the JstKO block to the client.
+const EXT_SUB_HGGENIE: u8 = 0xED;
+
+/// Length of the game's own option structure at the start of `data` (None when it is not one).
+fn native_len(data: &[u8]) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    let count = u16::from_le_bytes([data[0], data[1]]) as usize;
+    let offset = 2 + count * 4;
+    (count <= 32 && data.len() >= offset + 44 && data[offset..offset + 2] == [42, 0]).then_some(offset + 44)
+}
+
+/// A saved blob: the game's own options alone, or the 400 byte JstKO blob.
+fn valid_payload(data: &[u8]) -> bool {
+    valid_options(data) || (data.len() == HG_BLOB_LEN && native_len(&data[..HG_NATIVE_LEN]).is_some())
+}
+
+fn default_options() -> Vec<u8> {
+    let mut options = vec![0; GENIE_OPTIONS_DEFAULT_SIZE];
+    options[2] = 42;
+    // Defaults initialized by CUIGenie_Main at B18E1D and B1A4E6.
+    for (index, value) in [
+        (2, 30),
+        (3, 10),
+        (4, 30),
+        (6, 30),
+        (8, 80),
+        (25, 3),
+        (27, 2),
+    ] {
+        options[4 + index] = value;
+    }
+    options
+}
 
 /// Convert absolute genie timestamp to DB i32 for storage.
 /// C++ and in-memory both use absolute UNIX timestamp (`uint32`).
@@ -129,6 +182,13 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         Some(v) => v,
         None => return Ok(()),
     };
+
+    debug!(
+        "[{}] WIZ_GENIE: command={} payload_len={}",
+        session.addr(),
+        command,
+        pkt.data.len()
+    );
 
     match command {
         GENIE_INFO_REQUEST => handle_info_request(session, &mut r).await,
@@ -217,10 +277,17 @@ async fn handle_info_request(
         None => return Ok(()),
     };
 
+    debug!(
+        "[{}] WIZ_GENIE: InfoRequest sub={} remaining_bytes={}",
+        session.addr(),
+        sub_command,
+        r.remaining()
+    );
+
     match sub_command {
         GENIE_USE_SPIRING_POTION => handle_genie_use_spirit(session, r).await,
         GENIE_LOAD_OPTIONS => handle_load_options(session).await,
-        GENIE_SAVE_OPTIONS => handle_save_options(session, r),
+        GENIE_SAVE_OPTIONS => handle_save_options(session, r).await,
         GENIE_START_HANDLE => handle_genie_start(session).await,
         GENIE_STOP_HANDLE => handle_genie_stop(session).await,
         _ => {
@@ -337,22 +404,37 @@ async fn handle_genie_use_spirit(
 
 /// Load and send genie options to the client.
 /// Sends a blob of saved genie configuration bytes.
-async fn handle_load_options(session: &mut ClientSession) -> anyhow::Result<()> {
+pub(crate) async fn handle_load_options(session: &mut ClientSession) -> anyhow::Result<()> {
     let sid = session.session_id();
     let world = session.world();
 
     // Get saved options from session data (or default zeros)
-    let options = world
+    let saved = world
         .with_session(sid, |h| h.genie_options.clone())
-        .unwrap_or_else(|| vec![0u8; GENIE_OPTIONS_SIZE]);
+        .filter(|saved| valid_payload(saved));
+    let (options, hg_block): (Vec<u8>, Option<Vec<u8>>) = match saved {
+        Some(blob) if blob.len() == HG_BLOB_LEN => {
+            let n = native_len(&blob[..HG_NATIVE_LEN]).unwrap_or(0);
+            (blob[..n].to_vec(), Some(blob[HG_NATIVE_LEN..].to_vec()))
+        }
+        Some(blob) => (blob, None),
+        None => (default_options(), None),
+    };
 
     let mut resp = Packet::new(Opcode::WizGenie as u8);
     resp.write_u8(GENIE_INFO_REQUEST);
     resp.write_u8(GENIE_LOAD_OPTIONS);
     resp.data.extend_from_slice(&options);
     session.send_packet(&resp).await?;
+    if let Some(block) = hg_block {
+        let mut hook = Packet::new(Opcode::EXT_HOOK_S2C);
+        hook.write_u8(EXT_SUB_HGGENIE);
+        hook.write_u8(4);
+        hook.data.extend_from_slice(&block);
+        session.send_packet(&hook).await?;
+    }
 
-    debug!(
+    tracing::info!(
         "[{}] WIZ_GENIE: LoadOptions sent ({} bytes)",
         session.addr(),
         options.len()
@@ -362,27 +444,39 @@ async fn handle_load_options(session: &mut ClientSession) -> anyhow::Result<()> 
 
 /// Save genie options from the client.
 /// Reads the options blob from the packet and stores it in the session.
-fn handle_save_options(
+async fn handle_save_options(
     session: &mut ClientSession,
     r: &mut PacketReader<'_>,
 ) -> anyhow::Result<()> {
     let sid = session.session_id();
     let world = session.world();
 
-    // Read up to GENIE_OPTIONS_SIZE bytes
-    let mut options = Vec::with_capacity(GENIE_OPTIONS_SIZE);
-    for _ in 0..GENIE_OPTIONS_SIZE {
-        match r.read_u8() {
-            Some(b) => options.push(b),
-            None => break,
-        }
+    // Reject incomplete payloads without destroying the last complete settings.
+    let payload = r.read_remaining();
+    if !valid_payload(payload) {
+        warn!(
+            "WIZ_GENIE: rejected malformed options: sid={}, bytes={}",
+            sid,
+            payload.len()
+        );
+        return Ok(());
     }
+    let options = payload.to_vec();
 
     world.update_session(sid, |h| {
         h.genie_options = options.clone();
+        h.genie_loaded = true;
     });
 
-    debug!(
+    // Persist immediately. Disconnect/periodic saves remain as a safeguard,
+    // but the client expects a settings change to survive a relog right away.
+    if let Some(char_name) = world.get_character_info(sid).map(|c| c.name.clone()) {
+        let pool = session.pool().clone();
+        let repo = ko_db::repositories::user_data::UserDataRepository::new(&pool);
+        repo.save_genie_options(&char_name, &options).await?;
+    }
+
+    tracing::info!(
         "[{}] WIZ_GENIE: SaveOptions ({} bytes)",
         session.addr(),
         options.len()
@@ -405,12 +499,21 @@ async fn handle_genie_start(session: &mut ClientSession) -> anyhow::Result<()> {
         .with_session(sid, |h| (h.premium_in_use > 0, h.genie_time_abs))
         .unwrap_or((false, 0));
     if requires_premium && !has_premium {
+        warn!(
+            "[{}] WIZ_GENIE: Start rejected — premium required but inactive",
+            session.addr()
+        );
         return Ok(());
     }
 
     // Time check — genie must have remaining time.
     let remaining = genie_remaining_from_abs(abs);
     if remaining == 0 {
+        warn!(
+            "[{}] WIZ_GENIE: Start rejected — no remaining time (abs={})",
+            session.addr(),
+            abs
+        );
         return Ok(());
     }
 
@@ -440,7 +543,8 @@ async fn handle_genie_start(session: &mut ClientSession) -> anyhow::Result<()> {
     let mut region_pkt = Packet::new(Opcode::WizGenie as u8);
     region_pkt.write_u8(GENIE_INFO_REQUEST);
     region_pkt.write_u8(GENIE_ACTIVATED);
-    region_pkt.write_u32(sid as u32);
+    // Native C++ serialises GetID() as uint16 here.
+    region_pkt.write_u16(sid);
     region_pkt.write_u8(1); // active
 
     if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
@@ -453,6 +557,11 @@ async fn handle_genie_start(session: &mut ClientSession) -> anyhow::Result<()> {
             event_room,
         );
     }
+    // `isInGenie()` is also carried in the UserInOut appearance block. The
+    // native server updates it via GenieActivated; send the current appearance
+    // once as well so nearby clients that missed/ignored that state packet
+    // immediately render the Genie marker above this player.
+    super::region::broadcast_user_appearance_update(&world, sid);
 
     debug!(
         "[{}] WIZ_GENIE: Started (remaining={})",
@@ -492,7 +601,7 @@ pub(crate) async fn handle_genie_stop(session: &mut ClientSession) -> anyhow::Re
     let mut region_pkt = Packet::new(Opcode::WizGenie as u8);
     region_pkt.write_u8(GENIE_INFO_REQUEST);
     region_pkt.write_u8(GENIE_ACTIVATED);
-    region_pkt.write_u32(sid as u32);
+    region_pkt.write_u16(sid);
     region_pkt.write_u8(0); // inactive
 
     if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
@@ -505,6 +614,7 @@ pub(crate) async fn handle_genie_stop(session: &mut ClientSession) -> anyhow::Re
             event_room,
         );
     }
+    super::region::broadcast_user_appearance_update(&world, sid);
 
     // Persist genie time to DB on stop to prevent data loss on crash.
     {
@@ -583,11 +693,12 @@ pub fn check_genie_time_tick(
             let mut region_pkt = Packet::new(Opcode::WizGenie as u8);
             region_pkt.write_u8(GENIE_INFO_REQUEST);
             region_pkt.write_u8(GENIE_ACTIVATED);
-            region_pkt.write_u32(sid as u32);
+            region_pkt.write_u16(sid);
             region_pkt.write_u8(0);
             if let Some(pos) = world.get_position(sid) {
                 world.broadcast_to_zone(pos.zone_id, Arc::new(region_pkt), None);
             }
+            super::region::broadcast_user_appearance_update(world, sid);
         }
         return;
     }
@@ -628,7 +739,8 @@ mod tests {
         assert_eq!(GENIE_REMAINING_TIME, 6);
         assert_eq!(GENIE_ACTIVATED, 7);
         assert_eq!(GENIE_STATUS_ACTIVE, 1); // C++ GenieStatusActive = 1
-        assert_eq!(GENIE_OPTIONS_SIZE, 46); // v2600 sniff verified
+        assert_eq!(GENIE_OPTIONS_DEFAULT_SIZE, 46);
+        assert_eq!(GENIE_OPTIONS_MAX_SIZE, 174);
     }
 
     #[test]
@@ -673,13 +785,13 @@ mod tests {
         let mut pkt = Packet::new(Opcode::WizGenie as u8);
         pkt.write_u8(GENIE_INFO_REQUEST);
         pkt.write_u8(GENIE_ACTIVATED);
-        pkt.write_u32(42); // session ID
+        pkt.write_u16(42); // native C++ GetID() is uint16
         pkt.write_u8(1); // active
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u8(), Some(GENIE_INFO_REQUEST));
         assert_eq!(r.read_u8(), Some(GENIE_ACTIVATED));
-        assert_eq!(r.read_u32(), Some(42));
+        assert_eq!(r.read_u16(), Some(42));
         assert_eq!(r.read_u8(), Some(1));
         assert_eq!(r.remaining(), 0);
 
@@ -687,13 +799,13 @@ mod tests {
         let mut pkt2 = Packet::new(Opcode::WizGenie as u8);
         pkt2.write_u8(GENIE_INFO_REQUEST);
         pkt2.write_u8(GENIE_ACTIVATED);
-        pkt2.write_u32(42);
+        pkt2.write_u16(42);
         pkt2.write_u8(0); // inactive
 
         let mut r2 = PacketReader::new(&pkt2.data);
         assert_eq!(r2.read_u8(), Some(GENIE_INFO_REQUEST));
         assert_eq!(r2.read_u8(), Some(GENIE_ACTIVATED));
-        assert_eq!(r2.read_u32(), Some(42));
+        assert_eq!(r2.read_u16(), Some(42));
         assert_eq!(r2.read_u8(), Some(0));
         assert_eq!(r2.remaining(), 0);
     }
@@ -703,14 +815,13 @@ mod tests {
         let mut resp = Packet::new(Opcode::WizGenie as u8);
         resp.write_u8(GENIE_INFO_REQUEST);
         resp.write_u8(GENIE_LOAD_OPTIONS);
-        let options = vec![0u8; GENIE_OPTIONS_SIZE];
+        let options = vec![0u8; GENIE_OPTIONS_DEFAULT_SIZE];
         resp.data.extend_from_slice(&options);
 
         let mut r = PacketReader::new(&resp.data);
         assert_eq!(r.read_u8(), Some(GENIE_INFO_REQUEST));
         assert_eq!(r.read_u8(), Some(GENIE_LOAD_OPTIONS));
-        // Remaining should be GENIE_OPTIONS_SIZE bytes
-        assert_eq!(r.remaining(), GENIE_OPTIONS_SIZE);
+        assert_eq!(r.remaining(), GENIE_OPTIONS_DEFAULT_SIZE);
     }
 
     #[test]
@@ -804,10 +915,22 @@ mod tests {
         assert_eq!(GENIE_HOURS_PER_POTION * 3600, 1_296_000); // in seconds
     }
 
-    /// Genie options blob size is 256 bytes.
+    /// Every legal v2615 skill count survives without truncation.
     #[test]
     fn test_genie_options_size() {
-        assert_eq!(GENIE_OPTIONS_SIZE, 46); // v2600 sniff verified
+        assert_eq!(GENIE_OPTIONS_DEFAULT_SIZE, 46);
+        assert_eq!(GENIE_OPTIONS_MAX_SIZE, 174);
+        assert!(valid_options(&default_options()));
+        for count in 0u16..=32 {
+            let mut blob = count.to_le_bytes().to_vec();
+            for slot in 0..count {
+                blob.extend_from_slice(&(100001u32 + u32::from(slot) * 1000000).to_le_bytes());
+            }
+            blob.extend_from_slice(&default_options()[2..]);
+            assert!(valid_options(&blob));
+            assert!(!valid_options(&blob[..blob.len() - 1]));
+        }
+        assert!(!valid_options(&[0; 62]));
     }
 
     /// get_genie_hours: 0→0, <3600→1, 3600→1, 7200→2.

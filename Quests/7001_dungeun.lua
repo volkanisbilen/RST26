@@ -72,11 +72,15 @@ local HellY = {74, 197, 316, 437, 118, 237, 353, 473, 77, 192, 315, 435, 117, 23
 	end
 
 	if (EVENT == 30011) then
-		ItemA = HowmuchItem(UID, 379080000);  
+		ItemA = HowmuchItem(UID, 379080000);
 		if (ItemA > 0) then
-			RobAllItemParty(UID, 379080000)
-			i = Num - 39999
-			ZoneChangeParty(UID, 32, HellX[i], HellY[i])
+			-- All party members must have a key. Do not warp if atomic party removal fails.
+			if (RobAllItemParty(UID, 379080000, 1)) then
+				i = Num - 39999
+				ZoneChangeParty(UID, 32, HellX[i], HellY[i])
+			else
+				SelectMsg(UID, 2, -1, 40021, NPC, 10, -1);
+			end
 		else
 			SelectMsg(UID, 2, -1, 40021, NPC, 10, -1);
 		end

@@ -77,7 +77,7 @@ fn build_kiss_packet(player_id: u32, event_npc_id: i16) -> Packet {
 
 #[cfg(test)]
 mod tests {
-    use ko_protocol::{Opcode, Packet, PacketReader};
+    use ko_protocol::{Opcode, PacketReader};
 
     use super::*;
 

@@ -55,6 +55,27 @@ impl<'a> DrakiTowerRepository<'a> {
         .await
     }
 
+    /// Lazily apply the 18:00 Europe/Istanbul daily reset for one user.
+    /// This makes the reset reliable even when the server was offline at 18:00.
+    pub async fn reset_user_entrance_limit_if_due(
+        &self,
+        user_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE user_draki_tower_data \
+             SET b_draki_enterance_limit = 3, \
+                 draki_limit_reset_bucket = \
+                     (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul' - INTERVAL '18 hours')::date \
+             WHERE str_user_id = $1 \
+               AND (draki_limit_reset_bucket IS NULL OR draki_limit_reset_bucket < \
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul' - INTERVAL '18 hours')::date)",
+        )
+        .bind(user_id)
+        .execute(self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Upsert user Draki Tower progress data (best-result only).
     ///
     /// Only updates stage/time if the new result is better:
@@ -74,8 +95,10 @@ impl<'a> DrakiTowerRepository<'a> {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO user_draki_tower_data \
-             (str_user_id, class, class_name, i_draki_time, b_draki_stage, b_draki_enterance_limit) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             (str_user_id, class, class_name, i_draki_time, b_draki_stage, b_draki_enterance_limit, \
+              draki_limit_reset_bucket) \
+             VALUES ($1, $2, $3, $4, $5, $6, \
+                     (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul' - INTERVAL '18 hours')::date) \
              ON CONFLICT (str_user_id) DO UPDATE SET \
              class = EXCLUDED.class, \
              class_name = EXCLUDED.class_name, \
@@ -110,8 +133,13 @@ impl<'a> DrakiTowerRepository<'a> {
         limit: i16,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE user_draki_tower_data SET b_draki_enterance_limit = $1 \
-             WHERE str_user_id = $2",
+            "INSERT INTO user_draki_tower_data \
+             (str_user_id, b_draki_enterance_limit, draki_limit_reset_bucket) \
+             VALUES ($2, $1, \
+                     (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul' - INTERVAL '18 hours')::date) \
+             ON CONFLICT (str_user_id) DO UPDATE SET \
+             b_draki_enterance_limit = EXCLUDED.b_draki_enterance_limit, \
+             draki_limit_reset_bucket = EXCLUDED.draki_limit_reset_bucket",
         )
         .bind(limit)
         .bind(user_id)
@@ -123,9 +151,14 @@ impl<'a> DrakiTowerRepository<'a> {
     /// Reset all users' entrance limits to 3 (daily reset at 18:00).
     ///
     pub async fn reset_all_entrance_limits(&self) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query("UPDATE user_draki_tower_data SET b_draki_enterance_limit = 3")
-            .execute(self.pool)
-            .await?;
+        let result = sqlx::query(
+            "UPDATE user_draki_tower_data SET \
+             b_draki_enterance_limit = 3, \
+             draki_limit_reset_bucket = \
+                 (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul' - INTERVAL '18 hours')::date",
+        )
+        .execute(self.pool)
+        .await?;
         Ok(result.rows_affected())
     }
 

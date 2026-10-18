@@ -102,10 +102,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             drop(siege);
 
             let nation = if owner_clan > 0 {
-                world
-                    .get_knights(owner_clan)
-                    .map(|k| k.nation)
-                    .unwrap_or(0)
+                world.get_knights(owner_clan).map(|k| k.nation).unwrap_or(0)
             } else {
                 0
             };

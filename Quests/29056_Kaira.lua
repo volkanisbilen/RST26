@@ -2,7 +2,13 @@ local NPC = 29056;
 ----------------------------------------------------------------------------------------------------------------------
 
 if (EVENT == 100) then 
-	SelectMsg(UID, 3, -1, 3018, NPC,7496,550,40102,110,7202,400,7214,420,7219,430,7228,460,45237,556); 
+	SelectMsg(UID, 3, -1, 3018, NPC,45573,900,7496,550,40102,110,7202,400,7214,420,7219,430,7228,460,45237,556);
+end
+
+-- v2615 sub_7F0770 case 0x49 opens CUITiketExchange. The client then
+-- submits WIZ_NPC_EVENT sub=6 with the ticket and selected reward IDs.
+if (EVENT == 900) then
+	SelectMsg(UID, 73, -1, -1, NPC);
 end
 
 ----------------------------------------------------------------------------------------------------------------------
@@ -42,7 +48,12 @@ if (EVENT == 116) then -- Official List
 	if (LIST < 1 or LIST == 0) then
 		SelectMsg(UID, 2, -1, 10596, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6897, 10597, NPC, 4006, 117, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange(UID,628, 1);
+		end
 	end
 end
 
@@ -96,12 +107,17 @@ end
 --end
 
 
-if (EVENT == 180) then -- Golden Pickaxe 
+if (EVENT == 180) then -- Golden Pickaxe
 	PICKAX = HowmuchItem(UID, 508122000);
 	if (PICKAX < 1 or PICKAX == 0) then
 		SelectMsg(UID, 2, -1, 9943, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6895, 9944, NPC, 4297, 182, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange(UID,620, 1);
+		end
 	end
 end
 
@@ -135,8 +151,12 @@ if (EVENT == 185) then -- Golden Fishing Rod
 	if (FISHING < 1) then
 		SelectMsg(UID, 2, -1, 9945, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6896, 9946, NPC, 4297, 187, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
 
+         else
+	RunGiveItemExchange (UID,630,1)
+		end
 	end
 end
 
@@ -157,7 +177,7 @@ end
 ----------------------------------------------------------------------------------------------------------------------
 
 if (EVENT == 400) then--7803,404,10005,405,8574,406, -- Premium Menu
-	SelectMsg(UID, 3, -1, 9527, NPC, 7197, 401, 7198, 402, 7252, 403,8390,600, 45241,750,4296,100);
+	SelectMsg(UID, 3, -1, 9527, NPC, 7197, 401, 7198, 402, 7252, 403,8390,600, 60010,750,4296,100);
 end
 
 if (EVENT == 401) then -- DISC Premium
@@ -364,18 +384,22 @@ end
 ----------------------------------------------------------------------------------------
 
 if (EVENT == 750) then -- Clan Premium
-    CheckLeader = isClanLeader(UID) 
+    CheckLeader = isClanLeader(UID)
     if (CheckLeader == false) then
         SelectMsg(UID, 2, -1, 707, NPC, 10, -1);
     else
-    CLANPREM = HowmuchItem(UID, 399300914);
-    if (CLANPREM < 1) then
-        SelectMsg(UID, 2, -1, 4121, NPC, 18, -1);
-    else
-        RobItem(UID, 399300914, 1);
-        GiveClanPremium(UID,2,30)
-		SelectMsg(UID, 2, -1, 8094, NPC, 10, -1);
-		end
+        CLANPREM = HowmuchItem(UID, 399300914);
+        if (CLANPREM < 1) then
+            SelectMsg(UID, 2, -1, 4121, NPC, 18, -1);
+        else
+            -- the item is only taken when the clan premium was really applied
+            if (GiveClanPremium(UID, 2, 30) == true) then
+                RobItem(UID, 399300914, 1);
+                SelectMsg(UID, 2, -1, 8094, NPC, 10, -1);
+            else
+                SelectMsg(UID, 2, -1, 707, NPC, 10, -1);
+            end
+        end
     end
 end
 
@@ -386,7 +410,12 @@ if (EVENT == 420) then -- Minerva Pack
 	if (MINEVRAPACK < 1 or MINEVRAPACK == 0) then
 		SelectMsg(UID, 2, -1, 9622, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6898, 9621, NPC, 4006, 421, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 2)
+     if SlotCheck == false then
+
+         else
+		RunGiveItemExchange (UID,629, 1)
+		end
     end
 end
 
@@ -411,7 +440,12 @@ if (EVENT == 430) then  -- Pathos Pack
 	if (PATHOSPACK < 1 or PATHOSPACK == 0) then
 		SelectMsg(UID, 2, -1, 9629, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6899, 9628, NPC, 4006, 431, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 2)
+     if SlotCheck == false then
+
+         else
+		RunGiveItemExchange (UID,626, 1)
+		end
     end
 end
 
@@ -422,7 +456,7 @@ if (EVENT == 431) then
 	else
 	SlotCheck = CheckGiveSlot(UID, 2)
      if SlotCheck == false then
-       
+
          else
 		RunGiveItemExchange (UID,626, 1)
 		end
@@ -440,7 +474,12 @@ if (EVENT == 461) then -- Seal 10
 	if (SEAL10 < 1 or SEAL10 == 0) then
 		SelectMsg(UID, 2, -1, 9706, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6889, 9706, NPC, 4006, 462, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunGiveItemExchange (UID,634, 1)
+		end
     end
 end
 
@@ -463,7 +502,12 @@ if (EVENT == 463) then -- Seal 50
 	if (SEAL50 < 1 or SEAL50 == 0) then
 		SelectMsg(UID, 2, -1, 9707, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6890, 9707, NPC, 4006, 464, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunGiveItemExchange (UID,635, 1)
+		end
     end
 end
 
@@ -492,7 +536,12 @@ if (EVENT == 501) then -- Dryads Peri
 	if (DRYADS < 1 or DRYADS == 0) then
 		SelectMsg(UID, 2, -1, 9991, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6892, 9990, NPC, 4006, 502, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange (UID,631,1)
+		end
 	end
 end
 
@@ -515,7 +564,12 @@ if (EVENT == 503) then -- Oreads Peri
 	if (OREADS < 1 or OREADS == 0) then
 		SelectMsg(UID, 2, -1, 9992, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6893, 9990, NPC, 4006, 504, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange (UID,632,1)
+		end
 	end
 end
 
@@ -540,7 +594,12 @@ if (EVENT == 505) then  -- Alseids Peri
 	if (ALSEIDS < 1 or ALSEIDS == 0) then
 		SelectMsg(UID, 2, -1, 9992, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6894, 9990, NPC, 4006, 506, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange (UID,633,1)
+		end
 	end
 end
 
@@ -564,7 +623,12 @@ if (EVENT == 507) then  -- Nereids Peri
 	if (NEREIDS < 1 or NEREIDS == 0) then
 		SelectMsg(UID, 2, -1, 9992, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6945, 9990, NPC, 4006, 508, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange (UID,663,1)
+		end
 	end
 end
 
@@ -588,7 +652,12 @@ if (EVENT == 550) then -- Helmet Of Wraith
 	if (HELWRATH < 1 or HELWRATH == 0) then
 		SelectMsg(UID, 2, -1, 43604, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6891, 43605, NPC, 4006, 551, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange(UID,627, 1);
+		end
 	end
 end
 
@@ -612,16 +681,19 @@ if (EVENT == 556) then -- Wing Of Dragon
 	SelectMsg(UID, 3, -1, 3018, NPC,7679,205,45238,552,45239,35264, 40536,111,8611,118,9017,138,4296, 100);
 end
 
-if (EVENT == 205) then
+if (EVENT == 205) then -- Wing Of Dragon
 	ITEMDRGN = HowmuchItem(UID, 810164000);
 	if (ITEMDRGN < 1 or ITEMDRGN == 0) then
 		SelectMsg(UID, 2, -1, 10593, NPC, 18, 5000);
 	else
 	NATION = CheckNation(UID);
-	if (NATION == 1 ) then
-		SelectMsg(UID, 5, 6900, 10592, NPC, 4006, 206, 4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+	elseif (NATION == 1 ) then
+		RunQuestExchange(UID,6900,STEP,1);
 	elseif (NATION == 2 ) then
-		SelectMsg(UID, 5, 6901, 10592, NPC, 4006, 207, 4005,-1);
+		RunQuestExchange(UID,6901,STEP,1);
 		end
 	end
 end
@@ -662,7 +734,12 @@ if (EVENT == 552) then  -- War Wing
 	if (WarWing < 1 or WarWing == 0) then
 		SelectMsg(UID, 2, -1, 9543, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6902, 43605, NPC, 4006, 553, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunGiveItemExchange(UID,638, 1);
+		end
 	end
 end
 
@@ -688,10 +765,13 @@ if (EVENT == 35264) then -- Battle Hero Wing
 		SelectMsg(UID, 2, -1, 9546, NPC, 18, 5000);
 	else
 	NATION = CheckNation(UID);
-	if (NATION == 1 ) then
-		SelectMsg(UID, 4, 6903, 10592, NPC, 4006, 554, 4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+	elseif (NATION == 1 ) then
+		RunQuestExchange(UID,639,STEP,1);
 	elseif (NATION == 2 ) then
-		SelectMsg(UID, 4, 6904, 10592, NPC, 4006, 555, 4005,-1);
+		RunQuestExchange(UID,640,STEP,1);
 		end
 	end
 end
@@ -732,7 +812,12 @@ if (EVENT == 111) then -- Cupid Wing
 	if (CUPIDWING < 1 or CUPIDWING == 0) then
 		SelectMsg(UID, 2, -1, 44440, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 5, 6905, 44439, NPC, 4006, 112, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6905,STEP,1);
+		end
 	end
 end
 
@@ -763,7 +848,12 @@ if (EVENT == 119) then -- Alencia Wing Blue
 	if (BLUEWING < 1 or BLUEWING == 0) then
 		SelectMsg(UID, 2, -1, 12061, NPC, 18,5000);
 	else
-		SelectMsg(UID, 5, 6911, 12060, NPC, 4006,121,4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6911,STEP,1);
+		end
 	end
 end
 
@@ -789,7 +879,12 @@ if (EVENT == 120) then -- Alencia Wing Red
 	if (REDWING < 1 or REDWING == 0) then
 		SelectMsg(UID, 2, -1, 12058, NPC, 18,5000);
 	else
-		SelectMsg(UID, 5, 6912, 12057, NPC, 4006,125,4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6912,STEP,1);
+		end
 	end
 end
 
@@ -814,7 +909,12 @@ if (EVENT == 138) then -- Wings Of Hellfire
 	if (Hellfire < 1 or Hellfire == 0) then
 		SelectMsg(UID, 2, -1, 9528, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 5, 6913, 9527, NPC, 4006, 156,4005,-1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+		RunQuestExchange(UID,6913,STEP,1);
+		end
 	end
 end
 
@@ -880,4 +980,3 @@ end
 if (EVENT == 1700) then
 	SelectMsg(UID, 2, -1, 331, NPC, 10, -1);
 end
-

@@ -44,8 +44,12 @@ pub struct ServerSettingsRow {
     pub max_blessing_up_reb: i16,
     pub give_genie_hour: i16,
     pub game_version: i16,
+    pub launcher_version: i16,
     pub patch_url: String,
     pub patch_path: String,
+    /// Global monster EXP multiplier, percent (100 = unchanged). Applied in
+    /// level.rs::exp_change_inner before the per-player % bonuses.
+    pub exp_rate: i16,
 }
 
 /// Damage balance multipliers (single row).

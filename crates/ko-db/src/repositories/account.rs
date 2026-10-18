@@ -41,6 +41,29 @@ impl<'a> AccountRepository<'a> {
         .await
     }
 
+    /// Create an account for the automatic first-login registration flow.
+    /// Passwords are stored exactly as received because the 2615 login client
+    /// sends the same credential representation that authentication compares.
+    /// A conflicting account is never overwritten.
+    pub async fn create_auto_registered(
+        &self,
+        account_id: &str,
+        password: &str,
+        client_ip: &str,
+    ) -> Result<Option<TbUser>, sqlx::Error> {
+        sqlx::query_as::<_, TbUser>(
+            "INSERT INTO tb_user (str_account_id, str_passwd, str_client_ip, str_authority, account_check) \
+             VALUES ($1, $2, $3, 1, 1) \
+             ON CONFLICT (str_account_id) DO NOTHING \
+             RETURNING *",
+        )
+        .bind(account_id)
+        .bind(password)
+        .bind(client_ip)
+        .fetch_optional(self.pool)
+        .await
+    }
+
     /// Get the character list for an account.
     pub async fn get_account_chars(
         &self,

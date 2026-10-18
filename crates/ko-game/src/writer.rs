@@ -48,20 +48,13 @@ pub async fn writer_loop(
     let mut total_writes: u64 = 0;
 
     while let Some(first_packet) = rx.recv().await {
-        // Block opcodes that cause v2600 client inventory corruption:
-        // - 0xE9 (WIZ_EXT_HOOK): outside client dispatch range (0x06-0xD9), not in sniffer
-        // - 0xC7 (WIZ_DAILY_QUEST): not in sniffer, causes bag item clearing on parse
-        if first_packet.opcode == 0xE9 || first_packet.opcode == 0xC7 {
-            tracing::debug!(
-                "Writer DROP opcode=0x{:02X} len={} (blocked: causes v2600 client corruption)",
-                first_packet.opcode, first_packet.data.len()
-            );
-            continue;
-        }
-
         buf.clear();
         let seq = sequence.load(Ordering::Acquire);
         let mut batch_count: u32 = 1;
+        let mut hook_routes = Vec::new();
+        if first_packet.opcode == 0xE9 {
+            hook_routes.push((first_packet.data.first().copied(), first_packet.data.len()));
+        }
         total_packets += 1;
 
         tracing::info!(
@@ -86,7 +79,9 @@ pub async fn writer_loop(
 
         // Drain all additional pending packets (non-blocking)
         while let Ok(packet) = rx.try_recv() {
-            if packet.opcode == 0xE9 || packet.opcode == 0xC7 { continue; }
+            if packet.opcode == 0xE9 {
+                hook_routes.push((packet.data.first().copied(), packet.data.len()));
+            }
             let seq = sequence.load(Ordering::Acquire);
             batch_count += 1;
             total_packets += 1;
@@ -115,13 +110,27 @@ pub async fn writer_loop(
                 // header(2) + len(2) = 4 bytes minimum before payload
                 let payload_len = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
                 let frame_end = off + 4 + payload_len + 2; // header + len + payload + footer
-                if frame_end > buf.len() { break; }
-                let wire: String = buf[off..frame_end].iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                if frame_end > buf.len() {
+                    break;
+                }
+                let wire: String = buf[off..frame_end]
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 let flag = buf[off + 4]; // first payload byte (0x01=AES, else opcode)
-                let opcode = if flag == 0x01 && payload_len > 1 { "AES" } else { &format!("0x{:02X}", flag) };
+                let opcode = if flag == 0x01 && payload_len > 1 {
+                    "AES"
+                } else {
+                    &format!("0x{:02X}", flag)
+                };
                 tracing::info!(
                     "WIRE S2C #{} [{}] payload={} wire_len={}: {}",
-                    frame_idx, opcode, payload_len, frame_end - off, wire,
+                    frame_idx,
+                    opcode,
+                    payload_len,
+                    frame_end - off,
+                    wire,
                 );
                 off = frame_end;
                 frame_idx += 1;
@@ -142,6 +151,10 @@ pub async fn writer_loop(
                 batch_count,
             );
             break;
+        }
+        for (sub, bytes) in hook_routes {
+            tracing::info!(target: "hook_protocol", sub, bytes,
+                "HOOK S2C TCP write completed");
         }
     }
     tracing::warn!(
@@ -219,11 +232,7 @@ fn build_frame(
 ///
 /// Wire format: `[0xAA 0x55] [len: u16le] [0x01 | AES_CBC(CRC32 + opcode + data)] [0x55 0xAA]`
 /// CRC32 is computed over the raw plaintext (opcode + data) and prepended before encryption.
-fn build_frame_aes(
-    aes: &AesCryption,
-    packet: &Packet,
-    buf: &mut Vec<u8>,
-) -> anyhow::Result<()> {
+fn build_frame_aes(aes: &AesCryption, packet: &Packet, buf: &mut Vec<u8>) -> anyhow::Result<()> {
     // Build plaintext: [opcode | data]
     // Wireshark-verified: NO CRC32 in either direction. Just raw opcode + data.
     let mut plaintext = Vec::with_capacity(1 + packet.data.len());
@@ -270,6 +279,35 @@ fn build_frame_plaintext(packet: &Packet, buf: &mut Vec<u8>) -> anyhow::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the actual channel/TCP path: both the first E9 response and a
+    /// queued E9 response used to disappear before build_frame was called.
+    #[tokio::test]
+    async fn extension_responses_reach_tcp_in_order() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let (_, writer) = server.into_split();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let crypto = Arc::new(JvCryption::new());
+        let aes = Arc::new(AesCryption::new());
+        let mut expected = Vec::new();
+        for (opcode, payload) in [(0xE9, vec![0xAE, 1, 0]), (0x10, vec![1]), (0xE9, vec![0xA8, 0])] {
+            let mut packet = Packet::new(opcode);
+            packet.data.extend_from_slice(&payload);
+            build_frame(&crypto, 0, &packet, &mut expected, &aes).unwrap();
+            tx.send(Arc::new(packet)).unwrap();
+        }
+        drop(tx);
+        let task = tokio::spawn(writer_loop(writer, rx, crypto,
+            Arc::new(AtomicU32::new(0)), aes));
+        let mut actual = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(3), client.read_to_end(&mut actual))
+            .await.unwrap().unwrap();
+        task.await.unwrap();
+        assert_eq!(actual, expected);
+    }
 
     /// Unencrypted frame: header(2) + len(2) + opcode(1) + data + footer(2).
     #[test]

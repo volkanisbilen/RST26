@@ -65,19 +65,19 @@ async fn main() -> anyhow::Result<()> {
     info!("[3/6] Migrations applied");
 
     // ── Server settings from DB ──────────────────────────────────────────
-    let (version, patch_url, patch_path) = load_server_settings(&pool).await;
+    let (_game_version, launcher_version, patch_url, patch_path) =
+        load_server_settings(&pool).await;
 
     // ── Login server config ──────────────────────────────────────────────
     let login_config = LoginServerConfig {
         bind_ip: bind_ip.clone(),
         base_port: login_base_port,
-        game_server_ip: std::env::var("GAME_SERVER_IP")
-            .unwrap_or_else(|_| "127.0.0.1".to_string()),
+        game_server_ip: std::env::var("GAME_SERVER_IP").unwrap_or_else(|_| "127.0.0.1".to_string()),
         game_server_port: std::env::var("GAME_SERVER_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(15001),
-        version,
+        version: launcher_version,
         ftp_url: patch_url,
         ftp_path: patch_path,
         news_title: "Login Notice".to_string(),
@@ -99,7 +99,12 @@ async fn main() -> anyhow::Result<()> {
 
     info!("[6/6] All systems ready — accepting connections");
     info!("====================================");
-    info!("  Login:  {}:{}-{}", bind_ip, login_base_port, login_base_port + 9);
+    info!(
+        "  Login:  {}:{}-{}",
+        bind_ip,
+        login_base_port,
+        login_base_port + 9
+    );
     info!("  Game:   {}", game_server.bind_addr());
     info!("====================================");
 
@@ -116,10 +121,23 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Wait for shutdown — either server exiting or signal terminates both.
-    tokio::select! {
-        _ = login_handle => warn!("Login server exited"),
-        _ = game_handle => warn!("Game server exited"),
+    // Wait for BOTH servers to finish their own shutdown before the process exits.
+    //
+    // This used to be a `tokio::select!` on whichever finished first, which raced login
+    // and game shutdown: both register their own SIGTERM/Ctrl-C handler and wake on the
+    // same signal, but login's shutdown is near-instant (no save) while game's does an
+    // awaited, up-to-30s save_all_characters_sync pass over every online character.
+    // Whichever branch `select!` picked first (almost always login, since it does
+    // nothing) made the whole process exit immediately, dropping game_handle mid-save —
+    // silently truncating that save and rolling players still online at restart time
+    // back to their last periodic autosave (every 10 minutes). Waiting for both ensures
+    // the character-save pass always finishes before the binary actually exits.
+    let (login_res, game_res) = tokio::join!(login_handle, game_handle);
+    if let Err(e) = login_res {
+        warn!("Login server task panicked: {e}");
+    }
+    if let Err(e) = game_res {
+        warn!("Game server task panicked: {e}");
     }
 
     Ok(())
@@ -142,16 +160,17 @@ fn init_tracing() {
 }
 
 /// Load server settings from the database (version, patch URL).
-async fn load_server_settings(pool: &ko_db::DbPool) -> (u16, String, String) {
+async fn load_server_settings(pool: &ko_db::DbPool) -> (u16, u16, String, String) {
     let repo = ServerSettingsRepository::new(pool);
     match repo.load_server_settings().await {
         Ok(s) => {
             info!(
-                "[3/6] DB: version={}, patch={}{}",
-                s.game_version, s.patch_url, s.patch_path
+                "[3/6] DB: game_version={}, launcher_version={}, patch={}{}",
+                s.game_version, s.launcher_version, s.patch_url, s.patch_path
             );
             (
                 s.game_version as u16,
+                s.launcher_version as u16,
                 s.patch_url,
                 s.patch_path,
             )
@@ -159,7 +178,8 @@ async fn load_server_settings(pool: &ko_db::DbPool) -> (u16, String, String) {
         Err(e) => {
             warn!("[3/6] Failed to read server_settings: {}", e);
             (
-                2598u16,
+                2625u16,
+                2625u16,
                 "http://127.0.0.1:8080".to_string(),
                 "/patches/".to_string(),
             )

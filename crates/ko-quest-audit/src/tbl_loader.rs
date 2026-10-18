@@ -345,10 +345,11 @@ fn load_item_exchange(data_dir: &Path) -> anyhow::Result<HashMap<i32, TblItemExc
         "Item_Exchange.tbl"
     );
 
-    // Item_Exchange layout: col_0=index, col_1=random_flag,
-    // col_2..col_6=origin_item_num (5), col_7..col_11=origin_item_count (5),
-    // col_12..col_16=exchange_item_num (5), col_17..col_21=exchange_item_count (5),
-    // col_22..col_26=exchange_item_time (5)
+    // v2615 Item_Exchange layout is interleaved and contains a TBL-only
+    // field at col_2. This matches the importer migration and runtime model:
+    // col_3..12  = five (origin_item_num, origin_item_count) pairs
+    // col_13..22 = five (exchange_item_num, exchange_item_count) pairs
+    // col_23..26 = output times 1..4 (time5 is absent/zero in the TBL).
     let mut result = HashMap::with_capacity(tbl.rows.len());
     for row in &tbl.rows {
         if row.len() < 27 {
@@ -358,17 +359,17 @@ fn load_item_exchange(data_dir: &Path) -> anyhow::Result<HashMap<i32, TblItemExc
         let random_flag = cell_to_i32(&row[1]);
         let mut origin_items = Vec::new();
         for i in 0..5 {
-            let item_id = cell_to_i32(&row[2 + i]);
-            let count = cell_to_i32(&row[7 + i]);
+            let item_id = cell_to_i32(&row[3 + i * 2]);
+            let count = cell_to_i32(&row[4 + i * 2]);
             if item_id != 0 {
                 origin_items.push((item_id, count));
             }
         }
         let mut exchange_items = Vec::new();
         for i in 0..5 {
-            let item_id = cell_to_i32(&row[12 + i]);
-            let count = cell_to_i32(&row[17 + i]);
-            let time = cell_to_i32(&row[22 + i]);
+            let item_id = cell_to_i32(&row[13 + i * 2]);
+            let count = cell_to_i32(&row[14 + i * 2]);
+            let time = if i < 4 { cell_to_i32(&row[23 + i]) } else { 0 };
             if item_id != 0 {
                 exchange_items.push((item_id, count, time));
             }

@@ -141,16 +141,16 @@ fn unicode_to_win1254(c: char) -> Option<u8> {
         0x0178 => Some(0x9F), // Ÿ
         // Latin-1 range (U+00A0-U+00FF) — direct mapping
         0x00A0..=0x00CF => Some(cp as u8), // before Ğ replacement
-        0x00D0 => None,                     // Ð not in Win-1254 (replaced by Ğ)
+        0x00D0 => None,                    // Ð not in Win-1254 (replaced by Ğ)
         0x00D1..=0x00DC => Some(cp as u8),
-        0x00DD => None,                     // Ý not in Win-1254 (replaced by İ)
-        0x00DE => None,                     // Þ not in Win-1254 (replaced by Ş)
+        0x00DD => None, // Ý not in Win-1254 (replaced by İ)
+        0x00DE => None, // Þ not in Win-1254 (replaced by Ş)
         0x00DF..=0x00EF => Some(cp as u8),
-        0x00F0 => None,                     // ð not in Win-1254 (replaced by ğ)
+        0x00F0 => None, // ð not in Win-1254 (replaced by ğ)
         0x00F1..=0x00FC => Some(cp as u8),
-        0x00FD => None,                     // ý not in Win-1254 (replaced by ı)
-        0x00FE => None,                     // þ not in Win-1254 (replaced by ş)
-        0x00FF => Some(0xFF),               // ÿ
+        0x00FD => None,       // ý not in Win-1254 (replaced by ı)
+        0x00FE => None,       // þ not in Win-1254 (replaced by ş)
+        0x00FF => Some(0xFF), // ÿ
         _ => None,
     }
 }
@@ -206,7 +206,11 @@ impl Packet {
 
     /// Create a packet with opcode and existing data.
     pub fn with_data(opcode: u8, data: Vec<u8>) -> Self {
-        Self { opcode, data, plaintext: false }
+        Self {
+            opcode,
+            data,
+            plaintext: false,
+        }
     }
 
     /// Create a plaintext packet (bypasses AES encryption).

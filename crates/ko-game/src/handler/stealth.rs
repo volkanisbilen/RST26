@@ -695,7 +695,10 @@ mod tests {
     fn test_buff_type_invisibility_is_positive() {
         assert!(BUFF_TYPE_INVISIBILITY > 0);
         // Imported from buff_constants, same value in both modules
-        assert_eq!(BUFF_TYPE_INVISIBILITY, crate::buff_constants::BUFF_TYPE_INVISIBILITY);
+        assert_eq!(
+            BUFF_TYPE_INVISIBILITY,
+            crate::buff_constants::BUFF_TYPE_INVISIBILITY
+        );
     }
 
     /// Stealth types: MOVE breaks more easily than ATTACK.

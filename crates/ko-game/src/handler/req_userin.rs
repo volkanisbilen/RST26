@@ -23,6 +23,7 @@ use crate::handler::region;
 use crate::handler::region::write_user_info;
 use crate::npc::NPC_BAND;
 use crate::session::ClientSession;
+use crate::world::BOT_ID_BASE;
 use crate::zone::SessionId;
 
 /// Maximum users per response (C++ MAX_SEND_USERID).
@@ -53,7 +54,26 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             None => break,
         };
 
-        // Only handle user IDs (< NPC_BAND). Skip self.
+        // Runtime bots share the user visibility protocol even though their IDs
+        // live at/above NPC_BAND. Resolve them before applying the player guard.
+        if socket_id >= BOT_ID_BASE {
+            let bot = match world.get_bot(socket_id) {
+                Some(bot) if bot.in_game && bot.zone_id == my_zone => bot,
+                _ => continue,
+            };
+
+            result.write_u8(0); // type marker (user/bot)
+            result.write_u32(bot.id);
+            crate::systems::bot_ai::write_bot_user_info(&mut result, &bot, &world);
+            user_count += 1;
+
+            if user_count >= MAX_SEND_USERID || result.data.len() >= 60000 {
+                break;
+            }
+            continue;
+        }
+
+        // Only handle real user IDs (< NPC_BAND). Skip self.
         if socket_id >= NPC_BAND || socket_id as SessionId == my_sid {
             continue;
         }
@@ -85,6 +105,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         let other_alliance_cape = other_clan
             .as_ref()
             .and_then(|ki| region::resolve_alliance_cape(ki, &world));
+        let other_is_king = world.is_king(other_char.nation, &other_char.name);
         result.write_u8(0); // type marker (user/bot)
         result.write_u32(other_sid as u32);
         write_user_info(
@@ -93,6 +114,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             &other_pos,
             other_clan.as_ref(),
             other_alliance_cape,
+            other_is_king,
             other_invis,
             other_abnormal,
             &other_bs,
@@ -202,7 +224,9 @@ mod tests {
     fn test_req_userin_c2s_data_length() {
         let mut pkt = Packet::new(Opcode::WizReqUserIn as u8);
         pkt.write_u16(4);
-        for i in 0..4u32 { pkt.write_u32(i + 1); }
+        for i in 0..4u32 {
+            pkt.write_u32(i + 1);
+        }
         assert_eq!(pkt.data.len(), 18); // 2 + 4*4
     }
 

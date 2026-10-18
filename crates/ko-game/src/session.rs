@@ -34,6 +34,8 @@ use crate::zone::SessionId;
 /// Sessions that have connected (or even logged in) but haven't completed the
 /// game entry flow within this period are disconnected.
 const LOADING_TIMEOUT_SECS: u64 = 10 * 60;
+/// An in-game client that sends nothing for this long is dropped (hung / dead connection).
+const IN_GAME_IDLE_SECS: u64 = 45;
 
 /// Session states for the login flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +96,9 @@ pub struct ClientSession {
     // --- In-game: channel-based sending ---
     /// Outbound packet channel (Some after upgrade).
     tx: Option<mpsc::UnboundedSender<Arc<Packet>>>,
+
+    /// The native warehouse window currently shows the clan warehouse.
+    clan_wh_native: bool,
 }
 
 impl ClientSession {
@@ -107,6 +112,11 @@ impl ClientSession {
     ) -> Self {
         // Disable Nagle's algorithm — game servers need low-latency packet delivery.
         let _ = stream.set_nodelay(true);
+        // a dead peer (network cut, frozen / killed client machine) is noticed in about 30 s instead of never
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(20))
+            .with_interval(Duration::from_secs(5));
+        let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive);
         Self {
             stream: Some(stream),
             read_half: None,
@@ -123,7 +133,16 @@ impl ClientSession {
             aes_owned: Some(AesCryption::new()),
             aes_shared: None,
             tx: None,
+            clan_wh_native: false,
         }
+    }
+
+    pub fn clan_wh_native(&self) -> bool {
+        self.clan_wh_native
+    }
+
+    pub fn set_clan_wh_native(&mut self, on: bool) {
+        self.clan_wh_native = on;
     }
 
     /// Main session loop: read packets and dispatch to handlers.
@@ -159,10 +178,19 @@ impl ClientSession {
                     }
                 }
             } else {
-                match self.read_packet().await {
-                    Ok(pkt) => pkt,
-                    Err(e) => {
+                // the game client sends something at least every ~10 s (position, heartbeat): a client that stays
+                // silent is frozen or gone, so the character leaves the game instead of hanging in it
+                match tokio::time::timeout(Duration::from_secs(IN_GAME_IDLE_SECS), self.read_packet()).await {
+                    Ok(Ok(pkt)) => pkt,
+                    Ok(Err(e)) => {
                         info!("[{}] Connection closed: {}", self.addr, e);
+                        break;
+                    }
+                    Err(_) => {
+                        warn!(
+                            "[{}] No packet for {} s in game - dropping the hung client (sid={})",
+                            self.addr, IN_GAME_IDLE_SECS, self.session_id
+                        );
                         break;
                     }
                 }
@@ -170,10 +198,20 @@ impl ClientSession {
 
             // Raw packet logging for debugging v2600 connection flow
             if self.state != SessionState::InGame {
-                let hex: String = packet.data.iter().take(32).map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                let hex: String = packet
+                    .data
+                    .iter()
+                    .take(32)
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 info!(
                     "[{}] C2S opcode=0x{:02X} len={} state={:?} data=[{}]",
-                    self.addr, packet.opcode, packet.data.len(), self.state, hex
+                    self.addr,
+                    packet.opcode,
+                    packet.data.len(),
+                    self.state,
+                    hex
                 );
             }
 
@@ -214,10 +252,7 @@ impl ClientSession {
             result
         } else if let Some(ref mut stream) = self.stream {
             // Pre-auth mode: check AES first, then JvCryption.
-            let aes_enabled = self
-                .aes_owned
-                .as_ref()
-                .is_some_and(|a| a.is_enabled());
+            let aes_enabled = self.aes_owned.as_ref().is_some_and(|a| a.is_enabled());
             if aes_enabled {
                 let aes = self.aes_owned.as_ref().unwrap();
                 return packet_io::read_packet_aes(stream, aes).await;
@@ -246,32 +281,57 @@ impl ClientSession {
     pub async fn send_packet(&mut self, packet: &Packet) -> anyhow::Result<()> {
         // S2C logging for ALL phases (Phase 1 + Phase 2)
         {
-            let hex: String = packet.data.iter().take(32).map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
-            let mode = if self.tx.is_some() { "channel" } else { "direct" };
+            let hex: String = packet
+                .data
+                .iter()
+                .take(32)
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mode = if self.tx.is_some() {
+                "channel"
+            } else {
+                "direct"
+            };
             tracing::info!(
                 "[{}] S2C opcode=0x{:02X} len={} state={:?} mode={} plaintext={} data=[{}]",
-                self.addr, packet.opcode, packet.data.len(), self.state, mode, packet.plaintext, hex
+                self.addr,
+                packet.opcode,
+                packet.data.len(),
+                self.state,
+                mode,
+                packet.plaintext,
+                hex
             );
         }
 
+        // The native warehouse window only understands WIZ_WAREHOUSE: show the clan warehouse in it.
+        let rewritten;
+        let packet = if self.clan_wh_native && packet.opcode == ko_protocol::Opcode::WizClanWarehouse as u8 {
+            let mut p = packet.clone();
+            p.opcode = ko_protocol::Opcode::WizWarehouse as u8;
+            rewritten = p;
+            &rewritten
+        } else {
+            packet
+        };
+
         if let Some(ref tx) = self.tx {
             // In-game: send via channel to writer task
-            tx.send(Arc::new(packet.clone()))
-                .map_err(|e| {
-                    tracing::warn!(
-                        "[{}] Writer channel CLOSED — opcode=0x{:02X} lost (sid={})",
-                        self.addr, e.0.opcode, self.session_id,
-                    );
-                    anyhow::anyhow!("writer channel closed")
-                })?;
+            tx.send(Arc::new(packet.clone())).map_err(|e| {
+                tracing::warn!(
+                    "[{}] Writer channel CLOSED — opcode=0x{:02X} lost (sid={})",
+                    self.addr,
+                    e.0.opcode,
+                    self.session_id,
+                );
+                anyhow::anyhow!("writer channel closed")
+            })?;
             Ok(())
         } else if let Some(ref mut stream) = self.stream {
             // Pre-auth: direct write.
             // Check AES first, then fall back to JvCryption.
-            let aes_enabled = self
-                .aes_owned
-                .as_ref()
-                .is_some_and(|a| a.is_enabled());
+            let aes_enabled = self.aes_owned.as_ref().is_some_and(|a| a.is_enabled());
             if aes_enabled {
                 let aes = self.aes_owned.as_ref().unwrap();
                 return packet_io::send_packet_aes(stream, aes, packet).await;
@@ -387,6 +447,11 @@ impl ClientSession {
                     1,
                 );
             }
+
+            // ── 0. Fun Class: restore the real character before it is saved ──
+            crate::handler::dungeon_defence::restore_on_disconnect(&self.world, sid);
+            self.world.manes_survival_manager.leave_event(&self.world, sid, false);
+            crate::handler::cinderella::cinderella_logout(&self.world, sid, true);
 
             // ── 1. Save character stats + position ────────────────────────
             if !char_id.is_empty() {
@@ -510,15 +575,22 @@ impl ClientSession {
 
             // ── 1b. Bulk save inventory items ──────────────────────────────
             if !char_id.is_empty() {
-                let inventory = self.world.get_inventory(sid);
-                let non_empty: Vec<(usize, u32)> = inventory.iter().enumerate()
+                let inventory = self.world.get_persistent_inventory(sid);
+                let non_empty: Vec<(usize, u32)> = inventory
+                    .iter()
+                    .enumerate()
                     .filter(|(_, i)| i.item_id != 0)
                     .map(|(s, i)| (s, i.item_id))
                     .collect();
                 tracing::info!(
                     "Disconnect save: char={} inventory_len={} non_empty={}  slots={:?}",
-                    char_id, inventory.len(), non_empty.len(),
-                    non_empty.iter().map(|(s, id)| format!("[{}]={}", s, id)).collect::<Vec<_>>()
+                    char_id,
+                    inventory.len(),
+                    non_empty.len(),
+                    non_empty
+                        .iter()
+                        .map(|(s, id)| format!("[{}]={}", s, id))
+                        .collect::<Vec<_>>()
                 );
                 if !inventory.is_empty() {
                     let pool = self.pool.clone();
@@ -543,8 +615,14 @@ impl ClientSession {
                             )
                             .collect();
                         match repo.save_items_batch(&params).await {
-                            Ok(()) => tracing::info!("Disconnect save OK: char={} slots={}", cid, params.len()),
-                            Err(e) => warn!("Disconnect: failed to save inventory for {}: {}", cid, e),
+                            Ok(()) => tracing::info!(
+                                "Disconnect save OK: char={} slots={}",
+                                cid,
+                                params.len()
+                            ),
+                            Err(e) => {
+                                warn!("Disconnect: failed to save inventory for {}: {}", cid, e)
+                            }
                         }
                     });
                 } else {
@@ -599,7 +677,7 @@ impl ClientSession {
             }
 
             // ── 2. Save active buffs (saved magic) ───────────────────────
-            self.save_saved_magic_async();
+            self.save_saved_magic().await;
 
             // ── 3. Save premium state ─────────────────────────────────────
             if !account_id.is_empty() {
@@ -689,6 +767,7 @@ impl ClientSession {
                                     ],
                                     summary.cover_id as i16,
                                     summary.skill_id as i16,
+                                    summary.skill_title_row as i16,
                                 )
                                 .await
                             {
@@ -1260,7 +1339,9 @@ impl ClientSession {
             }
 
             // ── 12. Zone/region removal + INOUT_OUT broadcast ─────────────
-            if let Some((pos, event_room)) = self.world.with_session(sid, |h| (h.position, h.event_room)) {
+            if let Some((pos, event_room)) =
+                self.world.with_session(sid, |h| (h.position, h.event_room))
+            {
                 if let Some(zone) = self.world.get_zone(pos.zone_id) {
                     zone.remove_user(pos.region_x, pos.region_z, sid);
                 }
@@ -1288,6 +1369,8 @@ impl ClientSession {
             self.world.chaos_remove_player(sid);
 
             // ── 13b. Cinderella War cleanup ─────────────────────────────
+            crate::handler::dungeon_defence::restore_on_disconnect(&self.world, sid);
+            self.world.manes_survival_manager.leave_event(&self.world, sid, false);
             crate::handler::cinderella::cinderella_logout(&self.world, sid, true);
 
             // ── 13c. Wanted event cleanup ────────────────────────────────
@@ -1381,9 +1464,7 @@ impl ClientSession {
 
     /// Check if AES encryption is currently enabled for this session.
     pub fn aes_enabled(&self) -> bool {
-        self.aes_owned
-            .as_ref()
-            .is_some_and(|a| a.is_enabled())
+        self.aes_owned.as_ref().is_some_and(|a| a.is_enabled())
     }
 
     /// Account ID (set after successful login).
@@ -1421,21 +1502,18 @@ impl ClientSession {
         &self.world
     }
 
-    /// Save active saved magic entries to DB (fire-and-forget).
-    ///
-    /// Called on disconnect and zone change to persist scroll buffs.
-    pub(crate) fn save_saved_magic_async(&self) {
+    /// Save active saved magic entries to DB and wait until the replacement
+    /// is complete. Zone transitions must not race this delete/insert with a
+    /// later logout save, or the character can lose its persistent scrolls.
+    pub(crate) async fn save_saved_magic(&self) {
         let char_id = match self.character_id.as_deref() {
             Some(id) if !id.is_empty() => id.to_string(),
             _ => return,
         };
         let entries = self.world.get_saved_magic_entries(self.session_id);
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            let repo = ko_db::repositories::saved_magic::SavedMagicRepository::new(&pool);
-            if let Err(e) = repo.save_saved_magic(&char_id, &entries).await {
-                tracing::error!(char_id, "failed to save magic on disconnect: {}", e);
-            }
-        });
+        let repo = ko_db::repositories::saved_magic::SavedMagicRepository::new(&self.pool);
+        if let Err(e) = repo.save_saved_magic(&char_id, &entries).await {
+            tracing::error!(char_id, "failed to save magic on zone change: {}", e);
+        }
     }
 }

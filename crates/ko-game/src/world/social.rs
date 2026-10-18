@@ -353,10 +353,20 @@ impl WorldState {
             }
         }
     }
-    /// Get the party ID for a session (from CharacterInfo).
+    /// Get the party ID for a real player or runtime bot.
+    ///
+    /// Real players cache the ID on `CharacterInfo`. Runtime bots have no
+    /// session handle, so their membership is resolved from the party roster.
     pub fn get_party_id(&self, sid: SessionId) -> Option<u16> {
-        let handle = self.sessions.get(&sid)?;
-        handle.character.as_ref()?.party_id
+        if let Some(handle) = self.sessions.get(&sid) {
+            if let Some(party_id) = handle.character.as_ref().and_then(|ch| ch.party_id) {
+                return Some(party_id);
+            }
+        }
+
+        self.parties
+            .iter()
+            .find_map(|entry| entry.value().find_slot(sid).map(|_| *entry.key()))
     }
     /// Check if a session is currently in a party.
     pub fn is_in_party(&self, sid: SessionId) -> bool {
@@ -599,6 +609,16 @@ impl WorldState {
     /// Add a player to the Cinderella War event user set.
     pub fn add_cinderella_user(&self, sid: SessionId) {
         self.cindwar_event_users.insert(sid, ());
+    }
+
+    /// Mark a session whose client needs a full character refresh after leaving the event.
+    pub fn mark_cind_refresh_pending(&self, sid: SessionId) {
+        self.cind_refresh_pending.insert(sid, ());
+    }
+
+    /// Take (and clear) the pending-refresh mark.
+    pub fn take_cind_refresh_pending(&self, sid: SessionId) -> bool {
+        self.cind_refresh_pending.remove(&sid).is_some()
     }
 
     /// Remove a player from the Cinderella War event user set.
@@ -883,7 +903,7 @@ impl WorldState {
         let mut pkt = Packet::new(Opcode::WizChat as u8);
         pkt.write_u8(7); // ChatType::WarSystem (WAR_SYSTEM_CHAT)
         pkt.write_u8(0); // nation (0 = all)
-        // Write formatted text as Latin-1 encoded string
+                         // Write formatted text as Latin-1 encoded string
         pkt.write_string(&txt);
 
         self.broadcast_to_zone(zone_id, Arc::new(pkt), None);

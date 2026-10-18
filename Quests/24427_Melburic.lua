@@ -805,19 +805,19 @@ if (EVENT == 8028) then
 		if (MonsterCount < 20) then
 			SelectMsg(UID, 2, 140, 8144, NPC, 18, 8027);
 		else
-	Class = CheckClass(UID);
+		Class = CheckClass(UID);
 		if (Class == 1 or Class == 5 or Class == 6 or Class == 13 or Class == 14 or Class == 15) then
 			RunQuestExchange(UID,1037)
-			--SaveEvent(UID, 8639);
+			SaveEvent(UID, 8639);
 		elseif (Class == 2 or Class == 7 or Class == 8) then
 			RunQuestExchange(UID,1038)
-			--SaveEvent(UID, 8644);
+			SaveEvent(UID, 8644);
 		elseif (Class == 3 or Class == 9 or Class == 10) then
 			RunQuestExchange(UID,1039)
-			--SaveEvent(UID, 8649);
+			SaveEvent(UID, 8649);
 		elseif (Class == 4 or Class == 11 or Class == 12) then
 			RunQuestExchange(UID,1040)
-			--SaveEvent(UID, 8654);
+			SaveEvent(UID, 8654);
 			end
 		end
 	end
@@ -1132,7 +1132,7 @@ end
 if (EVENT == 2205) then
 	MonsterSub = ExistMonsterQuestSub(UID);
 	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 570, 20108, NPC, 22, 2206, 23, -1);
+		SelectMsg(UID, 5, 570, 20108, NPC, 22, 2206, 23, -1);
 	else
 		SelectMsg(UID, 2, 570, 20108, NPC, 18, 2206);
 	end
@@ -1173,4 +1173,3 @@ end
 if (EVENT == 8700) then
 	SaveEvent(UID, 8397);
 end
-

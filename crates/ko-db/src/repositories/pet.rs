@@ -2,7 +2,7 @@
 //! - `GameServer/LoadServerData.cpp` — pet info/transform loading
 //! - `GameServer/DBAgent.cpp` — `CreateNewPet()`, `LoadPetData()`
 
-use crate::models::pet::{PetImageChangeRow, PetStatsInfoRow, PetUserDataRow};
+use crate::models::pet::{PetImageChangeRow, PetStatsInfoRow, PetUserDataRow, PetUserItemRow};
 use crate::DbPool;
 
 /// Repository for pet system table access.
@@ -79,6 +79,52 @@ impl<'a> PetRepository<'a> {
         .execute(self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Load the four item slots stored with a pet. Empty slots are omitted by
+    /// the DB and are filled by the game layer.
+    pub async fn load_pet_items(&self, serial_id: i64) -> Result<Vec<PetUserItemRow>, sqlx::Error> {
+        sqlx::query_as::<_, PetUserItemRow>(
+            "SELECT n_pet_serial_id, slot_index, item_id, durability, count, flag, \
+             original_flag, serial_num, expire_time FROM pet_user_items \
+             WHERE n_pet_serial_id = $1 ORDER BY slot_index",
+        )
+        .bind(serial_id)
+        .fetch_all(self.pool)
+        .await
+    }
+
+    /// Replace a pet's persisted equipment atomically. This is deliberately
+    /// called on every pet-inventory move: dismissing a pet must never delete
+    /// its auto-loot or other equipment.
+    pub async fn save_pet_items(
+        &self,
+        serial_id: i64,
+        items: &[PetUserItemRow],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM pet_user_items WHERE n_pet_serial_id = $1")
+            .bind(serial_id)
+            .execute(&mut *tx)
+            .await?;
+        for item in items.iter().filter(|item| item.item_id != 0) {
+            sqlx::query(
+                "INSERT INTO pet_user_items (n_pet_serial_id, slot_index, item_id, durability, count, flag, original_flag, serial_num, expire_time) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            )
+            .bind(serial_id)
+            .bind(item.slot_index)
+            .bind(item.item_id)
+            .bind(item.durability)
+            .bind(item.count)
+            .bind(item.flag)
+            .bind(item.original_flag)
+            .bind(item.serial_num)
+            .bind(item.expire_time)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
     }
 
     /// Create a new pet and return the auto-assigned index.

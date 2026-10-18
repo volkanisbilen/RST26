@@ -67,7 +67,8 @@ pub fn evaluate_terrain(
         || in_rect(375.0, 527.0, 392.0, 612.0) // Area 2
         || in_rect(285.0, 423.0, 344.0, 569.0) // Area 3
         || in_rect(263.0, 319.0, 461.0, 537.0) // Area 4
-        || in_rect(591.0, 669.0, 416.0, 493.0) // Area 5
+        || in_rect(591.0, 669.0, 416.0, 493.0)
+    // Area 5
     {
         return TERRAIN_HAY;
     }
@@ -147,95 +148,149 @@ mod tests {
     #[test]
     fn test_evaluate_terrain_no_nation_battle_returns_none() {
         // In ZONE_BATTLE6 but nation battle not active
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, false, false, 500.0, 500.0), TERRAIN_NONE);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, false, false, 500.0, 500.0),
+            TERRAIN_NONE
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_gm_returns_none() {
         // GM in ZONE_BATTLE6 during nation battle — still NONE
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, true, 500.0, 500.0), TERRAIN_NONE);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, true, 500.0, 500.0),
+            TERRAIN_NONE
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_hay_area1() {
         // Center of HAY Area 1: x=531-713, z=447-690
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 620.0, 550.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 620.0, 550.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_hay_area2() {
         // Center of HAY Area 2: x=375-527, z=392-612
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 450.0, 500.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 450.0, 500.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_hay_area3() {
         // Center of HAY Area 3: x=285-423, z=344-569
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 350.0, 450.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 350.0, 450.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_hay_area4() {
         // Center of HAY Area 4: x=263-319, z=461-537
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 290.0, 500.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 290.0, 500.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_hay_area5() {
         // Center of HAY Area 5: x=591-669, z=416-493
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 630.0, 450.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 630.0, 450.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_swamp() {
         // Center of Swamp: x=619-984, z=714-970
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 800.0, 850.0), TERRAIN_SWAMP);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 800.0, 850.0),
+            TERRAIN_SWAMP
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_water() {
         // Center of Water: x=138-373, z=62-306
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 250.0, 180.0), TERRAIN_WATER);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 250.0, 180.0),
+            TERRAIN_WATER
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_none_in_battle6() {
         // In ZONE_BATTLE6 during nation battle, but outside all terrain zones
         // Position (50, 50) is outside all defined areas
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 50.0, 50.0), TERRAIN_NONE);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 50.0, 50.0),
+            TERRAIN_NONE
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_hay_boundary_min() {
         // HAY Area 1 lower-left corner (boundary inclusive)
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 531.0, 447.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 531.0, 447.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_hay_boundary_max() {
         // HAY Area 1 upper-right corner (boundary inclusive)
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 713.0, 690.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 713.0, 690.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_swamp_boundary() {
         // Swamp boundary corners
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 619.0, 714.0), TERRAIN_SWAMP);
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 984.0, 970.0), TERRAIN_SWAMP);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 619.0, 714.0),
+            TERRAIN_SWAMP
+        );
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 984.0, 970.0),
+            TERRAIN_SWAMP
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_water_boundary() {
         // Water boundary corners
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 138.0, 62.0), TERRAIN_WATER);
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 373.0, 306.0), TERRAIN_WATER);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 138.0, 62.0),
+            TERRAIN_WATER
+        );
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 373.0, 306.0),
+            TERRAIN_WATER
+        );
     }
 
     #[test]
     fn test_evaluate_terrain_just_outside_hay_area1() {
         // Just outside HAY Area 1 boundary
-        assert_ne!(evaluate_terrain(ZONE_BATTLE6, true, false, 530.0, 550.0), TERRAIN_HAY);
-        assert_ne!(evaluate_terrain(ZONE_BATTLE6, true, false, 714.0, 550.0), TERRAIN_HAY);
+        assert_ne!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 530.0, 550.0),
+            TERRAIN_HAY
+        );
+        assert_ne!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 714.0, 550.0),
+            TERRAIN_HAY
+        );
     }
 
     #[test]
@@ -243,6 +298,9 @@ mod tests {
         // HAY areas are checked before swamp — verify priority in overlap region
         // There's no actual overlap in C++ data, but test that HAY is checked first
         // Position in HAY Area 1 that doesn't overlap with swamp
-        assert_eq!(evaluate_terrain(ZONE_BATTLE6, true, false, 650.0, 500.0), TERRAIN_HAY);
+        assert_eq!(
+            evaluate_terrain(ZONE_BATTLE6, true, false, 650.0, 500.0),
+            TERRAIN_HAY
+        );
     }
 }

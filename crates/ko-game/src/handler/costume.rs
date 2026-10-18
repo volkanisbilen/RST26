@@ -231,6 +231,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         return Ok(());
     }
 
+    // v2615 routes CUISpecialAuction through the same 0xC3 opcode as the
+    // costume panel. Akara's server-validated panel context must get first
+    // refusal; otherwise sub 1/2/4/7 receive valid costume replies and the
+    // altar opens with an empty list and non-working bid button.
+    if super::native_events::try_handle_akara_altar(session, &pkt).await? {
+        return Ok(());
+    }
+
     let mut reader = PacketReader::new(&pkt.data);
     let sub = reader.read_u8().unwrap_or(0);
 
