@@ -200,7 +200,7 @@ fn validate_zone_entry(world: &WorldState, sid: SessionId, dest_zone: u16) -> Re
         // Delos — CSW clan/grade check + loyalty requirement
         ZONE_DELOS => {
             // During CSW: must be in a real clan (not auto-clan) with grade <= 3
-            let csw = world.csw_event().blocking_read();
+            let csw = world.csw_event().try_read().map_err(|_| (WARP_NOT_DURING_CSW, 0))?;
             let csw_active = csw.is_active();
             drop(csw);
 
@@ -256,6 +256,9 @@ fn validate_zone_entry(world: &WorldState, sid: SessionId, dest_zone: u16) -> Re
             if let Some(zone) = world.get_zone(dest_zone) {
                 if zone.is_war_zone() {
                     let battle_state = world.get_battle_state();
+                    if !battle_state.is_war_open() {
+                        return Err((WARP_ERROR, 0));
+                    }
                     if dest_zone == ZONE_SNOW_BATTLE {
                         // Snow battle uses offset from ZONE_SNOW_BATTLE
                         if (dest_zone - ZONE_SNOW_BATTLE) as u8 != battle_state.battle_zone {
@@ -381,6 +384,9 @@ pub async fn trigger_zone_change(
         }
     }
 
+    // C++ ZoneChange(): CSW master-clan members entering Delos land in the castellan area.
+    let (dest_x, dest_z) = csw_master_spawn(&world, sid, dest_zone).unwrap_or((dest_x, dest_z));
+
     // Resolve (0,0) coordinates to zone start_position
     let (dest_x, dest_z) = if dest_x == 0.0 && dest_z == 0.0 {
         resolve_zero_coords(dest_zone, sid, &world)
@@ -438,6 +444,22 @@ pub async fn trigger_zone_change(
         super::logout::bdw_user_logout(&world, sid);
     }
 
+    // 0b2. Manes Survival: leaving the event zones hands the real HP/MP back and closes the
+    // client's temporary Survival mode.
+    {
+        use crate::systems::manes_survival::ZONES_MANES_SURVIVAL;
+        if ZONES_MANES_SURVIVAL.contains(&pos.zone_id)
+            && !ZONES_MANES_SURVIVAL.contains(&dest_zone)
+            && world.manes_survival_manager.leave_event(&world, sid, true)
+        {
+            if let Some(restore) =
+                crate::handler::survival::build_event_finish_restore(&world, sid).await
+            {
+                world.send_to_session_owned(sid, restore);
+            }
+        }
+    }
+
     // 0c. Monster Stone cleanup when warping out of a stone zone (81-83)
     // When ANY player exits, the entire room is disbanded.
     {
@@ -463,7 +485,7 @@ pub async fn trigger_zone_change(
         use crate::handler::dungeon_defence;
         if pos.zone_id == ZONE_DUNGEON_DEFENCE && dest_zone != ZONE_DUNGEON_DEFENCE {
             // Remove all Monster Coins from inventory
-            world.rob_all_of_item(sid, dungeon_defence::MONSTER_COIN_ITEM);
+            dungeon_defence::clear_rift_items(&world, sid);
 
             // Force HP recalculation with normal formula (iFlag=1 bypasses zone override)
             world.recalculate_max_hp_mp(sid);
@@ -593,15 +615,25 @@ pub async fn trigger_zone_change(
         }
     }
 
-    // 1b. Dismiss active pet on cross-zone change
+    // 1b. Despawn an active pet on cross-zone change without discarding its
+    // session state. Taking pet_data here lost its equipped items/transform and
+    // made the next summon fail until a full relog. Persist the equipment before
+    // moving zones, then let the same pet be summoned in the destination zone.
     {
-        let mut pet_index: Option<u32> = None;
+        let mut pet_info: Option<(u32, u16)> = None;
         world.update_session(sid, |h| {
-            if let Some(pet) = h.pet_data.take() {
-                pet_index = Some(pet.index);
+            if let Some(pet) = h.pet_data.as_mut() {
+                pet_info = Some((pet.index, pet.nid));
+                pet.nid = 0;
+                pet.attack_started = false;
+                pet.attack_target_id = -1;
             }
         });
-        if let Some(index) = pet_index {
+        if let Some((index, nid)) = pet_info {
+            super::pet::save_pet_items(session).await;
+            if nid != 0 {
+                world.kill_npc(nid as u32);
+            }
             let mut resp = Packet::new(Opcode::WizPet as u8);
             resp.write_u8(1); // PET_MODE_FUNCTION
             resp.write_u8(5); // NORMAL_MODE
@@ -785,7 +817,7 @@ pub async fn trigger_zone_change(
     save_position_async(session, dest_zone, dest_x, dest_z);
 
     // 9. Save active buffs to DB for persistence across zone change
-    session.save_saved_magic_async();
+    session.save_saved_magic().await;
 
     // 10. Send active event time (for players entering event zones)
     crate::systems::event_room::send_active_event_time(&world, sid);
@@ -864,6 +896,39 @@ pub async fn trigger_zone_change(
     Ok(())
 }
 
+/// Side-effect-free preflight used by event handlers that must not consume an
+/// entry/item or start a client countdown unless the requested warp can run.
+pub(crate) fn can_trigger_zone_change(
+    world: &WorldState,
+    sid: SessionId,
+    dest_zone: u16,
+    dest_x: f32,
+    dest_z: f32,
+) -> bool {
+    if world.is_zone_changing(sid) || !world.can_teleport(sid) {
+        return false;
+    }
+    let Some(pos) = world.get_position(sid) else {
+        return false;
+    };
+    if pos.zone_id == dest_zone {
+        return true;
+    }
+    let Some(zone) = world.get_zone(dest_zone) else {
+        return false;
+    };
+    let status = zone.zone_info.as_ref().map(|info| info.status).unwrap_or(1);
+    if status != 1 {
+        return false;
+    }
+    let (x, z) = if dest_x == 0.0 && dest_z == 0.0 {
+        resolve_zero_coords(dest_zone, sid, world)
+    } else {
+        (dest_x, dest_z)
+    };
+    zone.is_valid_position(x, z) && validate_zone_entry(world, sid, dest_zone).is_ok()
+}
+
 /// Same-zone warp — teleport within the current zone.
 pub async fn same_zone_warp(
     session: &mut ClientSession,
@@ -933,6 +998,7 @@ pub async fn same_zone_warp(
     region::send_region_user_in_out_for_me(session).await?;
     region::send_merchant_user_in_out_for_me(session).await?;
     region::send_region_npc_info_for_me(session).await?;
+    region::send_nearby_npc_inouts(session).await?;
 
     // 7. Broadcast INOUT_WARP to new region
     region::broadcast_user_in_with_type(session, region::INOUT_WARP).await?;
@@ -959,6 +1025,7 @@ async fn handle_loading(session: &mut ClientSession) -> anyhow::Result<()> {
     // Send NPC region list — client uses cached templates for rendering
     // C++ ZoneChangeWarpHandler.cpp:662 — only RegionNpcInfoForMe(), no NPC_INOUT
     region::send_region_npc_info_for_me(session).await?;
+    region::send_nearby_npc_inouts(session).await?;
 
     // Send user region list (WIZ_REGIONCHANGE 3-phase) + merchants
     region::send_region_user_in_out_for_me(session).await?;
@@ -984,6 +1051,18 @@ async fn handle_loading(session: &mut ClientSession) -> anyhow::Result<()> {
 async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
+
+    // The client reports the map as loaded: what was sent during the loading screen (NPC
+    // list, NPCs, bag) may have been dropped, so send it again now that it is ready. This is
+    // what made NPCs and monsters appear only after walking into another region.
+    region::send_region_npc_info_for_me(session).await?;
+    region::send_nearby_npc_inouts(session).await?;
+    region::send_region_user_in_out_for_me(session).await?;
+    region::send_merchant_user_in_out_for_me(session).await?;
+    if let Some(bag) = super::survival::build_bag_refresh(&world, sid).await {
+        session.send_packet(&bag).await?;
+    }
+    region::schedule_npc_resend(world.clone(), sid);
 
     if !world.is_zone_changing(sid) {
         return Ok(());
@@ -1032,6 +1111,7 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
         10 // default BLINK_TIME
     };
     regene::activate_blink_with_duration(session, zone_id, blink_duration)?;
+    super::discord_presence::send(&world, sid);
 
     // Clear all buffs (without removing saved magic) then recast saved magic
     // Skip for Chaos Dungeon AND Cinderella War zones
@@ -1049,17 +1129,22 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
     //         || (GetZoneID() == ZONE_DUNGEON_DEFENCE && iFlag == 0))
     //       m_MaxHp = 10000 / 10;   // = 1000
     if matches!(zone_id, ZONE_CHAOS_DUNGEON | ZONE_DUNGEON_DEFENCE) {
-        world.update_character_stats(sid, |ch| {
-            ch.max_hp = 1000;
-            if ch.hp > 1000 {
-                ch.hp = 1000;
-            }
-        });
+        if zone_id == ZONE_DUNGEON_DEFENCE {
+            // the Full Moon Rift equalizes everybody to 10 000 HP (and remembers the real values)
+            crate::handler::dungeon_defence::equalize(&world, sid);
+        } else {
+            world.update_character_stats(sid, |ch| {
+                ch.max_hp = 1000;
+                if ch.hp > 1000 {
+                    ch.hp = 1000;
+                }
+            });
+        }
     }
 
     // DD zone entry: remove any leftover Monster Coins from previous runs
     if zone_id == ZONE_DUNGEON_DEFENCE {
-        world.rob_all_of_item(sid, crate::handler::dungeon_defence::MONSTER_COIN_ITEM);
+        crate::handler::dungeon_defence::clear_rift_items(&world, sid);
     }
 
     // Send Delos siege packets if entering Delos during active siege
@@ -1080,25 +1165,11 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
             drop(csw_state);
             send_delos_siege_packets(session, remaining).await?;
 
-            // CSW ext_hook timer packet
-            let owner_name = {
-                let mk = world.get_csw_master_knights();
-                if mk != 0 {
-                    world
-                        .get_knights(mk)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                }
-            };
-            let csw_pkt = super::ext_hook::build_csw_timer_packet(
-                remaining,
-                &owner_name,
-                csw_status,
-                phase_mins,
-            );
-            session.send_packet(&csw_pkt).await?;
+            // The proprietary ext-hook timer packet is not part of the 2625
+            // client protocol and causes a disconnect during Delos loading.
+            // The standard siege packets above are sufficient for the client;
+            // keep the server-side timer state authoritative.
+            let _ = (remaining, csw_status, phase_mins);
         }
     }
 
@@ -1138,6 +1209,21 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
 
     // Reset zone online reward timers for the new zone
     crate::systems::zone_rewards::zone_online_reward_change(&world, sid);
+
+    // Fun Class: leaving the event restores the player's own identity on the client;
+    // entering the event zone signs the player up with their current class (C++ CindirellaSign).
+    if world.take_cind_refresh_pending(sid) {
+        super::gamestart::send_myinfo_refresh(session).await?;
+        super::region::broadcast_user_appearance_update(&world, sid);
+    }
+    if zone_id == super::golem_war::ZONE_RONARK {
+        super::golem_war::send_state_to_player(&world, sid);
+    }
+    if world.is_cinderella_active()
+        && super::cinderella::is_cinderella_zone(zone_id, world.cinderella_zone_id())
+    {
+        super::cinderella::auto_join(session).await?;
+    }
 
     // Clear zone_changing flag
     world.set_zone_changing(sid, false);
@@ -1207,6 +1293,30 @@ pub(crate) fn save_position_async(session: &ClientSession, zone_id: u16, x: f32,
 /// When a zone change is triggered with (0,0) coordinates (e.g., event kick-out),
 /// the server looks up the spawn position from the start_position table using
 /// nation-specific columns. Falls back to zone spawn_position if no DB entry.
+/// C++ `CUser::ZoneChange` (ZoneChangeWarpHandler.cpp:106-119): members of the Castle Siege
+/// master clan entering Delos always arrive in the castellan area of the map.
+pub(crate) fn csw_master_spawn(
+    world: &crate::world::WorldState,
+    sid: crate::zone::SessionId,
+    dest_zone: u16,
+) -> Option<(f32, f32)> {
+    use rand::Rng;
+    if dest_zone != ZONE_DELOS {
+        return None;
+    }
+    let ch = world.get_character_info(sid)?;
+    let master = world.get_csw_master_knights();
+    if master == 0 || ch.knights_id == 0 || ch.knights_id != master {
+        return None;
+    }
+    let mut rng = rand::thread_rng();
+    let base_x = if ch.nation == 1 { 455.0 } else { 555.0 };
+    Some((
+        base_x + rng.gen_range(0..=5) as f32,
+        790.0 + rng.gen_range(0..=5) as f32,
+    ))
+}
+
 fn resolve_zero_coords(
     dest_zone: u16,
     sid: crate::zone::SessionId,
@@ -1292,11 +1402,35 @@ fn is_transform_allowed_zone(zone_id: u16) -> bool {
 /// This is a lightweight version of `trigger_zone_change` that works with
 /// just a session ID + WorldState (no ClientSession needed).
 pub(crate) fn server_teleport_to_zone(
-    world: &std::sync::Arc<crate::world::WorldState>,
+    world: &crate::world::WorldState,
     sid: crate::zone::SessionId,
     dest_zone: u16,
     dest_x: f32,
     dest_z: f32,
+) {
+    server_teleport_to_zone_impl(world, sid, dest_zone, dest_x, dest_z, false);
+}
+
+/// Event entry variant which also repositions a player already inside the
+/// destination zone. This is required for Manes participants that entered a
+/// physical instance manually before the registration countdown completed.
+pub(crate) fn server_teleport_to_zone_force(
+    world: &crate::world::WorldState,
+    sid: crate::zone::SessionId,
+    dest_zone: u16,
+    dest_x: f32,
+    dest_z: f32,
+) {
+    server_teleport_to_zone_impl(world, sid, dest_zone, dest_x, dest_z, true);
+}
+
+fn server_teleport_to_zone_impl(
+    world: &crate::world::WorldState,
+    sid: crate::zone::SessionId,
+    dest_zone: u16,
+    dest_x: f32,
+    dest_z: f32,
+    force_same_zone: bool,
 ) {
     let pos = match world.get_position(sid) {
         Some(p) => p,
@@ -1304,9 +1438,12 @@ pub(crate) fn server_teleport_to_zone(
     };
 
     // Skip if already in the destination zone
-    if pos.zone_id == dest_zone {
+    if !force_same_zone && pos.zone_id == dest_zone {
         return;
     }
+
+    // C++ ZoneChange(): CSW master-clan members entering Delos land in the castellan area.
+    let (dest_x, dest_z) = csw_master_spawn(world, sid, dest_zone).unwrap_or((dest_x, dest_z));
 
     // Resolve (0,0) coordinates to zone start_position
     let (dest_x, dest_z) = if dest_x == 0.0 && dest_z == 0.0 {
@@ -1314,6 +1451,16 @@ pub(crate) fn server_teleport_to_zone(
     } else {
         (dest_x, dest_z)
     };
+
+    // Manes: a teleport out of the event zones gives the real HP/MP back (the scheduled
+    // evacuation already did it and finds nothing left to restore).
+    {
+        use crate::systems::manes_survival::ZONES_MANES_SURVIVAL;
+        if ZONES_MANES_SURVIVAL.contains(&pos.zone_id) && !ZONES_MANES_SURVIVAL.contains(&dest_zone)
+        {
+            world.manes_survival_manager.leave_event(world, sid, true);
+        }
+    }
 
     // Set zone_changing flag so the client triggers handle_loaded properly
     // QA Sprint 195 fix: without this, teleported users are invisible in

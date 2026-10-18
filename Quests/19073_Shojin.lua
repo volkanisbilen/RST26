@@ -77,3 +77,87 @@ end
 if (EVENT == 3001) then
 	Ret = 1;
 end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- AUTO-GENERATED EVENT HANDLERS (ko-quest-gen)
+-- ═══════════════════════════════════════════════════════════════════
+
+-- [AUTO-GEN] quest=1506 status=0 n_index=8385
+if (EVENT == 146) then
+	SelectMsg(UID, 4, 1506, 44224, NPC, 3495, 147, 23, -1);
+end
+
+-- [AUTO-GEN] quest=1506 status=0 n_index=8385
+if (EVENT == 147) then
+	SaveEvent(UID, 8386);
+end
+
+-- [AUTO-GEN] quest=1506 status=1 n_index=8386
+if (EVENT == 149) then
+	QuestStatusCheck = GetQuestStatus(UID, 1506)
+	if(QuestStatusCheck == 2) then
+		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
+	else
+		if (RunQuestExchange(UID, 6230)) then
+			SaveEvent(UID, 8387);
+		end
+	end
+end
+
+-- [AUTO-GEN] quest=1506 status=1 n_index=8386
+if (EVENT == 150) then
+	ItemA = HowmuchItem(UID, 379107000);
+	if (ItemA < 0) then
+		SelectMsg(UID, 2, 1506, 44224, NPC, 18, 151);
+	else
+		SelectMsg(UID, 4, 1506, 44224, NPC, 41, 149, 27, -1);
+	end
+end
+
+-- [AUTO-GEN] quest=1506 status=1 n_index=8386
+if (EVENT == 151) then
+	ShowMap(UID, 21);
+end
+
+-- [AUTO-GEN] quest=1506 status=2 n_index=8387
+if (EVENT == 200) then
+	QuestStatusCheck = GetQuestStatus(UID, 1506)
+	if(QuestStatusCheck == 2) then
+		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
+	else
+		if (RunQuestExchange(UID, 6230)) then
+			SaveEvent(UID, 8389);
+		end
+	end
+end
+
+-- [AUTO-GEN] quest=931 status=0 n_index=6740
+if (EVENT == 1000) then
+	SelectMsg(UID, 4, 931, 0, NPC, 22, 1001, 23, -1);
+end
+
+-- [AUTO-GEN] quest=931 status=0 n_index=6740
+if (EVENT == 1001) then
+	SaveEvent(UID, 6741);
+end
+
+-- [AUTO-GEN] quest=931 status=1 n_index=6741
+if (EVENT == 1002) then
+	SelectMsg(UID, 2, 931, 0, NPC, 10, -1);
+end
+
+-- [AUTO-GEN] quest=931 status=1 n_index=6741
+if (EVENT == 1003) then
+	QuestStatusCheck = GetQuestStatus(UID, 931)
+	if(QuestStatusCheck == 2) then
+		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
+	else
+		SaveEvent(UID, 6742);
+	end
+end
+
+-- [AUTO-GEN] quest=931 status=1 n_index=6741
+if (EVENT == 1004) then
+	ShowMap(UID, 21);
+end
+

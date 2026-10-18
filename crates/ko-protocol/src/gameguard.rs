@@ -92,12 +92,8 @@ impl GgAuthRequest {
         }
         let mut hmac = [0u8; 32];
         hmac.copy_from_slice(&remaining[..32]);
-        let text_crc = u32::from_le_bytes([
-            remaining[32],
-            remaining[33],
-            remaining[34],
-            remaining[35],
-        ]);
+        let text_crc =
+            u32::from_le_bytes([remaining[32], remaining[33], remaining[34], remaining[35]]);
         Some(Self { hmac, text_crc })
     }
 }
@@ -141,8 +137,7 @@ impl GgHeartbeat {
         let session_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         let hb_count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
         let timestamp = u64::from_le_bytes([
-            data[8], data[9], data[10], data[11],
-            data[12], data[13], data[14], data[15],
+            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
         ]);
         let text_crc = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
         let flags = data[20];

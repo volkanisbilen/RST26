@@ -213,18 +213,34 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 ///   [u32 serial=0] [u32 expire_time]
 /// ```
 async fn handle_inventory_refresh(session: &mut ClientSession) -> anyhow::Result<()> {
+    send_inventory_snapshot_inner(session, true).await
+}
+
+/// Send the authoritative inventory view without reordering slots. Used after
+/// server-side bank transfers so the bag updates immediately rather than only
+/// after the user clicks the manual refresh button.
+pub async fn send_inventory_snapshot(session: &mut ClientSession) -> anyhow::Result<()> {
+    send_inventory_snapshot_inner(session, false).await
+}
+
+async fn send_inventory_snapshot_inner(
+    session: &mut ClientSession,
+    sort_bag: bool,
+) -> anyhow::Result<()> {
     let world = session.world().clone();
     let sid = session.session_id();
 
-    // Sort the bag portion of inventory by item_id descending (C++ uses std::sort with >)
-    world.update_inventory(sid, |inv| {
-        if inv.len() < INVENTORY_TOTAL {
-            inv.resize(INVENTORY_TOTAL, UserItemSlot::default());
-        }
-        let bag = &mut inv[SLOT_MAX..SLOT_MAX + HAVE_MAX];
-        bag.sort_by(|a, b| b.item_id.cmp(&a.item_id));
-        true
-    });
+    if sort_bag {
+        // Manual client refresh preserves the legacy sort behavior.
+        world.update_inventory(sid, |inv| {
+            if inv.len() < INVENTORY_TOTAL {
+                inv.resize(INVENTORY_TOTAL, UserItemSlot::default());
+            }
+            let bag = &mut inv[SLOT_MAX..SLOT_MAX + HAVE_MAX];
+            bag.sort_by(|a, b| b.item_id.cmp(&a.item_id));
+            true
+        });
+    }
 
     // Build the response packet
     let inventory = world.get_inventory(sid);
@@ -556,6 +572,9 @@ async fn handle_inventory_system(
         // Recalculate stats for the 2H weapon swap (equipment change).
         // Weight notification is integrated into set_user_ability().
         world.set_user_ability(sid);
+        // Pet equipment is not part of user_items. Persist it now so a
+        // dismiss, disconnect or server restart cannot delete auto-loot gear.
+        super::pet::save_pet_items(session).await;
         // SNIFFER-VERIFIED (2026-03-29): Original server sends sub=1 for equip success.
         // Sub=2 is stats-only (gamestart refresh) — client does NOT unlock UI on sub=2.
         send_item_move_result(session, true).await?;
@@ -1167,7 +1186,7 @@ fn is_valid_slot_pos(item: &Item, dest_pos: usize) -> bool {
 }
 
 /// Check if the item's class restriction allows this player's class.
-fn item_class_available(item: &Item, player_class: u16) -> bool {
+pub(crate) fn item_class_available(item: &Item, player_class: u16) -> bool {
     let item_class = item.class.unwrap_or(0);
     if item_class == 0 {
         return true; // No restriction
@@ -1289,8 +1308,15 @@ fn broadcast_look_change(
             }
         }
         ItemMoveDir::InvenToCosp => {
-            // C++ ItemHandler.cpp:1160-1162 — skip pos 5 (EMBLAM) and 6 (BAG1)
-            if dst_pos != 5 && dst_pos != 6 {
+            // C++ ItemHandler.cpp:1160-1162 — skip pos 5 (EMBLAM) and 6 (BAG1): the client's
+            // WIZ_USERLOOK_CHANGE slot mapping has no visual for either, so the original game
+            // never bothered. BAG1 really has nothing to show, but EMBLAM is a real item other
+            // players should see worn -- it's only visible through the full appearance packet
+            // (INOUT_WARP, same one Genie/zone-enter use), so nearby players who were already in
+            // range when it got equipped need that re-sent, or they never see it.
+            if dst_pos == 5 {
+                super::region::broadcast_user_appearance_update(world, sid);
+            } else if dst_pos != 6 {
                 let abs_idx = cosp_pos_to_abs_index(dst_pos).unwrap_or(0);
                 let dur = inventory
                     .get(abs_idx)
@@ -1331,8 +1357,12 @@ fn broadcast_look_change(
                 }
                 _ => {
                     // Other cosmetics: single clear broadcast.
-                    // Skip EMBLAM(5) and BAG slots — they have no visual appearance.
-                    if src_pos != COSP_EMBLAM && src_pos != COSP_BAG1 && src_pos != COSP_BAG2 {
+                    // EMBLAM(5) only shows through the full appearance packet (see InvenToCosp
+                    // above) -- removing it needs the same re-send, or nearby players keep
+                    // seeing the old emblem. BAG slots genuinely have no visual, still skipped.
+                    if src_pos == COSP_EMBLAM {
+                        super::region::broadcast_user_appearance_update(world, sid);
+                    } else if src_pos != COSP_BAG1 && src_pos != COSP_BAG2 {
                         send_look_change_packet(world, sid, pos, src_pos, 0, 0);
                     }
                 }

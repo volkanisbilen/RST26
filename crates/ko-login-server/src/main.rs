@@ -70,12 +70,19 @@ async fn main() -> anyhow::Result<()> {
         let repo = ServerSettingsRepository::new(&pool);
         match repo.load_server_settings().await {
             Ok(s) => {
-                info!("[3/4] DB: version={}, patch={}{}", s.game_version, s.patch_url, s.patch_path);
-                (s.game_version as u16, s.patch_url, s.patch_path)
+                info!(
+                    "[3/4] DB: launcher_version={}, game_version={}, patch={}{}",
+                    s.launcher_version, s.game_version, s.patch_url, s.patch_path
+                );
+                (s.launcher_version as u16, s.patch_url, s.patch_path)
             }
             Err(e) => {
                 warn!("[3/4] Failed to read server_settings: {}", e);
-                (2598u16, "http://127.0.0.1:8080".to_string(), "/patches/".to_string())
+                (
+                    2598u16,
+                    "http://127.0.0.1:8080".to_string(),
+                    "/patches/".to_string(),
+                )
             }
         }
     };

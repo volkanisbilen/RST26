@@ -1,0 +1,808 @@
+﻿// Account Register on the login screen. Accounts are no longer created by logging in with a new ID
+// (GAME_OPTIONS.AutoRegister = 0): the login box's Homepage button became "Kayıt Ol" (our button drawn over it, its
+// click opens this window instead of the homepage). The window asks account ID / password (twice) / e-mail / phone /
+// item seal password / OTP password; the ID and password typed into the login box are filled in. Passwords show as *.
+// Server: LogInServer LoginSession::HandleAccountRegister + DB procedure ACCOUNT_REGISTER.
+// The client is not connected to the LoginServer on the login screen (it connects when OK is pressed), so the request
+// goes over our own short TCP connection: Server.ini [Server] IP0, port 15100, KOSocket framing without crypto
+// (AA 55 | u16 length | opcode + data | 55 AA), one answer, closed.
+//   C->S [0xE5][str id][str pw][str email][str phone][str seal][str otp]   (u16 length prefixed, CP1254)
+//   S->C [0xE5][u8 result]  1 created, 2 ID taken, 3 invalid data, 4 too many accounts from this IP, 5 DB error, 6 too fast
+// The login screen is CGameProcIntro (vtable 0x10199F8): its ProcessPacket (slot 2, 0x7B93C0) is observed for the answer.
+// Skin: build_register_assets.py (reg_ui\*.pus, the game's own login screen pieces), reg_layout.h.
+#include <winsock2.h>
+#include <windows.h>
+#include <windowsx.h>
+#include <stdio.h>
+#include <string>
+#include <vector>
+#include <deque>
+#include <map>
+#include <ws2tcpip.h>
+#include "reg_layout.h"
+#pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "ws2_32.lib")
+
+void Log(const char* msg);
+
+namespace
+{
+    const BYTE  LS_ACCOUNT_REGISTER = 0xE5;
+    const DWORD KO_SND_FNC = 0x00704070, KO_PTR_PKT = 0x01115914;   // CAPISocket::Send, CAPISocket*
+    const DWORD VT_INTRO = 0x010199F8, ORIG_INTRO_PP = 0x007B93C0;   // CGameProcIntro vtable, slot 2 ProcessPacket
+    const DWORD ANSWER_WAIT_MS = 8000;
+    const UINT WM_RG_SHOW = WM_APP + 81, WM_RG_REFRESH = WM_APP + 82, WM_RG_HIDE = WM_APP + 83, WM_RG_FILL = WM_APP + 84, WM_RG_ANSWER = WM_APP + 85;
+
+    CRITICAL_SECTION g_lock;                           // everything shared with the game thread
+    std::deque<std::vector<BYTE>> g_sendQ;
+    // login box, from login_remember.cpp's tick (game thread)
+    volatile DWORD g_lastSeen = 0;
+    RECT g_btnRect = {};                               // where our login box button goes (window coordinates)
+    std::string g_id, g_pw;                            // login box contents (asked for with g_wantCreds)
+    std::string g_fillId, g_fillPw;                    // a new account goes into the login box
+    volatile LONG g_idMax = 20, g_pwMax = 20;          // the login box edits' max lengths (CN3UIEdit +0x130)
+    // the native Homepage button's state (CN3UIBase +0xBC; CN3UIButton::Render 0x6D7410: 2 normal, 3-5 down,
+    // 6 on, 7 disabled). A message box ("Connection failed") locks the login buttons: ours shows the same and is locked.
+    volatile LONG g_nativeState = 2;
+    bool NativeLocked() { LONG st = g_nativeState; return (st >= 3 && st <= 5) || st == 7; }
+    volatile LONG g_wantCreds = 0;
+
+    // ------------------------------------------------------------------ skin
+    struct Sprite { HDC dc = nullptr; int w = 0, h = 0; };
+    std::map<std::string, Sprite> g_skin;
+    bool LoadPus(const char* path, Sprite& s)
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, path, "rb") != 0 || !f) return false;
+        char magic[4]; UINT32 w = 0, h = 0;
+        bool ok = fread(magic, 1, 4, f) == 4 && !memcmp(magic, "PUSI", 4) && fread(&w, 4, 1, f) == 1 && fread(&h, 4, 1, f) == 1 && w && h && w < 4096 && h < 4096;
+        if (ok)
+        {
+            BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), (LONG)w, -(LONG)h, 1, 32, BI_RGB };
+            void* bits = nullptr; s.dc = CreateCompatibleDC(nullptr);
+            HBITMAP bmp = CreateDIBSection(s.dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            ok = bmp && fread(bits, 4, (size_t)w * h, f) == (size_t)w * h;
+            SelectObject(s.dc, bmp); s.w = (int)w; s.h = (int)h;
+        }
+        fclose(f);
+        return ok;
+    }
+    void LoadSkin()
+    {
+        if (!g_skin.empty()) return;
+        char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH); *(strrchr(dir, '\\') + 1) = 0;
+        for (const char* n : { "bg", "big_n", "big_o", "big_d", "btn_n", "btn_o", "btn_d", "ok_n", "ok_o", "ok_d", "ok_x" })
+        {
+            char p[MAX_PATH]; sprintf_s(p, "%sHopeGuard\\reg_ui\\%s.pus", dir, n);
+            Sprite s; if (LoadPus(p, s)) g_skin[n] = s;
+            else { char b[MAX_PATH + 32]; sprintf_s(b, "REGISTER: missing %s", p); Log(b); }
+        }
+    }
+
+    // a 32-bit premultiplied canvas (one per window)
+    struct Canvas { HDC dc = nullptr; DWORD* bits = nullptr; int w = 0, h = 0; };
+    Canvas MakeCanvas(int w, int h)
+    {
+        Canvas c; c.w = w; c.h = h; c.dc = CreateCompatibleDC(nullptr);
+        BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB };
+        SelectObject(c.dc, CreateDIBSection(c.dc, &bmi, DIB_RGB_COLORS, (void**)&c.bits, nullptr, 0));
+        return c;
+    }
+    void Skin(Canvas& c, const char* n, int x, int y, int w = 0, int h = 0)
+    {
+        auto it = g_skin.find(n); if (it == g_skin.end()) return;
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        AlphaBlend(c.dc, x, y, w ? w : it->second.w, h ? h : it->second.h, it->second.dc, 0, 0, it->second.w, it->second.h, bf);
+    }
+    // text rendered white on its own, then blended in one colour with a 1 px shadow (as tag_panel.cpp)
+    void Text(Canvas& c, const std::wstring& ws, RECT r, COLORREF color, int px, UINT fmt, bool bold = false, COLORREF shadow = RGB(0, 0, 0))
+    {
+        int w = r.right - r.left, h = r.bottom - r.top;
+        if (ws.empty() || w <= 0 || h <= 0) return;
+        BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB };
+        void* bits = nullptr; HDC dc = CreateCompatibleDC(nullptr);
+        HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        HGDIOBJ ob = SelectObject(dc, bmp);
+        HFONT font = CreateFontW(-px, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Tahoma");
+        HGDIOBJ of = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+        RECT rc = { 0, 0, w, h };
+        DrawTextW(dc, ws.c_str(), (int)ws.size(), &rc, fmt | DT_NOPREFIX);
+        GdiFlush();
+        for (int pass = 0; pass < 2; pass++)
+        {
+            int o = pass ? 0 : 1;
+            COLORREF col = pass ? color : shadow;
+            BYTE cr = GetRValue(col), cg = GetGValue(col), cb = GetBValue(col);
+            for (int y = 0; y < h; y++)
+            {
+                int dy = r.top + y + o; if (dy < 0 || dy >= c.h) continue;
+                const BYTE* src = (const BYTE*)bits + y * w * 4;
+                for (int x = 0; x < w; x++, src += 4)
+                {
+                    int dx = r.left + x + o; int a = max(src[0], max(src[1], src[2]));
+                    if (!a || dx < 0 || dx >= c.w) continue;
+                    if (!pass) a = a * 2 / 3;
+                    BYTE* d = (BYTE*)c.bits + (dy * c.w + dx) * 4;
+                    d[0] = (BYTE)((cb * a + d[0] * (255 - a)) / 255); d[1] = (BYTE)((cg * a + d[1] * (255 - a)) / 255);
+                    d[2] = (BYTE)((cr * a + d[2] * (255 - a)) / 255); d[3] = (BYTE)(a + d[3] * (255 - a) / 255);
+                }
+            }
+        }
+        SelectObject(dc, of); DeleteObject(font); SelectObject(dc, ob); DeleteObject(bmp); DeleteDC(dc);
+    }
+    RECT R4(const int a[4]) { return { a[0], a[1], a[2], a[3] }; }
+    bool In(const int a[4], int x, int y) { return x >= a[0] && x < a[2] && y >= a[1] && y < a[3]; }
+    void Present(HWND h, Canvas& c)
+    {
+        RECT wr; GetWindowRect(h, &wr);
+        POINT dst = { wr.left, wr.top }, src = { 0, 0 }; SIZE sz = { c.w, c.h };
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        UpdateLayeredWindow(h, nullptr, &dst, &sz, c.dc, &src, 0, &bf, ULW_ALPHA);
+    }
+    HCURSOR g_gameCursor = nullptr;
+    void SetGameCursor()
+    {
+        while (ShowCursor(TRUE) < 0) {}
+        SetCursor(g_gameCursor ? g_gameCursor : LoadCursor(nullptr, IDC_ARROW));
+    }
+
+    // ------------------------------------------------------------------ the register window
+    HWND  g_win = nullptr, g_btn = nullptr;            // register window, login box button
+    Canvas g_wc, g_bc;
+    enum { F_ACCOUNT, F_PASSWORD, F_PASSWORD2, F_EMAIL, F_PHONE, F_SEAL, F_OTP, F_COUNT };
+    const int* kEditRect[F_COUNT] = { RG_EDIT_ACCOUNT, RG_EDIT_PASSWORD, RG_EDIT_PASSWORD2, RG_EDIT_EMAIL, RG_EDIT_PHONE, RG_EDIT_SEAL, RG_EDIT_OTP };
+    const int* kLblRect[F_COUNT] = { RG_LBL_ACCOUNT, RG_LBL_PASSWORD, RG_LBL_PASSWORD2, RG_LBL_EMAIL, RG_LBL_PHONE, RG_LBL_SEAL, RG_LBL_OTP };
+    size_t kMax[F_COUNT] = { 20, 20, 20, 50, 11, 8, 6 };
+    const bool kMasked[F_COUNT] = { false, true, true, false, false, true, true };
+    const bool kDigits[F_COUNT] = { false, false, false, false, true, true, true };
+    bool Allowed(int f, wchar_t c)
+    {
+        if (kDigits[f]) return c >= L'0' && c <= L'9';
+        if (f == F_ACCOUNT) return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L'_';
+        return c > 32 && c < 127;
+    }
+    std::wstring g_field[F_COUNT];
+    int   g_focus = -1;
+    enum { H_NONE, H_OK, H_CLOSE, H_EDIT0 };
+    int   g_hover = H_NONE, g_pressed = H_NONE;
+    bool  g_open = false, g_track = false, g_dragging = false;
+    POINT g_dragFrom = {};
+    std::wstring g_status; COLORREF g_statusColor = RGB(255, 255, 255);
+    DWORD g_waitSince = 0, g_closeAt = 0;
+    bool  g_btnHover = false, g_btnDown = false, g_btnTrack = false;
+
+    void SetStatus(const std::wstring& s, COLORREF c)
+    {
+        EnterCriticalSection(&g_lock); g_status = s; g_statusColor = c; LeaveCriticalSection(&g_lock);
+    }
+    std::wstring Wide(const std::string& s)
+    {
+        if (s.empty()) return std::wstring();
+        int n = MultiByteToWideChar(1254, 0, s.data(), (int)s.size(), nullptr, 0);
+        std::wstring w(n, L'\0'); MultiByteToWideChar(1254, 0, s.data(), (int)s.size(), &w[0], n);
+        return w;
+    }
+    std::string Narrow(const std::wstring& w)
+    {
+        if (w.empty()) return std::string();
+        int n = WideCharToMultiByte(1254, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+        std::string s(n, '\0'); WideCharToMultiByte(1254, 0, w.data(), (int)w.size(), &s[0], n, nullptr, nullptr);
+        return s;
+    }
+
+    void PaintWindow()
+    {
+        if (!g_win || !g_wc.bits) return;
+        LoadSkin();
+        memset(g_wc.bits, 0, (size_t)g_wc.w * g_wc.h * 4);
+        Skin(g_wc, "bg", 0, 0);
+        Text(g_wc, L"Hesap Kaydı", R4(RG_TITLE), RGB(70, 34, 6), 17, DT_CENTER | DT_VCENTER | DT_SINGLELINE, true, RGB(250, 214, 130));
+        Text(g_wc, L"Lütfen bilgilerinizi eksiksiz doldurunuz.\nPlease fill in your information completely.", R4(RG_TEXT), RGB(235, 230, 215), 13, DT_CENTER | DT_WORDBREAK);
+        EnterCriticalSection(&g_lock);
+        std::wstring status = g_status; COLORREF sc = g_statusColor;
+        LeaveCriticalSection(&g_lock);
+        static const wchar_t* tr[F_COUNT] = { L"Hesap Adı", L"Şifre", L"Şifre (Tekrar)", L"E-Posta Adresiniz", L"Telefon (Örn: 05550000000)",
+            L"Item Kilit Şifresi (8 Haneli Sayı)", L"OTP Şifresi (6 Haneli Sayı)" };
+        static const wchar_t* en[F_COUNT] = { L"Account ID (3-20 letters / digits)", L"Password (4-20 characters)", L"Confirm Password", L"E-Mail Address",
+            L"(Leave blank if you don't live in Turkey)", L"Item Seal Password (8 Digits)", L"OTP Password (6 Digits)" };
+        for (int i = 0; i < F_COUNT; i++)
+        {
+            RECT l = R4(kLblRect[i]);
+            Text(g_wc, tr[i], { l.left, l.top, l.right, l.top + 18 }, RGB(255, 255, 255), 14, DT_CENTER | DT_VCENTER | DT_SINGLELINE, true);
+            Text(g_wc, en[i], { l.left, l.top + 17, l.right, l.bottom }, RGB(200, 186, 150), 12, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            RECT e = R4(kEditRect[i]);
+            bool caret = g_focus == i && (GetTickCount() / 500) % 2;
+            std::wstring shown = kMasked[i] ? std::wstring(g_field[i].size(), L'*') : g_field[i];
+            Text(g_wc, shown + (caret ? L"|" : L""), { e.left + 9, e.top, e.right - 6, e.bottom }, RGB(255, 255, 255), 14, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        }
+        Text(g_wc, status, R4(RG_STATUS), sc, 13, DT_CENTER | DT_VCENTER | DT_WORDBREAK, true);
+        // Kapat (red login style) and Kayıt Ol (the Connect button's place under the frame)
+        Skin(g_wc, g_hover == H_CLOSE ? (g_pressed == H_CLOSE ? "btn_d" : "btn_o") : "btn_n", RG_BTN_CLOSE[0], RG_BTN_CLOSE[1]);
+        Text(g_wc, L"Kapat", R4(RG_BTN_CLOSE), RGB(255, 222, 0), 14, DT_CENTER | DT_VCENTER | DT_SINGLELINE, true);
+        bool waiting = g_waitSince != 0;
+        Skin(g_wc, waiting ? "ok_x" : g_hover == H_OK ? (g_pressed == H_OK ? "ok_d" : "ok_o") : "ok_n", RG_BTN_OK[0], RG_BTN_OK[1]);
+        Text(g_wc, L"Kayıt Ol", R4(RG_BTN_OK), waiting ? RGB(150, 150, 150) : RGB(255, 196, 90), 17, DT_CENTER | DT_VCENTER | DT_SINGLELINE, true);
+        Present(g_win, g_wc);
+    }
+
+    void PaintButton()
+    {
+        if (!g_btn || !g_bc.bits) return;
+        LoadSkin();
+        memset(g_bc.bits, 0, (size_t)g_bc.w * g_bc.h * 4);
+        LONG st = g_nativeState;
+        bool locked = NativeLocked();
+        const char* art = st == 7 ? "big_x" : locked ? "big_d" : g_btnHover ? (g_btnDown ? "big_d" : "big_o") : "big_n";
+        Skin(g_bc, art, 0, 0, g_bc.w, g_bc.h);
+        int px = max(11, g_bc.h * 12 / 31);           // the size of the painted captions (O K / Cancel / Option)
+        // centred on the art (the text's 1 px shadow goes right / down)
+        Text(g_bc, L"Kayıt Ol", { 0, 0, g_bc.w - 1, g_bc.h - 1 }, locked ? RGB(150, 128, 60) : RGB(255, 222, 0), px,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE, true);
+        Present(g_btn, g_bc);
+    }
+
+    HWND GameWindow()
+    {
+        struct Ctx { DWORD pid; HWND best; int area; } ctx = { GetCurrentProcessId(), nullptr, 0 };
+        EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+            Ctx* c = (Ctx*)lp; DWORD pid; GetWindowThreadProcessId(h, &pid);
+            if (pid != c->pid || !IsWindowVisible(h) || h == g_win || h == g_btn) return TRUE;
+            RECT r; GetWindowRect(h, &r); int a = (r.right - r.left) * (r.bottom - r.top);
+            if (a > c->area) { c->area = a; c->best = h; }
+            return TRUE;
+        }, (LPARAM)&ctx);
+        return ctx.best;
+    }
+    void Focus(int f)
+    {
+        if (g_focus == f) return;
+        g_focus = f;
+        if (f >= 0) SetForegroundWindow(g_win);         // keyboard to us while typing
+        else if (HWND game = GameWindow()) SetForegroundWindow(game);
+    }
+    void HideWindow()
+    {
+        Focus(-1);
+        g_open = false; g_waitSince = 0; g_closeAt = 0;
+        ShowWindow(g_win, SW_HIDE);
+        if (HWND game = GameWindow()) SetForegroundWindow(game);
+    }
+    void ShowWindowNow()
+    {
+        g_open = true; g_waitSince = 0; g_closeAt = 0;
+        EnterCriticalSection(&g_lock);
+        std::string id = g_id, pw = g_pw;
+        LeaveCriticalSection(&g_lock);
+        if (g_field[F_ACCOUNT].empty()) g_field[F_ACCOUNT] = Wide(id);
+        if (!pw.empty()) SecureZeroMemory(&pw[0], pw.size());
+        kMax[F_ACCOUNT] = (size_t)min(20L, max(3L, (LONG)g_idMax));
+        kMax[F_PASSWORD] = kMax[F_PASSWORD2] = (size_t)min(20L, max(4L, (LONG)g_pwMax));
+        InterlockedExchange(&g_wantCreds, 1);          // the login tick copies ID / password (filled in on arrival)
+        SetStatus(L"", RGB(255, 255, 255));
+        RECT gr = { 0, 0, 1024, 768 };
+        if (HWND game = GameWindow()) GetClientRect(game, &gr), MapWindowPoints(game, nullptr, (POINT*)&gr, 2);
+        SetWindowPos(g_win, HWND_TOPMOST, gr.left + max(0, (int)((gr.right - gr.left) - RG_W) / 2), gr.top + max(0, (int)((gr.bottom - gr.top) - RG_H) / 2),
+            RG_W, RG_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        Focus(g_field[F_ACCOUNT].empty() ? F_ACCOUNT : F_PASSWORD);
+        PaintWindow();
+    }
+
+    std::wstring Fmt(const wchar_t* f, unsigned v) { wchar_t b[160]; swprintf_s(b, f, v); return b; }
+    bool AllDigits(const std::string& s) { for (char c : s) if (c < '0' || c > '9') return false; return true; }
+    bool ValidId(const std::string& s)
+    {
+        if (s.size() < 3 || s.size() > 20) return false;
+        for (char c : s) if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return false;
+        return true;
+    }
+    bool ValidEmail(const std::string& s)
+    {
+        size_t at = s.find('@');
+        if (s.size() < 6 || s.size() > 50 || at == std::string::npos || at == 0 || s.find('@', at + 1) != std::string::npos) return false;
+        size_t dot = s.find('.', at);
+        if (dot == std::string::npos || dot == at + 1 || dot + 1 >= s.size()) return false;
+        for (char c : s) if ((BYTE)c <= 32 || (BYTE)c >= 127) return false;
+        return true;
+    }
+
+    void Answer(BYTE code);
+
+    // The login box never sends the typed password: CUILoginIntro (0xBD714E) runs it through 0x6FE2C0
+    // (__stdcall(const char* in, int unused, char* out), out <= 0x200) into s_szPassWord (0x10FE174), which the
+    // login packet (0x7BD7B0) sends and ACCOUNT_LOGIN compares with TB_USER.strPasswd. A new account stores the same.
+    const DWORD FN_PASSWORD_HASH = 0x006FE2C0;
+    bool HashRaw(const char* in, char* out)
+    {
+        __try
+        {
+            typedef void(__stdcall* Fn)(const char*, int, char*);
+            ((Fn)FN_PASSWORD_HASH)(in, 0, out);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    bool GamePassword(const std::string& plain, std::string& out)
+    {
+        char buf[0x200] = {};
+        if (!HashRaw(plain.c_str(), buf)) return false;
+        buf[sizeof(buf) - 1] = 0;
+        out = buf;
+        SecureZeroMemory(buf, sizeof(buf));
+        return !out.empty() && out.size() <= 28;
+    }
+
+    // Server.ini next to the exe: [Server] IP0 (the address the client logs in to)
+    std::string LoginServerIp()
+    {
+        char dir[MAX_PATH]; GetModuleFileNameA(nullptr, dir, MAX_PATH); *(strrchr(dir, '\\') + 1) = 0;
+        char ini[MAX_PATH]; sprintf_s(ini, "%sServer.ini", dir);
+        char ip[128] = {};
+        GetPrivateProfileStringA("Server", "IP0", "127.0.0.1", ip, sizeof(ip), ini);
+        return ip;
+    }
+
+    bool RecvAll(SOCKET s, BYTE* b, int n)
+    {
+        while (n > 0)
+        {
+            int r = recv(s, (char*)b, n, 0);
+            if (r <= 0) return false;
+            b += r; n -= r;
+        }
+        return true;
+    }
+
+    // worker: connect, send one framed packet, read one framed answer [E5][u8 result]
+    DWORD WINAPI RequestThread(LPVOID arg)
+    {
+        std::vector<BYTE>* payload = (std::vector<BYTE>*)arg;
+        BYTE code = 0xFF;                              // 0xFF: no connection, 0xFE: no answer
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0)
+        {
+            std::string host = LoginServerIp();
+            addrinfo hints = {}, * res = nullptr;
+            hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM; hints.ai_protocol = IPPROTO_TCP;
+            for (int port = 15100; port <= 15102 && code == 0xFF; port++)
+            {
+                char ps[8]; sprintf_s(ps, "%d", port);
+                if (getaddrinfo(host.c_str(), ps, &hints, &res) != 0 || !res) continue;
+                SOCKET s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+                if (s != INVALID_SOCKET)
+                {
+                    DWORD tmo = 6000;
+                    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tmo, sizeof(tmo));
+                    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tmo, sizeof(tmo));
+                    if (connect(s, res->ai_addr, (int)res->ai_addrlen) == 0)
+                    {
+                        std::vector<BYTE> f = { 0xAA, 0x55, (BYTE)payload->size(), (BYTE)(payload->size() >> 8) };
+                        f.insert(f.end(), payload->begin(), payload->end());
+                        f.push_back(0x55); f.push_back(0xAA);
+                        code = 0xFE;
+                        if (send(s, (const char*)f.data(), (int)f.size(), 0) == (int)f.size())
+                        {
+                            BYTE hdr[4];
+                            if (RecvAll(s, hdr, 4) && hdr[0] == 0xAA && hdr[1] == 0x55)
+                            {
+                                int len = hdr[2] | (hdr[3] << 8);
+                                std::vector<BYTE> body(len + 2);
+                                if (len >= 2 && len < 4096 && RecvAll(s, body.data(), len + 2) && body[0] == LS_ACCOUNT_REGISTER)
+                                    code = body[1];
+                            }
+                        }
+                        SecureZeroMemory(f.data(), f.size());
+                    }
+                    closesocket(s);
+                }
+                freeaddrinfo(res); res = nullptr;
+            }
+            WSACleanup();
+            char lb[128]; sprintf_s(lb, "REGISTER: %s -> result %u", host.c_str(), code); Log(lb);
+        }
+        SecureZeroMemory(payload->data(), payload->size());
+        delete payload;
+        if (g_win) PostMessageW(g_win, WM_RG_ANSWER, code, 0);   // handled on the window thread
+        return 0;
+    }
+
+    void Submit()
+    {
+        if (g_waitSince) return;
+        std::string id = Narrow(g_field[F_ACCOUNT]), pw = Narrow(g_field[F_PASSWORD]), pw2 = Narrow(g_field[F_PASSWORD2]);
+        std::string email = Narrow(g_field[F_EMAIL]), phone = Narrow(g_field[F_PHONE]), seal = Narrow(g_field[F_SEAL]), otp = Narrow(g_field[F_OTP]);
+        const COLORREF bad = RGB(255, 100, 80);
+        if (!ValidId(id)) { SetStatus(L"Hesap adı 3-20 karakter olmalı: sadece harf, rakam ve _ .", bad); Focus(F_ACCOUNT); PaintWindow(); return; }
+        if (pw.size() < 4 || pw.size() > kMax[F_PASSWORD]) { SetStatus(Fmt(L"Şifre 4-%u karakter olmalı.", (unsigned)kMax[F_PASSWORD]), bad); Focus(F_PASSWORD); PaintWindow(); return; }
+        if (pw != pw2) { SetStatus(L"Şifreler aynı değil, şifreyi tekrar yaz.", bad); g_field[F_PASSWORD2].clear(); Focus(F_PASSWORD2); PaintWindow(); return; }
+        if (!ValidEmail(email)) { SetStatus(L"Geçerli bir e-posta adresi gir.", bad); Focus(F_EMAIL); PaintWindow(); return; }
+        if (!phone.empty() && (phone.size() != 11 || !AllDigits(phone) || phone.compare(0, 2, "05") != 0))
+        { SetStatus(L"Telefon 05 ile başlayan 11 rakam olmalı (Örn: 05550000000).", bad); Focus(F_PHONE); PaintWindow(); return; }
+        if (seal.size() != 8 || !AllDigits(seal)) { SetStatus(L"Item kilit şifresi 8 rakam olmalı.", bad); Focus(F_SEAL); PaintWindow(); return; }
+        if (otp.size() != 6 || !AllDigits(otp)) { SetStatus(L"OTP şifresi 6 rakam olmalı.", bad); Focus(F_OTP); PaintWindow(); return; }
+
+        std::string sent;
+        if (!GamePassword(pw, sent)) { SetStatus(L"Şifre hazırlanamadı, tekrar dene.", bad); PaintWindow(); return; }
+        std::vector<BYTE> p = { LS_ACCOUNT_REGISTER };
+        for (const std::string* s : { &id, &sent, &email, &phone, &seal, &otp })
+        {
+            WORD n = (WORD)s->size();
+            p.push_back((BYTE)n); p.push_back((BYTE)(n >> 8));
+            p.insert(p.end(), s->begin(), s->end());
+        }
+        SecureZeroMemory(&pw[0], pw.size()); SecureZeroMemory(&pw2[0], pw2.size()); SecureZeroMemory(&sent[0], sent.size());
+        auto* job = new std::vector<BYTE>(std::move(p));
+        if (HANDLE th = CreateThread(nullptr, 0, RequestThread, job, 0, nullptr)) CloseHandle(th);
+        else { SecureZeroMemory(job->data(), job->size()); delete job; SetStatus(L"İstek gönderilemedi.", bad); PaintWindow(); return; }
+        g_waitSince = GetTickCount();
+        Focus(-1);
+        SetStatus(L"Hesabın oluşturuluyor...", RGB(255, 255, 255));
+        char lb[96]; sprintf_s(lb, "REGISTER: request for \"%s\"", id.c_str()); Log(lb);
+        PaintWindow();
+    }
+
+    int HitTest(int x, int y)
+    {
+        if (In(RG_BTN_OK, x, y)) return H_OK;
+        if (In(RG_BTN_CLOSE, x, y)) return H_CLOSE;
+        for (int i = 0; i < F_COUNT; i++) if (In(kEditRect[i], x, y)) return H_EDIT0 + i;
+        return H_NONE;
+    }
+
+    void OnChar(WPARAM wp)
+    {
+        if (wp == VK_ESCAPE) { HideWindow(); return; }
+        if (wp == VK_RETURN) { Submit(); return; }
+        if (wp == VK_TAB) { Focus(g_focus < 0 ? 0 : (g_focus + ((GetKeyState(VK_SHIFT) & 0x8000) ? F_COUNT - 1 : 1)) % F_COUNT); PaintWindow(); return; }
+        if (g_focus < 0) return;
+        std::wstring& v = g_field[g_focus];
+        if (wp == VK_BACK) { if (!v.empty()) v.pop_back(); }
+        else if (wp == 0x16)                           // Ctrl+V
+        {
+            if (OpenClipboard(g_win))
+            {
+                if (HANDLE hd = GetClipboardData(CF_UNICODETEXT))
+                    if (const wchar_t* t = (const wchar_t*)GlobalLock(hd))
+                    {
+                        for (; *t && v.size() < kMax[g_focus]; t++)
+                            if (Allowed(g_focus, *t)) v.push_back(*t);
+                        GlobalUnlock(hd);
+                    }
+                CloseClipboard();
+            }
+        }
+        else if (v.size() < kMax[g_focus])
+        {
+            if (Allowed(g_focus, (wchar_t)wp)) v.push_back((wchar_t)wp);
+        }
+        PaintWindow();
+    }
+
+    void Sync()
+    {
+        HWND game = GameWindow(); DWORD pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+        bool ours = pid == GetCurrentProcessId() && game && !IsIconic(game);
+        bool login = g_lastSeen && GetTickCount() - g_lastSeen < 400;
+        if (!login && g_open) HideWindow();             // left the login screen (logged in / closed)
+        // login box button
+        RECT br; EnterCriticalSection(&g_lock); br = g_btnRect; LeaveCriticalSection(&g_lock);
+        bool wantBtn = login && ours && !g_open && br.right > br.left;
+        if (wantBtn)
+        {
+            int w = br.right - br.left, h = br.bottom - br.top;
+            if (w != g_bc.w || h != g_bc.h)
+            {
+                if (g_bc.dc) DeleteDC(g_bc.dc);
+                g_bc = MakeCanvas(w, h);
+            }
+            RECT cur; GetWindowRect(g_btn, &cur);
+            if (!IsWindowVisible(g_btn) || cur.left != br.left || cur.top != br.top || cur.right - cur.left != w)
+            {
+                SetWindowPos(g_btn, HWND_TOPMOST, br.left, br.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                PaintButton();
+            }
+        }
+        else if (IsWindowVisible(g_btn)) ShowWindow(g_btn, SW_HIDE);
+        static LONG s_shownState = -1;
+        if (wantBtn && s_shownState != g_nativeState) { s_shownState = g_nativeState; PaintButton(); }
+        // window
+        bool wantWin = g_open && ours;
+        if (wantWin != (IsWindowVisible(g_win) != FALSE))
+        {
+            if (wantWin) { SetWindowPos(g_win, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW); PaintWindow(); }
+            else ShowWindow(g_win, SW_HIDE);
+        }
+        POINT p; CURSORINFO ci = { sizeof(ci) };
+        if (game && GetCursorPos(&p) && WindowFromPoint(p) == game && GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && ci.hCursor)
+            g_gameCursor = ci.hCursor;
+        if (g_waitSince && GetTickCount() - g_waitSince > ANSWER_WAIT_MS)
+        {
+            g_waitSince = 0;
+            SetStatus(L"Sunucudan cevap gelmedi, tekrar dene.", RGB(255, 100, 80));
+            PaintWindow();
+        }
+        if (g_closeAt && GetTickCount() >= g_closeAt) { HideWindow(); return; }
+        if (g_open && g_focus >= 0 && IsWindowVisible(g_win)) PaintWindow();   // caret blink
+    }
+
+    LRESULT CALLBACK WinProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+    {
+        int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+        switch (msg)
+        {
+        case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+        case WM_MOUSEMOVE:
+            if (g_dragging)
+            {
+                POINT p; GetCursorPos(&p); RECT wr; GetWindowRect(h, &wr);
+                SetWindowPos(h, nullptr, wr.left + p.x - g_dragFrom.x, wr.top + p.y - g_dragFrom.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                g_dragFrom = p; return 0;
+            }
+            if (!g_track) { TRACKMOUSEEVENT t = { sizeof(t), TME_LEAVE, h, 0 }; g_track = TrackMouseEvent(&t) != FALSE; }
+            if (int hit = HitTest(x, y); hit != g_hover) { g_hover = hit; PaintWindow(); }
+            return 0;
+        case WM_MOUSELEAVE: g_track = false; if (g_hover != H_NONE) { g_hover = H_NONE; PaintWindow(); } return 0;
+        case WM_LBUTTONDOWN:
+        {
+            int hit = HitTest(x, y);
+            SetCapture(h);
+            if (hit >= H_EDIT0) { Focus(hit - H_EDIT0); PaintWindow(); return 0; }
+            if (hit == H_NONE) { g_dragging = true; GetCursorPos(&g_dragFrom); return 0; }
+            g_pressed = hit; PaintWindow();
+            return 0;
+        }
+        case WM_LBUTTONUP:
+        {
+            ReleaseCapture();
+            if (g_dragging) { g_dragging = false; return 0; }
+            int hit = HitTest(x, y), p = g_pressed; g_pressed = H_NONE;
+            if (p != H_NONE && p == hit)
+            {
+                if (hit == H_OK) Submit();
+                else if (hit == H_CLOSE) { HideWindow(); return 0; }
+            }
+            PaintWindow();
+            return 0;
+        }
+        case WM_CHAR: OnChar(wp); return 0;
+        case WM_KILLFOCUS: if (g_focus >= 0) { g_focus = -1; PaintWindow(); } return 0;
+        case WM_SETCURSOR: SetGameCursor(); return TRUE;
+        case WM_TIMER: Sync(); return 0;
+        case WM_RG_SHOW: ShowWindowNow(); return 0;
+        case WM_RG_HIDE: HideWindow(); return 0;
+        case WM_RG_ANSWER: Answer((BYTE)wp); return 0;
+        case WM_RG_FILL:                               // login box ID / password arrived: fill the empty fields
+        {
+            EnterCriticalSection(&g_lock);
+            std::string id = g_id, pw = g_pw;
+            LeaveCriticalSection(&g_lock);
+            if (g_open && g_field[F_ACCOUNT].empty() && !id.empty()) g_field[F_ACCOUNT] = Wide(id);
+            if (g_open && g_focus == F_ACCOUNT && !g_field[F_ACCOUNT].empty()) Focus(F_PASSWORD);
+            if (!pw.empty()) SecureZeroMemory(&pw[0], pw.size());
+            if (g_open) PaintWindow();
+            return 0;
+        }
+        case WM_RG_REFRESH:
+            if (wp == 1) g_closeAt = GetTickCount() + 3000;   // created: close a moment later
+            if (g_open) PaintWindow();
+            return 0;
+        case WM_CLOSE: HideWindow(); return 0;
+        }
+        return DefWindowProcW(h, msg, wp, lp);
+    }
+
+    LRESULT CALLBACK BtnProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+    {
+        switch (msg)
+        {
+        case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+        case WM_MOUSEMOVE:
+            if (!g_btnTrack) { TRACKMOUSEEVENT t = { sizeof(t), TME_LEAVE, h, 0 }; g_btnTrack = TrackMouseEvent(&t) != FALSE; }
+            if (!g_btnHover) { g_btnHover = true; PaintButton(); }
+            return 0;
+        case WM_MOUSELEAVE: g_btnTrack = false; g_btnHover = false; g_btnDown = false; PaintButton(); return 0;
+        case WM_LBUTTONDOWN: if (NativeLocked()) return 0; g_btnDown = true; SetCapture(h); PaintButton(); return 0;
+        case WM_LBUTTONUP:
+        {
+            ReleaseCapture();
+            bool click = g_btnDown && g_btnHover && !NativeLocked();
+            g_btnDown = false; PaintButton();
+            if (click) { if (g_open) HideWindow(); else ShowWindowNow(); }
+            return 0;
+        }
+        case WM_SETCURSOR: SetGameCursor(); return TRUE;
+        }
+        return DefWindowProcW(h, msg, wp, lp);
+    }
+
+    // ------------------------------------------------------------------ answer (login screen ProcessPacket, game thread)
+    typedef char(__thiscall* FnPP)(void*, DWORD*, int*);
+    FnPP g_origPP = nullptr;
+
+    void Answer(BYTE code)
+    {
+        static const wchar_t* kText[] = {
+            L"Hesap oluşturulamadı.",
+            L"Hesabın oluşturuldu! Bilgilerin giriş kutusuna yazıldı, OK ile girebilirsin.",
+            L"Bu hesap adı zaten kullanılıyor, başka bir ad seç.",
+            L"Bilgiler geçersiz, kontrol edip tekrar dene.",
+            L"Bu bağlantıdan çok fazla hesap açıldı, daha sonra tekrar dene.",
+            L"Sunucu hatası, biraz sonra tekrar dene.",
+            L"Çok hızlı denedin, birkaç saniye bekle.",
+        };
+        std::wstring t = code == 0xFF ? L"Sunucuya bağlanılamadı, sunucu kapalı olabilir."
+                       : code == 0xFE ? L"Sunucudan cevap gelmedi, tekrar dene."
+                       : code < sizeof(kText) / sizeof(kText[0]) ? kText[code] : kText[0];
+        SetStatus(t, code == 1 ? RGB(120, 255, 120) : RGB(255, 100, 80));
+        if (code == 1)
+        {
+            EnterCriticalSection(&g_lock);
+            g_fillId = Narrow(g_field[F_ACCOUNT]); g_fillPw = Narrow(g_field[F_PASSWORD]);   // into the login box (login tick)
+            LeaveCriticalSection(&g_lock);
+            for (auto& f : g_field) { if (!f.empty()) SecureZeroMemory(&f[0], f.size() * sizeof(wchar_t)); f.clear(); }
+        }
+        g_waitSince = 0;
+        char lb[64]; sprintf_s(lb, "REGISTER: answer %u", code); Log(lb);
+        if (g_win) PostMessageW(g_win, WM_RG_REFRESH, code == 1 ? 1 : 0, 0);
+    }
+
+    char __fastcall HkIntroPP(void* self, void*, DWORD* data, int* offset)
+    {
+        __try
+        {
+            if (data && offset && (DWORD)*offset < data[1])
+            {
+                const BYTE* pkt = (const BYTE*)data[2] + *offset;
+                if (pkt[0] == LS_ACCOUNT_REGISTER && data[1] - *offset >= 2) Answer(pkt[1]);
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return g_origPP(self, data, offset);
+    }
+
+    DWORD WINAPI WindowThread(LPVOID)
+    {
+        // answer hook: CGameProcIntro vtable slot 2 (the exe unpacks first)
+        DWORD* slot = (DWORD*)(VT_INTRO + 8);
+        for (int i = 0; i < 240; i++)
+        {
+            __try { if (*slot == ORIG_INTRO_PP) break; }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+            Sleep(250);
+        }
+        bool hooked = false;
+        __try
+        {
+            if (*slot == ORIG_INTRO_PP)
+            {
+                DWORD old;
+                if (VirtualProtect(slot, 4, PAGE_EXECUTE_READWRITE, &old))
+                {
+                    g_origPP = (FnPP)ORIG_INTRO_PP;
+                    *slot = (DWORD)HkIntroPP;
+                    VirtualProtect(slot, 4, old, &old);
+                    hooked = true;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        Log(hooked ? "REGISTER: login screen answer hook installed" : "REGISTER: CGameProcIntro::ProcessPacket differs, no answers");
+
+        HINSTANCE hi = GetModuleHandleW(nullptr);
+        WNDCLASSEXW wc = { sizeof(wc) };
+        wc.hInstance = hi; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpfnWndProc = WinProc; wc.lpszClassName = L"NTT_RegisterPanel"; RegisterClassExW(&wc);
+        wc.lpfnWndProc = BtnProc; wc.lpszClassName = L"NTT_RegisterButton"; RegisterClassExW(&wc);
+        DWORD ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        g_win = CreateWindowExW(ex, L"NTT_RegisterPanel", L"Hesap Kaydı", WS_POPUP, 0, 0, RG_W, RG_H, nullptr, nullptr, hi, nullptr);
+        g_btn = CreateWindowExW(ex, L"NTT_RegisterButton", L"Kayıt Ol", WS_POPUP, 0, 0, RG_BIG_W, RG_BIG_H, nullptr, nullptr, hi, nullptr);
+        if (!g_win || !g_btn) { Log("REGISTER: window creation failed"); return 0; }
+        g_wc = MakeCanvas(RG_W, RG_H);
+        g_bc = MakeCanvas(RG_BIG_W, RG_BIG_H);
+        SetTimer(g_win, 1, 150, nullptr);
+        MSG m;
+        while (GetMessageW(&m, nullptr, 0, 0)) { TranslateMessage(&m); DispatchMessageW(&m); }
+        return 0;
+    }
+}
+
+void Register_Init()
+{
+    InitializeCriticalSection(&g_lock);
+    CloseHandle(CreateThread(nullptr, 0, WindowThread, nullptr, 0, nullptr));
+}
+
+// login_remember.cpp tick (game thread, every frame while the login box is up): our "Kayıt Ol" covers btn_homepage
+void Register_LoginTick(const float* homepage, bool covered, int idMax, int pwMax, int nativeState)
+{
+    if (nativeState >= 0 && nativeState < 64) InterlockedExchange(&g_nativeState, nativeState);
+    if (idMax > 0 && idMax < 64) InterlockedExchange(&g_idMax, idMax);
+    if (pwMax > 0 && pwMax < 64) InterlockedExchange(&g_pwMax, pwMax);
+    if (covered)                                       // the server list / a notice is over the Homepage button
+    {
+        EnterCriticalSection(&g_lock); g_btnRect = {}; LeaveCriticalSection(&g_lock);
+        g_lastSeen = GetTickCount();
+        return;
+    }
+    if (!homepage) return;
+    POINT o = { 0, 0 };
+    static HWND game = nullptr;
+    static DWORD found = 0;
+    if (!game || !IsWindow(game) || GetTickCount() - found > 2000)
+    {
+        struct Ctx { DWORD tid; HWND best; int area; } ctx = { GetCurrentThreadId(), nullptr, 0 };
+        EnumThreadWindows(ctx.tid, [](HWND hw, LPARAM lp) -> BOOL {
+            Ctx* c = (Ctx*)lp; RECT r;
+            if (IsWindowVisible(hw) && GetWindowRect(hw, &r)) { int a = (r.right - r.left) * (r.bottom - r.top); if (a > c->area) { c->area = a; c->best = hw; } }
+            return TRUE;
+        }, (LPARAM)&ctx);
+        game = ctx.best; found = GetTickCount();
+    }
+    if (game) ClientToScreen(game, &o);                 // the UI rects are client coordinates
+    EnterCriticalSection(&g_lock);
+    g_btnRect = { o.x + (int)homepage[0], o.y + (int)homepage[1], o.x + (int)homepage[2], o.y + (int)homepage[3] };
+    LeaveCriticalSection(&g_lock);
+    g_lastSeen = GetTickCount();
+}
+
+// login_remember.cpp ReceiveMessage: the native Homepage click (keyboard / missed gate) opens the window instead
+void Register_Open()
+{
+    if (g_win) PostMessageW(g_win, WM_RG_SHOW, 0, 0);
+}
+
+// a new account: its ID / password for the login box (login tick, game thread)
+bool Register_TakeFill(std::string& id, std::string& pw)
+{
+    EnterCriticalSection(&g_lock);
+    bool has = !g_fillId.empty();
+    if (has) { id = g_fillId; pw = g_fillPw; if (!g_fillPw.empty()) SecureZeroMemory(&g_fillPw[0], g_fillPw.size()); g_fillId.clear(); g_fillPw.clear(); }
+    LeaveCriticalSection(&g_lock);
+    return has;
+}
+
+bool Register_WantCredentials() { return g_wantCreds != 0; }
+
+void Register_SetCredentials(const std::string& id, const std::string& pw)
+{
+    InterlockedExchange(&g_wantCreds, 0);
+    EnterCriticalSection(&g_lock);
+    g_id = id; g_pw = pw;
+    LeaveCriticalSection(&g_lock);
+    if (g_win) PostMessageW(g_win, WM_RG_FILL, 0, 0);
+}
+
+// game thread (login tick): our request goes out through the game's socket (connected to the LoginServer here)
+void Register_FlushSendQueue()
+{
+    if (g_sendQ.empty()) return;
+    void* sock = *(void**)KO_PTR_PKT;
+    std::deque<std::vector<BYTE>> pending;
+    EnterCriticalSection(&g_lock);
+    pending.swap(g_sendQ);
+    LeaveCriticalSection(&g_lock);
+    if (!sock)
+    {
+        SetStatus(L"Sunucuya bağlı değil. Oyunu yeniden başlatıp tekrar dene.", RGB(255, 100, 80));
+        g_waitSince = 0;
+        if (g_win) PostMessageW(g_win, WM_RG_REFRESH, 0, 0);
+        return;
+    }
+    for (auto& p : pending)
+    {
+        typedef void(__thiscall* tSend)(void*, BYTE*, int);
+        ((tSend)KO_SND_FNC)(sock, p.data(), (int)p.size());
+        SecureZeroMemory(p.data(), p.size());
+    }
+}
+
+// pus_store.cpp click gate: clicks on our windows must not reach the login box under them
+bool Register_CursorOverPanel()
+{
+    POINT p;
+    if (!GetCursorPos(&p)) return false;
+    HWND h = WindowFromPoint(p);
+    return h && ((h == g_win && IsWindowVisible(g_win)) || (h == g_btn && IsWindowVisible(g_btn)));
+}

@@ -114,7 +114,7 @@ async fn handle_rekey_ack(session: &mut LoginSession) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use ko_protocol::{LoginOpcode, Packet, PacketReader};
+    use ko_protocol::{LoginOpcode, Packet};
 
     /// Opcode value is 0xF2.
     #[test]

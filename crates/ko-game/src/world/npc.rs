@@ -15,6 +15,22 @@ impl WorldState {
             .get(&(s_sid, is_monster))
             .map(|t| t.clone())
     }
+
+    /// Update one monster template's drop-table index in the live template map.
+    pub fn set_monster_drop_table(&self, proto_id: u16, item_table: i16) -> bool {
+        let updated = self.npc_templates.get(&(proto_id, true)).map(|old| {
+            let mut template = (**old).clone();
+            template.item_table = item_table;
+            template
+        });
+        if let Some(template) = updated {
+            self.npc_templates
+                .insert((proto_id, true), Arc::new(template));
+            true
+        } else {
+            false
+        }
+    }
     /// Update an NPC template's group (nation) and optionally PID (model).
     ///
     ///
@@ -89,6 +105,21 @@ impl WorldState {
             .map(|entry| entry.value().clone())
             .collect()
     }
+    /// Live NPC/monster instances of a zone within `radius` of (x, z) that belong to `event_room`.
+    pub fn npcs_near(&self, zone_id: u16, x: f32, z: f32, radius: f32, event_room: u16) -> Vec<Arc<NpcInstance>> {
+        self.npc_instances
+            .iter()
+            .filter(|e| {
+                let n = e.value();
+                if n.zone_id != zone_id || n.event_room != event_room {
+                    return false;
+                }
+                let (dx, dz) = (n.x - x, n.z - z);
+                (dx * dx + dz * dz).sqrt() <= radius
+            })
+            .map(|e| e.value().clone())
+            .collect()
+    }
     /// Get the current HP of an NPC by runtime ID.
     ///
     /// Returns `None` if the NPC does not exist.
@@ -102,8 +133,45 @@ impl WorldState {
     /// Update (set) the HP of an NPC by runtime ID.
     pub fn update_npc_hp(&self, nid: NpcId, hp: i32) {
         if let Some(mut entry) = self.npc_hp.get_mut(&nid) {
+            // Ultima's Dungeon rules: a sealed boss takes no damage, a seal only loses its fixed hit.
+            if hp < *entry {
+                if self.ultima_boss_guard.contains_key(&nid) {
+                    return;
+                }
+                if let Some(hit) = self.ultima_seals.get(&nid) {
+                    // any hit removes one fixed hit; a GM's fixed 30000 hit counts in full
+                    let taken = if *entry - hp == 30_000 { 30_000 } else { *hit };
+                    *entry = (*entry - taken).max(0);
+                    return;
+                }
+            }
             *entry = hp;
         }
+    }
+    /// Ultima's Dungeon: register / clear the boss guard, seals and lethal windows.
+    pub fn ultima_set_boss_guard(&self, nid: NpcId, on: bool) {
+        if on {
+            self.ultima_boss_guard.insert(nid, ());
+        } else {
+            self.ultima_boss_guard.remove(&nid);
+        }
+    }
+    pub fn ultima_register_seal(&self, nid: NpcId, hit: i32) {
+        self.ultima_seals.insert(nid, hit);
+    }
+    pub fn ultima_set_lethal(&self, nid: NpcId, on: bool) {
+        if on {
+            self.ultima_lethal.insert(nid, ());
+        } else {
+            self.ultima_lethal.remove(&nid);
+        }
+    }
+    pub fn ultima_is_lethal(&self, nid: NpcId) -> bool {
+        self.ultima_lethal.contains_key(&nid)
+    }
+    /// Fixed damage of one basic attack on an Ultima seal, if `nid` is one.
+    pub fn ultima_seal_hit(&self, nid: NpcId) -> Option<i32> {
+        self.ultima_seals.get(&nid).map(|v| *v)
     }
     /// Check if an NPC is dead (HP <= 0).
     pub fn is_npc_dead(&self, nid: NpcId) -> bool {
@@ -133,6 +201,13 @@ impl WorldState {
     /// Clear damage tracking for an NPC (called on death/respawn).
     pub fn clear_npc_damage(&self, nid: NpcId) {
         self.npc_damage.remove(&nid);
+    }
+    /// Remove one player's threat/damage entry without affecting loot rights
+    /// for other players who are still fighting this NPC.
+    pub fn clear_npc_player_damage(&self, nid: NpcId, sid: SessionId) {
+        if let Some(inner) = self.npc_damage.get(&nid) {
+            inner.remove(&sid);
+        }
     }
     /// Get all damage entries for an NPC, returning `Vec<(SessionId, i32)>`.
     ///
@@ -165,9 +240,16 @@ impl WorldState {
     pub fn notify_npc_damaged(&self, nid: NpcId, attacker_sid: SessionId) {
         // Snapshot fields we need for find_friends after releasing the lock.
         let mut should_find_friends = false;
-        let mut is_boss = false;
+        let is_boss = self
+            .get_npc_instance(nid)
+            .and_then(|npc| self.get_npc_template(npc.proto_id, npc.is_monster))
+            .is_some_and(|tmpl| tmpl.npc_type == NPC_BOSS);
 
         if let Some(mut ai) = self.npc_ai.get_mut(&nid) {
+            // Reactive aggro bypasses find_enemy(), which normally starts the
+            // chase timer. A first hit must start it too (and subsequent hits
+            // keep an active fight alive).
+            ai.last_combat_time_ms = ai.last_tick_ms.max(1);
             // Only switch target if NPC is in a non-combat state
             //   if (GetNpcState() == NPC_STANDING || NPC_MOVING || NPC_SLEEPING)
             match ai.state {
@@ -190,21 +272,9 @@ impl WorldState {
             }
         }
 
-        // Check for boss type via template lookup (NPC_BOSS = 3).
-        if !should_find_friends {
-            if let Some(inst) = self.get_npc_instance(nid) {
-                if let Some(tmpl) = self.get_npc_template(inst.proto_id, inst.is_monster) {
-                    if tmpl.npc_type == NPC_BOSS {
-                        should_find_friends = true;
-                        is_boss = true;
-                    }
-                }
-            }
-        }
-
         // Call find_friends outside the npc_ai borrow.
-        if should_find_friends {
-            self.find_friends(nid, is_boss);
+        if should_find_friends && !is_boss {
+            self.find_friends(nid, false);
         }
     }
 
@@ -221,7 +291,7 @@ impl WorldState {
     /// target set to the caller's target and transitions to Attacking state.
     fn find_friends(&self, caller_nid: NpcId, is_boss: bool) {
         // Snapshot the caller's state needed for friend search.
-        let (target_id, zone_id, cur_x, cur_z, family_type, tracing_range) = {
+        let (target_id, zone_id, cur_x, cur_z, family_type, tracing_range, caller_proto) = {
             let ai = match self.npc_ai.get(&caller_nid) {
                 Some(a) => a,
                 None => return,
@@ -256,7 +326,9 @@ impl WorldState {
                 ai.cur_x,
                 ai.cur_z,
                 ai.family_type,
-                tmpl.tracing_range as f32,
+                // monsters call their own kind within a few metres (monster_behavior.cfg)
+                crate::monster_behavior::assist_range(),
+                inst.proto_id,
             )
         };
         // ^ DashMap ref dropped here
@@ -304,9 +376,11 @@ impl WorldState {
             } else {
                 // MonSearchSameFamily: only same-family NPCs with has_friends
                 //   if (pNpc->m_bHasFriends && pNpc->m_proto->m_byFamilyType == m_proto->m_byFamilyType)
-                if !friend_ai.has_friends || friend_ai.family_type != family_type {
+                // any monster close to the hit one joins (the 5 m assist range), whatever its kind
+                if !friend_ai.has_friends {
                     continue;
                 }
+                let _ = (family_type, caller_proto);
             }
 
             // Check NPC is not dead (HP check)
@@ -434,6 +508,68 @@ impl WorldState {
             ai.delay_ms = 0;
         }
     }
+/// Ensure a dead static objective participates in the normal timed NPC respawn loop.
+    pub(crate) fn schedule_npc_respawn(&self, nid: NpcId, regen_time_ms: u64) -> bool {
+        if let Some(mut ai) = self.npc_ai.get_mut(&nid) {
+            ai.state = NpcState::Dead;
+            ai.regen_time_ms = regen_time_ms;
+            ai.delay_ms = 0;
+            ai.last_tick_ms = 0;
+            ai.target_id = None;
+            ai.npc_target_id = None;
+            return true;
+        }
+
+        let npc = match self.get_npc_instance(nid) {
+            Some(npc) => npc,
+            None => return false,
+        };
+        let region_x = calc_region(npc.x);
+        let region_z = calc_region(npc.z);
+        self.npc_ai.insert(nid, NpcAiState {
+            state: NpcState::Dead,
+            spawn_x: npc.x,
+            spawn_z: npc.z,
+            cur_x: npc.x,
+            cur_z: npc.z,
+            target_id: None,
+            npc_target_id: None,
+            delay_ms: 0,
+            last_tick_ms: 0,
+            regen_time_ms,
+            is_aggressive: false,
+            zone_id: npc.zone_id,
+            region_x,
+            region_z,
+            fainting_until_ms: 0,
+            old_state: NpcState::Standing,
+            active_skill_id: 0,
+            active_target_id: -1,
+            active_cast_time_ms: 0,
+            has_friends: false,
+            family_type: 0,
+            skill_cooldown_ms: 0,
+            nation: npc.nation,
+            is_tower_owner: false,
+            attack_type: 0,
+            last_combat_time_ms: 0,
+            duration_secs: 0,
+            spawned_at_ms: 0,
+            last_hp_regen_ms: 0,
+            gate_open: 0,
+            wood_cooldown_count: 0,
+            utc_second: 0,
+            path_waypoints: Vec::new(),
+            path_index: 0,
+            path_target_x: 0.0,
+            path_target_z: 0.0,
+            path_is_direct: false,
+            dest_x: 0.0,
+            dest_z: 0.0,
+            pattern_frame: 0,
+        });
+        true
+    }
     /// Get a snapshot of an NPC's AI state.
     pub fn get_npc_ai(&self, nid: NpcId) -> Option<NpcAiState> {
         self.npc_ai.get(&nid).map(|v| v.clone())
@@ -443,6 +579,32 @@ impl WorldState {
     pub(crate) fn insert_npc_ai(&self, nid: NpcId, ai: NpcAiState) {
         self.npc_ai.insert(nid, ai);
     }
+    /// Recompute aggression / assist flags of every monster after `monster_behavior` changed.
+    pub fn reapply_monster_behavior(&self) -> usize {
+        let mut changed = 0;
+        for mut entry in self.npc_ai.iter_mut() {
+            let nid = *entry.key();
+            let Some(inst) = self.get_npc_instance(nid) else {
+                continue;
+            };
+            if !inst.is_monster {
+                continue;
+            }
+            let Some(tmpl) = self.get_npc_template(inst.proto_id, true) else {
+                continue;
+            };
+            let (aggressive, attack_type, has_friends) =
+                crate::monster_behavior::ai_flags(&tmpl, entry.zone_id);
+            if entry.is_aggressive != aggressive || entry.has_friends != has_friends {
+                changed += 1;
+            }
+            entry.is_aggressive = aggressive;
+            entry.attack_type = attack_type;
+            entry.has_friends = has_friends;
+        }
+        changed
+    }
+
     /// Update an NPC's AI state via a closure.
     pub fn update_npc_ai(&self, nid: NpcId, updater: impl FnOnce(&mut NpcAiState)) {
         if let Some(mut entry) = self.npc_ai.get_mut(&nid) {
@@ -508,6 +670,27 @@ impl WorldState {
             ai.region_x = crate::zone::calc_region(new_x);
             ai.region_z = crate::zone::calc_region(new_z);
         });
+    }
+
+    /// Move a runtime NPC and keep the zone's region index in sync.
+    ///
+    /// Ordinary NPC AI owns its own region bookkeeping. Runtime pets do not
+    /// have an AI entry, so calling `update_npc_position` alone leaves them
+    /// registered in their spawn region; clients then stop seeing them after
+    /// they cross a region boundary even though the server still attacks.
+    pub(crate) fn move_runtime_npc(&self, nid: NpcId, new_x: f32, new_z: f32) {
+        let Some(old) = self.get_npc_instance(nid) else {
+            return;
+        };
+        let new_rx = crate::zone::calc_region(new_x);
+        let new_rz = crate::zone::calc_region(new_z);
+        if old.region_x != new_rx || old.region_z != new_rz {
+            if let Some(zone) = self.get_zone(old.zone_id) {
+                zone.remove_npc(old.region_x, old.region_z, nid);
+                zone.add_npc(new_rx, new_rz, nid);
+            }
+        }
+        self.update_npc_position(nid, new_x, new_z);
     }
     /// Toggle a gate NPC's open/close state and broadcast to nearby players.
     ///
@@ -591,15 +774,27 @@ impl WorldState {
     /// Timer-triggered broadcasts are per-nation: Karus bridge → KARUS only,
     /// Elmorad bridge → ELMORAD only.
     pub fn broadcast_juraid_bridge_open(&self, bridge_idx: usize, room_id: u16) {
+        self.broadcast_juraid_bridge_open_for_nation(bridge_idx, room_id, NATION_KARUS);
+        self.broadcast_juraid_bridge_open_for_nation(bridge_idx, room_id, NATION_ELMORAD);
+    }
+
+    /// Open only one nation's Juraid bridge. Kill progression is independent;
+    /// the two-nation wrapper above is reserved for the 10-minute fallback.
+    pub fn broadcast_juraid_bridge_open_for_nation(
+        &self,
+        bridge_idx: usize,
+        room_id: u16,
+        nation: u8,
+    ) {
         use crate::npc::{build_npc_inout, NPC_IN, NPC_OUT};
         use crate::systems::juraid::ZONE_JURAID;
 
-        // Karus trap_number = bridge_idx + 1 (1, 2, 3)
-        // Elmorad trap_number = bridge_idx + 4 (4, 5, 6)
-        let karus_trap = bridge_idx as i16 + 1;
-        let elmo_trap = bridge_idx as i16 + 4;
-
-        for (trap, nation) in [(karus_trap, NATION_KARUS), (elmo_trap, NATION_ELMORAD)] {
+        let trap = match nation {
+            NATION_KARUS => bridge_idx as i16 + 1,
+            NATION_ELMORAD => bridge_idx as i16 + 4,
+            _ => return,
+        };
+        {
             // Find the bridge NPC by zone + event_room + trap_number
             let npc = self.npc_instances.iter().find_map(|entry| {
                 let n = entry.value();
@@ -612,7 +807,7 @@ impl WorldState {
 
             let npc = match npc {
                 Some(n) => n,
-                None => continue,
+                None => return,
             };
 
             // Set gate_open = 2
@@ -623,34 +818,37 @@ impl WorldState {
             out_pkt.write_u8(NPC_OUT);
             out_pkt.write_u32(npc.nid);
 
-            // Send OUT to matching zone + event_room + nation
-            self.broadcast_to_zone_event_room_nation(
-                ZONE_JURAID,
-                room_id,
-                nation,
-                Arc::new(out_pkt),
-            );
+            // C++ HandleJuraidGateOpen broadcasts the bridge transition to ALL
+            // users in the event room. The two nation paths use different
+            // physical bridge NPCs, but filtering the packet by nation left the
+            // client's collision state stale in v2615.
+            self.broadcast_to_zone_event_room(ZONE_JURAID, room_id, Arc::new(out_pkt), None);
 
             // Re-read the updated NPC instance (with gate_open=2)
             let updated_npc = match self.get_npc_instance(npc.nid) {
                 Some(n) => n,
-                None => continue,
+                None => return,
             };
 
             // Build INOUT_IN packet (spawn with gate_open=2)
             let tmpl = match self.get_npc_template(npc.proto_id, npc.is_monster) {
                 Some(t) => t,
-                None => continue,
+                None => return,
             };
             let in_pkt = build_npc_inout(NPC_IN, &updated_npc, &tmpl);
 
-            // Send IN to matching zone + event_room + nation
-            self.broadcast_to_zone_event_room_nation(
-                ZONE_JURAID,
-                room_id,
-                nation,
-                Arc::new(in_pkt),
-            );
+            self.broadcast_to_zone_event_room(ZONE_JURAID, room_id, Arc::new(in_pkt), None);
+
+            // The C++ server also sends CNpc::SendJuraidBridgeFlag() when
+            // changing the physical bridge collision state. NPC_INOUT alone
+            // updates its visible gate_open field, but the client keeps the
+            // bridge collision closed without this OBJECT_GATE event.
+            let mut gate_pkt = Packet::new(Opcode::WizObjectEvent as u8);
+            gate_pkt.write_u8(crate::object_event_constants::OBJECT_GATE);
+            gate_pkt.write_u8(1);
+            gate_pkt.write_u32(npc.nid);
+            gate_pkt.write_u8(1);
+            self.broadcast_to_zone_event_room(ZONE_JURAID, room_id, Arc::new(gate_pkt), None);
 
             tracing::debug!(
                 npc_id = npc.nid,
@@ -700,6 +898,67 @@ impl WorldState {
         event_room: u16,
         summon_type: u8,
     ) -> Vec<NpcId> {
+        self.spawn_event_npc_ex_with_direction(
+            s_sid,
+            is_monster,
+            zone_id,
+            x,
+            z,
+            count,
+            event_room,
+            summon_type,
+            0,
+        )
+    }
+
+    /// Event spawn variant preserving the authoritative DB facing direction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_event_npc_ex_with_direction(
+        &self,
+        s_sid: u16,
+        is_monster: bool,
+        zone_id: u16,
+        x: f32,
+        z: f32,
+        count: u16,
+        event_room: u16,
+        summon_type: u8,
+        direction: u8,
+    ) -> Vec<NpcId> {
+        self.spawn_event_npc_ex_with_metadata(
+            s_sid,
+            is_monster,
+            zone_id,
+            x,
+            0.0,
+            z,
+            count,
+            event_room,
+            summon_type,
+            direction,
+            0,
+        )
+    }
+
+    /// Event spawn variant preserving placement data that is significant for
+    /// scripted map objects. UTC doors use both their DB Y/facing values and
+    /// `trap_number`; the C++ SpawnEventNpc call passes all three separately
+    /// from its summon/event type.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_event_npc_ex_with_metadata(
+        &self,
+        s_sid: u16,
+        is_monster: bool,
+        zone_id: u16,
+        x: f32,
+        y: f32,
+        z: f32,
+        count: u16,
+        event_room: u16,
+        summon_type: u8,
+        direction: u8,
+        trap_number: u8,
+    ) -> Vec<NpcId> {
         let tmpl = match self.get_npc_template(s_sid, is_monster) {
             Some(t) => t,
             None => return Vec::new(),
@@ -729,22 +988,33 @@ impl WorldState {
             let region_x = calc_region(spawn_x);
             let region_z = calc_region(spawn_z);
 
+            // Monster Stone support NPCs are neutral to both nations. Their
+            // global templates retain the original nation for normal map
+            // spawns; only private rooms override the runtime nation to 3.
+            let runtime_nation = if is_monster {
+                0
+            } else if event_room > 0 && matches!(zone_id, 81..=83) {
+                3
+            } else {
+                tmpl.group
+            };
+
             let instance = Arc::new(NpcInstance {
                 nid,
                 proto_id: s_sid,
                 is_monster,
                 zone_id,
                 x: spawn_x,
-                y: 0.0,
+                y,
                 z: spawn_z,
-                direction: 0,
+                direction,
                 region_x,
                 region_z,
                 gate_open: 0,
                 object_type: 0,
-                nation: if is_monster { 0 } else { tmpl.group },
+                nation: runtime_nation,
                 special_type: 0,
-                trap_number: 0,
+                trap_number: trap_number as i16,
                 event_room,
                 is_event_npc: true,
                 summon_type,
@@ -762,11 +1032,8 @@ impl WorldState {
 
             // Initialize AI state for monsters with search range
             if is_monster && tmpl.search_range > 0 {
-                let has_friends = matches!(tmpl.act_type, 3 | 4)
-                    && !matches!(
-                        zone_id,
-                        ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
-                    );
+                let (is_aggressive, attack_type, has_friends) =
+                    crate::monster_behavior::ai_flags(&tmpl, zone_id);
                 self.npc_ai.insert(
                     nid,
                     NpcAiState {
@@ -780,7 +1047,7 @@ impl WorldState {
                         delay_ms: tmpl.stand_time as u64,
                         last_tick_ms: 0,
                         regen_time_ms: 0, // event NPCs don't auto-respawn
-                        is_aggressive: !matches!(tmpl.act_type, 1..=4),
+                        is_aggressive,
                         zone_id,
                         region_x,
                         region_z,
@@ -794,7 +1061,7 @@ impl WorldState {
                         skill_cooldown_ms: 0,
                         nation: tmpl.group,
                         is_tower_owner: false,
-                        attack_type: map_act_type(tmpl.act_type),
+                        attack_type,
                         last_combat_time_ms: 0,
                         duration_secs: 0,
                         spawned_at_ms: 0,
@@ -879,6 +1146,33 @@ impl WorldState {
 
         spawned_ids
     }
+
+    /// Update an event NPC trap number, used by Juraid bridge gates.
+    pub fn update_npc_trap_number(&self, nid: NpcId, trap_number: i16) {
+        if let Some(entry) = self.npc_instances.get(&nid) {
+            let old = entry.value().clone();
+            let updated = Arc::new(NpcInstance {
+                trap_number,
+                ..(*old).clone()
+            });
+            drop(entry);
+            self.npc_instances.insert(nid, updated);
+        }
+    }
+
+    /// Set the runtime nation of an event NPC (guard summons take their caster's nation).
+    pub fn set_npc_nation(&self, nid: NpcId, nation: u8) {
+        if let Some(entry) = self.npc_instances.get(&nid) {
+            let old = entry.value().clone();
+            let updated = Arc::new(NpcInstance {
+                nation,
+                ..(*old).clone()
+            });
+            drop(entry);
+            self.npc_instances.insert(nid, updated);
+        }
+    }
+
     /// Set duration (auto-death timer) on a spawned NPC.
     ///
     /// After `duration_secs` elapses, the NPC AI tick will automatically kill it.
@@ -1074,6 +1368,57 @@ impl WorldState {
             .unwrap_or(false)
     }
 
+    /// NPC defense after its active AC buffs/debuffs (`BUFF_TYPE_AC` = 2), e.g.
+    /// Torment's `ac_pct = 70` lowers a monster's defense to 70%.
+    pub fn apply_npc_buff_ac(&self, npc_id: NpcId, base_ac: i32) -> i32 {
+        const BUFF_TYPE_AC: i32 = 2;
+        let Some(map) = self.npc_buffs.get(&npc_id) else {
+            return base_ac;
+        };
+        let mut ac = base_ac as i64;
+        let mut flat = 0i64;
+        for entry in map.values() {
+            if entry.buff_type != BUFF_TYPE_AC || entry.is_expired() {
+                continue;
+            }
+            if let Some(row) = self.get_magic_type4(entry.skill_id as i32) {
+                let pct = row.ac_pct.unwrap_or(100) as i64;
+                if pct > 0 && pct != 100 {
+                    ac = ac * pct / 100;
+                }
+                flat += row.ac.unwrap_or(0) as i64;
+            }
+        }
+        (ac + flat).max(0) as i32
+    }
+
+    /// Movement multiplier from an NPC's debuffs: `0.0` while stunned (STUN 47), otherwise
+    /// the strongest SPEED(6)/SPEED2(40) slow from the skill's Type4 `speed` percentage.
+    pub fn npc_move_factor(&self, npc_id: NpcId) -> f32 {
+        let Some(map) = self.npc_buffs.get(&npc_id) else {
+            return 1.0;
+        };
+        let mut factor = 1.0f32;
+        for entry in map.values() {
+            if entry.is_expired() {
+                continue;
+            }
+            match entry.buff_type {
+                47 => return 0.0,
+                6 | 40 => {
+                    if let Some(row) = self.get_magic_type4(entry.skill_id as i32) {
+                        let slow = row.speed.unwrap_or(100) as f32 / 100.0;
+                        if slow < 1.0 {
+                            factor = factor.min(slow.max(0.05));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        factor
+    }
+
     /// Get the number of active buffs on an NPC.
     pub fn npc_buff_count(&self, npc_id: NpcId) -> usize {
         self.npc_buffs
@@ -1150,6 +1495,16 @@ impl WorldState {
     pub fn bot_merchant_data_count(&self) -> usize {
         self.bot_merchant_data.len()
     }
+    /// Get every configured merchant stall in deterministic DB-index order.
+    pub fn get_all_bot_merchant_data(&self) -> Vec<BotMerchantDataRow> {
+        let mut rows: Vec<_> = self
+            .bot_merchant_data
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        rows.sort_by_key(|row| row.n_index);
+        rows
+    }
     /// Look up a user bot by its ID.
     pub fn get_user_bot(&self, id: i32) -> Option<UserBotRow> {
         self.user_bots.get(&id).map(|r| r.clone())
@@ -1166,6 +1521,17 @@ impl WorldState {
             .filter(|e| e.value().zone == zone_id)
             .map(|e| e.value().clone())
             .collect()
+    }
+    /// Get all loaded farm-bot templates. GM-created PK bots use this only as
+    /// an equipment fallback when their target zone has no class template.
+    pub fn get_all_bot_templates(&self) -> Vec<BotHandlerFarmRow> {
+        let mut rows: Vec<_> = self
+            .bot_farm_data
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        rows.sort_by_key(|row| row.id);
+        rows
     }
     /// Get a snapshot of the bot knights ranking.
     pub fn get_bot_knights_rank(&self) -> Vec<BotKnightsRankRow> {
@@ -1442,6 +1808,24 @@ impl WorldState {
         }
     }
 
+    pub(crate) fn kill_non_monster_npcs_in_room(&self, zone_id: u16, event_room: u16) {
+        if event_room == 0 {
+            return;
+        }
+        let matching_nids: Vec<NpcId> = self
+            .npc_instances
+            .iter()
+            .filter(|entry| {
+                let inst = entry.value();
+                inst.zone_id == zone_id && inst.event_room == event_room && !inst.is_monster
+            })
+            .map(|entry| *entry.key())
+            .collect();
+        for nid in matching_nids {
+            self.kill_npc_by_runtime_id(nid);
+        }
+    }
+
     /// Insert an NPC instance and register it in the zone's region grid.
     ///
     /// Calculates proper region coordinates from the instance's world position
@@ -1464,9 +1848,9 @@ impl WorldState {
         // Register in zone region grid so the NPC is visible to nearby players
         if let Some(zone) = self.get_zone(zone_id) {
             if let Some(region) = zone.get_region(region_x, region_z) {
-                if let Some(mut npcs) = region.npcs.try_write() {
-                    npcs.insert(nid);
-                }
+                // Blocking write: a contended try_write silently left the NPC unregistered,
+                // making summoned familiars invisible to everyone after the first packet.
+                region.npcs.write().insert(nid);
             }
         }
     }
@@ -1680,6 +2064,7 @@ mod tests {
             NpcAiState {
                 state: NpcState::Standing,
                 target_id: None,
+                last_tick_ms: 10_000,
                 ..test_ai_state()
             },
         );
@@ -1687,6 +2072,7 @@ mod tests {
         let ai = world.get_npc_ai(nid).unwrap();
         assert_eq!(ai.target_id, Some(1));
         assert!(matches!(ai.state, NpcState::Attacking));
+        assert_eq!(ai.last_combat_time_ms, 10_000);
     }
 
     #[test]
@@ -2105,6 +2491,11 @@ mod tests {
 
     #[test]
     fn test_find_friends_activates_same_family() {
+        // find_friends() gates distance on the live-configurable assist_range()
+        // global (default 1.0m), not the NPC template's own tracing_range — pin
+        // it so this test is deterministic regardless of ambient/default value
+        // or what other tests set it to.
+        crate::monster_behavior::set_assist_range(5.0);
         let world = WorldState::new();
         let (caller_nid, friend_nid) = setup_friend_pair(
             &world,
@@ -2112,7 +2503,7 @@ mod tests {
             5,    // friend same family
             true, // friend has_friends
             NpcState::Standing,
-            10.0, // within range
+            4.0, // within the 5 m assist range
         );
 
         world.notify_npc_damaged(caller_nid, 42);
@@ -2314,7 +2705,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_friends_boss_calls_any_family() {
+    fn test_damaged_boss_does_not_recruit_even_with_friends_flag() {
         // Bosses use MonSearchAny — should alert NPCs of any family type.
         let world = WorldState::new();
         let boss_nid: NpcId = 3000;
@@ -2354,7 +2745,7 @@ mod tests {
             boss_nid,
             NpcAiState {
                 state: NpcState::Standing,
-                has_friends: false, // boss doesn't need has_friends
+                has_friends: true, // Bosses must not recruit even with this flag.
                 family_type: 10,
                 zone_id: 21,
                 cur_x: 100.0,
@@ -2411,11 +2802,10 @@ mod tests {
 
         let friend_ai = world.get_npc_ai(friend_nid).unwrap();
         assert_eq!(
-            friend_ai.target_id,
-            Some(42),
-            "Boss should call any nearby NPC regardless of family type"
+            friend_ai.target_id, None,
+            "Damaging a boss must not recruit nearby NPCs"
         );
-        assert_eq!(friend_ai.state, NpcState::Attacking);
+        assert_eq!(friend_ai.state, NpcState::Standing);
     }
 
     #[test]
@@ -2687,7 +3077,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_friends_boss_does_not_need_has_friends() {
+    fn test_damaged_boss_without_friends_flag_does_not_recruit() {
         // Bosses trigger MonSearchAny even without has_friends flag.
         let world = WorldState::new();
         let boss_nid: NpcId = 7000;
@@ -2783,15 +3173,16 @@ mod tests {
 
         let friend_ai = world.get_npc_ai(friend_nid).unwrap();
         assert_eq!(
-            friend_ai.target_id,
-            Some(42),
-            "Boss should alert any NPC even without has_friends flag"
+            friend_ai.target_id, None,
+            "Bosses without has_friends must not recruit nearby NPCs"
         );
     }
 
     #[test]
     fn test_find_friends_multiple_npcs_activated() {
         // When a pack NPC is attacked, ALL eligible friends should be activated.
+        // See test_find_friends_activates_same_family for why assist_range is pinned.
+        crate::monster_behavior::set_assist_range(5.0);
         let world = WorldState::new();
         let caller_nid: NpcId = 8000;
 
@@ -2848,7 +3239,7 @@ mod tests {
                 proto_id: 801 + i as u16,
                 is_monster: true,
                 zone_id: 21,
-                x: 100.0 + (i as f32 * 5.0),
+                x: 100.0 + (i as f32 * 1.5),
                 y: 0.0,
                 z: 100.0,
                 direction: 0,
@@ -2876,7 +3267,7 @@ mod tests {
                     has_friends: true,
                     family_type: 5,
                     zone_id: 21,
-                    cur_x: 100.0 + (i as f32 * 5.0),
+                    cur_x: 100.0 + (i as f32 * 1.5),
                     cur_z: 100.0,
                     ..test_ai_state()
                 },
@@ -3973,6 +4364,20 @@ mod tests {
         world.record_npc_damage(nid, 1, 200);
         assert!(world.npc_damage_contains(nid, 1));
         assert!(!world.npc_damage_contains(nid, 2));
+    }
+
+    #[test]
+    fn test_clear_npc_player_damage_preserves_other_attackers() {
+        let world = WorldState::new();
+        let nid = world.allocate_npc_id();
+        world.record_npc_damage(nid, 1, 200);
+        world.record_npc_damage(nid, 2, 300);
+
+        world.clear_npc_player_damage(nid, 1);
+
+        assert!(!world.npc_damage_contains(nid, 1));
+        assert!(world.npc_damage_contains(nid, 2));
+        assert_eq!(world.get_max_damage_user(nid), Some(2));
     }
 
     /// get_npc_damage_entries returns all recorded players.

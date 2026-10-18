@@ -1,0 +1,115 @@
+r"""Account Register skin (register_panel.cpp), made only from the game's own login screen pieces (re_login_intro.uif):
+  - frame:   the server list frame of Group_ServerList_01 (ui\re_login_intro01.dxt) with its blank gold title plate
+  - edit:    the black ID field of Group_Login (ui\re_login_intro03.dxt + the frame's right column)
+  - buttons: btn_ok of Group_Login (ui\re_login_intro02.dxt), the painted "O K" caption cut out (3-slice, blank middle)
+             -> big 152x31 "Register" button under btn_homepage on the login box (same size as the login buttons)
+             -> small buttons for the register window
+Output: reg_ui\*.pus + reg_layout.h
+"""
+import os, ntpath
+from PIL import Image
+import kopanel as K
+import uif3
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(HERE, 'reg_ui')
+SRC = os.path.join(HERE, 'login_ui', 're_login_intro.uif')
+if not os.path.exists(SRC):
+    os.makedirs(os.path.dirname(SRC), exist_ok=True)
+    open(SRC, 'wb').write(K.__dict__['raw_tex']('re_login_intro.uif')[0])
+
+
+def img_of(e, size=None):
+    T = K.tex(ntpath.basename(e['tex'])); W_, H_ = T.size; u0, v0, u1, v1 = e['uv']; l, t, r, b = e['rect']
+    return T.crop((round(u0 * W_), round(v0 * H_), round(u1 * W_), round(v1 * H_))).resize(size or (r - l, b - t), Image.LANCZOS)
+
+
+def find(e, id_):
+    if e.get('id') == id_: return e
+    for c in e.get('children', []):
+        r = find(c, id_)
+        if r: return r
+
+
+root, _, _ = uif3.load(SRC)
+srv = find(root, 'Group_ServerList_01')
+login = find(root, 'Group_Login')
+btn_ok = find(login, 'btn_ok')
+edit_id = find(login, 'Edit_ID')
+
+# frame: the server list as the game draws it - frame (306 x 502, blank title plate) + the two chain pieces under it
+fx, fy = srv['children'][0]['rect'][:2]
+W = srv['children'][0]['rect'][2] - fx
+H = max(c['rect'][3] for c in srv['children'][:3]) - fy
+frame = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+for c in srv['children'][:3]:
+    frame.alpha_composite(img_of(c), (c['rect'][0] - fx, c['rect'][1] - fy))
+connect = find(srv, 'Btn_Connect')
+cstates = [img_of(k) for k in connect['children'] if k['type'] == 'IMAGE']
+cl, ct, cr, cb = connect['rect']
+
+# the login box as the game draws it, to cut the black ID field out of it
+gx, gy, gx1, gy1 = login['rect']
+box = Image.new('RGBA', (gx1 - gx, gy1 - gy), (0, 0, 0, 0))
+for c in login['children']:
+    if c['type'] == 'IMAGE':
+        box.alpha_composite(img_of(c), (c['rect'][0] - gx, c['rect'][1] - gy))
+el, et, er, eb = edit_id['rect']
+field = box.crop((el - gx - 3, et - gy - 3, er - gx + 3, eb - gy + 3))
+
+# button states (uif order: normal, down, on, disabled)
+states = [img_of(k) for k in btn_ok['children'] if k['type'] == 'IMAGE']
+bw0, bh0 = states[0].size                                                     # 152 x 31
+
+# the whole frame 20 % bigger (same proportions): room for 7 fields with readable text
+SC = 1.2
+W, H = round(W * SC), round(H * SC)
+frame = frame.resize((W, H), Image.LANCZOS)
+cl, ct, cr, cb = [round(v * SC) for v in (cl - fx, ct - fy, cr - fx, cb - fy)]
+fx = fy = 0
+
+L = {}
+def r(name, x0, y0, x1, y1): L[name] = (x0, y0, x1, y1)
+r('title', 72, 17, W - 72, 53)
+r('text', 30, 80, W - 30, 112)
+EW = W - 110
+FIELDS = ('account', 'password', 'password2', 'email', 'phone', 'seal', 'otp')
+y = 116
+for k in FIELDS:
+    r('lbl_' + k, 24, y, W - 24, y + 31)
+    r('edit_' + k, (W - EW) // 2, y + 31, (W - EW) // 2 + EW, y + 31 + 26)
+    y += 61
+r('status', 28, y - 2, W - 28, y + 30)
+SBW = 130
+r('btn_close', (W - SBW) // 2, y + 34, (W - SBW) // 2 + SBW, y + 34 + bh0)
+r('btn_ok', cl, ct, cr, cb)                                                    # where the game puts Connect
+assert L['btn_close'][3] < round(530 * SC), (L['btn_close'], round(530 * SC))
+
+os.makedirs(OUT, exist_ok=True)
+bg = frame.copy()
+for k in FIELDS:
+    x0, y0, x1, y1 = L['edit_' + k]
+    bg.alpha_composite(K.slice3(field, x1 - x0, y1 - y0, 6), (x0, y0))
+K.save_pus(bg, os.path.join(OUT, 'bg.pus'))
+# in-game "account details" form (bilgileri eksik hesaplar, Lv10+): only e-mail / phone / seal / OTP fields
+bgi = frame.copy()
+for k in ('email', 'phone', 'seal', 'otp'):
+    x0, y0, x1, y1 = L['edit_' + k]
+    bgi.alpha_composite(K.slice3(field, x1 - x0, y1 - y0, 6), (x0, y0))
+K.save_pus(bgi, os.path.join(OUT, 'bg_info.pus'))
+for st, im in (('n', states[0]), ('d', states[1]), ('o', states[2]), ('x', states[3])):
+    K.save_pus(K.slice3(im, bw0, bh0, 10, mid=(12, 22)), os.path.join(OUT, 'big_%s.pus' % st))      # login box button
+    K.save_pus(K.slice3(im, SBW, bh0, 10, mid=(12, 22)), os.path.join(OUT, 'btn_%s.pus' % st))      # window buttons
+
+for st, im in (('n', cstates[0]), ('d', cstates[1]), ('o', cstates[2]), ('x', cstates[3])):
+    K.save_pus(K.slice3(im.resize((cr - cl, cb - ct), Image.LANCZOS), cr - cl, cb - ct, 16, mid=(16, 24)), os.path.join(OUT, 'ok_%s.pus' % st))   # Connect, caption cut out
+prev = bg.copy()
+prev.alpha_composite(Image.open(os.path.join(OUT, 'btn_n.png')), L['btn_close'][:2])
+prev.alpha_composite(Image.open(os.path.join(OUT, 'ok_n.png')), L['btn_ok'][:2])
+prev.save(os.path.join(OUT, '_preview.png'))
+with open(os.path.join(HERE, 'reg_layout.h'), 'w') as f:
+    f.write('// Generated by build_register_assets.py -- do not edit by hand.\n#pragma once\n')
+    f.write('static const int RG_W = %d, RG_H = %d, RG_BIG_W = %d, RG_BIG_H = %d;\n' % (W, H, bw0, bh0))
+    for k, v in L.items():
+        f.write('static const int RG_%s[4] = { %d, %d, %d, %d };\n' % ((k.upper(),) + tuple(v)))
+print('register skin ->', OUT, W, H)

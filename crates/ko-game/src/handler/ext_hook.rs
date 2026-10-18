@@ -664,7 +664,10 @@ pub fn handle_procinfo(session: &mut ClientSession, data: &[u8]) -> anyhow::Resu
     // Check if target is a GM + get nation (single read)
     let (is_gm, gm_nation) = world
         .with_session(target_sid as u16, |h| {
-            h.character.as_ref().map(|c| (c.authority == AUTHORITY_GAME_MASTER, c.nation)).unwrap_or((false, 0))
+            h.character
+                .as_ref()
+                .map(|c| (c.authority == AUTHORITY_GAME_MASTER, c.nation))
+                .unwrap_or((false, 0))
         })
         .unwrap_or((false, 0));
 
@@ -997,13 +1000,14 @@ pub async fn handle_pus(session: &mut ClientSession, data: &[u8]) -> anyhow::Res
         1 => handle_pus_purchase(session, rest).await,
         2 => Ok(()),
         3 => handle_pus_gift(session, rest).await,
+        4 => crate::handler::pus_codes::handle_redeem(session, rest).await,
         _ => Ok(()),
     }
 }
 
 /// PUS sub 0: Send full catalog + categories to client.
-/// Wire format (items): `[0xE9][0xA8][u32 count]([u32 id][u32 item_id][u32 price][i16 cat][i32 buy_count][i16 price_type]) × N`
-/// Wire format (cats):  `[0xE9][0xA9][u32 count]([u32 id][string name][i16 status]) × N`
+/// 2625 proxy items (sub-op 0xA8): `[count]([id][item_id][name][price][u8 category][u32 count][u8 price_type][icon])`.
+/// Categories (sub-op 0xD6): `[count]([id][name][u8 status])`.
 async fn handle_pus_send_catalog(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
 
@@ -1013,12 +1017,27 @@ async fn handle_pus_send_catalog(session: &mut ClientSession) -> anyhow::Result<
     pkt.write_u8(EXT_SUB_PUS);
     pkt.write_u32(items.len() as u32);
     for item in &items {
+        let item_def = world.get_item(item.item_id.max(0) as u32);
+        let display_name = item
+            .item_name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| item.item_title.as_deref().filter(|s| !s.trim().is_empty()))
+            .or_else(|| item_def.as_ref().and_then(|i| i.str_name.as_deref()))
+            .unwrap_or("Unknown item");
+        let icon = item_def
+            .as_ref()
+            .and_then(|i| i.item_icon_id1)
+            .unwrap_or(0)
+            .max(0) as u32;
         pkt.write_u32(item.id as u32);
         pkt.write_u32(item.item_id as u32);
+        pkt.write_string(display_name);
         pkt.write_u32(item.price.unwrap_or(0) as u32);
-        pkt.write_i16(item.category);
-        pkt.write_i32(item.buy_count);
-        pkt.write_i16(item.price_type);
+        pkt.write_u8(item.category.clamp(0, u8::MAX as i16) as u8);
+        pkt.write_u32(item.buy_count.max(0) as u32);
+        pkt.write_u8(item.price_type.clamp(0, u8::MAX as i16) as u8);
+        pkt.write_u32(icon);
     }
     session.send_packet(&pkt).await?;
 
@@ -1030,9 +1049,10 @@ async fn handle_pus_send_catalog(session: &mut ClientSession) -> anyhow::Result<
     for cat in &cats {
         cpkt.write_u32(cat.id as u32);
         cpkt.write_string(&cat.category_name);
-        cpkt.write_i16(cat.status);
+        cpkt.write_u8(cat.status.clamp(0, u8::MAX as i16) as u8);
     }
-    session.send_packet(&cpkt).await
+    session.send_packet(&cpkt).await?;
+    send_cash_change(session).await
 }
 
 /// PUS sub 1: Purchase item with KC or TL.
@@ -1082,10 +1102,21 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
             return Ok(());
         }
         for _ in 0..count {
-            if !world.give_item(sid, game_item_id, pus_item.buy_count as u16) {
+            let given = if pus_item.duration_days > 0 {
+                world.give_item_with_expiry(
+                    sid,
+                    game_item_id,
+                    pus_item.buy_count as u16,
+                    pus_item.duration_days as u32,
+                )
+            } else {
+                world.give_item(sid, game_item_id, pus_item.buy_count as u16)
+            };
+            if !given {
                 continue;
             }
             crate::handler::knight_cash::cash_lose(&world, session.pool(), sid, price);
+            record_pus_purchase(session, &world, sid, game_item_id, pus_item.buy_count as u16, price, 0);
             // Send CASHCHANGE update
             send_cash_change(session).await?;
         }
@@ -1113,16 +1144,53 @@ async fn handle_pus_purchase(session: &mut ClientSession, data: &[u8]) -> anyhow
                 send_cash_change(session).await?;
                 continue;
             }
-            if !world.give_item(sid, game_item_id, pus_item.buy_count as u16) {
+            let given = if pus_item.duration_days > 0 {
+                world.give_item_with_expiry(
+                    sid,
+                    game_item_id,
+                    pus_item.buy_count as u16,
+                    pus_item.duration_days as u32,
+                )
+            } else {
+                world.give_item(sid, game_item_id, pus_item.buy_count as u16)
+            };
+            if !given {
                 continue;
             }
             world.update_session(sid, |h| {
                 h.tl_balance = h.tl_balance.saturating_sub(price);
             });
+            record_pus_purchase(session, &world, sid, game_item_id, pus_item.buy_count as u16, price, 1);
             send_cash_change(session).await?;
         }
     }
+    if pus_item.price_type != 0 {
+        let account = session.account_id().unwrap_or("");
+        if !account.is_empty() {
+            let repo = ko_db::repositories::cash_shop::CashShopRepository::new(session.pool());
+            repo.update_kc_balances(account, world.get_knight_cash(sid) as i32,
+                world.get_tl_balance(sid) as i32).await?;
+        }
+    }
     Ok(())
+}
+
+/// Refund record + KC/TL ledger row of one shop purchase.
+fn record_pus_purchase(
+    session: &ClientSession,
+    world: &std::sync::Arc<crate::world::WorldState>,
+    sid: crate::zone::SessionId,
+    item_id: u32,
+    count: u16,
+    price: u32,
+    buy_type: u8,
+) {
+    let account = session.account_id().unwrap_or("").to_string();
+    crate::handler::pus_refund::record_purchase(world, session.pool(), sid, &account, item_id, count, price, buy_type);
+    let (kc, tl) = world.with_session(sid, |h| (h.knight_cash, h.tl_balance)).unwrap_or((0, 0));
+    let name = world.get_session_name(sid).unwrap_or_default();
+    let (dk, dt) = if buy_type == 0 { (-(price as i64), 0) } else { (0, -(price as i64)) };
+    crate::handler::pus_codes::ledger(session.pool(), &account, &name, dk, dt, kc, tl, if buy_type == 0 { "buy_kc" } else { "buy_tl" }, &item_id.to_string());
 }
 
 /// PUS sub 3: Gift purchase — buy item for another player.
@@ -1173,11 +1241,21 @@ async fn handle_pus_gift(session: &mut ClientSession, data: &[u8]) -> anyhow::Re
     };
 
     // Give item to target
-    if !world.give_item(
-        target_sid,
-        pus_item.item_id as u32,
-        pus_item.buy_count as u16,
-    ) {
+    let given = if pus_item.duration_days > 0 {
+        world.give_item_with_expiry(
+            target_sid,
+            pus_item.item_id as u32,
+            pus_item.buy_count as u16,
+            pus_item.duration_days as u32,
+        )
+    } else {
+        world.give_item(
+            target_sid,
+            pus_item.item_id as u32,
+            pus_item.buy_count as u16,
+        )
+    };
+    if !given {
         return Ok(());
     }
 
@@ -1230,12 +1308,143 @@ pub async fn handle_drop_request(session: &mut ClientSession, data: &[u8]) -> an
         2 => handle_drop_cmd2(session, rest).await,
         3 => handle_drop_cmd3(session, rest).await,
         4 => handle_drop_cmd4(session, rest).await,
+        5 => handle_drop_cmd5(session, rest).await,
+        7 => handle_drop_tooltip(session, rest).await,
         _ => Ok(()),
     }
 }
 
-/// Drop command 1: Look up target NPC's drop items.
-/// Wire format: `[0xE9][EXT_SUB_DROP_REQUEST][u8(1)][u16 proto_id]([u32 item_id][u16 percent] × 12)[u8 is_monster]`
+async fn handle_drop_tooltip(session: &mut ClientSession, data: &[u8]) -> anyhow::Result<()> {
+    let Some(id) = ko_protocol::PacketReader::new(data).read_u32() else { return Ok(()); };
+    let Some(item) = session.world().get_item(id) else { return Ok(()); };
+    let mut lines = Vec::new();
+    macro_rules! stat {
+        ($label:expr, $value:expr) => {
+            if let Some(value) = $value.filter(|value| *value != 0) {
+                lines.push(format!("{}: {}", $label, value));
+            }
+        };
+    }
+    stat!("Attack", item.damage); stat!("Defence", item.ac);
+    stat!("Required level", item.req_level);
+    stat!("STR", item.str_b); stat!("HP", item.sta_b); stat!("DEX", item.dex_b);
+    stat!("INT", item.intel_b); stat!("MP", item.cha_b);
+    stat!("Health bonus", item.max_hp_b); stat!("Mana bonus", item.max_mp_b);
+    stat!("Fire damage", item.fire_damage); stat!("Ice damage", item.ice_damage);
+    stat!("Lightning damage", item.lightning_damage); stat!("Poison damage", item.poison_damage);
+    stat!("Fire resistance", item.fire_r); stat!("Cold resistance", item.cold_r);
+    stat!("Lightning resistance", item.lightning_r); stat!("Magic resistance", item.magic_r);
+    stat!("Poison resistance", item.poison_r); stat!("Curse resistance", item.curse_r);
+    stat!("Dagger defence", item.dagger_ac); stat!("Jamadar defence", item.jamadar_ac);
+    stat!("Sword defence", item.sword_ac); stat!("Club defence", item.club_ac);
+    stat!("Axe defence", item.axe_ac); stat!("Spear defence", item.spear_ac); stat!("Bow defence", item.bow_ac);
+    stat!("HP drain", item.hp_drain); stat!("MP drain", item.mp_drain);
+    stat!("Required STR", item.req_str); stat!("Required HP", item.req_sta);
+    stat!("Required DEX", item.req_dex); stat!("Required INT", item.req_intel); stat!("Required MP", item.req_cha);
+    let mut pkt = Packet::new(WIZ_EXT_HOOK);
+    pkt.write_u8(EXT_SUB_DROP_REQUEST); pkt.write_u8(7); pkt.write_u32(id);
+    pkt.write_string(item.str_name.as_deref().unwrap_or("Unknown item"));
+    pkt.write_u32(item.item_icon_id1.unwrap_or(0).max(0) as u32);
+    pkt.write_u8(lines.len() as u8);
+    for line in lines { pkt.write_u8(0); pkt.write_string(&line); }
+    session.send_packet(&pkt).await
+}
+
+/// 2625 panel response: proto, length-prefixed name, level, monster flag, count, then
+/// (item id, chance/10000, icon id, length-prefixed item name) records.
+fn build_drop_panel_response(
+    world: &crate::world::WorldState,
+    proto_id: u16,
+    template: &crate::npc::NpcTemplate,
+    table_index: i16,
+) -> Packet {
+    let pairs = if template.is_monster {
+        world
+            .get_monster_item(table_index)
+            .map(|r| monster_item_pairs(&r).to_vec())
+    } else {
+        world
+            .get_npc_item(table_index)
+            .map(|r| npc_item_pairs(&r).to_vec())
+    }
+    .unwrap_or_default();
+
+    let mut drops: Vec<(u32, u16)> = Vec::new();
+    for (id, chance) in pairs {
+        if id <= 0 || chance <= 0 {
+            continue;
+        }
+        // MAKE_ITEM_GROUP entries can legitimately be <100 (admin-created
+        // groups at 1, 3, 5, 7, 8, 31, ...), so a group lookup must come
+        // before treating a low code as a production-table code — matching
+        // resolve_drop_item's precedence in npc_loot.rs.
+        if id < 100_000_000 {
+            if let Some(group) = world.get_make_item_group(id) {
+                let total = group.items.iter().filter(|id| **id > 0).count() as u32;
+                let mut weights = std::collections::BTreeMap::<u32, u32>::new();
+                for item_id in group.items {
+                    if item_id > 0 {
+                        *weights.entry(item_id as u32).or_default() += 1;
+                    }
+                }
+                for (item, weight) in weights {
+                    drops.push((item, (chance.clamp(0, 10000) as u32 * weight / total) as u16));
+                }
+                continue;
+            }
+        }
+        if id < 100 {
+            // No group matches this code; it's a production-table code generated
+            // by level/nation at drop time, not a fixed item list.
+            drops.push((id as u32, chance.clamp(0, 10000) as u16));
+        } else if id < 100_000_000 {
+            // Mid-range code with no matching group: nothing to show.
+        } else {
+            drops.push((id as u32, chance as u16));
+        }
+    }
+
+    let mut pkt = Packet::new(WIZ_EXT_HOOK);
+    pkt.write_u8(EXT_SUB_DROP_REQUEST);
+    pkt.write_u8(1);
+    pkt.write_u16(proto_id);
+    pkt.write_string(&template.name);
+    pkt.write_u16(template.level as u16);
+    pkt.write_u8(u8::from(template.is_monster));
+    let count_offset = pkt.data.len();
+    pkt.write_u16(0);
+    let mut written = 0u16;
+    for (item_id, chance) in drops.into_iter().take(u16::MAX as usize) {
+        let item = world.get_item(item_id);
+        let icon = item
+            .as_ref()
+            .and_then(|i| i.item_icon_id1.or(i.item_icon_id2))
+            .unwrap_or(0)
+            .max(0) as u32;
+        let name = item
+            .as_ref()
+            .and_then(|i| i.str_name.as_deref())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| if item_id < 100 {
+                format!("Random equipment (group {item_id})")
+            } else { format!("Item {item_id}") });
+        // The outer KO frame length is u16; leave room for encryption overhead.
+        if pkt.data.len() + 12 + name.len() > 60_000 {
+            warn!(proto_id, written, "Drop catalog exceeds one client frame; remaining entries omitted");
+            break;
+        }
+        pkt.write_u32(item_id);
+        pkt.write_u16(chance);
+        pkt.write_u32(icon);
+        pkt.write_string(&name);
+        written += 1;
+    }
+    pkt.data[count_offset..count_offset + 2].copy_from_slice(&written.to_le_bytes());
+    pkt
+}
+
+/// Drop command 1: Look up target NPC's drop items by its runtime ID.
 async fn handle_drop_cmd1(session: &mut ClientSession, data: &[u8]) -> anyhow::Result<()> {
     if data.len() < 4 {
         return Ok(());
@@ -1245,50 +1454,15 @@ async fn handle_drop_cmd1(session: &mut ClientSession, data: &[u8]) -> anyhow::R
 
     let world = session.world().clone();
 
-    if target_nid == 0 {
-        return Ok(());
-    }
-
     let npc = match world.get_npc_instance(target_nid) {
         Some(n) => n,
         None => return Ok(()),
     };
-
-    let proto_id = npc.proto_id as i16;
-    let is_monster = if npc.is_monster { 1u8 } else { 0u8 };
-
-    let mut pkt = Packet::new(WIZ_EXT_HOOK);
-    pkt.write_u8(EXT_SUB_DROP_REQUEST);
-    pkt.write_u8(1);
-    pkt.write_u16(proto_id as u16);
-
-    if is_monster == 1 {
-        if let Some(mi) = world.get_monster_item(proto_id) {
-            let items = monster_item_pairs(&mi);
-            for &(item_id, percent) in &items {
-                pkt.write_u32(item_id as u32);
-                pkt.write_u16(percent as u16);
-            }
-        } else {
-            for _ in 0..12 {
-                pkt.write_u32(0);
-                pkt.write_u16(0);
-            }
-        }
-    } else if let Some(ni) = world.get_npc_item(proto_id) {
-        let items = npc_item_pairs(&ni);
-        for &(item_id, percent) in &items {
-            pkt.write_u32(item_id as u32);
-            pkt.write_u16(percent as u16);
-        }
-    } else {
-        for _ in 0..12 {
-            pkt.write_u32(0);
-            pkt.write_u16(0);
-        }
-    }
-
-    pkt.write_u8(is_monster);
+    let template = match world.get_npc_template(npc.proto_id, npc.is_monster) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+    let pkt = build_drop_panel_response(&world, npc.proto_id, &template, template.item_table);
     session.send_packet(&pkt).await
 }
 
@@ -1328,53 +1502,42 @@ async fn handle_drop_cmd3(session: &mut ClientSession, data: &[u8]) -> anyhow::R
 
     let world = session.world().clone();
 
+    let template = match world.get_npc_template(mob_proto, true) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+    let pkt = build_drop_panel_response(&world, mob_proto, &template, template.item_table);
+    session.send_packet(&pkt).await
+}
+
+/// Search live monster prototypes; the result is bounded to fit a single frame.
+async fn handle_drop_cmd5(session: &mut ClientSession, data: &[u8]) -> anyhow::Result<()> {
+    let mut reader = ko_protocol::PacketReader::new(data);
+    let query = match reader.read_string() {
+        Some(query) if query.len() <= 100 => query.trim().to_lowercase(),
+        _ => return Ok(()),
+    };
+    let world = session.world();
+    let mut rows = Vec::new();
+    for proto in 1..=u16::MAX {
+        let Some(template) = world.get_npc_template(proto, true) else { continue; };
+        if query.parse::<u16>().ok() == Some(proto) || template.name.to_lowercase().contains(&query) {
+            rows.push((proto, template));
+            if rows.len() == 100 { break; }
+        }
+    }
     let mut pkt = Packet::new(WIZ_EXT_HOOK);
     pkt.write_u8(EXT_SUB_DROP_REQUEST);
-    pkt.write_u8(1);
-    pkt.write_u16(mob_proto);
-
-    let mi = match world.get_monster_item(mob_proto as i16) {
-        Some(m) => m,
-        None => {
-            // Empty response
-            pkt.write_u32(0); // list size
-            pkt.write_u8(1); // is_monster
-            return session.send_packet(&pkt).await;
-        }
-    };
-
-    let items = monster_item_pairs(&mi);
-    let mut drop_list: Vec<(u32, u16)> = Vec::new();
-    let mut added_random = false;
-    const MIN_ITEM_ID: i32 = 100000000;
-
-    for &(item_id, percent) in &items {
-        if item_id == 0 {
-            continue;
-        }
-        if item_id < MIN_ITEM_ID {
-            // Group item — check for random group indicator
-            if !added_random && world.has_make_item_group_random(item_id) {
-                added_random = true;
-                drop_list.push((900004000, 10000));
-            }
-            // Expand group items
-            if let Some(group) = world.get_make_item_group(item_id) {
-                for &gitem in &group.items {
-                    drop_list.push((gitem as u32, percent as u16));
-                }
-            }
-        } else {
-            drop_list.push((item_id as u32, percent as u16));
-        }
+    pkt.write_u8(5);
+    pkt.write_u16(rows.len() as u16);
+    for (proto, template) in rows {
+        pkt.write_u16(proto);
+        pkt.write_string(&template.name);
+        pkt.write_u16(template.level as u16);
+        let has_drops = world.get_monster_item(template.item_table)
+            .is_some_and(|row| monster_item_pairs(&row).iter().any(|(id, rate)| *id > 0 && *rate > 0));
+        pkt.write_u8(u8::from(has_drops));
     }
-
-    pkt.write_u32(drop_list.len() as u32);
-    for &(item_id, percent) in &drop_list {
-        pkt.write_u32(item_id);
-        pkt.write_u16(percent);
-    }
-    pkt.write_u8(1); // is_monster
     session.send_packet(&pkt).await
 }
 
@@ -1453,7 +1616,13 @@ pub async fn handle_chaotic_exchange(
     let world = session.world().clone();
     let sid = session.session_id();
 
+    warn!(
+        "[chaotic] sid={} npc_id={} item={} src_pos={} bank={} sell={} count={}",
+        sid, npc_id, exchange_item_id, src_pos, bank, sell, count
+    );
+
     if count == 0 || count > 100 {
+        warn!("[chaotic] sid={} reject: bad count={}", sid, count);
         return send_bifrost_fail(session, error_code).await;
     }
 
@@ -1467,19 +1636,30 @@ pub async fn handle_chaotic_exchange(
     if chaotic_coins > 0 {
         let gold = world.get_character_info(sid).map(|ch| ch.gold).unwrap_or(0);
         if gold < chaotic_coins as u32 {
+            warn!(
+                "[chaotic] sid={} reject: not enough chaotic coins (have {}, need {})",
+                sid, gold, chaotic_coins
+            );
             return send_bifrost_fail(session, error_code).await;
         }
     }
 
     // Validate player has enough of the exchange item
     if !world.check_exist_item(sid, exchange_item_id, count as u16) {
+        warn!(
+            "[chaotic] sid={} reject: doesn't have {}x item {}",
+            sid, count, exchange_item_id
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Validate NPC exists and is chaotic generator type
     let npc = match world.get_npc_instance(npc_id as u32) {
         Some(n) => n,
-        None => return send_bifrost_fail(session, error_code).await,
+        None => {
+            warn!("[chaotic] sid={} reject: no npc instance {}", sid, npc_id);
+            return send_bifrost_fail(session, error_code).await;
+        }
     };
 
     // State checks
@@ -1489,6 +1669,7 @@ pub async fn handle_chaotic_exchange(
         || world.is_mining(sid)
         || world.is_fishing(sid)
     {
+        warn!("[chaotic] sid={} reject: busy state", sid);
         return send_bifrost_fail(session, error_code).await;
     }
 
@@ -1498,37 +1679,56 @@ pub async fn handle_chaotic_exchange(
         .map(|t| t.npc_type)
         .unwrap_or(0);
     if npc_type != 137 && npc_type != 162 {
+        warn!(
+            "[chaotic] sid={} reject: npc proto_id={} has npc_type={} (need 137/162)",
+            sid, npc.proto_id, npc_type
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Validate item template: must be countable with effect2 == 251
     let item_tmpl = match world.get_item(exchange_item_id) {
         Some(t) => t,
-        None => return send_bifrost_fail(session, error_code).await,
+        None => {
+            warn!("[chaotic] sid={} reject: no item template {}", sid, exchange_item_id);
+            return send_bifrost_fail(session, error_code).await;
+        }
     };
 
     if item_tmpl.countable.unwrap_or(0) != 1 || item_tmpl.effect2.unwrap_or(0) != 251 {
+        warn!(
+            "[chaotic] sid={} reject: item {} countable={:?} effect2={:?}",
+            sid, exchange_item_id, item_tmpl.countable, item_tmpl.effect2
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Check free slots
     let free_slots = world.count_free_slots(sid);
     if free_slots < 1 {
+        warn!("[chaotic] sid={} reject: no free inventory slots", sid);
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Load matching exchanges
     let exchanges = world.get_bifrost_exchanges(exchange_item_id);
     if exchanges.is_empty() {
+        warn!(
+            "[chaotic] sid={} reject: no item_exchange rows for piece {}",
+            sid, exchange_item_id
+        );
         return send_bifrost_fail(session, error_code).await;
     }
 
     // Process each exchange count
     let multiple = count > 1;
     for _ in 0..count {
-        // Build weighted random array
-        let mut rand_array = vec![0u32; 10000];
-        let mut offset = 0usize;
+        // Build the complete weighted pool. The former fixed 10,000-slot
+        // array truncated large pools in DashMap iteration order, which could
+        // silently exclude low-rate rewards such as Fortified Sterling's
+        // accessory entries. Keep every positive TBL weight instead.
+        let mut weighted_items = Vec::with_capacity(exchanges.len());
+        let mut total_weight = 0u64;
 
         for ex in &exchanges {
             if ex.random_flag >= 101 {
@@ -1542,25 +1742,25 @@ pub async fn handle_chaotic_exchange(
             ) {
                 continue;
             }
-            let fill_count = (ex.exchange_item_count1 / 5) as usize;
-            for i in 0..fill_count {
-                if offset + i >= 9999 {
-                    break;
-                }
-                rand_array[offset + i] = ex.exchange_item_num1 as u32;
+            if ex.exchange_item_num1 <= 0 || ex.exchange_item_count1 <= 0 {
+                continue;
             }
-            offset += fill_count;
-            if offset >= 9999 {
-                break;
-            }
+            let weight = ex.exchange_item_count1 as u64;
+            total_weight = total_weight.saturating_add(weight);
+            weighted_items.push((ex.exchange_item_num1 as u32, weight));
         }
 
-        if offset == 0 {
+        if total_weight == 0 {
+            warn!(
+                "[chaotic] sid={} reject: {} item_exchange rows for piece {} but none passed origin_item_count1 check",
+                sid, exchanges.len(), exchange_item_id
+            );
             return send_bifrost_fail(session, error_code).await;
         }
 
-        let rand_slot = rand::random::<usize>() % offset;
-        let give_item_id = rand_array[rand_slot];
+        let roll = rand::random::<u64>() % total_weight;
+        let give_item_id = select_weighted_exchange_item(&weighted_items, roll)
+            .ok_or_else(|| anyhow::anyhow!("Chaotic Generator weighted pool was inconsistent"))?;
 
         let give_tmpl = match world.get_item(give_item_id) {
             Some(t) => t,
@@ -1650,6 +1850,21 @@ pub async fn handle_chaotic_exchange(
         }
     }
     Ok(())
+}
+
+/// Select a generator reward using a zero-based roll in `[0, total_weight)`.
+/// Kept independent from RNG so pool-boundary behavior is unit-testable.
+fn select_weighted_exchange_item(weighted_items: &[(u32, u64)], mut roll: u64) -> Option<u32> {
+    for &(item_id, weight) in weighted_items {
+        if weight == 0 {
+            continue;
+        }
+        if roll < weight {
+            return Some(item_id);
+        }
+        roll -= weight;
+    }
+    None
 }
 
 /// Send chaotic exchange result notification.
@@ -1830,11 +2045,12 @@ pub async fn handle_item_exchange_info(
     let rest = if data.len() > 1 { &data[1..] } else { &[] };
 
     match subcode {
+        0 => send_right_exchange_slots(session).await,
         1 => handle_right_click_exchange_send(session, rest).await,
         2 => handle_new_right_click_exchange_send(session, rest).await,
         3 => handle_new_right_click_exchange(session, rest).await,
         4 => handle_new_right_click_give_exchange(session, rest).await,
-        5 => handle_new_right_click_generator_exchange(session, rest),
+        5 => handle_new_right_click_generator_exchange(session, rest).await,
         _ => {
             debug!("ItemExchangeInfo: unknown subcode {}", subcode);
             Ok(())
@@ -1908,6 +2124,11 @@ async fn handle_new_right_click_exchange_send(
     pkt.write_u8(2); // new format
     pkt.write_u8(slot);
     pkt.write_u32(item_id);
+    let item = world.get_item(item_id);
+    pkt.write_u32(item.as_ref().and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32);
+    pkt.write_string(item.as_ref().and_then(|i| i.str_name.as_deref()).unwrap_or(""));
+    let count = world.with_session(sid, |h| h.inventory.get(slot as usize).map(|s| s.count).unwrap_or(0)).unwrap_or(0);
+    pkt.write_u16(count);
     session.send_packet(&pkt).await
 }
 
@@ -1923,8 +2144,7 @@ async fn handle_new_right_click_exchange(
     let rest = if data.len() > 1 { &data[1..] } else { &[] };
 
     match exchange_type {
-        1 => handle_exchange_reward(session, rest).await,
-        2 => handle_exchange_all(session, rest).await,
+        1 | 2 => send_right_exchange_preview(session, exchange_type, rest).await,
         3 => handle_exchange_premium(session, rest).await,
         4 => handle_exchange_knight_cash(session, rest).await,
         6 => handle_exchange_genie(session, rest).await,
@@ -1936,22 +2156,33 @@ async fn handle_new_right_click_exchange(
     }
 }
 
-/// Exchange type 1: Reward exchange — exchange for specific reward item.
-async fn handle_exchange_reward(session: &mut ClientSession, _data: &[u8]) -> anyhow::Result<()> {
-    // Send exchange type response
-    let mut pkt = Packet::new(WIZ_EXT_HOOK);
-    pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
-    pkt.write_u8(3); // exchange process
-    pkt.write_u8(1); // reward type
-    session.send_packet(&pkt).await
-}
-
-/// Exchange type 2: Exchange all — exchange all matching items.
-async fn handle_exchange_all(session: &mut ClientSession, _data: &[u8]) -> anyhow::Result<()> {
+async fn send_right_exchange_preview(session: &mut ClientSession, kind: u8, data: &[u8]) -> anyhow::Result<()> {
+    let mut reader = ko_protocol::PacketReader::new(data);
+    let Some(item_id) = reader.read_u32() else { return Ok(()); };
+    let world = session.world().clone();
+    let Some(row) = world.get_right_exchange(item_id as i32) else { return Ok(()); };
+    if row.exchange_type.unwrap_or(0) != kind as i16
+        || !world.check_exist_item(session.session_id(), item_id, 1) { return Ok(()); }
+    let icon = |id: u32| world.get_item(id).and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32;
+    let name = |id: u32| world.get_item(id).and_then(|i| i.str_name.clone()).unwrap_or_default();
     let mut pkt = Packet::new(WIZ_EXT_HOOK);
     pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
     pkt.write_u8(3);
-    pkt.write_u8(2);
+    pkt.write_u8(kind);
+    pkt.write_u8(kind);
+    pkt.write_u32(item_id);
+    for i in 0..25 {
+        pkt.write_u32(row.exchange_items.get(i).copied().unwrap_or(0).max(0) as u32);
+        pkt.write_u32(row.expiration_times.get(i).copied().unwrap_or(0).max(0) as u32);
+    }
+    pkt.write_u32(icon(item_id));
+    for i in 0..25 { pkt.write_u32(icon(row.exchange_items.get(i).copied().unwrap_or(0).max(0) as u32)); }
+    pkt.write_u8(1);
+    pkt.write_string(&name(item_id));
+    for i in 0..25 {
+        pkt.write_string(&name(row.exchange_items.get(i).copied().unwrap_or(0).max(0) as u32));
+        pkt.write_u32(row.exchange_counts.get(i).copied().unwrap_or(0).max(0) as u32);
+    }
     session.send_packet(&pkt).await
 }
 
@@ -2028,6 +2259,11 @@ async fn handle_new_right_click_give_exchange(
         }
         let selected_item = u32::from_le_bytes([data[5], data[6], data[7], data[8]]);
 
+        // Validate the selected reward before consuming the player's coupon.
+        if selected_item == 0 || !right_exchange.exchange_items.contains(&(selected_item as i32)) {
+            return Ok(());
+        }
+
         // Check free slots
         let free_slots = world.count_free_slots(sid);
         if free_slots < 1 {
@@ -2095,7 +2331,7 @@ async fn handle_new_right_click_give_exchange(
 /// Sub 5: Generator exchange — random item from ITEM_EXCHANGE table.
 /// Uses weighted random selection from m_ItemExchangeArray where
 /// `bRandomFlag IN (1,2,3,101)` and `nOriginItemNum[0] == item_id`.
-fn handle_new_right_click_generator_exchange(
+async fn handle_new_right_click_generator_exchange(
     session: &mut ClientSession,
     data: &[u8],
 ) -> anyhow::Result<()> {
@@ -2179,11 +2415,12 @@ fn handle_new_right_click_generator_exchange(
         return Ok(());
     }
 
+    let mut last_reward = 0;
     // Process each count
     for _ in 0..count {
         // Check free slots
         if world.count_free_slots(sid) < 1 {
-            return Ok(());
+            break;
         }
 
         // Random pick
@@ -2196,14 +2433,31 @@ fn handle_new_right_click_generator_exchange(
 
         // Rob source item
         if !world.rob_item(sid, exchange_item_id, 1) {
-            return Ok(());
+            break;
         }
 
         // Give won item
-        world.give_item(sid, won_item, 1);
+        if !world.give_item(sid, won_item, 1) {
+            world.give_item(sid, exchange_item_id, 1);
+            break;
+        }
+        last_reward = won_item;
     }
 
-    Ok(())
+    let left = world.with_session(sid, |h| h.inventory.iter()
+        .filter(|slot| slot.item_id == exchange_item_id)
+        .map(|slot| slot.count as u32).sum::<u32>()).unwrap_or(0);
+    let item = world.get_item(last_reward);
+    let mut pkt = Packet::new(WIZ_EXT_HOOK);
+    pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
+    pkt.write_u8(3); pkt.write_u8(8);
+    pkt.write_u32(last_reward);
+    pkt.write_u32(item.as_ref().and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32);
+    pkt.write_string(item.as_ref().and_then(|i| i.str_name.as_deref()).unwrap_or(""));
+    pkt.write_u16(left.min(u16::MAX as u32) as u16);
+    pkt.write_string(if last_reward == 0 { "Canta dolu veya esya kirilamiyor." } else { "" });
+    pkt.write_u32(exchange_item_id);
+    session.send_packet(&pkt).await
 }
 
 /// Handle DAILY_REWARD (0xF7) — daily login reward claim.
@@ -2602,22 +2856,53 @@ pub async fn send_anti_afk_list(session: &mut ClientSession) -> anyhow::Result<(
 /// Sends 6 packets (one per exchange type 1,2,3,4,6,7).
 /// Packet: `[0xE9, 0xE6, u8(2), u8(type), u16(count), u32(item_id)...]`
 pub async fn send_right_exchange_list(session: &mut ClientSession) -> anyhow::Result<()> {
-    let world = session.world();
+    let world = session.world().clone();
     let by_type = world.get_right_exchange_by_type();
+    send_right_exchange_slots(session).await?;
 
-    // C++ sends types in order: 1, 2, 3, 4, 6, 7 (skips 5 for non-1098)
     for exchange_type in &[1u8, 2, 3, 4, 6, 7] {
         let items = by_type.get(exchange_type).cloned().unwrap_or_default();
         let mut pkt = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
         pkt.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
-        pkt.write_u8(2); // list type (server-initiated)
+        pkt.write_u8(2);
         pkt.write_u8(*exchange_type);
         pkt.write_u16(items.len() as u16);
-        for item_id in &items {
-            pkt.write_u32(*item_id);
-        }
+        for item_id in &items { pkt.write_u32(*item_id); }
         session.send_packet(&pkt).await?;
     }
+    Ok(())
+}
+
+pub async fn send_right_exchange_slots(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+
+    // The proxy's right-click hook is disabled until it receives this slot map.
+    // The type lists alone do not enable any inventory slot.
+    let inventory = world.with_session(session.session_id(), |h| h.inventory.clone()).unwrap_or_default();
+    let mut slots = Packet::new(WIZ_EXT_HOOK);
+    slots.write_u8(EXT_SUB_ITEM_EXCHANGE_INFO);
+    slots.write_u8(0);
+    for index in 14..42 {
+        let item_id = inventory.get(index).map(|s| s.item_id).unwrap_or(0);
+        let sub = if world.get_right_exchange(item_id as i32).is_some() { 1 }
+            else if !world.get_generator_exchanges(item_id).is_empty() { 2 } else { 0 };
+        slots.write_u8(u8::from(sub != 0));
+        slots.write_u8(sub);
+        slots.write_u32(item_id);
+    }
+    slots.write_u8(2);
+    for index in 14..42 {
+        let slot = inventory.get(index);
+        let item = slot.and_then(|s| world.get_item(s.item_id));
+        slots.write_u32(item.and_then(|i| i.item_icon_id1).unwrap_or(0).max(0) as u32);
+        slots.write_u16(slot.map(|s| s.count).unwrap_or(0));
+    }
+    let character = world.get_character_info(session.session_id());
+    slots.write_u32(character.as_ref().map(|c| c.item_weight.max(0) as u32).unwrap_or(0));
+    slots.write_u32(character.as_ref().map(|c| c.max_weight.max(0) as u32).unwrap_or(0));
+    slots.write_u32(character.map(|c| c.gold).unwrap_or(0));
+    session.send_packet(&slots).await?;
+
     Ok(())
 }
 
@@ -2784,6 +3069,33 @@ pub(crate) fn build_death_notice(
     pkt
 }
 
+/// Build the JstKO 1098/2615 narration packet used by the hooked client.
+///
+/// This is intentionally different from the generic extended death-notice
+/// structure above. The original `CUser::SendNewDeathNotice()` sets SByte
+/// string mode and writes only viewer-relative kill type, both names and the
+/// victim coordinates:
+/// `[0xE9][0xD7][u8 kill_type][SByte killer][SByte victim][u16 x][u16 z]`.
+///
+/// kill_type: 1 = killer/victim, 2 = killer party, 3 = other observer.
+#[cfg(test)]
+fn build_new_death_narration(
+    kill_type: u8,
+    killer_name: &str,
+    victim_name: &str,
+    victim_x: u16,
+    victim_z: u16,
+) -> Packet {
+    let mut pkt = Packet::new(WIZ_EXT_HOOK);
+    pkt.write_u8(EXT_SUB_DEATH_NOTICE);
+    pkt.write_u8(kill_type);
+    pkt.write_sbyte_string(killer_name);
+    pkt.write_sbyte_string(victim_name);
+    pkt.write_u16(victim_x);
+    pkt.write_u16(victim_z);
+    pkt
+}
+
 /// Build a PLAYER_RANK (0xD5) update packet — ranking badge push to client.
 /// Packet: `[0xE9][0xD5][u8 rank_type][u16 session_id][u32 kills][u32 deaths][u32 loyalty]`
 /// - `rank_type`: 0=PK Zone, 1=BDW, 2=Chaos Dungeon, etc.
@@ -2812,11 +3124,7 @@ pub(crate) fn build_player_rank_update(
 /// Build a JURAID (0xE2) score packet — scoreboard on zone entry.
 /// Packet: `[0xE9][0xE2][u8 sub=0][u32 karus_score][u32 elmo_score][u32 remaining_secs]`
 #[allow(dead_code)]
-pub(crate) fn build_juraid_score(
-    karus_score: u32,
-    elmo_score: u32,
-    remaining_secs: u32,
-) -> Packet {
+pub(crate) fn build_juraid_score(karus_score: u32, elmo_score: u32, remaining_secs: u32) -> Packet {
     let mut pkt = Packet::new(WIZ_EXT_HOOK);
     pkt.write_u8(EXT_SUB_JURAID);
     pkt.write_u8(0); // score sub
@@ -2841,11 +3149,7 @@ pub(crate) fn build_juraid_updatescore(nation: u8, new_score: u32) -> Packet {
 /// Build a JURAID (0xE2) result packet — event ended, show results.
 /// Packet: `[0xE9][0xE2][u8 sub=2][u8 winner_nation][u32 karus_score][u32 elmo_score]`
 #[allow(dead_code)]
-pub(crate) fn build_juraid_result(
-    winner_nation: u8,
-    karus_score: u32,
-    elmo_score: u32,
-) -> Packet {
+pub(crate) fn build_juraid_result(winner_nation: u8, karus_score: u32, elmo_score: u32) -> Packet {
     let mut pkt = Packet::new(WIZ_EXT_HOOK);
     pkt.write_u8(EXT_SUB_JURAID);
     pkt.write_u8(2); // result sub
@@ -2882,11 +3186,7 @@ pub(crate) fn build_castle_siege_timer(sub: u8, remaining_secs: u32, status: u8)
 /// Build a ZindanWar result packet — event ended, show final result.
 /// Packet: `[0xE9][0xD2][u8 sub=3][u8 winner_nation][u32 elmo_kills][u32 karus_kills]`
 #[allow(dead_code)]
-pub(crate) fn build_zindan_result(
-    winner_nation: u8,
-    elmo_kills: u32,
-    karus_kills: u32,
-) -> Packet {
+pub(crate) fn build_zindan_result(winner_nation: u8, elmo_kills: u32, karus_kills: u32) -> Packet {
     let mut pkt = Packet::new(WIZ_EXT_HOOK);
     pkt.write_u8(EXT_SUB_ZINDAN_WAR);
     pkt.write_u8(3); // result sub
@@ -2923,7 +3223,7 @@ pub async fn handle_bansystem(session: &mut ClientSession, _data: &[u8]) -> anyh
     pkt.write_u8(EXT_SUB_BANSYSTEM);
     // 4 skills × (u8 level + u32 exp + u32 target_exp)
     for _ in 0..4 {
-        pkt.write_u8(0);  // level
+        pkt.write_u8(0); // level
         pkt.write_u32(0); // current exp
         pkt.write_u32(0); // target exp
     }
@@ -2967,11 +3267,7 @@ pub async fn handle_game_master_mode(
     let requested = data[0]; // 0 or 1
     let enabled = if requested != 0 { 1u8 } else { 0u8 };
 
-    debug!(
-        "[{}] GM mode toggle: enabled={}",
-        session.addr(),
-        enabled
-    );
+    debug!("[{}] GM mode toggle: enabled={}", session.addr(), enabled);
 
     let pkt = build_gm_mode_toggle(enabled);
     session.send_packet(&pkt).await
@@ -3066,6 +3362,22 @@ pub(crate) fn build_zindan_logout() -> Packet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weighted_generator_selection_keeps_low_rate_tail_reachable() {
+        let pool = [(100, 10_000), (1310515301, 5), (1310518304, 5)];
+        assert_eq!(select_weighted_exchange_item(&pool, 0), Some(100));
+        assert_eq!(select_weighted_exchange_item(&pool, 9_999), Some(100));
+        assert_eq!(
+            select_weighted_exchange_item(&pool, 10_000),
+            Some(1310515301)
+        );
+        assert_eq!(
+            select_weighted_exchange_item(&pool, 10_009),
+            Some(1310518304)
+        );
+        assert_eq!(select_weighted_exchange_item(&pool, 10_010), None);
+    }
 
     #[test]
     fn test_compute_money_req_premium_12_free() {
@@ -3930,12 +4242,26 @@ mod tests {
     #[test]
     fn test_ext_all_opcodes_unique() {
         let all = [
-            EXT_SUB_AUTHINFO, EXT_SUB_PROCINFO, EXT_SUB_OPEN, EXT_SUB_LOG,
-            EXT_SUB_XALIVE, EXT_SUB_UIINFO, EXT_SUB_PUS, EXT_SUB_CASHCHANGE,
-            EXT_SUB_KESN, EXT_SUB_DROP_LIST, EXT_SUB_ITEM_PROCESS, EXT_SUB_RESET,
-            EXT_SUB_DROP_REQUEST, EXT_SUB_COLLECTION_RACE, EXT_SUB_CLANBANK,
-            EXT_SUB_USERINFO, EXT_SUB_KCPAZAR, EXT_SUB_LOOT_SETTINGS,
-            EXT_SUB_CHAOTIC_EXCHANGE, EXT_SUB_MERCHANT,
+            EXT_SUB_AUTHINFO,
+            EXT_SUB_PROCINFO,
+            EXT_SUB_OPEN,
+            EXT_SUB_LOG,
+            EXT_SUB_XALIVE,
+            EXT_SUB_UIINFO,
+            EXT_SUB_PUS,
+            EXT_SUB_CASHCHANGE,
+            EXT_SUB_KESN,
+            EXT_SUB_DROP_LIST,
+            EXT_SUB_ITEM_PROCESS,
+            EXT_SUB_RESET,
+            EXT_SUB_DROP_REQUEST,
+            EXT_SUB_COLLECTION_RACE,
+            EXT_SUB_CLANBANK,
+            EXT_SUB_USERINFO,
+            EXT_SUB_KCPAZAR,
+            EXT_SUB_LOOT_SETTINGS,
+            EXT_SUB_CHAOTIC_EXCHANGE,
+            EXT_SUB_MERCHANT,
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
@@ -3967,8 +4293,11 @@ mod tests {
         assert_eq!(EXT_SUB_DAILY_REWARD, 0xF7);
         // Must be above all other ext sub-opcodes
         let others = [
-            EXT_SUB_AUTHINFO, EXT_SUB_GAME_MASTER_MODE, EXT_SUB_HOOK_VISIBLE,
-            EXT_SUB_ITEM_EXCHANGE_INFO, EXT_SUB_CHEST_BLOCKITEM,
+            EXT_SUB_AUTHINFO,
+            EXT_SUB_GAME_MASTER_MODE,
+            EXT_SUB_HOOK_VISIBLE,
+            EXT_SUB_ITEM_EXCHANGE_INFO,
+            EXT_SUB_CHEST_BLOCKITEM,
         ];
         for &op in &others {
             assert!(EXT_SUB_DAILY_REWARD > op);
@@ -4197,25 +4526,70 @@ mod tests {
     #[test]
     fn test_ext_sub_total_count() {
         let all_subs: std::collections::HashSet<u8> = [
-            EXT_SUB_AUTHINFO, EXT_SUB_XALIVE, EXT_SUB_UIINFO, EXT_SUB_USERINFO,
-            EXT_SUB_LOOT_SETTINGS, EXT_SUB_SUPPORT, EXT_SUB_CHAT_LASTSEEN,
-            EXT_SUB_SKILL_STAT_RESET, EXT_SUB_PROCINFO, EXT_SUB_LOG, EXT_SUB_PUS,
-            EXT_SUB_CASHCHANGE, EXT_SUB_DROP_LIST, EXT_SUB_RESET, EXT_SUB_DROP_REQUEST,
-            EXT_SUB_CLANBANK, EXT_SUB_CHAOTIC_EXCHANGE, EXT_SUB_MERCHANT, EXT_SUB_TEMPITEMS,
-            EXT_SUB_MERCHANTLIST, EXT_SUB_RESETREBSTAT, EXT_SUB_ACCOUNT_INFO_SAVE,
-            EXT_SUB_REPURCHASE, EXT_SUB_CHEST_BLOCKITEM, EXT_SUB_ITEM_EXCHANGE_INFO,
-            EXT_SUB_DAILY_REWARD, EXT_SUB_CSW, EXT_SUB_ZINDAN_WAR, EXT_SUB_OPEN,
-            EXT_SUB_KESN, EXT_SUB_ITEM_PROCESS, EXT_SUB_COLLECTION_RACE, EXT_SUB_KCPAZAR,
-            EXT_SUB_USERDATA, EXT_SUB_KCUPDATE, EXT_SUB_AUTODROP, EXT_SUB_INFOMESSAGE,
-            EXT_SUB_MESSAGE, EXT_SUB_BANSYSTEM, EXT_SUB_MERC_VIEWER_INFO,
-            EXT_SUB_UPGRADE_RATE, EXT_SUB_CASTLE_SIEGE_TIMER, EXT_SUB_VOICE,
-            EXT_SUB_LOTTERY, EXT_SUB_TOPLEFT, EXT_SUB_ERRORMSG, EXT_SUB_UNKNOWN1,
-            EXT_SUB_TAG_INFO, EXT_SUB_DAILY_QUEST, EXT_SUB_PUS_REFUND,
-            EXT_SUB_PLAYER_RANK, EXT_SUB_DEATH_NOTICE, EXT_SUB_SHOW_QUEST_LIST,
-            EXT_SUB_WHEEL_DATA, EXT_SUB_GENIE_INFO, EXT_SUB_CINDERELLA, EXT_SUB_JURAID,
-            EXT_SUB_PERKS, EXT_SUB_MESSAGE2, EXT_SUB_HOOK_VISIBLE,
+            EXT_SUB_AUTHINFO,
+            EXT_SUB_XALIVE,
+            EXT_SUB_UIINFO,
+            EXT_SUB_USERINFO,
+            EXT_SUB_LOOT_SETTINGS,
+            EXT_SUB_SUPPORT,
+            EXT_SUB_CHAT_LASTSEEN,
+            EXT_SUB_SKILL_STAT_RESET,
+            EXT_SUB_PROCINFO,
+            EXT_SUB_LOG,
+            EXT_SUB_PUS,
+            EXT_SUB_CASHCHANGE,
+            EXT_SUB_DROP_LIST,
+            EXT_SUB_RESET,
+            EXT_SUB_DROP_REQUEST,
+            EXT_SUB_CLANBANK,
+            EXT_SUB_CHAOTIC_EXCHANGE,
+            EXT_SUB_MERCHANT,
+            EXT_SUB_TEMPITEMS,
+            EXT_SUB_MERCHANTLIST,
+            EXT_SUB_RESETREBSTAT,
+            EXT_SUB_ACCOUNT_INFO_SAVE,
+            EXT_SUB_REPURCHASE,
+            EXT_SUB_CHEST_BLOCKITEM,
+            EXT_SUB_ITEM_EXCHANGE_INFO,
+            EXT_SUB_DAILY_REWARD,
+            EXT_SUB_CSW,
+            EXT_SUB_ZINDAN_WAR,
+            EXT_SUB_OPEN,
+            EXT_SUB_KESN,
+            EXT_SUB_ITEM_PROCESS,
+            EXT_SUB_COLLECTION_RACE,
+            EXT_SUB_KCPAZAR,
+            EXT_SUB_USERDATA,
+            EXT_SUB_KCUPDATE,
+            EXT_SUB_AUTODROP,
+            EXT_SUB_INFOMESSAGE,
+            EXT_SUB_MESSAGE,
+            EXT_SUB_BANSYSTEM,
+            EXT_SUB_MERC_VIEWER_INFO,
+            EXT_SUB_UPGRADE_RATE,
+            EXT_SUB_CASTLE_SIEGE_TIMER,
+            EXT_SUB_VOICE,
+            EXT_SUB_LOTTERY,
+            EXT_SUB_TOPLEFT,
+            EXT_SUB_ERRORMSG,
+            EXT_SUB_UNKNOWN1,
+            EXT_SUB_TAG_INFO,
+            EXT_SUB_DAILY_QUEST,
+            EXT_SUB_PUS_REFUND,
+            EXT_SUB_PLAYER_RANK,
+            EXT_SUB_DEATH_NOTICE,
+            EXT_SUB_SHOW_QUEST_LIST,
+            EXT_SUB_WHEEL_DATA,
+            EXT_SUB_GENIE_INFO,
+            EXT_SUB_CINDERELLA,
+            EXT_SUB_JURAID,
+            EXT_SUB_PERKS,
+            EXT_SUB_MESSAGE2,
+            EXT_SUB_HOOK_VISIBLE,
             EXT_SUB_GAME_MASTER_MODE,
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(all_subs.len(), 61);
     }
 
@@ -4322,6 +4696,21 @@ mod tests {
         assert_eq!(r.read_sbyte_string(), Some("Victim".to_string()));
         assert_eq!(r.read_u16(), Some(500)); // victim_x
         assert_eq!(r.read_u16(), Some(600)); // victim_z
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn test_build_new_death_narration_matches_1098_wire_format() {
+        use ko_protocol::PacketReader;
+        let pkt = build_new_death_narration(2, "Killer", "Victim", 1054, 1082);
+        assert_eq!(pkt.opcode, WIZ_EXT_HOOK);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(EXT_SUB_DEATH_NOTICE));
+        assert_eq!(r.read_u8(), Some(2));
+        assert_eq!(r.read_sbyte_string(), Some("Killer".to_string()));
+        assert_eq!(r.read_sbyte_string(), Some("Victim".to_string()));
+        assert_eq!(r.read_u16(), Some(1054));
+        assert_eq!(r.read_u16(), Some(1082));
         assert_eq!(r.remaining(), 0);
     }
 

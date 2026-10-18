@@ -227,7 +227,10 @@ mod tests {
     #[test]
     fn test_total_equals_sum() {
         // sniffer: 14 + 28 + 11 + 36 + 7 = 96
-        assert_eq!(INVENTORY_TOTAL, SLOT_MAX + HAVE_MAX + COSP_MAX + MBAG_MAX * MBAG_COUNT + KNIGHT_ROYALE_MAX);
+        assert_eq!(
+            INVENTORY_TOTAL,
+            SLOT_MAX + HAVE_MAX + COSP_MAX + MBAG_MAX * MBAG_COUNT + KNIGHT_ROYALE_MAX
+        );
     }
 
     /// Shield kind is 60, separate from weapon ranges.

@@ -48,6 +48,11 @@ pub struct PusItemRow {
     pub category: i16,
     /// Currency type: 0 = Knight Cash (KC), 1 = TL (real money balance).
     pub price_type: i16,
+    /// Days until the delivered item expires. 0 = permanent (default).
+    pub duration_days: i32,
+    /// Display order within its category (lower = earlier). GM-adjustable via drag-and-drop
+    /// in the admin panel; independent of `id`.
+    pub sort_order: i32,
 }
 
 /// A cash shop purchase/refund record.

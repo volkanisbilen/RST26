@@ -22,14 +22,14 @@ if (EVENT == 103) then
 	if (Check == -1) then
 		SelectMsg(UID, 2, -1, 1626, NPC, 27, -1);
 	else
-		CycleSpawn(UID);;
+		CycleSpawn(UID);
 		RunQuestExchange(UID,476);
 		SaveEvent(UID, 4227); 
 	end   
 end
 
 if (EVENT == 102) then
-   CycleSpawn(UID);;
+   CycleSpawn(UID);
    RobItem(UID, 910055000, 1);
    SelectMsg(UID, 2, -1, 4423, NPC, 10, -1);
 end

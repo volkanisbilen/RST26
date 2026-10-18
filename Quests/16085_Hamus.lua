@@ -16,16 +16,25 @@ if (EVENT == 521) then
 	if (HP100 < 1) then
 		SelectMsg(UID, 2, -1, 1113, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6939, 1112, NPC, 4006, 527, 4005, 520);
+		SlotCheck = CheckGiveSlot(UID, 1)
+		if SlotCheck == false then
+
+		else
+		RunGiveItemExchange(UID,657, 1);
+		end
 	end
 end
 
-if (EVENT == 522) then  
+if (EVENT == 522) then
 	HP300 = HowmuchItem(UID, 889320000);
 	if (HP300 < 1) then
 		SelectMsg(UID, 2, -1, 1116, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6940, 1115, NPC, 4006, 528, 4005, 520);
+		SlotCheck = CheckGiveSlot(UID, 1)
+		if SlotCheck == false then
+		else
+		RunGiveItemExchange(UID,658, 1);
+		end
 	end
 end
 
@@ -34,7 +43,11 @@ if (EVENT == 523) then
 	if (MP100 < 1) then
 		SelectMsg(UID, 2, -1, 1118, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6941, 1117, NPC, 4006, 529, 4005, 520);
+		SlotCheck = CheckGiveSlot(UID, 1)
+		if SlotCheck == false then
+		else
+		RunGiveItemExchange(UID,659, 1);
+		end
 	end
 end
 
@@ -43,16 +56,24 @@ if (EVENT == 524) then
 	if (MP300 < 1) then
 		SelectMsg(UID, 2, -1, 1120, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6942, 1119, NPC, 4006, 530, 4005, 520);
+		SlotCheck = CheckGiveSlot(UID, 1)
+		if SlotCheck == false then
+		else
+		RunGiveItemExchange(UID,660, 1);
+		end
 	end
 end
 
-if (EVENT == 525) then  
+if (EVENT == 525) then
 	HP500 = HowmuchItem(UID, 889330000);
 	if (HP500 < 1) then
 		SelectMsg(UID, 2, -1, 1669, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6943, 1668, NPC, 4006, 531, 4005, 520);
+		SlotCheck = CheckGiveSlot(UID, 1)
+		if SlotCheck == false then
+		else
+		RunGiveItemExchange(UID,661, 1);
+		end
 	end
 end
 
@@ -61,7 +82,11 @@ if (EVENT == 526) then
 	if (MP500 < 1) then
 		SelectMsg(UID, 2, -1, 1671, NPC, 18, 5000);
 	else
-		SelectMsg(UID, 4, 6944, 1670, NPC, 4006, 532, 4005, 520);
+		SlotCheck = CheckGiveSlot(UID, 1)
+		if SlotCheck == false then
+		else
+		RunGiveItemExchange(UID,662, 1);
+		end
 	end
 end
 
@@ -282,7 +307,12 @@ if (EVENT == 1008) then
 	if (VALARMOR < 1 or VALARMOR == 0) then
 		SelectMsg(UID, 2, -1, 4921, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6910, 4902, NPC, 4006, 1009, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6910,STEP,1);
+		end
     end
 end
 
@@ -307,7 +337,12 @@ if (EVENT == 1010) then
 	if (VALHELMET < 1 or VALHELMET == 0) then
 		SelectMsg(UID, 2, -1, 4921, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6882, 4902, NPC, 4006, 1011, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6882,STEP,1);
+		end
     end
 end
 
@@ -332,7 +367,12 @@ if (EVENT == 1012) then
 	if (GRYPARMOR < 1 or GRYPARMOR == 0) then
 		SelectMsg(UID, 2, -1, 6488, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6883, 4902, NPC, 4006, 1013, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6883,STEP,1);
+		end
     end
 end
 
@@ -357,7 +397,12 @@ if (EVENT == 1014) then
 	if (GRYPHELMET < 1 or GRYPHELMET == 0) then
 		SelectMsg(UID, 2, -1, 6488, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6884, 4902, NPC, 4006, 1015, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6884,STEP,1);
+		end
     end
 end
 
@@ -382,7 +427,12 @@ if (EVENT == 1016) then
 	if (BAHAMUTARMOR < 1 or BAHAMUTARMOR == 0) then
 		SelectMsg(UID, 2, -1, 1126, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6885, 4902, NPC, 4006, 1017, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6885,STEP,1);
+		end
     end
 end
 
@@ -407,7 +457,12 @@ if (EVENT == 1018) then
 	if (BAHAMUTHELMET < 1 or BAHAMUTHELMET == 0) then
 		SelectMsg(UID, 2, -1, 1126, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6886, 4902, NPC, 4006, 1019, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6886,STEP,1);
+		end
     end
 end
 
@@ -432,7 +487,12 @@ if (EVENT == 1020) then
 	if (YENICERIA < 1 or YENICERIA == 0) then
 		SelectMsg(UID, 2, -1, 1116, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6887, 4902, NPC, 4006, 1021, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6887,STEP,1);
+		end
     end
 end
 
@@ -457,7 +517,12 @@ if (EVENT == 1022) then
 	if (YENICERIH < 1 or YENICERIH == 0) then
 		SelectMsg(UID, 2, -1, 1113, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6888, 4902, NPC, 4006, 1023, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6888,STEP,1);
+		end
     end
 end
 
@@ -486,7 +551,12 @@ if (EVENT == 880) then
 	if (PATHOSGLOVEAT < 1 or PATHOSGLOVEAT == 0) then
 		SelectMsg(UID, 2, -1, 4921, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6914, 4902, NPC, 4006, 881, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6914,STEP,1);
+		end
     end
 end
 
@@ -511,7 +581,12 @@ if (EVENT == 882) then
 	if (PATHOSGLOVEDEF < 1 or PATHOSGLOVEDEF == 0) then
 		SelectMsg(UID, 2, -1, 4921, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6915, 4902, NPC, 4006, 883, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6915,STEP,1);
+		end
     end
 end
 
@@ -536,7 +611,12 @@ if (EVENT == 722) then
 	if (MINERVAVALARM < 1 or MINERVAVALARM == 0) then
 		SelectMsg(UID, 2, -1, 4921, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6916, 4902, NPC, 4006, 745, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6916,STEP,1);
+		end
     end
 end
 
@@ -561,7 +641,12 @@ if (EVENT == 723) then
 	if (MINERVAVALHEL < 1 or MINERVAVALHEL == 0) then
 		SelectMsg(UID, 2, -1, 4921, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6917, 4902, NPC, 4006, 746, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6917,STEP,1);
+		end
     end
 end
 
@@ -586,7 +671,12 @@ if (EVENT == 724) then
 	if (MINERVAGRYPARM < 1 or MINERVAGRYPARM == 0) then
 		SelectMsg(UID, 2, -1, 6488, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6918, 4902, NPC, 4006, 747, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6918,STEP,1);
+		end
     end
 end
 
@@ -611,7 +701,12 @@ if (EVENT == 725) then
 	if (MINERVAGRYPHEL < 1 or MINERVAGRYPHEL == 0) then
 		SelectMsg(UID, 2, -1, 6488, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6919, 4902, NPC, 4006, 748, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6919,STEP,1);
+		end
     end
 end
 
@@ -636,7 +731,12 @@ if (EVENT == 726) then
 	if (MINERVABAHARM < 1 or MINERVABAHARM == 0) then
 		SelectMsg(UID, 2, -1, 1126, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6920, 4902, NPC, 4006, 749, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6920,STEP,1);
+		end
     end
 end
 
@@ -661,7 +761,12 @@ if (EVENT == 727) then
 	if (MINERVABAHHEL < 1 or MINERVABAHHEL == 0) then
 		SelectMsg(UID, 2, -1, 1126, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6921, 4902, NPC, 4006, 750, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6921,STEP,1);
+		end
     end
 end
 
@@ -686,7 +791,12 @@ if (EVENT == 728) then
 	if (MINERVAYENAR < 1 or MINERVAYENAR == 0) then
 		SelectMsg(UID, 2, -1, 1116, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6922, 4902, NPC, 4006, 751, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6922,STEP,1);
+		end
     end
 end
 
@@ -711,7 +821,12 @@ if (EVENT == 729) then
 	if (MINERVAYENHEL < 1 or MINERVAYENHEL == 0) then
 		SelectMsg(UID, 2, -1, 1113, NPC, 10, 5000);
 	else
-		SelectMsg(UID, 5, 6923, 4902, NPC, 4006, 752, 4005, -1);
+	SlotCheck = CheckGiveSlot(UID, 1)
+     if SlotCheck == false then
+
+         else
+	RunQuestExchange(UID,6923,STEP,1);
+		end
     end
 end
 

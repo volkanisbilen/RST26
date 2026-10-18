@@ -224,7 +224,7 @@ pub fn build_join_fail_packet(msg: &str) -> Packet {
     pkt.write_u8(EXT_SUB_LOTTERY);
     pkt.write_u8(SUB_JOIN_RESULT);
     pkt.write_u8(0); // fail
-    pkt.write_sbyte_string(msg);
+    pkt.write_string(msg);
     pkt
 }
 
@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(r.read_u8(), Some(SUB_JOIN_RESULT));
         assert_eq!(r.read_u8(), Some(0)); // fail
                                           // sbyte_string: u8 len + bytes
-        let msg = r.read_sbyte_string().unwrap_or_default();
+        let msg = r.read_string().unwrap_or_default();
         assert_eq!(msg, "No items");
     }
 
@@ -1202,7 +1202,7 @@ mod tests {
             assert_eq!(r.read_u8(), Some(EXT_SUB_LOTTERY));
             assert_eq!(r.read_u8(), Some(SUB_JOIN_RESULT));
             assert_eq!(r.read_u8(), Some(0)); // fail
-            let decoded = r.read_sbyte_string().unwrap_or_default();
+            let decoded = r.read_string().unwrap_or_default();
             assert_eq!(&decoded, msg);
         }
     }

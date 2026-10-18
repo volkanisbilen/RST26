@@ -108,15 +108,18 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         return send_fail(session, &world, sid).await;
     }
 
-    // Calculate damage amount
-    let quantity = max_durability - inv_slot.durability;
+    // Legacy items may have been created with a duration that no longer matches
+    // the item definition. Clamp before subtraction so an invalid database value
+    // can never become a negative repair amount/cost on the client.
+    let current_durability = inv_slot.durability.clamp(0, max_durability);
+    let quantity = max_durability - current_durability;
     if quantity <= 0 {
         return send_fail(session, &world, sid).await;
     }
 
     // Calculate repair cost
     // C++ formula: (((buy_price - 10) / 10000.0) + pow(buy_price, 0.75)) * quantity / durability
-    let buy_price = item_def.buy_price.unwrap_or(0) as f64;
+    let buy_price = item_def.buy_price.unwrap_or(0).max(10) as f64;
     let mut cost = ((((buy_price - 10.0) / 10000.0) + buy_price.powf(0.75)) * quantity as f64
         / max_durability as f64) as u32;
 

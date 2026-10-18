@@ -44,8 +44,8 @@ use tracing::debug;
 use crate::session::{ClientSession, SessionState};
 use crate::state_change_constants::STATE_CHANGE_PARTY_LEADER;
 use crate::world::{
-    CharacterInfo, WorldState, ZONE_BORDER_DEFENSE_WAR, ZONE_CHAOS_DUNGEON, ZONE_DELOS,
-    ZONE_DUNGEON_DEFENCE, ZONE_JURAID_MOUNTAIN, ZONE_PRISON,
+    BotInstance, CharacterInfo, WorldState, ZONE_BORDER_DEFENSE_WAR, ZONE_CHAOS_DUNGEON,
+    ZONE_DELOS, ZONE_DUNGEON_DEFENCE, ZONE_JURAID_MOUNTAIN, ZONE_PRISON,
 };
 use crate::zone::SessionId;
 
@@ -246,25 +246,61 @@ pub(crate) fn build_party_member_info(
     pkt
 }
 
+/// Build the same PARTY_INSERT payload for a runtime bot. Bots deliberately
+/// share the normal party wire format so the stock client renders their HP,
+/// MP, level and class exactly like a player member.
+pub(crate) fn build_bot_party_member_info(
+    bot: &BotInstance,
+    index_hint: u8,
+    target_number_id: i16,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizParty as u8);
+    pkt.write_u8(PARTY_INSERT);
+    pkt.write_u16(1);
+    pkt.write_u32(bot.id);
+    pkt.write_u8(index_hint);
+    pkt.write_string(&bot.name);
+    pkt.write_i16(bot.max_hp);
+    pkt.write_i16(bot.hp);
+    pkt.write_u8(bot.level);
+    pkt.write_u16(bot.class);
+    pkt.write_i16(bot.max_mp);
+    pkt.write_i16(bot.mp);
+    pkt.write_u8(bot.nation);
+    pkt.write_u8(0);
+    pkt.write_u32(target_number_id as i32 as u32);
+    pkt.write_i8(0);
+    let loyalty_rank = match (bot.personal_rank, bot.knights_rank) {
+        (0, 0) => -1,
+        (p, 0) => p as i8,
+        (0, k) => k as i8,
+        (p, k) => p.min(k) as i8,
+    };
+    pkt.write_i8(loyalty_rank);
+    pkt
+}
+
 /// Get character info + loyalty symbol rank in a single DashMap read.
 /// Avoids the pattern `get_character_info(sid)` + `get_loyalty_symbol_rank(sid)`
 /// which acquires two separate DashMap locks on the same session.
 fn get_char_with_loyalty(world: &WorldState, sid: SessionId) -> Option<(CharacterInfo, i8)> {
-    world.with_session(sid, |h| {
-        let ch = h.character.as_ref()?.clone();
-        let pr = h.personal_rank;
-        let kr = h.knights_rank;
-        let lr = if (pr > 100 && pr <= 200) || (kr > 100 && kr <= 200) || (kr == 0 && pr == 0) {
-            -1
-        } else if kr == 0 {
-            pr as i8
-        } else if pr == 0 || kr <= pr {
-            kr as i8
-        } else {
-            pr as i8
-        };
-        Some((ch, lr))
-    }).flatten()
+    world
+        .with_session(sid, |h| {
+            let ch = h.character.as_ref()?.clone();
+            let pr = h.personal_rank;
+            let kr = h.knights_rank;
+            let lr = if (pr > 100 && pr <= 200) || (kr > 100 && kr <= 200) || (kr == 0 && pr == 0) {
+                -1
+            } else if kr == 0 {
+                pr as i8
+            } else if pr == 0 || kr <= pr {
+                kr as i8
+            } else {
+                pr as i8
+            };
+            Some((ch, lr))
+        })
+        .flatten()
 }
 
 /// Build a PARTY_HPCHANGE packet for a party member.
@@ -744,12 +780,12 @@ fn handle_party_permit(
         None => return Ok(()),
     };
 
-    let leader_pos = match world.get_position(leader_sid_check) {
-        Some(p) => p,
-        None => return Ok(()),
-    };
+    let leader_zone = world
+        .get_position(leader_sid_check)
+        .map(|p| p.zone_id)
+        .or_else(|| world.get_bot(leader_sid_check as u32).map(|b| b.zone_id));
 
-    if joiner_pos.zone_id != leader_pos.zone_id || party.is_full() {
+    if leader_zone != Some(joiner_pos.zone_id) || party.is_full() {
         // Zone changed or party full -- decline
         send_party_error(&world, leader_sid_check, PARTY_ERR_DECLINED);
         return Ok(());
@@ -760,6 +796,9 @@ fn handle_party_permit(
     for &member_sid in &party.active_members() {
         if let Some((member_ch, lr)) = get_char_with_loyalty(&world, member_sid) {
             let info_pkt = build_party_member_info(&member_ch, 1, target_number_id, 0, lr);
+            world.send_to_session_owned(sid, info_pkt);
+        } else if let Some(bot) = world.get_bot(member_sid as u32) {
+            let info_pkt = build_bot_party_member_info(&bot, 1, target_number_id);
             world.send_to_session_owned(sid, info_pkt);
         }
     }
@@ -777,6 +816,12 @@ fn handle_party_permit(
         return Ok(());
     }
 
+    // Joining a party consumes the seek request. The client may leave a stale
+    // BBS row/need-party flag behind, which otherwise makes PK bots send a new
+    // invitation on every AI pass.
+    world.remove_seeking_party(sid);
+    world.update_session(sid, |h| h.need_party = 0);
+
     // Broadcast the new member's info to the whole party
     if let Some((joiner_ch, lr)) = get_char_with_loyalty(&world, sid) {
         let info_pkt = build_party_member_info(&joiner_ch, 1, target_number_id, 0, lr);
@@ -788,6 +833,15 @@ fn handle_party_permit(
         for &member_sid in &party.active_members() {
             if let Some(member_ch) = world.get_character_info(member_sid) {
                 let hp_pkt = build_party_hp_update(&member_ch);
+                world.send_to_party(party_id, &hp_pkt);
+            } else if let Some(bot) = world.get_bot(member_sid as u32) {
+                let mut hp_pkt = Packet::new(Opcode::WizParty as u8);
+                hp_pkt.write_u8(PARTY_HPCHANGE);
+                hp_pkt.write_u32(bot.id);
+                hp_pkt.write_i16(bot.max_hp);
+                hp_pkt.write_i16(bot.hp);
+                hp_pkt.write_i16(bot.max_mp);
+                hp_pkt.write_i16(bot.mp);
                 world.send_to_party(party_id, &hp_pkt);
             }
         }

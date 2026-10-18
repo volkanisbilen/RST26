@@ -593,12 +593,16 @@ fn test_insert_saved_magic_no_duplicate() {
     world.insert_saved_magic(1, 600000, 100);
     assert!(world.has_saved_magic(1, 600000));
 
-    // Inserting same skill again should not overwrite (C++ behavior)
+    // Reusing the same scroll refreshes its persisted duration.
     world.insert_saved_magic(1, 600000, 9999);
 
-    // Duration should still be close to original 100s, not 9999s
+    // The refreshed duration must survive a zone change/relog recast.
     let dur = world.get_saved_magic_duration(1, 600000);
-    assert!(dur <= 100, "Duration {} should be <= 100", dur);
+    assert!(
+        dur > 9900,
+        "Duration {} should reflect the refreshed scroll",
+        dur
+    );
 }
 
 #[test]
