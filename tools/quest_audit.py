@@ -288,6 +288,9 @@ def main():
     ap.add_argument("--bindings", type=Path, default=Path("crates/ko-game/src/lua_engine/bindings.rs"))
     ap.add_argument("--out", type=Path, default=Path("docs/QUEST_AUDIT.md"))
     ap.add_argument("--json", type=Path)
+    ap.add_argument("--client-exchange", type=Path,
+                    help="output of `tbl_dump docs/data/Item_Exchange.tbl 0 100000`; enables EXCHANGE_CLIENT_ITEMS "
+                         "(reward items the client table lists but the server row lost)")
     ap.add_argument("--fail-on-error", action="store_true")
     ap.add_argument("--max-detail", type=int, default=400, help="max rows per table in the report")
     args = ap.parse_args()
@@ -504,6 +507,35 @@ def main():
                 if kind == "zero_count":
                     sev = "WARN"
                 add("EXCHANGE_" + kind.upper(), sev, fname, line, ev, f"`{fn}({ex_id})`: {detail}")
+
+    # ---- reward items lost from the server rows ---------------------------------
+    client_ex = {}
+    if args.client_exchange and args.client_exchange.exists():
+        for line in args.client_exchange.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("row="):
+                d = dict(x.strip().split("=", 1) for x in line.split("|")[1:])
+                client_ex[int(d["c0"])] = d
+    for ex_id, uses in sorted(used_exchanges.items()):
+        r = data.exchange.get(ex_id)
+        if r is None or exchange_shifted(r):
+            continue
+        outs = [(int(r[f"exchange_item_num{k}"]), int(r[f"exchange_item_count{k}"])) for k in range(1, 6)]
+        has_exp_row = ex_id in data.exchange_exp
+        has_origin = any(int(r[f"origin_item_num{k}"]) for k in range(1, 6))
+        if has_origin and not any(a and c for a, c in outs) and not has_exp_row                 and not any(int(r[f"origin_item_num{k}"]) == 900012000 for k in range(1, 6)):
+            for (fname, line, ev, fn) in uses:
+                add("EXCHANGE_NO_OUTPUT", "ERROR", fname, line, ev,
+                    f"`{fn}({ex_id})`: the row has no reward at all (all exchange_item columns empty) - "
+                    f"the quest completes and pays nothing")
+        c = client_ex.get(ex_id)
+        if c:
+            have = {a for a, _ in outs if a}
+            lost = [int(c[f"c{13 + 2 * k}"]) for k in range(5)]
+            lost = [a for a in lost if a and not (900000000 <= a < 900100000) and a in data.items and a not in have]
+            if lost:
+                for (fname, line, ev, fn) in uses:
+                    add("EXCHANGE_CLIENT_ITEMS", "WARN", fname, line, ev,
+                        f"`{fn}({ex_id})`: client Item_Exchange lists reward item(s) {lost} that the server row does not give")
 
     # ---- quest_helper rows ------------------------------------------------------
     for r in data.helpers:
