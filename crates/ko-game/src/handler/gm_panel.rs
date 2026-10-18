@@ -158,7 +158,13 @@ fn apply_edit(world: &WorldState, target: SessionId, field: u8, value: i64) -> R
     }
     let byte = |v: i64| v.clamp(0, 255) as u8;
     match field {
-        1 => world.update_character_stats(target, |c| c.level = byte(value).clamp(1, 83)),
+        1 => {
+            world.update_character_stats(target, |c| c.level = byte(value).clamp(1, 83));
+            if super::daily_quest::auto_start_all(world, target) {
+                super::daily_quest::send_list(world, target);
+                super::daily_quest::send_progress(world, target);
+            }
+        }
         2 => world.update_character_stats(target, |c| c.exp = value as u64),
         3 => world.update_character_loyalty(target, value.min(i64::from(u32::MAX)) as u32),
         4 => world.update_character_loyalty_monthly(target, value.min(i64::from(u32::MAX)) as u32),

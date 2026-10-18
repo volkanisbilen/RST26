@@ -45,6 +45,7 @@ static int  g_page = 0;            // visible page (15 quests each)
 static int  g_lastRow = -1; static DWORD g_lastClick = 0;   // double click detection
 struct HudLine { BYTE id; DWORD at; };
 static std::vector<HudLine> g_hud;   // quests that just got a kill (screen counter)
+void TargetHp_BarAnchor(int* centerOffX, int* bottomY);   // target_hp.cpp
 static HWND g_hHud = nullptr; static HDC g_hudDC = nullptr; static void* g_hudBits = nullptr;
 static const int HUD_W = 250, HUD_H = 96, HUD_LINES = 4; static const DWORD HUD_MS = 12000;
 static std::map<UINT32, void*> g_iconCache;
@@ -446,7 +447,8 @@ static void HudSync()
 
     if (!fg || lines.empty()) { if (IsWindowVisible(g_hHud)) ShowWindow(g_hHud, SW_HIDE); return; }
 
-    // draw into the HUD bitmap: Text()/Fill() write to g_bits / DQ_W x DQ_H, so use a small local renderer
+    // The counter sits just below the target's HP bar (target_hp.cpp), centred under it, one opaque
+    // dark panel with a gold border and bright text per quest (no see-through text).
     memset(g_hudBits, 0, (size_t)HUD_W * HUD_H * 4);
     for (size_t i = 0; i < lines.size(); i++)
     {
@@ -454,47 +456,53 @@ static void HudSync()
         char t[96];
         bool done = pr.status == 2 || pr.kills >= q.kill;
         if (done) sprintf_s(t, "%s  Completed!", q.name.c_str()); else sprintf_s(t, "%s  %u / %u", q.name.c_str(), pr.kills, (unsigned)q.kill);
-        int w = HUD_W, h = 22;
-        BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB };
+        const int slotH = 22, boxH = 20;
+        BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), HUD_W, -slotH, 1, 32, BI_RGB };
         void* bits = nullptr; HDC dc = CreateCompatibleDC(nullptr);
+        if (!dc) continue;
         HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (!bmp || !bits) { DeleteDC(dc); continue; }
         HGDIOBJ ob = SelectObject(dc, bmp);
         HFONT font = CreateFontA(-12, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Verdana");
         HGDIOBJ of = SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
-        RECT rc = { 0, 0, w, h };
-        DrawTextA(dc, t, -1, &rc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        RECT tr = { 0, 0, 0, 0 };
+        DrawTextA(dc, t, -1, &tr, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        int bw = min(HUD_W, (tr.right - tr.left) + 20);
+        RECT box = { (HUD_W - bw) / 2, 0, (HUD_W - bw) / 2 + bw, boxH };
+        COLORREF accent = done ? RGB(140, 255, 140) : RGB(255, 210, 90);
+        HBRUSH bg = CreateSolidBrush(RGB(16, 16, 26)), bd = CreateSolidBrush(accent);
+        FillRect(dc, &box, bg); FrameRect(dc, &box, bd);
+        DeleteObject(bg); DeleteObject(bd);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, done ? RGB(170, 255, 170) : RGB(255, 245, 190));
+        DrawTextA(dc, t, -1, &box, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         GdiFlush();
-        COLORREF color = done ? RGB(140, 255, 140) : RGB(255, 225, 120);
-        for (int pass = 0; pass < 2; pass++)
+        for (int y = 0; y < slotH; y++)
         {
-            int o = pass ? 0 : 1;
-            BYTE cr = pass ? GetRValue(color) : 0, cg = pass ? GetGValue(color) : 0, cb = pass ? GetBValue(color) : 0;
-            for (int y = 0; y < h; y++)
+            int dy = (int)i * slotH + y; if (dy >= HUD_H) break;
+            const BYTE* src = (const BYTE*)bits + (size_t)y * HUD_W * 4;
+            BYTE* d = (BYTE*)g_hudBits + (size_t)dy * HUD_W * 4;
+            for (int x = 0; x < HUD_W; x++, src += 4, d += 4)
             {
-                int dy = (int)i * 22 + y + o; if (dy >= HUD_H) continue;
-                const BYTE* src = (const BYTE*)bits + y * w * 4;
-                for (int x = 0; x < w; x++, src += 4)
-                {
-                    int dx = x + o; int a = max(src[0], max(src[1], src[2]));
-                    if (!a || dx >= HUD_W) continue;
-                    BYTE* d = (BYTE*)g_hudBits + (dy * HUD_W + dx) * 4;
-                    d[0] = (BYTE)((cb * a + d[0] * (255 - a)) / 255); d[1] = (BYTE)((cg * a + d[1] * (255 - a)) / 255);
-                    d[2] = (BYTE)((cr * a + d[2] * (255 - a)) / 255); d[3] = (BYTE)(a + d[3] * (255 - a) / 255);
-                }
+                if (y >= boxH || x < box.left || x >= box.right) continue;   // outside the panel stays transparent
+                d[0] = src[0]; d[1] = src[1]; d[2] = src[2]; d[3] = 255;      // opaque
             }
         }
         SelectObject(dc, of); DeleteObject(font); SelectObject(dc, ob); DeleteObject(bmp); DeleteDC(dc);
     }
+    // anchor: centred under the target HP bar (target_hp.cpp), daily_hud.ini [hud] x/y = extra nudge
     static int offX = -9999, offY = -9999;
     if (offX == -9999)
     {
-        char ip[MAX_PATH]; sprintf_s(ip, "%sJstKO\\daily_hud.ini", g_dir);
-        offX = GetPrivateProfileIntA("hud", "x", 270, ip);     // distance of the right edge from the game's right edge
-        offY = GetPrivateProfileIntA("hud", "y", 200, ip);     // top
+        char ip[MAX_PATH]; sprintf_s(ip, "%sJstKO\daily_hud.ini", g_dir);
+        offX = GetPrivateProfileIntA("hud", "x", 0, ip);       // horizontal nudge from the bar's centre
+        offY = GetPrivateProfileIntA("hud", "y", 0, ip);       // vertical nudge below the bar
     }
-    RECT gr; GetClientRect(game, &gr); MapWindowPoints(game, nullptr, (POINT*)&gr, 2);
-    POINT dst = { gr.right - offX + 10, gr.top + offY }, src = { 0, 0 }; SIZE sz = { HUD_W, HUD_H };
+    RECT gr; if (!GetClientRect(game, &gr)) return;
+    MapWindowPoints(game, nullptr, (POINT*)&gr, 2);
+    if (gr.right - gr.left < 200 || gr.bottom - gr.top < 200) return;
+    int barCx = 0, barBottom = 56;
+    TargetHp_BarAnchor(&barCx, &barBottom);
+    POINT dst = { gr.left + (gr.right - gr.left) / 2 + barCx - HUD_W / 2 + offX, gr.top + barBottom + 6 + offY }, src = { 0, 0 }; SIZE sz = { HUD_W, HUD_H };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     UpdateLayeredWindow(g_hHud, nullptr, &dst, &sz, g_hudDC, &src, 0, &bf, ULW_ALPHA);
     if (!IsWindowVisible(g_hHud)) SetWindowPos(g_hHud, HWND_TOPMOST, dst.x, dst.y, HUD_W, HUD_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);

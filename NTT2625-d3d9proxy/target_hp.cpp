@@ -149,6 +149,14 @@ namespace
     }
 }
 
+// Where the target HP bar's text sits (client-relative): x offset of its centre from the window's
+// top centre, and the y of its bottom edge. Used by the daily quest counter to sit just below the bar.
+void TargetHp_BarAnchor(int* centerOffX, int* bottomY)
+{
+    if (centerOffX) *centerOffX = g_x;
+    if (bottomY) *bottomY = g_y + g_h / 2;
+}
+
 void TargetHp_Init()
 {
     InitializeCriticalSection(&g_lock);
