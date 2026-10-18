@@ -90,6 +90,40 @@ struct CachedBotPath {
 static BOT_PATH_CACHE: OnceLock<parking_lot::Mutex<HashMap<BotId, CachedBotPath>>> =
     OnceLock::new();
 
+/// Targets a bot could not find a walkable route to: `bot -> (target id,
+/// retry-after ms)`. A bot used to drop such a target and re-pick the very
+/// same one on the next tick, standing still forever next to a wall or at the
+/// foot of a cliff. While a target is parked here the bot ignores it and goes
+/// back to its patrol / regroup behaviour, then tries again.
+static BOT_UNREACHABLE_TARGETS: OnceLock<parking_lot::Mutex<HashMap<BotId, (i16, u64)>>> =
+    OnceLock::new();
+
+/// How long an unreachable target is ignored (ms).
+const BOT_UNREACHABLE_RETRY_MS: u64 = 4_000;
+
+fn park_unreachable_target(bot_id: BotId, target_id: i16, now_ms: u64) {
+    BOT_UNREACHABLE_TARGETS
+        .get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        .lock()
+        .insert(bot_id, (target_id, now_ms + BOT_UNREACHABLE_RETRY_MS));
+}
+
+fn target_is_parked_unreachable(bot_id: BotId, target_id: i16, now_ms: u64) -> bool {
+    BOT_UNREACHABLE_TARGETS
+        .get()
+        .and_then(|table| table.lock().get(&bot_id).copied())
+        .is_some_and(|(parked, until)| parked == target_id && now_ms < until)
+}
+
+fn forget_bot_navigation_state(bot_id: BotId) {
+    if let Some(cache) = BOT_PATH_CACHE.get() {
+        cache.lock().remove(&bot_id);
+    }
+    if let Some(table) = BOT_UNREACHABLE_TARGETS.get() {
+        table.lock().remove(&bot_id);
+    }
+}
+
 /// Default movement step per tick for non-PK zones (game units).
 /// Used only in test assertions.
 #[cfg(test)]
@@ -892,6 +926,16 @@ pub fn tick_bots(world: &WorldState) {
 
         // Throttle: only act if enough time has elapsed since last tick.
         if now_ms.saturating_sub(bot.last_tick_ms) < BOT_AI_TICK_MS {
+            continue;
+        }
+
+        // A bot standing somewhere a player cannot stand (spawned or placed
+        // there, or the navigation rules were tightened under it) can never
+        // path out: A* rejects a blocked start. Put it back on walkable
+        // ground before it does anything else.
+        if matches!(bot.ai_state, BotAiState::Farmer | BotAiState::Pk)
+            && return_bot_to_walkable_ground(world, &bot, now_ms)
+        {
             continue;
         }
 
@@ -2049,8 +2093,11 @@ fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
         }
     }
 
-    // Find nearest enemy in surrounding regions.
-    let target = find_nearest_enemy(bot, world);
+    // Find nearest enemy in surrounding regions. A target we just failed to
+    // route to is skipped so the bot falls back to patrolling instead of
+    // freezing in front of it.
+    let target = find_nearest_enemy(bot, world)
+        .filter(|(sid, ..)| !target_is_parked_unreachable(bot_id, *sid as i16, now_ms));
 
     match target {
         None => {
@@ -2110,6 +2157,7 @@ fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
                 let Some((new_x, new_y, new_z)) =
                     bot_path_step_toward(world, bot, spaced_x, target_y, spaced_z)
                 else {
+                    park_unreachable_target(bot_id, target_sid as i16, now_ms);
                     world.update_bot(bot_id, |b| {
                         b.target_id = -1;
                         b.last_move_ms = now_ms;
@@ -3674,6 +3722,10 @@ fn is_bot_move_valid(
 
 /// Move toward a target using the SMD's actual walkability grid. Short clear
 /// segments stay cheap; blocked direct segments are routed through cached A*.
+///
+/// Every returned position has been checked against the navigation mask along
+/// the whole segment from the bot's current position, never just at the
+/// destination.
 fn bot_path_step_toward(
     world: &WorldState,
     bot: &BotInstance,
@@ -3686,15 +3738,17 @@ fn bot_path_step_toward(
     let map = zone.map_data.as_ref()?;
     let cache = BOT_PATH_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
     // Do not abandon a detour whenever the next short step toward a wall is free.
-    if is_bot_move_valid(world, bot.zone_id, bot.x, bot.z, target_x, target_z) {
+    if is_bot_move_valid(world, bot.zone_id, bot.x, bot.z, target_x, target_z)
+        && is_bot_move_valid(world, bot.zone_id, bot.x, bot.z, direct_x, direct_z)
+    {
         cache.lock().remove(&bot.id);
         return Some((direct_x, map.terrain_height(direct_x, direct_z).unwrap_or(direct_y), direct_z));
     }
 
-    let zone = world.get_zone(bot.zone_id)?;
-    let map = zone.map_data.as_ref()?;
     let (goal_x, goal_z) =
         crate::systems::pathfind::nearest_bot_point(map, target_x, target_z, 8)?;
+    let step = movement_step(bot);
+    let unit = map.unit_dist().max(1.0);
     let mut paths = cache.lock();
     let refresh = paths.get(&bot.id).is_none_or(|path| {
         let dx = path.goal_x - goal_x;
@@ -3705,6 +3759,12 @@ fn bot_path_step_toward(
             // first path segment is exhausted, replan from the new position;
             // otherwise step_move returns the same endpoint forever.
             || path.waypoint_index >= path.waypoints.len()
+            // The bot is no longer near the route it was following (it was
+            // relocated, or a step was refused): plan again from where it is.
+            || path.waypoints.get(path.waypoint_index).is_some_and(|&(wx, wz)| {
+                let (rx, rz) = (wx - bot.x, wz - bot.z);
+                rx * rx + rz * rz > (2.5 * unit + step).powi(2)
+            })
     });
     if refresh {
         let result = crate::systems::pathfind::find_bot_path(map, bot.x, bot.z, goal_x, goal_z);
@@ -3724,16 +3784,31 @@ fn bot_path_step_toward(
         );
     }
     let path = paths.get_mut(&bot.id)?;
-    let (new_x, new_z, next_index) = crate::systems::pathfind::step_move(
+    let (mut new_x, mut new_z, mut next_index) = crate::systems::pathfind::step_move(
         bot.x,
         bot.z,
         &path.waypoints,
         path.waypoint_index,
-        movement_step(bot),
+        step,
     );
     if !is_bot_move_valid(world, bot.zone_id, bot.x, bot.z, new_x, new_z) {
-        paths.remove(&bot.id);
-        return None;
+        // The step swung round a corner, so the straight chord from the old
+        // to the new position leaves the walkable cells even though the path
+        // itself is fine. Walk only as far as the next waypoint this tick
+        // rather than freezing and re-planning the same failing step forever.
+        let start = path.waypoint_index;
+        let (cx, cz, advanced) = crate::systems::pathfind::step_move(
+            bot.x,
+            bot.z,
+            &path.waypoints[start..=start],
+            0,
+            step,
+        );
+        if !is_bot_move_valid(world, bot.zone_id, bot.x, bot.z, cx, cz) {
+            paths.remove(&bot.id);
+            return None;
+        }
+        (new_x, new_z, next_index) = (cx, cz, start + advanced);
     }
     path.waypoint_index = next_index;
     let total = ((target_x - bot.x).powi(2) + (target_z - bot.z).powi(2)).sqrt();
@@ -3744,6 +3819,58 @@ fn bot_path_step_toward(
         1.0
     };
     Some((new_x, map.terrain_height(new_x, new_z).unwrap_or(bot.y + (target_y - bot.y) * y_ratio), new_z))
+}
+
+/// If the bot is standing on ground the navigation mask refuses (so no path
+/// can start from it), move it to the nearest walkable point and tell the
+/// clients. Returns `true` when it relocated (or tried to) so the caller skips
+/// the rest of this tick.
+fn return_bot_to_walkable_ground(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
+    let Some(zone) = world.get_zone(bot.zone_id) else {
+        return false;
+    };
+    let Some(map) = zone.map_data.as_ref() else {
+        return false;
+    };
+    if map.is_bot_movable(bot.x, bot.z) {
+        return false;
+    }
+    let Some((x, z)) = crate::systems::pathfind::nearest_bot_point(map, bot.x, bot.z, 64) else {
+        // Nowhere walkable within 64 cells; leave it alone rather than loop.
+        return false;
+    };
+    let y = map.terrain_height(x, z).unwrap_or(bot.y);
+    let (rx, rz) = (calc_region(x), calc_region(z));
+    forget_bot_navigation_state(bot.id);
+    if rx != bot.region_x || rz != bot.region_z {
+        let out_pkt = build_bot_inout_packet(bot, world, 2); // INOUT_OUT
+        broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &out_pkt);
+    }
+    world.update_bot(bot.id, |b| {
+        b.x = x;
+        b.y = y;
+        b.z = z;
+        b.region_x = rx;
+        b.region_z = rz;
+        b.target_id = -1;
+        b.target_changed = false;
+        b.last_move_ms = now_ms;
+        b.last_tick_ms = now_ms;
+    });
+    if let Some(moved) = world.get_bot(bot.id) {
+        let in_pkt = build_bot_inout_packet(&moved, world, 1); // INOUT_IN
+        broadcast_to_bot_region(world, moved.zone_id, rx, rz, &in_pkt);
+    }
+    tracing::warn!(
+        bot_id = bot.id,
+        zone_id = bot.zone_id,
+        from_x = bot.x,
+        from_z = bot.z,
+        to_x = x,
+        to_z = z,
+        "bot was standing on unwalkable ground; moved to nearest walkable tile"
+    );
+    true
 }
 
 /// Broadcast a mining animation packet for a bot and update its timer.
@@ -3989,6 +4116,7 @@ fn tick_merchant(world: &WorldState, bot: &BotInstance, now_ms: u64) {
 /// Builds an INOUT_OUT packet using the bot's session-band ID and broadcasts
 /// it to all players in the surrounding 3×3 region so they see the bot disappear.
 pub fn despawn_bot(world: &WorldState, id: BotId) {
+    forget_bot_navigation_state(id);
     if let Ok(bot_sid) = SessionId::try_from(id) {
         world.cleanup_party_on_disconnect(bot_sid);
     }
@@ -11332,3 +11460,6 @@ pub(crate) fn event_bot_place(world: &WorldState, bot_id: BotId, x: f32, z: f32)
         world.broadcast_to_region_sync(b.zone_id, rx, rz, Arc::new(in_pkt), None, room);
     }
 }
+
+#[cfg(test)]
+mod nav_real_map_tests;
