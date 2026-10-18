@@ -22,6 +22,7 @@
 //! | N+2    | string| Account ID echo                      |
 
 use ko_db::repositories::account::AccountRepository;
+use ko_db::repositories::game_options::GameOptionsRepository;
 use ko_db::repositories::premium::PremiumRepository;
 use ko_protocol::{LoginOpcode, Packet, PacketReader};
 
@@ -107,6 +108,15 @@ pub async fn handle(session: &mut LoginSession, pkt: Packet) -> anyhow::Result<(
                 return Ok(());
             }
 
+            // account_check = 0: registered through the web panel, email not verified yet.
+            // Accounts the game client auto-registers always get account_check = 1 (see
+            // create_auto_registered), so this never blocks the old walk-up-and-type-a-new-ID flow.
+            if user.account_check == 0 {
+                tracing::info!("[{}] Account not activated (email): {}", session.addr(), account_id);
+                send_result(session, AUTH_NOT_FOUND, None).await?;
+                return Ok(());
+            }
+
             // Success — compute premium hours dynamically from account_premium table.
             //   calls ACCOUNT_PREMIUM_V2 stored procedure which computes
             //   `(expiry_time - NOW) / 3600` and returns -1 if no premium.
@@ -154,10 +164,53 @@ pub async fn handle(session: &mut LoginSession, pkt: Packet) -> anyhow::Result<(
             tracing::info!("[{}] LS login success: {}", session.addr(), account_id);
         }
         Ok(None) => {
+            // Do not ever replace an existing account with a different password.
+            // Only a genuinely unknown account may use first-login registration.
+            let exists = repo.find_by_account_id(&account_id).await?;
+            let auto_register = GameOptionsRepository::new(session.pool())
+                .load()
+                .await
+                .map(|options| options.auto_register)
+                .unwrap_or(false);
+
+            if exists.is_none() && auto_register {
+                match repo
+                    .create_auto_registered(
+                        &account_id,
+                        &password,
+                        &session.addr().ip().to_string(),
+                    )
+                    .await
+                {
+                    Ok(Some(_)) => {
+                        let mut response = Packet::new(LoginOpcode::LsLoginReq as u8);
+                        response.write_u16(0);
+                        response.write_u8(AUTH_SUCCESS);
+                        response.write_i16(-1);
+                        response.write_string(&account_id);
+                        response.write_u32(0);
+                        session.send_packet(&response).await?;
+                        session.set_account_id(account_id.clone());
+                        tracing::info!(
+                            "[{}] LS auto-registered account: {}",
+                            session.addr(),
+                            account_id
+                        );
+                        return Ok(());
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::error!("[{}] LS auto-registration error: {}", session.addr(), e);
+                        send_result(session, AUTH_FAILED, None).await?;
+                        return Ok(());
+                    }
+                }
+            }
+
             tracing::info!(
                 "[{}] LS login failed (not found): account='{}'",
                 session.addr(),
-                account_id,
+                account_id
             );
             send_result(session, AUTH_NOT_FOUND, None).await?;
         }

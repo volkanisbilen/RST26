@@ -1,0 +1,10 @@
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\file0.pus|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain0.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\FILE1.PUS|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain1.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\file2.pus|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain2.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\FILE3.PUS|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain3.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\file4.pus|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain4.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\FILE5.PUS|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain5.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\file6.pus|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain6.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\ITEMS7.TXT|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain7.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\items8.txt|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain8.bin
+D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\HopeGuard\t_ui\ITEMS9.TXT|D:\26xx HOPEGUARD FINAL\NTT2625-d3d9proxy_birlesik\OPSGUARD\test\asset\asset_plain9.bin

@@ -162,7 +162,7 @@ pub struct NpcInstance {
     pub y: f32,
     /// World Z coordinate.
     pub z: f32,
-    /// Facing direction (0-7, compass directions).
+    /// Facing direction byte sent to the client.
     pub direction: u8,
     /// Region grid X index.
     pub region_x: u16,
@@ -232,11 +232,53 @@ pub fn build_npc_inout(inout_type: u8, npc: &NpcInstance, template: &NpcTemplate
 /// Dispatches to type-specific serialization for type 15 and type 191 NPCs.
 /// All other NPCs use the default 43-byte format.
 pub fn write_npc_info(pkt: &mut Packet, npc: &NpcInstance, tmpl: &NpcTemplate) {
+    if is_native_moraranker_template(tmpl) {
+        write_npc_info_ranker(pkt, npc, tmpl);
+        return;
+    }
+
+    write_npc_info_base(pkt, npc, tmpl);
+}
+
+/// Write the fixed-size/base GetNpcInfo block used inside multi-NPC lists.
+///
+/// `WIZ_REQ_NPCIN` has no per-NPC length marker, so native MORANKER character
+/// extension bytes must not be written there or subsequent NPCs are parsed at
+/// the wrong offset by the client.
+pub fn write_npc_info_base(pkt: &mut Packet, npc: &NpcInstance, tmpl: &NpcTemplate) {
     match tmpl.npc_type {
         15 => write_npc_info_type15(pkt, npc, tmpl),
         191 => write_npc_info_type191(pkt, npc, tmpl),
         _ => write_npc_info_default(pkt, npc, tmpl),
     }
+}
+
+pub fn is_native_moraranker_template(tmpl: &NpcTemplate) -> bool {
+    (31_882..=31_887).contains(&tmpl.s_sid) && (b'R'..=b'W').contains(&tmpl.npc_type)
+}
+
+/// Write the v2615 native MORANKER extension for NPC types R..W (82..=87).
+///
+/// The unpacked client reads a normal GetNpcInfo block followed by a character
+/// name and the appearance values below. Ranker templates are runtime-only and
+/// intentionally store these values in otherwise-unused template fields:
+/// group=race, attack=class, act_type=face, exp=hair RGB, magic1..3=body parts,
+/// selling_group=gloves and money=boots. The two weapon fields retain their
+/// normal meaning.
+fn write_npc_info_ranker(pkt: &mut Packet, npc: &NpcInstance, tmpl: &NpcTemplate) {
+    write_npc_info_default(pkt, npc, tmpl);
+    pkt.write_string(&tmpl.name);
+    pkt.write_u8(tmpl.group);
+    pkt.write_u16(tmpl.attack);
+    pkt.write_u8(tmpl.act_type);
+    pkt.write_u32(tmpl.exp);
+    pkt.write_u32(tmpl.magic_1); // chest
+    pkt.write_u32(tmpl.magic_2); // helmet
+    pkt.write_u32(tmpl.magic_3); // trousers
+    pkt.write_u32(tmpl.selling_group); // gloves
+    pkt.write_u32(tmpl.money); // boots
+    pkt.write_u32(tmpl.weapon_1); // right hand
+    pkt.write_u32(tmpl.weapon_2); // left hand
 }
 
 /// Write GetNpcInfo for **type 15** (barracks / pets).
@@ -289,6 +331,10 @@ fn write_npc_info_type15(pkt: &mut Packet, npc: &NpcInstance, tmpl: &NpcTemplate
                              // Owner name + Pet name — SByte mode: u8 length prefix (NOT u16)
         pkt.write_sbyte_string(&npc.user_name);
         pkt.write_sbyte_string(&npc.pet_name);
+        // The 2625 client reads one more u32 here for type 15 (NPC-in parser, after the pet name
+        // string); 0 means "no skin". Without it every later field shifts by 4 bytes and the pet
+        // is created at the map origin with a wrong nation/level.
+        pkt.write_u32(0);
         pkt.write_u8(npc.nation);
         pkt.write_u8(tmpl.level);
         pkt.write_u16((npc.x * 10.0) as u16);
@@ -403,8 +449,13 @@ fn write_npc_info_default(pkt: &mut Packet, npc: &NpcInstance, tmpl: &NpcTemplat
             // Per-user packets in req_npcin would need user_clan_id for nation=3.
             0u8
         } else if tmpl.s_sid == GUARD_SUMMON {
-            // Guard summons keep their nation (template group) even as monsters.
-            tmpl.group
+            // Guard summons keep their nation even as monsters: the caster's nation when
+            // summoned by a skill, otherwise the template group.
+            if npc.nation != 0 {
+                npc.nation
+            } else {
+                tmpl.group
+            }
         } else if tmpl.is_monster {
             // Regular monsters always send nation=0.
             0u8
@@ -571,8 +622,9 @@ mod tests {
         // Reserved
         assert_eq!(r.read_u16(), Some(0));
         assert_eq!(r.read_u16(), Some(0));
-        // Direction
-        assert_eq!(r.read_u16(), Some(0));
+        // Direction + nation2
+        assert_eq!(r.read_u8(), Some(0));
+        assert_eq!(r.read_u8(), Some(0));
 
         // Should have consumed all data (5 + 43 = 48 bytes)
         assert_eq!(r.remaining(), 0);
@@ -593,6 +645,90 @@ mod tests {
         // No GetNpcInfo for OUT
         assert_eq!(r.remaining(), 0);
         assert_eq!(pkt.data.len(), 5);
+    }
+
+    #[test]
+    fn test_default_npc_preserves_byte_direction() {
+        let mut tmpl = test_template();
+        tmpl.is_monster = false;
+        tmpl.npc_type = 7;
+
+        let mut npc = test_instance();
+        npc.is_monster = false;
+        npc.nation = 1;
+        npc.direction = 130;
+
+        let pkt = build_npc_inout(NPC_IN, &npc, &tmpl);
+
+        assert_eq!(pkt.data.len(), 48);
+        assert_eq!(pkt.data[46], 130);
+        assert_eq!(pkt.data[47], 1);
+    }
+
+    #[test]
+    fn test_native_ranker_extension_packet_format() {
+        let mut tmpl = test_template();
+        tmpl.is_monster = false;
+        tmpl.s_sid = 31_882;
+        tmpl.name = "RankOne".to_string();
+        tmpl.npc_type = b'R';
+        tmpl.group = 12; // race
+        tmpl.attack = 106; // class
+        tmpl.act_type = 3; // face
+        tmpl.exp = 0x0011_2233; // hair RGB
+        tmpl.magic_1 = 210_000_000; // chest
+        tmpl.magic_2 = 210_001_000; // helmet
+        tmpl.magic_3 = 210_002_000; // trousers
+        tmpl.selling_group = 210_003_000; // gloves
+        tmpl.money = 210_004_000; // boots
+        tmpl.weapon_1 = 180_000_000;
+        tmpl.weapon_2 = 170_000_000;
+
+        let mut npc = test_instance();
+        npc.is_monster = false;
+        npc.nation = 1;
+        npc.direction = 130;
+        let pkt = build_npc_inout(NPC_IN, &npc, &tmpl);
+
+        assert_eq!(pkt.data[46], 130);
+        assert_eq!(pkt.data[47], 1);
+
+        let mut reader = PacketReader::new(&pkt.data[48..]);
+        assert_eq!(reader.read_string().as_deref(), Some("RankOne"));
+        assert_eq!(reader.read_u8(), Some(12));
+        assert_eq!(reader.read_u16(), Some(106));
+        assert_eq!(reader.read_u8(), Some(3));
+        assert_eq!(reader.read_u32(), Some(0x0011_2233));
+        assert_eq!(reader.read_u32(), Some(210_000_000));
+        assert_eq!(reader.read_u32(), Some(210_001_000));
+        assert_eq!(reader.read_u32(), Some(210_002_000));
+        assert_eq!(reader.read_u32(), Some(210_003_000));
+        assert_eq!(reader.read_u32(), Some(210_004_000));
+        assert_eq!(reader.read_u32(), Some(180_000_000));
+        assert_eq!(reader.read_u32(), Some(170_000_000));
+        assert_eq!(reader.remaining(), 0);
+    }
+
+    #[test]
+    fn test_native_ranker_base_info_stays_fixed_size_for_req_npcin() {
+        let mut tmpl = test_template();
+        tmpl.is_monster = false;
+        tmpl.s_sid = 31_882;
+        tmpl.npc_type = b'R';
+
+        let mut npc = test_instance();
+        npc.is_monster = false;
+        npc.nation = 1;
+        npc.direction = 130;
+
+        let mut pkt = Packet::new(Opcode::WizReqNpcIn as u8);
+        pkt.write_u16(1);
+        pkt.write_u32(npc.nid);
+        write_npc_info_base(&mut pkt, &npc, &tmpl);
+
+        assert_eq!(pkt.data.len(), 2 + 4 + 43);
+        assert_eq!(pkt.data[47], 130);
+        assert_eq!(pkt.data[48], 1);
     }
 
     #[test]
@@ -906,6 +1042,9 @@ mod tests {
         // Pet name — SByte mode
         let pet_name = r.read_sbyte_string().unwrap();
         assert_eq!(pet_name, "Fluffy");
+
+        // 2625 client reads one extra u32 (pet skin, 0 = none) after the pet name
+        assert_eq!(r.read_u32(), Some(0));
 
         // nation
         assert_eq!(r.read_u8(), Some(2));

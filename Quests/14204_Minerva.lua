@@ -171,9 +171,9 @@ if EVENT == 535 then
 end
 
 if (EVENT == 536) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379047000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 379067000);
+	ITEM_COUNT1 = HowmuchItem(UID, 810095000);
+	ITEM_COUNT2 = HowmuchItem(UID, 810091000);
+	ITEM_COUNT3 = HowmuchItem(UID, 810093000);
 	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 0 and ITEM_COUNT3 > 0) then
 		SelectMsg(UID, 4, 273, 4125, NPC, 41, 537, 27, -1);
 	else

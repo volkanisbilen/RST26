@@ -28,11 +28,11 @@ pub struct LetterRow {
     /// Attached coins (disabled in most servers).
     pub coins: i32,
     /// Read status: 0 = unread, 1 = read.
-    pub b_status: bool,
+    pub b_status: i16,
     /// Deletion flag: 0 = active, 1 = deleted.
-    pub b_deleted: bool,
+    pub b_deleted: i16,
     /// Whether the attached item has been taken.
-    pub item_taken: bool,
+    pub item_taken: i16,
     /// Send date in yy*10000 + mm*100 + dd format.
     pub send_date: i32,
     /// Days remaining before auto-delete.

@@ -25,6 +25,8 @@ impl WorldState {
     const WEAPON_KIND_2H_SPEAR: i32 = 52;
 
     const WEAPON_KIND_BOW: i32 = 70;
+    /// Pseudo slot key for the equipped skill title's elemental bonuses.
+    const ACHIEVE_BONUS_SLOT: usize = 200;
 
     const WEAPON_KIND_CROSSBOW: i32 = 71;
 
@@ -70,6 +72,24 @@ impl WorldState {
             .get(&id)
             .map(|h| h.inventory.clone())
             .unwrap_or_default()
+    }
+
+    /// Return the inventory state that is safe to persist for a normal
+    /// character. Manes consumables live only for the event session and must
+    /// never leak into `user_items`.
+    pub fn get_persistent_inventory(&self, id: SessionId) -> Vec<UserItemSlot> {
+        let mut inventory = self.get_inventory(id);
+        let removed = self
+            .manes_survival_manager
+            .remove_temporary_items(&mut inventory);
+        if removed > 0 {
+            tracing::info!(
+                "Inventory persistence removed {} temporary Manes item slot(s) for sid={}",
+                removed,
+                id
+            );
+        }
+        inventory
     }
     /// Get a single inventory slot for a session.
     pub fn get_inventory_slot(&self, id: SessionId, slot: usize) -> Option<UserItemSlot> {
@@ -236,7 +256,7 @@ impl WorldState {
     ///   and duplicate-flagged items.
     /// - Set items: armor with race >= 100 accumulates a set ID; after the loop,
     ///   matching set bonuses are looked up and applied.
-    fn compute_slot_item_values(&self, inventory: &[UserItemSlot]) -> EquippedStats {
+    pub(crate) fn compute_slot_item_values(&self, inventory: &[UserItemSlot]) -> EquippedStats {
         let mut stats = EquippedStats {
             item_hitrate: 100,
             item_evasionrate: 100,
@@ -518,7 +538,7 @@ impl WorldState {
         }
 
         // ── Phase 1: Snapshot session data (brief read lock) ────────────
-        let (ch, inventory, perk_levels, achieve_stat, weight_buff, buff) = {
+        let (ch, inventory, perk_levels, mut achieve_stat, achieve_title_idx, weight_buff, buff) = {
             let handle = match self.sessions.get(&sid) {
                 Some(h) => h,
                 None => return,
@@ -530,6 +550,7 @@ impl WorldState {
             let inventory = handle.inventory.clone();
             let perk_levels = handle.perk_levels;
             let achieve_stat = handle.achieve_stat_bonuses;
+            let achieve_title_idx = handle.achieve_title_idx;
             let weight_buff = handle.weight_buff_amount;
 
             // Single-pass buff aggregation — replaces 5 separate iterations.
@@ -560,7 +581,7 @@ impl WorldState {
                     ba.mp_pct += b.max_mp_pct - 100;
                 }
             }
-            (ch, inventory, perk_levels, achieve_stat, weight_buff, ba)
+            (ch, inventory, perk_levels, achieve_stat, achieve_title_idx, weight_buff, ba)
         }; // Read lock dropped.
 
         // ── Phase 2: Compute stats (no session lock held) ───────────────
@@ -569,6 +590,48 @@ impl WorldState {
         let is_gm = ch.authority == 0;
         let coeff_row = self.get_coefficient(ch.class);
         let mut stats = self.compute_slot_item_values(&inventory);
+
+        // Equipped skill title: its stat bonuses count as item bonuses (so the client's
+        // stat window and every formula see them), plus resistances, weapon AC, element
+        // damage and EXP/NP bonus. The attack/defence part stays in `achieve_stat`.
+        if achieve_title_idx > 0 {
+            if let Some(t) = self.achieve_title(achieve_title_idx) {
+                stats.stat_bonuses[0] += achieve_stat[0];
+                stats.stat_bonuses[1] += achieve_stat[1];
+                stats.stat_bonuses[2] += achieve_stat[2];
+                stats.stat_bonuses[3] += achieve_stat[3];
+                stats.stat_bonuses[4] += achieve_stat[4];
+                achieve_stat[..5].fill(0);
+                stats.fire_r += t.s_fire_resist;
+                stats.cold_r += t.s_ice_resist;
+                stats.lightning_r += t.s_light_resist;
+                stats.magic_r += t.s_magic_resist;
+                stats.disease_r += t.s_curse_resist;
+                stats.poison_r += t.s_poison_resist;
+                stats.dagger_r += t.s_short_sword_ac;
+                stats.jamadar_r += t.s_jamadar_ac;
+                stats.sword_r += t.s_sword_ac;
+                stats.club_r += t.s_blow_ac;
+                stats.axe_r += t.s_axe_ac;
+                stats.spear_r += t.s_spear_ac;
+                stats.bow_r += t.s_arrow_ac;
+                stats.item_exp_bonus = stats.item_exp_bonus.saturating_add(t.s_exp_bonus.max(0) as u8);
+                stats.item_np_bonus = stats.item_np_bonus.saturating_add(t.s_loyalty_bonus.max(0) as u8);
+                let mut el: Vec<(u8, i32)> = Vec::new();
+                if t.s_fire_bonus > 0 {
+                    el.push((1, t.s_fire_bonus as i32));
+                }
+                if t.s_ice_bonus > 0 {
+                    el.push((2, t.s_ice_bonus as i32));
+                }
+                if t.s_light_bonus > 0 {
+                    el.push((3, t.s_light_bonus as i32));
+                }
+                if !el.is_empty() {
+                    stats.equipped_item_bonuses.insert(Self::ACHIEVE_BONUS_SLOT, el);
+                }
+            }
+        }
 
         // Pre-fetch perk definitions for all indices used in ability calculation.
         // Batches 5 DashMap lookups into one contiguous block instead of scattering
@@ -600,7 +663,11 @@ impl WorldState {
             // ── Castellan cape bonuses (C++ User.cpp:2377-2391) ──────
             if ch.knights_id > 0 {
                 if let Some(knights) = self.get_knights(ch.knights_id) {
-                    let cape_row = if knights.castellan_cape {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as u32;
+                    let cape_row = if knights.castellan_cape && knights.cast_cape_time >= now {
                         self.get_knights_cape(knights.cast_cape_id)
                     } else {
                         self.get_knights_cape(knights.cape as i16)
@@ -613,6 +680,15 @@ impl WorldState {
                         }
                     }
                 }
+            }
+
+            // ── Solo Cape bonuses: +300 HP, +5 % attack, +5 % defence ──
+            if crate::handler::solo_cape::has(&ch.name) {
+                stats.item_max_hp += crate::handler::solo_cape::BONUS_HP;
+                stats.ap_bonus_amount = stats
+                    .ap_bonus_amount
+                    .saturating_add(crate::handler::solo_cape::BONUS_ATTACK_PCT);
+                stats.item_ac += (stats.item_ac as i32 * crate::handler::solo_cape::BONUS_DEFENCE_PCT / 100) as i16;
             }
 
             // Weapon power calculation
@@ -1046,6 +1122,16 @@ impl WorldState {
         };
         let new_max_mp = (mp_before_buff + buff_mp_bonus).clamp(0, i16::MAX as i32) as i16;
 
+        // Event vitals win over the real character's formula: Manes level vitals and the
+        // Full Moon Rift's equalized HP must survive every recalculation (item, buff, death).
+        let (new_max_hp, new_max_mp) = match self.manes_survival_manager.vitals_override(sid) {
+            Some((hp, mp)) => (hp, mp),
+            None if crate::handler::dungeon_defence::is_equalized(sid) => {
+                (crate::handler::dungeon_defence::RIFT_HP, new_max_mp)
+            }
+            None => (new_max_hp, new_max_mp),
+        };
+
         // ── Phase 3: Apply results (brief write lock) ───────────────
         let mut max_hp_changed: Option<i32> = None;
         if let Some(mut handle) = self.sessions.get_mut(&sid) {
@@ -1247,6 +1333,10 @@ impl WorldState {
                 pkt.write_u16(durability);
                 pkt.write_u32(0); // reserved
                 pkt.write_u32(0); // expiration
+                // v2625 SendStackChange has a trailing u16 after expiration.
+                // Omitting it leaves the client packet reader misaligned and can
+                // leave a consumed stack visible as "0" until a full refresh.
+                pkt.write_u16(0);
                 self.send_to_session_owned(sid, pkt);
 
                 // C++ SendStackChange calls SetUserAbility(false) + SendItemWeight()
@@ -1336,6 +1426,7 @@ impl WorldState {
                 pkt.write_u16(durability);
                 pkt.write_u32(0);
                 pkt.write_u32(exp);
+                pkt.write_u16(0); // v2625 SendStackChange trailing field
                 self.send_to_session_owned(sid, pkt);
 
                 // Weight notification is now integrated into set_user_ability().
@@ -1498,6 +1589,7 @@ impl WorldState {
                 pkt.write_u16(durability);
                 pkt.write_u32(0); // reserved
                 pkt.write_u32(0); // expiration
+                pkt.write_u16(0); // v2625 SendStackChange trailing field
                 self.send_to_session_owned(sid, pkt);
 
                 // Weight notification is now integrated into set_user_ability().
@@ -1505,6 +1597,44 @@ impl WorldState {
             }
         }
 
+        ok
+    }
+    /// Take exactly one piece of an item out of the bag, whatever its kind (unlike `rob_item`, a
+    /// consumable scroll loses its stack count, not a usage counter). Used when a reward is sold or banked.
+    pub fn take_one_item(&self, sid: SessionId, item_id: u32) -> bool {
+        let mut info: Option<(u8, u32, u16)> = None;
+        let ok = self.update_inventory(sid, |inv| {
+            for i in Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX) {
+                if let Some(slot) = inv.get_mut(i) {
+                    if slot.item_id != item_id || slot.count == 0 {
+                        continue;
+                    }
+                    slot.count -= 1;
+                    let (count, durability) = (slot.count, slot.durability);
+                    if slot.count == 0 {
+                        *slot = UserItemSlot::default();
+                    }
+                    info = Some(((i - Self::SLOT_MAX) as u8, count as u32, durability.max(0) as u16));
+                    return true;
+                }
+            }
+            false
+        });
+        if let (true, Some((pos, count, durability))) = (ok, info) {
+            let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+            pkt.write_u16(1);
+            pkt.write_u8(1);
+            pkt.write_u8(pos);
+            pkt.write_u32(item_id);
+            pkt.write_u32(count);
+            pkt.write_u8(0);
+            pkt.write_u16(durability);
+            pkt.write_u32(0);
+            pkt.write_u32(0);
+            pkt.write_u16(0);
+            self.send_to_session_owned(sid, pkt);
+            self.set_user_ability(sid);
+        }
         ok
     }
     /// Remove ALL copies of an item from a player's bag slots.
@@ -1542,6 +1672,7 @@ impl WorldState {
                 pkt.write_u16(0);
                 pkt.write_u32(0);
                 pkt.write_u32(0);
+                pkt.write_u16(0); // v2625 SendStackChange trailing field
                 self.send_to_session_owned(sid, pkt);
             }
             // Weight notification is now integrated into set_user_ability().
@@ -2265,7 +2396,7 @@ mod tests {
         assert_eq!(r.read_u16(), Some(duration as u16)); // durability
         assert_eq!(r.read_u32(), Some(0)); // reserved
         assert_eq!(r.read_u32(), Some(0)); // expiration
-        // v2600: no trailing u16 padding (sniff verified)
+                                           // v2600: no trailing u16 padding (sniff verified)
 
         // Verify WIZ_WEIGHT_CHANGE packet (C++ SendStackChange calls SendItemWeight)
         let weight_pkt = rx.try_recv().expect("should have received weight packet");
@@ -2298,7 +2429,7 @@ mod tests {
         assert_eq!(r.read_u16(), Some(duration as u16)); // durability unchanged
         assert_eq!(r.read_u32(), Some(0)); // reserved
         assert_eq!(r.read_u32(), Some(0)); // expiration
-        // v2600: no trailing u16 padding (sniff verified)
+                                           // v2600: no trailing u16 padding (sniff verified)
 
         // Verify WIZ_WEIGHT_CHANGE packet
         let weight_pkt = rx.try_recv().expect("should have received weight packet");
@@ -3772,9 +3903,9 @@ mod tests {
         let s1 = world.generate_item_serial();
         let s2 = world.generate_item_serial();
         let s3 = world.generate_item_serial();
-        assert_eq!(s1, 1);
-        assert_eq!(s2, 2);
-        assert_eq!(s3, 3);
+        assert!(s1 > 0);
+        assert_eq!(s2, s1 + 1);
+        assert_eq!(s3, s2 + 1);
     }
 
     #[test]
@@ -4275,7 +4406,7 @@ mod tests {
             cast_cape_r: 0,
             cast_cape_g: 0,
             cast_cape_b: 0,
-            cast_cape_time: 0,
+            cast_cape_time: u32::MAX,
             alliance_req: 0,
             clan_point_method: 0,
             premium_time: 0,
@@ -5163,6 +5294,58 @@ mod tests {
         assert_eq!(stats.total_ac, 8);
     }
 
+    /// A skill title counts as item bonus: stat window, resistances, weapon AC and EXP/NP bonus.
+    #[test]
+    fn test_achievement_title_full_bonus() {
+        let world = setup_equip_world();
+        world.coefficients.insert(101, make_test_coeff(101));
+        world.achieve_title.insert(
+            7,
+            ko_db::models::AchieveTitleRow {
+                s_index: 7,
+                str: 4,
+                hp: 3,
+                dex: 2,
+                int: 1,
+                mp: 5,
+                attack: 0,
+                defence: 0,
+                s_loyalty_bonus: 20,
+                s_exp_bonus: 10,
+                s_short_sword_ac: 1,
+                s_jamadar_ac: 0,
+                s_sword_ac: 2,
+                s_blow_ac: 0,
+                s_axe_ac: 0,
+                s_spear_ac: 0,
+                s_arrow_ac: 3,
+                s_fire_bonus: 6,
+                s_ice_bonus: 0,
+                s_light_bonus: 0,
+                s_fire_resist: 8,
+                s_ice_resist: 0,
+                s_light_resist: 0,
+                s_magic_resist: 9,
+                s_curse_resist: 0,
+                s_poison_resist: 0,
+            },
+        );
+        if let Some(mut h) = world.sessions.get_mut(&1) {
+            h.achieve_title_idx = 7;
+            h.achieve_stat_bonuses = [4, 3, 2, 1, 5, 0, 0];
+        }
+        world.set_user_ability(1);
+        let st = world.get_equipped_stats(1);
+        assert_eq!(st.stat_bonuses, [4, 3, 2, 1, 5]);
+        assert_eq!((st.fire_r, st.magic_r), (8, 9));
+        assert_eq!((st.dagger_r, st.sword_r, st.bow_r), (1, 2, 3));
+        assert_eq!((st.item_exp_bonus, st.item_np_bonus), (10, 20));
+        assert_eq!(st.equipped_item_bonuses.values().next(), Some(&vec![(1u8, 6)]));
+        // running it again must not stack the bonus
+        world.set_user_ability(1);
+        assert_eq!(world.get_equipped_stats(1).stat_bonuses, [4, 3, 2, 1, 5]);
+    }
+
     /// Achievement bonuses with zero or negative values should not be applied.
     #[test]
     fn test_achievement_zero_bonus_no_change() {
@@ -5977,8 +6160,16 @@ mod tests {
         let inv = vec![UserItemSlot::default(); INVENTORY_TOTAL];
         world.set_inventory(1, inv);
         world.update_inventory(1, |inv| {
-            inv[14] = UserItemSlot { item_id: 100000, count: 1, ..Default::default() };
-            inv[15] = UserItemSlot { item_id: 200000, count: 1, ..Default::default() };
+            inv[14] = UserItemSlot {
+                item_id: 100000,
+                count: 1,
+                ..Default::default()
+            };
+            inv[15] = UserItemSlot {
+                item_id: 200000,
+                count: 1,
+                ..Default::default()
+            };
             true
         });
         assert_eq!(world.count_free_inventory_slots(1), 26); // 28 - 2
@@ -5991,20 +6182,67 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         world.register_session(1, tx);
         let info = CharacterInfo {
-            session_id: 1, name: "GoldTest".into(), nation: 1, race: 1,
-            class: 101, level: 60, face: 1, hair_rgb: 0, rank: 0, title: 0,
-            max_hp: 500, hp: 500, max_mp: 200, mp: 200, max_sp: 0, sp: 0,
-            equipped_items: [0; 14], bind_zone: 21, bind_x: 0.0, bind_z: 0.0,
-            str: 60, sta: 60, dex: 60, intel: 60, cha: 60, free_points: 0,
-            skill_points: [0u8; 10], gold: 100, loyalty: 0, loyalty_monthly: 0,
-            authority: 1, knights_id: 0, fame: 0, party_id: None,
-            exp: 0, max_exp: 0, exp_seal_status: false, sealed_exp: 0,
-            item_weight: 0, max_weight: 5000, res_hp_type: 0x01,
-            rival_id: -1, rival_expiry_time: 0, anger_gauge: 0,
-            manner_point: 0, rebirth_level: 0, reb_str: 0, reb_sta: 0,
-            reb_dex: 0, reb_intel: 0, reb_cha: 0, cover_title: 0,
+            session_id: 1,
+            name: "GoldTest".into(),
+            nation: 1,
+            race: 1,
+            class: 101,
+            level: 60,
+            face: 1,
+            hair_rgb: 0,
+            rank: 0,
+            title: 0,
+            max_hp: 500,
+            hp: 500,
+            max_mp: 200,
+            mp: 200,
+            max_sp: 0,
+            sp: 0,
+            equipped_items: [0; 14],
+            bind_zone: 21,
+            bind_x: 0.0,
+            bind_z: 0.0,
+            str: 60,
+            sta: 60,
+            dex: 60,
+            intel: 60,
+            cha: 60,
+            free_points: 0,
+            skill_points: [0u8; 10],
+            gold: 100,
+            loyalty: 0,
+            loyalty_monthly: 0,
+            authority: 1,
+            knights_id: 0,
+            fame: 0,
+            party_id: None,
+            exp: 0,
+            max_exp: 0,
+            exp_seal_status: false,
+            sealed_exp: 0,
+            item_weight: 0,
+            max_weight: 5000,
+            res_hp_type: 0x01,
+            rival_id: -1,
+            rival_expiry_time: 0,
+            anger_gauge: 0,
+            manner_point: 0,
+            rebirth_level: 0,
+            reb_str: 0,
+            reb_sta: 0,
+            reb_dex: 0,
+            reb_intel: 0,
+            reb_cha: 0,
+            cover_title: 0,
         };
-        let pos = Position { zone_id: 21, x: 50.0, y: 0.0, z: 50.0, region_x: 0, region_z: 0 };
+        let pos = Position {
+            zone_id: 21,
+            x: 50.0,
+            y: 0.0,
+            z: 50.0,
+            region_x: 0,
+            region_z: 0,
+        };
         world.register_ingame(1, info, pos);
         let inv = vec![UserItemSlot::default(); INVENTORY_TOTAL];
         world.set_inventory(1, inv);
@@ -6025,10 +6263,22 @@ mod tests {
     /// Weapon kind constants: 2H variants are always 1H + 1.
     #[test]
     fn test_weapon_kind_2h_offset() {
-        assert_eq!(WorldState::WEAPON_KIND_2H_SWORD, WorldState::WEAPON_KIND_1H_SWORD + 1);
-        assert_eq!(WorldState::WEAPON_KIND_2H_AXE, WorldState::WEAPON_KIND_1H_AXE + 1);
-        assert_eq!(WorldState::WEAPON_KIND_2H_CLUP, WorldState::WEAPON_KIND_1H_CLUP + 1);
-        assert_eq!(WorldState::WEAPON_KIND_2H_SPEAR, WorldState::WEAPON_KIND_1H_SPEAR + 1);
+        assert_eq!(
+            WorldState::WEAPON_KIND_2H_SWORD,
+            WorldState::WEAPON_KIND_1H_SWORD + 1
+        );
+        assert_eq!(
+            WorldState::WEAPON_KIND_2H_AXE,
+            WorldState::WEAPON_KIND_1H_AXE + 1
+        );
+        assert_eq!(
+            WorldState::WEAPON_KIND_2H_CLUP,
+            WorldState::WEAPON_KIND_1H_CLUP + 1
+        );
+        assert_eq!(
+            WorldState::WEAPON_KIND_2H_SPEAR,
+            WorldState::WEAPON_KIND_1H_SPEAR + 1
+        );
     }
 
     /// Weapon kind range: dagger (11) is lowest, mace (181) is highest.
@@ -6038,11 +6288,16 @@ mod tests {
         assert_eq!(WorldState::WEAPON_KIND_MACE, 181);
         // All weapon kinds are distinct and positive
         let kinds = [
-            WorldState::WEAPON_KIND_DAGGER, WorldState::WEAPON_KIND_1H_SWORD,
-            WorldState::WEAPON_KIND_2H_SWORD, WorldState::WEAPON_KIND_1H_AXE,
-            WorldState::WEAPON_KIND_2H_AXE, WorldState::WEAPON_KIND_BOW,
-            WorldState::WEAPON_KIND_CROSSBOW, WorldState::WEAPON_KIND_STAFF,
-            WorldState::WEAPON_KIND_JAMADHAR, WorldState::WEAPON_KIND_MACE,
+            WorldState::WEAPON_KIND_DAGGER,
+            WorldState::WEAPON_KIND_1H_SWORD,
+            WorldState::WEAPON_KIND_2H_SWORD,
+            WorldState::WEAPON_KIND_1H_AXE,
+            WorldState::WEAPON_KIND_2H_AXE,
+            WorldState::WEAPON_KIND_BOW,
+            WorldState::WEAPON_KIND_CROSSBOW,
+            WorldState::WEAPON_KIND_STAFF,
+            WorldState::WEAPON_KIND_JAMADHAR,
+            WorldState::WEAPON_KIND_MACE,
         ];
         assert!(kinds.iter().all(|&k| k > 0));
     }
@@ -6081,7 +6336,10 @@ mod tests {
         assert_eq!(WorldState::COSP_MAX, 11);
         assert_eq!(WorldState::INVENTORY_MBAG, 53);
         // MBAG = COSP + COSP_MAX
-        assert_eq!(WorldState::INVENTORY_MBAG, WorldState::INVENTORY_COSP + WorldState::COSP_MAX);
+        assert_eq!(
+            WorldState::INVENTORY_MBAG,
+            WorldState::INVENTORY_COSP + WorldState::COSP_MAX
+        );
     }
 
     /// Bag slots 1 and 2 are adjacent at positions 51 and 52.
@@ -6107,7 +6365,10 @@ mod tests {
         assert_eq!(WorldState::ITEM_TYPE_MP_DRAIN, 7);
         assert_eq!(WorldState::ITEM_TYPE_MIRROR_DAMAGE, 8);
         // 8 contiguous types (1-8)
-        assert_eq!(WorldState::ITEM_TYPE_MIRROR_DAMAGE - WorldState::ITEM_TYPE_FIRE, 7);
+        assert_eq!(
+            WorldState::ITEM_TYPE_MIRROR_DAMAGE - WorldState::ITEM_TYPE_FIRE,
+            7
+        );
     }
 
     /// Armor slot indices: Helmet(7), Pauldron(5), Pads(6), Gloves(8), Boots(9).

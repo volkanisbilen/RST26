@@ -4,7 +4,7 @@
 //! ## Response (Server → Client)
 //! | Offset | Type  | Description               |
 //! |--------|-------|---------------------------|
-//! | 0      | u16le | Protocol version (e.g. 2369) |
+//! | 0      | u16le | Launcher patch version (2625) |
 
 use ko_protocol::{LoginOpcode, Packet};
 
@@ -31,13 +31,13 @@ mod tests {
     #[test]
     fn test_version_response_format() {
         // Response: [u16le version]
-        let version: u16 = 2369;
+        let version: u16 = 2625;
         let mut response = Packet::new(LoginOpcode::LsVersionReq as u8);
         response.write_u16(version);
 
         assert_eq!(response.opcode, LoginOpcode::LsVersionReq as u8);
         let mut reader = PacketReader::new(&response.data);
-        assert_eq!(reader.read_u16(), Some(2369));
+        assert_eq!(reader.read_u16(), Some(2625));
     }
 
     #[test]
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn test_version_various_values() {
         // Different server versions should all serialize correctly
-        for ver in [1, 2369, 2525, u16::MAX] {
+        for ver in [1, 2369, 2525, 2625, u16::MAX] {
             let mut pkt = Packet::new(LoginOpcode::LsVersionReq as u8);
             pkt.write_u16(ver);
 
@@ -61,17 +61,17 @@ mod tests {
     #[test]
     fn test_version_response_length() {
         let mut pkt = Packet::new(LoginOpcode::LsVersionReq as u8);
-        pkt.write_u16(2525);
+        pkt.write_u16(2625);
         assert_eq!(pkt.data.len(), 2);
     }
 
-    /// Version 2525 LE byte order: [0xDD, 0x09].
+    /// Version 2625 LE byte order: [0x41, 0x0A].
     #[test]
     fn test_version_le_byte_order() {
         let mut pkt = Packet::new(LoginOpcode::LsVersionReq as u8);
-        pkt.write_u16(2525);
-        assert_eq!(pkt.data[0], 0xDD); // 2525 & 0xFF
-        assert_eq!(pkt.data[1], 0x09); // 2525 >> 8
+        pkt.write_u16(2625);
+        assert_eq!(pkt.data[0], 0x41); // 2625 & 0xFF
+        assert_eq!(pkt.data[1], 0x0A); // 2625 >> 8
     }
 
     // ── Sprint 940: Additional coverage ──────────────────────────────
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_version_reader_exhausted() {
         let mut pkt = Packet::new(LoginOpcode::LsVersionReq as u8);
-        pkt.write_u16(2525);
+        pkt.write_u16(2625);
         let mut r = PacketReader::new(&pkt.data);
         r.read_u16();
         assert_eq!(r.remaining(), 0);

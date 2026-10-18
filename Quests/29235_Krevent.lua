@@ -15,9 +15,19 @@ if (EVENT == 101) then
 	SelectMsg(UID, 2, -1, 11624, NPC, 45217, 3001 --[[ TODO: unknown ]], 45441, 3001 --[[ TODO: unknown ]], 65555, 3001 --[[ TODO: unknown ]], 65556, 3001 --[[ TODO: unknown ]], 65550, 3001 --[[ TODO: unknown ]], 45216, 3001 --[[ TODO: unknown ]], 45446, 3001 --[[ TODO: unknown ]], 45548, 3001 --[[ TODO: unknown ]]);
 end
 
--- header=44727 flag=3
+-- Moon God titles: Grace of the Moon God (930661000) -> achievement
 if (EVENT == 102) then
-	SelectMsg(UID, 3, -1, 44727, NPC, 40791, 103, 40792, 104, 40793, 104, 40794, 104, 40795, 104);
+	SelectMsg(UID, 3, -1, 44727, NPC, 40791, 110, 40792, 111, 40793, 112, 40794, 113, 40795, 114);
+end
+
+local TITLE_COST = { [110] = {463, 1}, [111] = {464, 5}, [112] = {465, 10}, [113] = {466, 10}, [114] = {467, 10} };
+if (TITLE_COST[EVENT] ~= nil) then
+	local r = ExchangeItemForAchievement(UID, 930661000, TITLE_COST[EVENT][2], TITLE_COST[EVENT][1]);
+	if (r == 1) then
+		SelectMsg(UID, 3, -1, 9425, NPC, 27, 3001);
+	else
+		SelectMsg(UID, 3, -1, 12208, NPC, 27, 3001);
+	end
 end
 
 -- header=9425 flag=3

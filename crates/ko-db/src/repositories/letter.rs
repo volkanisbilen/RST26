@@ -170,13 +170,11 @@ impl<'a> LetterRepository<'a> {
     /// Delete a letter (soft delete).
     ///
     pub async fn delete_letter(&self, recipient: &str, letter_id: i32) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "UPDATE letter SET b_deleted = 1 WHERE letter_id = $1 AND recipient_name = $2",
-        )
-        .bind(letter_id)
-        .bind(recipient)
-        .execute(self.pool)
-        .await?;
+        sqlx::query("UPDATE letter SET b_deleted = 1 WHERE letter_id = $1 AND recipient_name = $2")
+            .bind(letter_id)
+            .bind(recipient)
+            .execute(self.pool)
+            .await?;
 
         Ok(())
     }

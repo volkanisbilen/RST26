@@ -45,6 +45,32 @@ pub fn build_clan_premium(sub_opcode: u8, result: u8) -> Packet {
     pkt
 }
 
+/// Refreshes the clan premium state of every online member.
+///
+/// The client drops its clan premium display 60 seconds after the last status packet (it then falls
+/// back to its "PC cafe" label), so the server repeats the packet every ~25 seconds with the
+/// remaining time, and switches it off for everybody when the clan premium runs out.
+pub fn tick(world: &crate::world::WorldState) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    for sid in world.collect_sessions_by(|h| h.clan_premium_in_use > 0) {
+        let clan_id = world
+            .get_character_info(sid)
+            .map(|c| c.knights_id)
+            .unwrap_or(0);
+        let premium_time = world.get_knights(clan_id).map(|k| k.premium_time).unwrap_or(0);
+        if clan_id > 0 && premium_time > now {
+            let minutes = (premium_time - now) / 60;
+            world.send_to_session_owned(sid, super::premium::build_clan_premium_packet(true, minutes.max(1)));
+        } else {
+            world.update_session(sid, |h| h.clan_premium_in_use = 0);
+            world.send_to_session_owned(sid, super::premium::build_clan_premium_packet(false, 0));
+        }
+    }
+}
+
 /// Clan premium sub-opcode: query result.
 pub const CLAN_PREMIUM_QUERY: u8 = 1;
 

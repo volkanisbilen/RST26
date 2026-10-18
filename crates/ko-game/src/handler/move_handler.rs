@@ -34,6 +34,16 @@ const MAX_CAUGHT_COUNT: u8 = 3;
 /// Time window (ms) for echo anomaly detection.
 const CAUGHT_TIME_WINDOW_MS: u64 = 1100;
 
+/// Average two packed movement coordinates without overflowing `u16`.
+///
+/// The client can use `u16::MAX` as the terrain-Y sentinel immediately after
+/// a zone change. Adding two packed coordinates as `u16` therefore panics in
+/// debug builds before the division can bring the result back into range.
+#[inline]
+fn average_packed_coord(a: u16, b: u16) -> u16 {
+    ((a as u32 + b as u32) / 2) as u16
+}
+
 /// Handle WIZ_MOVE from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
@@ -223,9 +233,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     // ── Position correction based on distance/speed ratio ────────────
     if snap.old_speed == 0 && echo == ECHO_START {
-        will_x = (will_x + cur_x) / 2;
-        will_y = (will_y + cur_y) / 2;
-        will_z = (will_z + cur_z) / 2;
+        will_x = average_packed_coord(will_x, cur_x);
+        will_y = average_packed_coord(will_y, cur_y);
+        will_z = average_packed_coord(will_z, cur_z);
     } else if speed != 0 {
         // GetDistance returns squared distance (no sqrt)
         let dist = get_distance_scaled(f_will_x, f_will_z, will_x, will_z);
@@ -233,9 +243,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
         if ratio > 8.0 && ratio < 10.0 {
             // Average with current position
-            will_x = (will_x + cur_x) / 2;
-            will_y = (will_y + cur_y) / 2;
-            will_z = (will_z + cur_z) / 2;
+            will_x = average_packed_coord(will_x, cur_x);
+            will_y = average_packed_coord(will_y, cur_y);
+            will_z = average_packed_coord(will_z, cur_z);
         } else if ratio >= 12.0 {
             // Snap to current position
             will_x = cur_x;
@@ -412,6 +422,10 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             //   NpcInOutForMe() is COMMENTED OUT in C++ (User.h:886) — client reconstructs
             //   NPC details from local data after receiving NPC_REGION ID list.
             region::send_region_npc_info_for_me(session).await?;
+            // Resend the visible NPC records with the region ID list. Some
+            // client builds do not instantiate every cached NPC from the ID
+            // list alone, leaving town NPCs invisible until the next refresh.
+            region::send_nearby_npc_inouts(session).await?;
             region::send_region_user_in_out_for_me(session).await?;
             region::send_merchant_user_in_out_for_me(session).await?;
 
@@ -447,9 +461,14 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if let Some(event) = zone.check_event(x, z) {
             match event.event_type {
                 GameEventType::ZoneChange => {
-                    let dest_zone = event.exec[0] as u16;
-                    let dest_x = event.exec[1] as f32;
-                    let dest_z = event.exec[2] as f32;
+                    let raw_zone = event.exec[0] as u16;
+                    let dest_zone = super::warp_list::resolve_active_battle_warp(&world, raw_zone);
+                    let (dest_x, dest_z) = if (61..=66).contains(&raw_zone) {
+                        // Each war map has separate nation start positions.
+                        (0.0, 0.0)
+                    } else {
+                        (event.exec[1] as f32, event.exec[2] as f32)
+                    };
                     zone_change::trigger_zone_change(session, dest_zone, dest_x, dest_z).await?;
                 }
                 GameEventType::TrapDead => {
@@ -497,6 +516,33 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
+    // Under The Castle has an internal, walk-up transition gate after the
+    // final physical door. It is handled by CUser::EventTrapProcess() in the
+    // reference server rather than by an NPC or a .aievt entry.
+    if zone_id == super::under_castle::ZONE_UNDER_CASTLE
+        && world
+            .under_the_castle_state()
+            .is_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+        && super::under_castle::is_at_final_boss_transition_gate(x, z)
+    {
+        tracing::info!(
+            sid,
+            x,
+            z,
+            destination_x = super::under_castle::UTC_FINAL_BOSS_WARP_X,
+            destination_z = super::under_castle::UTC_FINAL_BOSS_WARP_Z,
+            "Under The Castle: final boss transition gate triggered"
+        );
+        zone_change::same_zone_warp(
+            session,
+            super::under_castle::UTC_FINAL_BOSS_WARP_X,
+            super::under_castle::UTC_FINAL_BOSS_WARP_Z,
+        )
+        .await?;
+        return Ok(());
+    }
+
     // ── BDW altar delivery check ────────────────────────────────────────
     // Called at end of every move handler when in zone 84.
     if zone_id == crate::systems::bdw::ZONE_BDW {
@@ -510,9 +556,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     if zone_id == crate::world::ZONE_BATTLE6 {
         let is_nation_battle = world.get_battle_state().is_nation_battle();
         let is_gm = snap.authority == 0; // GM_AUTHORITY
-        let terrain = super::terrain_effects::evaluate_terrain(
-            zone_id, is_nation_battle, is_gm, x, z,
-        );
+        let terrain =
+            super::terrain_effects::evaluate_terrain(zone_id, is_nation_battle, is_gm, x, z);
         let pkt = super::terrain_effects::build_terrain_effects_packet(terrain);
         world.send_to_session(sid, &pkt);
     }
@@ -713,7 +758,7 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
     /// Distance threshold for pet follow (squared): 10 m.
     ///
     /// Note: `GetDistanceSqrt` returns ACTUAL distance (with sqrt), not squared.
-    const PET_FOLLOW_DIST: f32 = 10.0;
+    const PET_FOLLOW_DIST: f32 = 4.0;
 
     use super::pet::MODE_ATTACK;
 
@@ -765,6 +810,7 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
             if let Some(ref mut pet) = h.pet_data {
                 pet.attack_started = false;
                 pet.attack_target_id = -1;
+                pet.pending_attack_skill_id = 0;
             }
         });
     }
@@ -778,32 +824,89 @@ fn pet_follow_on_move(world: &WorldState, sid: SessionId, speed: i16, old_x: f32
     let new_x = old_x + dir_x * 2.0;
     let new_z = old_z + dir_z * 2.0;
 
-    // Update pet NPC position
-    world.update_npc_position(pet_nid as u32, new_x, new_z);
+    let event_room = world.get_event_room(sid);
+    move_follower_npc(world, pet_nid as u32, new_x, new_z, distance, event_room);
+}
+
+/// Move a runtime follower NPC (familiar, slave priest) to a new place and tell the players around it,
+/// including the NPC_OUT / NPC_IN pair when it crosses a region border.
+pub fn move_follower_npc(world: &WorldState, nid: u32, new_x: f32, new_z: f32, speed: f32, event_room: u16) {
+    let Some(npc_before) = world.get_npc_instance(nid) else {
+        return;
+    };
+    world.move_runtime_npc(nid, new_x, new_z);
 
     // Broadcast pet move: WIZ_NPC_MOVE
     let mut move_pkt = Packet::new(Opcode::WizNpcMove as u8);
     move_pkt.write_u8(1); // move type
-    move_pkt.write_u32(pet_nid as u32);
+    move_pkt.write_u32(nid);
     move_pkt.write_u16((new_x * 10.0) as u16);
     move_pkt.write_u16((new_z * 10.0) as u16);
-    move_pkt.write_u16(0); // y * 10
-    move_pkt.write_u16((distance * 10.0) as u16); // speed
+    move_pkt.write_u16((npc_before.y.max(0.0) * 10.0) as u16);
+    move_pkt.write_u16((speed * 10.0) as u16);
 
-    let event_room = world.get_event_room(sid);
     world.broadcast_to_3x3(
-        player_pos.zone_id,
-        player_pos.region_x,
-        player_pos.region_z,
-        Arc::new(move_pkt),
+        npc_before.zone_id,
+        npc_before.region_x,
+        npc_before.region_z,
+        Arc::new(move_pkt.clone()),
         None,
         event_room,
     );
+    if let Some(updated) = world.get_npc_instance(nid) {
+        if updated.region_x != npc_before.region_x || updated.region_z != npc_before.region_z {
+            // The pet crossed a region border: players who only see the new region have never
+            // received it, and players who lost sight of it still hold the old NPC. Send NPC_OUT
+            // to the old 3x3 and NPC_IN (with the pet's own model) to the new 3x3.
+            if let Some(template) = world.get_npc_template(updated.proto_id, updated.is_monster) {
+                let visual = world.npc_visual_template(&updated, &template);
+                world.broadcast_to_3x3(
+                    npc_before.zone_id,
+                    npc_before.region_x,
+                    npc_before.region_z,
+                    Arc::new(crate::npc::build_npc_inout(
+                        crate::npc::NPC_OUT,
+                        &npc_before,
+                        &template,
+                    )),
+                    None,
+                    event_room,
+                );
+                world.broadcast_to_3x3(
+                    updated.zone_id,
+                    updated.region_x,
+                    updated.region_z,
+                    Arc::new(crate::npc::build_npc_inout(
+                        crate::npc::NPC_IN,
+                        &updated,
+                        &visual,
+                    )),
+                    None,
+                    event_room,
+                );
+            }
+            world.broadcast_to_3x3(
+                updated.zone_id,
+                updated.region_x,
+                updated.region_z,
+                Arc::new(move_pkt),
+                None,
+                event_room,
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_average_packed_coord_handles_zone_change_y_sentinel() {
+        assert_eq!(average_packed_coord(u16::MAX, u16::MAX), u16::MAX);
+        assert_eq!(average_packed_coord(u16::MAX, 0), 32_767);
+        assert_eq!(average_packed_coord(2_000, 4_000), 3_000);
+    }
 
     #[test]
     fn test_echo_validation() {
@@ -1214,6 +1317,7 @@ mod tests {
                 if let Some(ref mut pet) = h.pet_data {
                     pet.attack_started = false;
                     pet.attack_target_id = -1;
+                    pet.pending_attack_skill_id = 0;
                 }
             });
         }

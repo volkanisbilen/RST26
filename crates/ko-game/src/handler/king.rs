@@ -2623,8 +2623,12 @@ mod tests {
     #[test]
     fn test_king_event_subopcodes_complete() {
         let events = [
-            KING_EVENT_NOAH, KING_EVENT_EXP, KING_EVENT_PRIZE,
-            KING_EVENT_FUGITIVE, KING_EVENT_WEATHER, KING_EVENT_NOTICE,
+            KING_EVENT_NOAH,
+            KING_EVENT_EXP,
+            KING_EVENT_PRIZE,
+            KING_EVENT_FUGITIVE,
+            KING_EVENT_WEATHER,
+            KING_EVENT_NOTICE,
         ];
         let mut set = std::collections::HashSet::new();
         for &op in &events {

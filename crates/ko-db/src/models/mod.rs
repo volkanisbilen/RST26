@@ -3,7 +3,6 @@
 
 mod account;
 mod achieve;
-pub mod client_version;
 pub mod anti_afk_list;
 pub mod banish_of_winner;
 pub mod beginner_settings;
@@ -17,6 +16,7 @@ pub mod character_seal;
 pub mod check_account;
 pub mod cinderella;
 pub mod clan_warehouse;
+pub mod client_version;
 mod coefficient;
 pub mod collection_race;
 pub mod costume;
@@ -51,9 +51,11 @@ pub mod level_merchant_rewards;
 mod level_up;
 pub mod lottery_event;
 pub mod magic;
+pub mod manes_survival;
 mod mining;
 pub mod monster_event;
 pub mod monster_resource;
+pub mod native_events;
 mod npc;
 mod object_event;
 pub mod perk;
@@ -161,6 +163,7 @@ pub use magic::{
     MagicRow, MagicType1Row, MagicType2Row, MagicType3Row, MagicType4Row, MagicType5Row,
     MagicType6Row, MagicType7Row, MagicType8Row, MagicType9Row,
 };
+pub use manes_survival::{ManesSurvivalMagicRow, ManesSurvivalSpawnRow};
 pub use mining::MiningFishingItemRow;
 pub use monster_event::{
     MonsterBossRandomStageRow, MonsterChallengeRow, MonsterChallengeSummonRow,
@@ -172,7 +175,7 @@ pub use npc::{
 };
 pub use object_event::ObjectEventRow;
 pub use perk::{PerkRow, UserPerkRow, PERK_COUNT};
-pub use pet::{PetImageChangeRow, PetStatsInfoRow, PetUserDataRow};
+pub use pet::{PetImageChangeRow, PetStatsInfoRow, PetUserDataRow, PetUserItemRow};
 pub use pet_talk::PetTalk;
 pub use ppcard::PPCardRow;
 pub use premium::{AccountPremiumRow, PremiumItemExpRow, PremiumItemRow};

@@ -35,6 +35,123 @@ use ko_db::models::event_schedule::EventRewardRow;
 /// Event tick interval in seconds.
 const EVENT_TICK_INTERVAL_SECS: u64 = 1;
 
+fn spawn_juraid_room_npcs(world: &WorldState) {
+    world.clear_juraid_monument_respawns();
+
+    let rooms = world
+        .event_room_manager
+        .list_rooms(TempleEventType::JuraidMountain);
+    for room_id in rooms {
+        let family = 20 + room_id as i16;
+        let rows = world.get_juraid_respawn_family(family);
+        if rows.is_empty() {
+            tracing::warn!(
+                room_id,
+                family,
+                "Juraid spawn skipped: no monster_juraid_respawn_list rows"
+            );
+            continue;
+        }
+
+        world.despawn_room_npcs(juraid::ZONE_JURAID, room_id as u16);
+
+        let mut bridge_trap = 1u8;
+        let mut spawned_total = 0usize;
+        let mut spawned_monsters = 0usize;
+        let mut spawned_bridges = 0usize;
+        let mut spawned_merchants = 0usize;
+        let mut spawned_deva = 0usize;
+        for row in rows {
+            let is_deva = juraid::is_deva_bird(row.s_sid as u16);
+            let is_bridge = juraid::is_bridge(row.s_sid as u16);
+            let is_wave_monster = juraid::is_wave_monster(&row);
+
+            // The MSSQL table is already the complete Juraid layout.  In
+            // particular, each of the six main rows has s_count=5 (three
+            // groups per nation).  Truncating those rows and forcing count=1
+            // left rooms empty and made progression impossible.
+            let is_merchant = row.b_type == 1;
+            if !is_wave_monster && !is_deva && !is_bridge && !is_merchant {
+                continue;
+            }
+
+            // C++ loads PID 6700 from K_MONSTER and sends it through the
+            // monster NPC_INOUT layout.  v2615 uses that wire flag to attach
+            // the Juraid bridge model/collision object; cloning it as K_NPC
+            // made the server open the gate while the client kept no walkable
+            // bridge. Its zero search range keeps this static gate out of AI.
+            // Bridge of Summoning (PID 8110) is a world gate, not a combat
+            // target. Sending it through the monster NPC_INOUT layout makes
+            // Z-targeting select it and puts the client into attack mode.
+            // Keep the monster wire layout only for actual combat spawns.
+            let is_monster = is_wave_monster || is_deva;
+            let count = if is_wave_monster {
+                row.s_count.max(1) as u16
+            } else {
+                1
+            };
+            let trap_number = if is_bridge {
+                let trap = bridge_trap;
+                bridge_trap = bridge_trap.saturating_add(1);
+                trap
+            } else {
+                0
+            };
+            let summon_type = if is_wave_monster {
+                juraid::SUMMON_JURAID_MAIN
+            } else if is_deva {
+                juraid::SUMMON_JURAID_DEVA
+            } else if is_bridge {
+                juraid::SUMMON_JURAID_BRIDGE
+            } else {
+                0
+            };
+
+            let ids = world.spawn_event_npc_ex_with_direction(
+                row.s_sid as u16,
+                is_monster,
+                juraid::ZONE_JURAID,
+                row.x as f32,
+                row.z as f32,
+                count,
+                room_id as u16,
+                summon_type,
+                row.by_direction.clamp(0, u8::MAX as i16) as u8,
+            );
+            if trap_number > 0 {
+                for nid in &ids {
+                    world.update_npc_trap_number(*nid, trap_number as i16);
+                }
+            }
+            if is_wave_monster {
+                spawned_monsters += ids.len();
+            } else if is_deva {
+                spawned_deva += ids.len();
+            } else if is_bridge {
+                spawned_bridges += ids.len();
+            } else if is_merchant {
+                spawned_merchants += ids.len();
+            }
+            spawned_total += ids.len();
+        }
+
+        let spawned_monuments = juraid::spawn_deva_room_monuments(world, room_id);
+        spawned_total += spawned_monuments;
+
+        tracing::info!(
+            room_id,
+            family,
+            spawned_monsters,
+            spawned_bridges,
+            spawned_merchants,
+            spawned_deva,
+            spawned_monuments,
+            spawned_total,
+            "Juraid room NPCs spawned from monster_juraid_respawn_list"
+        );
+    }
+}
+
 /// Start the event system background task.
 /// Spawns a tokio task that calls [`event_tick_at`] every second,
 /// processing BDW, Juraid, and other room-based event state machines.
@@ -63,12 +180,17 @@ pub fn start_event_system_task(
                 if let Some((event_type, sign_secs)) = try_schedule_trigger(erm, now) {
                     // Broadcast sign-up announcement to all online players.
                     // C++ skips: isInTempleEventZone(), isInMonsterStoneZone(), ZONE_PRISON
-                    let start_pkt = event_room::build_event_start_broadcast(
-                        event_type as i16,
-                        sign_secs as u16,
-                    );
-                    const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
-                    world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
+                    if event_type == TempleEventType::JuraidMountain {
+                        event_room::broadcast_juraid_window(&world, sign_secs as u16);
+                        broadcast_juraid_registration_notice(&world, sign_secs as u16);
+                    } else {
+                        let start_pkt = event_room::build_event_start_broadcast(
+                            event_type as i16,
+                            sign_secs as u16,
+                        );
+                        const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
+                        world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
+                    }
                 }
             }
 
@@ -91,7 +213,17 @@ pub fn start_event_system_task(
             //
             //
             // Chaos uses per-user EXP from kills/deaths (not winner/loser table rewards).
-            // BDW and Juraid use the EVENT_REWARD table (winner/loser items + level bonus).
+            // BDW uses EVENT_REWARD rows. Juraid gets its original winner-only
+            // gem/EXP rewards and keeps monster/chest drops on their own tables.
+            if active_event_i16 == TempleEventType::JuraidMountain as i16 {
+                for (room_id, nation) in world.take_due_juraid_monument_respawns(now) {
+                    let spawned = juraid::spawn_monument(&world, room_id, nation);
+                    if spawned > 0 {
+                        tracing::info!(room_id, nation, spawned, "Juraid Monument respawned");
+                    }
+                }
+            }
+
             match &action {
                 EventTickAction::TransitionedToRewards(results) => {
                     // Send winner screen to all room users before distributing rewards.
@@ -100,6 +232,8 @@ pub fn start_event_system_task(
                     if active_event_i16 == 24 {
                         // Chaos Dungeon: per-user EXP from kills/deaths
                         distribute_chaos_finish_exp(&world).await;
+                    } else if active_event_i16 == TempleEventType::JuraidMountain as i16 {
+                        distribute_juraid_rewards(&world, results).await;
                     } else {
                         // BDW / Juraid: table-based winner/loser rewards
                         let local_id = active_event_to_local_id(active_event_i16);
@@ -120,6 +254,14 @@ pub fn start_event_system_task(
                                     {
                                         world.update_npc_hp(nid, tmpl.max_hp as i32);
                                     }
+                                    // the killed altar waits for its map regen time (an hour): bring it back now
+                                    world.update_npc_ai(nid, |ai| {
+                                        if ai.state == crate::world::NpcState::Dead {
+                                            ai.state = crate::world::NpcState::Live;
+                                            ai.delay_ms = 0;
+                                            ai.last_tick_ms = 0;
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -130,7 +272,7 @@ pub fn start_event_system_task(
                         broadcast_to_bdw_room(&world, room_id, &respawn_pkt);
                     }
                 }
-                EventTickAction::TransitionedToActive(_assigned) => {
+                EventTickAction::TransitionedToActive(assigned) => {
                     // Teleport all room-assigned users into the event zone,
                     // send timer overlay packets, and create parties.
                     //
@@ -138,8 +280,16 @@ pub fn start_event_system_task(
                         event_room::TempleEventType::from_i16(s.active_event)
                     });
                     if let Some(et) = event_type {
+                        if et == TempleEventType::JuraidMountain {
+                            broadcast_juraid_active_notice(&world, *assigned);
+                        }
+
                         // Teleport users + send timer overlay packets
                         event_room::teleport_users_to_event(&world, et);
+
+                        if et == TempleEventType::JuraidMountain {
+                            spawn_juraid_room_npcs(&world);
+                        }
 
                         // Create auto-parties for BDW and Juraid (Chaos is FFA).
                         // after TeleportUsers for BDW and Juraid only.
@@ -168,11 +318,17 @@ pub fn start_event_system_task(
                     // Clear Juraid bridge state from WorldState on cleanup.
                     if *et == TempleEventType::JuraidMountain {
                         world.clear_juraid_bridge_states();
+                        world.clear_juraid_monument_respawns();
                     }
 
                     // Kick all event zone users to their appropriate destination.
                     let event_zone = et.zone_id();
                     for sid in user_sids {
+                        world.update_session(*sid, |h| {
+                            h.event_room = 0;
+                            h.joined_event = false;
+                            h.is_final_joined_event = false;
+                        });
                         let nation = world
                             .get_character_info(*sid)
                             .map(|c| c.nation)
@@ -201,6 +357,9 @@ pub fn start_event_system_task(
                             if let Some(rs) = juraid_mgr.room_states.get(&room_id) {
                                 world.set_juraid_bridge_state(room_id, rs.bridges.clone());
                             }
+                            // Deva and both monuments are part of the static
+                            // room layout and are spawned at event start behind
+                            // the closed gates. Do not duplicate them here.
                         }
 
                         tracing::info!(
@@ -556,20 +715,10 @@ pub fn start_event_system_task(
                     });
 
                     for sid in &user_sids {
-                        // Remove Monster Coins and restore normal HP before teleport
-                        world.rob_all_of_item(*sid, dungeon_defence::MONSTER_COIN_ITEM);
-                        world.recalculate_max_hp_mp(*sid);
-                        world.update_session(*sid, |h| {
-                            h.event_room = 0;
-                        });
-                        crate::handler::zone_change::server_teleport_to_zone(
-                            &world,
-                            *sid,
-                            crate::world::types::ZONE_MORADON,
-                            0.0,
-                            0.0,
-                        )
+                        crate::handler::dungeon_defence::remove_player(&world, *sid);
                     }
+
+                    crate::handler::dungeon_defence::despawn_bots(&world, room_id);
 
                     // Despawn room NPCs and reset
                     world.despawn_room_npcs(dungeon_defence::ZONE_DUNGEON_DEFENCE, room_id);
@@ -590,6 +739,21 @@ pub fn start_event_system_task(
                     );
                 }
             }
+
+            crate::handler::dungeon_defence::tower_tick(&world);
+            crate::handler::rift_entry::tick(&world);
+            crate::handler::golem_war::tick(&world);
+            world.manes_survival_manager.tick(&world);
+            crate::event_control::tick(&world);
+            crate::handler::slave_priest::tick(&world);
+            crate::handler::slave_merchant::tick(&world);
+            crate::handler::client_integrity::tick(&world).await;
+            if now % 25 == 0 {
+                crate::handler::clan_premium::tick(&world);
+            }
+
+            // ── Ultima's Dungeon timer tick ──────────────────────────────
+            crate::handler::ultima::tick(&world);
 
             // ── Forgotten Temple timer tick ───────────────────────────────
             // Called every 1s while the event is active. Handles summon phase,
@@ -696,6 +860,14 @@ pub fn start_event_system_task(
                             tracing::info!(
                                 "Forgotten Temple: event finished, kicking players to Moradon"
                             );
+                            world.broadcast_to_zone(
+                                forgotten_temple::ZONE_FORGOTTEN_TEMPLE,
+                                Arc::new(crate::systems::timed_notice::build_notice_packet(
+                                    8,
+                                    "The Forgotten Temple event has ended.",
+                                )),
+                                None,
+                            );
 
                             // Find all users in FT zone and teleport to Moradon
                             let ft_users = world.collect_sessions_by(|h| {
@@ -766,17 +938,20 @@ pub fn start_event_system_task(
                                 }
                             };
 
-                            for &(s_sid, count, is_monster, x, _y, z, _dir, trap_number) in
+                            for &(s_sid, count, is_monster, x, y, z, direction, trap_number) in
                                 &spawn_list
                             {
-                                let ids = world.spawn_event_npc_ex(
+                                let ids = world.spawn_event_npc_ex_with_metadata(
                                     s_sid as u16,
                                     is_monster,
                                     under_castle::ZONE_UNDER_CASTLE,
                                     x as f32,
+                                    y as f32,
                                     z as f32,
                                     count as u16,
                                     0, // event_room (UTC uses single zone)
+                                    0, // UTC summon/event type (not trap_number)
+                                    direction as u8,
                                     trap_number as u8,
                                 );
 
@@ -785,12 +960,14 @@ pub fn start_event_system_task(
                                 }
 
                                 // Register gate NPCs: trap_number 1-3 maps to gate index 0-2
-                                if (1..=3).contains(&trap_number) && !ids.is_empty() {
-                                    under_castle::set_gate_id(
-                                        utc_state,
-                                        (trap_number - 1) as u8,
-                                        ids[0],
-                                    );
+                                if (1..=3).contains(&trap_number) {
+                                    for id in ids {
+                                        under_castle::set_gate_id(
+                                            utc_state,
+                                            (trap_number - 1) as u8,
+                                            id,
+                                        );
+                                    }
                                 }
                             }
 
@@ -1145,6 +1322,51 @@ pub fn start_event_system_task(
             }
         }
     })
+}
+
+/// Broadcast the in-game Juraid registration notice alongside the native event UI.
+pub fn broadcast_juraid_registration_notice(world: &WorldState, remaining_secs: u16) {
+    let msg = juraid_registration_notice_message(remaining_secs);
+    let pkt = crate::systems::timed_notice::build_notice_packet(8, &msg);
+    world.broadcast_to_all(Arc::new(pkt), None);
+}
+
+fn broadcast_juraid_active_notice(world: &WorldState, assigned_users: usize) {
+    let msg = if assigned_users == 0 {
+        "Juraid Mountain registration has ended. No players registered.".to_string()
+    } else {
+        format!(
+            "Juraid Mountain has started. {} player(s) have been assigned.",
+            assigned_users
+        )
+    };
+    let pkt = crate::systems::timed_notice::build_notice_packet(8, &msg);
+    world.broadcast_to_all(Arc::new(pkt), None);
+}
+
+pub fn broadcast_juraid_force_start_notice(world: &WorldState, signed_users: usize) {
+    let msg = if signed_users == 0 {
+        "Juraid Mountain countdown skipped. No registered players yet.".to_string()
+    } else {
+        format!(
+            "Juraid Mountain countdown skipped. Starting with {} registered player(s).",
+            signed_users
+        )
+    };
+    let pkt = crate::systems::timed_notice::build_notice_packet(8, &msg);
+    world.broadcast_to_all(Arc::new(pkt), None);
+}
+
+fn juraid_registration_notice_message(remaining_secs: u16) -> String {
+    let minutes = ((remaining_secs as u32) + 59) / 60;
+    if minutes > 0 {
+        format!(
+            "Juraid Mountain registration has started. Registration closes in {} minute(s).",
+            minutes
+        )
+    } else {
+        "Juraid Mountain registration has started.".to_string()
+    }
 }
 
 /// Broadcast a packet to all active users in a BDW room.
@@ -2020,29 +2242,23 @@ async fn grant_reward(world: &WorldState, sid: SessionId, reward: &AggregatedRew
 pub async fn distribute_ft_rewards(world: &WorldState) {
     use crate::handler::forgotten_temple;
 
-    let rewards = match world.get_event_rewards(forgotten_temple::FT_REWARD_LOCAL_ID) {
-        Some(r) => r,
-        None => {
-            tracing::warn!(
-                "Forgotten Temple: no event rewards configured for local_id={}",
-                forgotten_temple::FT_REWARD_LOCAL_ID
-            );
-            return;
-        }
-    };
+    /// Forgotten Temple chests: Blue = 1st grade (high level), Green = 2nd grade (low level).
+    const FT_BLUE_CHEST: u32 = 379_156_000;
+    const FT_GREEN_CHEST: u32 = 379_155_000;
+    const FT_CHEST_COUNT: u16 = 20;
+    const FT_HIGH_LEVEL: u8 = 60;
+    const FT_LEAVE_SECS: u64 = 15;
 
-    // Filter to active reward rows (status=true, local_id=13)
-    let active_rows: Vec<&EventRewardRow> = rewards
-        .iter()
-        .filter(|r| r.status && r.local_id == forgotten_temple::FT_REWARD_LOCAL_ID)
-        .collect();
-
-    if active_rows.is_empty() {
-        tracing::warn!("Forgotten Temple: no active reward rows found");
-        return;
-    }
-
-    let aggregated = aggregate_rewards(&active_rows);
+    // Configured rows (exp / loyalty / noah / items) if any
+    let aggregated = world
+        .get_event_rewards(forgotten_temple::FT_REWARD_LOCAL_ID)
+        .map(|rewards| {
+            let rows: Vec<&EventRewardRow> = rewards
+                .iter()
+                .filter(|r| r.status && r.local_id == forgotten_temple::FT_REWARD_LOCAL_ID)
+                .collect();
+            aggregate_rewards(&rows)
+        });
 
     // Collect all eligible players in FT zone
     let ft_users: Vec<SessionId> = world.collect_sessions_by(|h| {
@@ -2055,20 +2271,47 @@ pub async fn distribute_ft_rewards(world: &WorldState) {
     });
 
     let mut rewarded = 0u32;
-
     for sid in &ft_users {
-        grant_reward(world, *sid, &aggregated).await;
+        if let Some(ref agg) = aggregated {
+            if !agg.items.is_empty() || agg.experience > 0 || agg.loyalty > 0 || agg.noah > 0 {
+                grant_reward(world, *sid, agg).await;
+            }
+        }
+        let level = world.get_character_info(*sid).map(|c| c.level).unwrap_or(0);
+        let (chest, name) = if level >= FT_HIGH_LEVEL {
+            (FT_BLUE_CHEST, "Blue Treasure Chest")
+        } else {
+            (FT_GREEN_CHEST, "Green Treasure Chest")
+        };
+        let msg = if world.give_item(*sid, chest, FT_CHEST_COUNT) {
+            format!("Forgotten Temple cleared! Reward: {FT_CHEST_COUNT} {name}.")
+        } else {
+            format!("Forgotten Temple cleared! Your bag is full, {name} could not be given.")
+        };
+        world.send_to_session_owned(*sid, crate::systems::timed_notice::build_notice_packet(8, &msg));
         rewarded += 1;
     }
 
+    // Everybody in the temple is told they are leaving; the finish tick moves them out.
+    let leave = format!("The Forgotten Temple is cleared. You will leave in {FT_LEAVE_SECS} seconds.");
+    world.broadcast_to_zone(
+        forgotten_temple::ZONE_FORGOTTEN_TEMPLE,
+        Arc::new(crate::systems::timed_notice::build_notice_packet(8, &leave)),
+        None,
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    world
+        .forgotten_temple_state()
+        .waiting_time
+        .store(now + FT_LEAVE_SECS, std::sync::atomic::Ordering::Relaxed);
+
     tracing::info!(
-        "Forgotten Temple: distributed rewards to {}/{} players (items={}, exp={}, loyalty={}, noah={})",
+        "Forgotten Temple: rewarded {}/{} players (20 chests each)",
         rewarded,
         ft_users.len(),
-        aggregated.items.len(),
-        aggregated.experience,
-        aggregated.loyalty,
-        aggregated.noah,
     );
 }
 
@@ -2203,6 +2446,98 @@ pub async fn distribute_event_rewards(
                 sid,
                 nation,
                 room_id
+            );
+        }
+    }
+}
+
+pub async fn distribute_juraid_rewards(world: &WorldState, winner_results: &[(u8, u8)]) {
+    let erm = world.event_room_manager();
+
+    for &(room_id, winner_nation) in winner_results {
+        let participants: Vec<(SessionId, u8)> = {
+            let Some(mut room) = erm.get_room_mut(TempleEventType::JuraidMountain, room_id) else {
+                tracing::warn!("Juraid room {} not found for reward distribution", room_id);
+                continue;
+            };
+
+            let mut users = Vec::new();
+            for user in room.karus_users.values_mut() {
+                if user.prize_given || user.logged_out {
+                    continue;
+                }
+                user.prize_given = true;
+                users.push((user.session_id, user.nation));
+            }
+            for user in room.elmorad_users.values_mut() {
+                if user.prize_given || user.logged_out {
+                    continue;
+                }
+                user.prize_given = true;
+                users.push((user.session_id, user.nation));
+            }
+            users
+        };
+
+        for (sid, nation) in participants {
+            if winner_nation == 0 {
+                continue;
+            }
+
+            let Some(ch) = world.get_character_info(sid) else {
+                continue;
+            };
+            let level = ch.level;
+            let rebirth_level = ch.rebirth_level;
+            if let Some(gem_id) = juraid::juraid_winner_gem(level, rebirth_level) {
+                let gem_count = juraid::juraid_reward_gem_count(nation == winner_nation);
+                if !world.give_item(sid, gem_id, gem_count) {
+                    tracing::warn!(
+                        sid,
+                        gem_id,
+                        gem_count,
+                        "Juraid reward gem could not be delivered"
+                    );
+                } else {
+                    tracing::info!(
+                        sid,
+                        room_id,
+                        is_winner = nation == winner_nation,
+                        gem_id,
+                        gem_count,
+                        "Juraid gem reward granted"
+                    );
+                }
+            }
+
+            let is_winner = nation == winner_nation;
+            if is_winner {
+                crate::handler::achieve::on_war_event_result(world, sid, 6);
+            }
+            let is_premium = world.with_session(sid, |h| h.premium_in_use).unwrap_or(0) != 0;
+            let exp = if is_winner {
+                if is_premium {
+                    50_000_000
+                } else {
+                    20_000_000
+                }
+            } else {
+                0
+            };
+            if exp > 0 {
+                crate::handler::level::exp_change_with_bonus(world, sid, exp, true).await;
+            }
+
+            tracing::info!(
+                sid,
+                room_id,
+                nation,
+                level,
+                rebirth_level,
+                is_winner,
+                is_premium,
+                exp,
+                "Juraid participation reward granted"
             );
         }
     }
@@ -3340,7 +3675,7 @@ mod tests {
             s.start_time = start_time;
         });
 
-        // Bridge 0 opens at bridge_start + 1200
+        // At +1200, the 10- and 20-minute section fallbacks have opened.
         let action = event_tick_at(
             &erm,
             &mut bdw_mgr,
@@ -3348,9 +3683,9 @@ mod tests {
             &mut chaos_mgr,
             start_time + 1200,
         );
-        assert_eq!(action, EventTickAction::JuraidBridgesOpened(vec![0]));
+        assert_eq!(action, EventTickAction::JuraidBridgesOpened(vec![0, 1]));
 
-        // Bridge 1 at +1800
+        // Bridge 2 at +1800
         let action = event_tick_at(
             &erm,
             &mut bdw_mgr,
@@ -3358,9 +3693,9 @@ mod tests {
             &mut chaos_mgr,
             start_time + 1800,
         );
-        assert_eq!(action, EventTickAction::JuraidBridgesOpened(vec![1]));
+        assert_eq!(action, EventTickAction::JuraidBridgesOpened(vec![2]));
 
-        // Bridge 2 at +2400
+        // No bridge remains at +2400.
         let action = event_tick_at(
             &erm,
             &mut bdw_mgr,
@@ -3368,7 +3703,7 @@ mod tests {
             &mut chaos_mgr,
             start_time + 2400,
         );
-        assert_eq!(action, EventTickAction::JuraidBridgesOpened(vec![2]));
+        assert_eq!(action, EventTickAction::None);
 
         // No more bridges
         let action = event_tick_at(
@@ -5597,11 +5932,11 @@ mod tests {
         assert_eq!(dest, 2, "Elmorad level 50 Chaos → Elmorad capital");
     }
 
-    /// Juraid kick: level >= 35 → Ronark Land (zone 71).
+    /// Juraid kick: exits to Moradon.
     #[test]
     fn test_kick_out_destination_juraid_high_level() {
         let dest = event_room::kick_out_destination(87, 1, 60);
-        assert_eq!(dest, 71, "High-level Juraid → Ronark Land");
+        assert_eq!(dest, 21, "High-level Juraid → Moradon");
     }
 
     /// Juraid kick: low-level → Moradon.
@@ -6569,10 +6904,22 @@ mod tests {
     /// TempleEventType from_i16 round-trip for all variants.
     #[test]
     fn test_temple_event_type_from_i16_roundtrip() {
-        assert_eq!(TempleEventType::from_i16(4), Some(TempleEventType::BorderDefenceWar));
-        assert_eq!(TempleEventType::from_i16(14), Some(TempleEventType::ForgottenTemple));
-        assert_eq!(TempleEventType::from_i16(24), Some(TempleEventType::ChaosDungeon));
-        assert_eq!(TempleEventType::from_i16(100), Some(TempleEventType::JuraidMountain));
+        assert_eq!(
+            TempleEventType::from_i16(4),
+            Some(TempleEventType::BorderDefenceWar)
+        );
+        assert_eq!(
+            TempleEventType::from_i16(14),
+            Some(TempleEventType::ForgottenTemple)
+        );
+        assert_eq!(
+            TempleEventType::from_i16(24),
+            Some(TempleEventType::ChaosDungeon)
+        );
+        assert_eq!(
+            TempleEventType::from_i16(100),
+            Some(TempleEventType::JuraidMountain)
+        );
         assert_eq!(TempleEventType::from_i16(0), None);
         assert_eq!(TempleEventType::from_i16(-1), None);
         assert_eq!(TempleEventType::from_i16(50), None);
@@ -6667,9 +7014,9 @@ mod tests {
     /// BDW level exp bonus boundary: level 57 uses low formula, 58 uses high formula.
     #[test]
     fn test_bdw_level_exp_bonus_formula_boundary() {
-        let low = bdw_level_exp_bonus(57);   // (57-20)*203000 = 7_511_000
-        let high = bdw_level_exp_bonus(58);  // (58+55)*120000 = 13_560_000
-        // High formula gives significantly more EXP at the boundary
+        let low = bdw_level_exp_bonus(57); // (57-20)*203000 = 7_511_000
+        let high = bdw_level_exp_bonus(58); // (58+55)*120000 = 13_560_000
+                                            // High formula gives significantly more EXP at the boundary
         assert!(high > low);
         // The jump ratio at boundary
         assert!((high as f64 / low as f64) > 1.5);

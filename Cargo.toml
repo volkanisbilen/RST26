@@ -11,6 +11,8 @@ members = [
     "crates/ko-tbl-import",
     "crates/ko-quest-audit",
     "crates/ko-quest-gen",
+    "crates/ko-letter-admin",
+    "crates/ko-admin",
 ]
 
 [workspace.package]
@@ -74,6 +76,11 @@ mlua = { version = "0.10", features = ["lua51", "vendored", "send"] }
 # Logging / Tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+axum = "0.8"
+serde_json = "1"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
 
 [profile.release]
 strip = true

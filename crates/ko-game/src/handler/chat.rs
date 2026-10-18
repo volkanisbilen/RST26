@@ -196,6 +196,45 @@ pub fn build_chat_packet(
     pkt
 }
 
+/// Build the native v2615 PvP death-notice packet.
+///
+/// Unlike ordinary chat messages, `DEATH_NOTICE` has its own payload. The
+/// client uses the two unit IDs and death coordinates to render the death line
+/// and live minimap marker. Centre-screen narration is a separate
+/// `WIZ_KILLASSIST` packet.
+///
+/// Wire format recovered from the v2615 client's `sub_8389A0`, case `0x1A`
+/// (all strings are SByte strings):
+/// `[WIZ_CHAT][u8 26][u8 killer_nation][u8 victim_nation]`
+/// `[u8 reserved][u8 notice_type][u32 killer_id][killer_name]`
+/// `[u32 victim_id][victim_name][u16 x][u16 z]`
+#[allow(clippy::too_many_arguments)]
+pub fn build_death_notice_packet(
+    killer_nation: u8,
+    victim_nation: u8,
+    notice_type: u8,
+    killer_id: u32,
+    killer_name: &str,
+    victim_id: u32,
+    victim_name: &str,
+    victim_x: u16,
+    victim_z: u16,
+) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizChat as u8);
+    pkt.write_u8(ChatType::DeathNotice as u8);
+    pkt.write_u8(killer_nation);
+    pkt.write_u8(victim_nation);
+    pkt.write_u8(0); // reserved by the native v2615 death-notice contract
+    pkt.write_u8(notice_type);
+    pkt.write_u32(killer_id);
+    pkt.write_sbyte_string(killer_name);
+    pkt.write_u32(victim_id);
+    pkt.write_sbyte_string(victim_name);
+    pkt.write_u16(victim_x);
+    pkt.write_u16(victim_z);
+    pkt
+}
+
 /// Build a chat packet with raw byte message content.
 /// Used for user-input chat messages to preserve client encoding (e.g. Windows-1254 Turkish).
 /// Server-generated messages should use `build_chat_packet` instead.
@@ -340,23 +379,33 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     // Check if the player is muted — silently drop their chat messages
     {
-        let is_muted = world.with_session(sid, |h| h.is_muted).unwrap_or(false);
-        if is_muted {
+        let (is_muted, is_gm) = world
+            .with_session(sid, |h| {
+                let is_gm = h
+                    .character
+                    .as_ref()
+                    .is_some_and(|ch| ch.authority == 0 || ch.authority == 2);
+                (h.is_muted, is_gm)
+            })
+            .unwrap_or((false, false));
+        if is_muted && !is_gm {
             return Ok(());
         }
     }
 
     // Prison zone chat block + mute level check — single DashMap read for both
     {
-        let (is_gm, zone_id, player_level) = world.with_session(sid, |h| {
-            let ch = h.character.as_ref();
-            let auth = ch.map(|c| c.authority).unwrap_or(255);
-            (
-                auth == 0 || auth == 2,
-                h.position.zone_id,
-                ch.map(|c| c.level as i16).unwrap_or(0),
-            )
-        }).unwrap_or((false, 0, 0));
+        let (is_gm, zone_id, player_level) = world
+            .with_session(sid, |h| {
+                let ch = h.character.as_ref();
+                let auth = ch.map(|c| c.authority).unwrap_or(255);
+                (
+                    auth == 0 || auth == 2,
+                    h.position.zone_id,
+                    ch.map(|c| c.level as i16).unwrap_or(0),
+                )
+            })
+            .unwrap_or((false, 0, 0));
         if zone_id == ZONE_PRISON && !is_gm {
             return Ok(());
         }
@@ -420,8 +469,35 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Route based on chat type
     match chat_type {
         Some(ChatType::General) => {
-            // Broadcast to 3x3 region (nearby players)
-            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+            if message.trim().eq_ignore_ascii_case("party") {
+                crate::handler::ultima::party_request(&world, sid);
+            }
+            // GM general chat is server-wide: GM text must reach every nation
+            // and zone, not just the sender's nearby region. Keep the GM chat
+            // packet type so the client renders it with its normal GM styling.
+            if is_gm {
+                // The client filters public chat by the packet's nation field.
+                // Sending one packet stamped with the GM's nation while
+                // broadcasting globally hides it from the other nation.
+                for recipient_nation in [1, 2] {
+                    let nation_broadcast = build_chat_packet(
+                        out_type,
+                        recipient_nation,
+                        sid,
+                        &sender_name,
+                        &message,
+                        personal_rank,
+                        authority,
+                        system_msg,
+                    );
+                    world.broadcast_to_nation(recipient_nation, Arc::new(nation_broadcast), None);
+                }
+                return Ok(());
+            }
+
+            // Broadcast normal player chat to 3x3 region (nearby players)
+            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room))
+            {
                 world.broadcast_to_3x3(
                     pos.zone_id,
                     pos.region_x,
@@ -459,6 +535,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // Send to all party members.
             if let Some(party_id) = world.get_party_id(sid) {
                 world.send_to_party(party_id, &broadcast);
+                crate::systems::bot_ai::handle_party_chat_command(&world, party_id, sid, &message);
             }
         }
 
@@ -491,7 +568,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                     crate::systems::regen::build_mp_change_packet(ch_after.max_mp, ch_after.mp);
                 world.send_to_session_owned(sid, pkt);
             }
-            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room))
+            {
                 world.broadcast_to_3x3(
                     pos.zone_id,
                     pos.region_x,
@@ -529,7 +607,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             }
 
             // Broadcast to 3x3 region (merchant advertising)
-            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room))
+            {
                 world.broadcast_to_3x3(
                     pos.zone_id,
                     pos.region_x,
@@ -582,7 +661,8 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             // Send to self first
             world.send_to_session(sid, &broadcast);
             // Broadcast to class-matched, party-less players in same zone+nation
-            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+            if let Some((pos, event_room)) = world.with_session(sid, |h| (h.position, h.event_room))
+            {
                 world.broadcast_to_zone_matched_class(
                     pos.zone_id,
                     nation,
@@ -1376,6 +1456,27 @@ mod tests {
         pos += 1;
 
         assert_eq!(pos, d.len());
+    }
+
+    #[test]
+    fn test_build_native_death_notice_packet() {
+        let pkt =
+            build_death_notice_packet(1, 2, 0, 10_001, "KarusBot", 42, "ElmoUser", 1054, 1082);
+        assert_eq!(pkt.opcode, Opcode::WizChat as u8);
+
+        let mut reader = PacketReader::new(&pkt.data);
+        assert_eq!(reader.read_u8(), Some(ChatType::DeathNotice as u8));
+        assert_eq!(reader.read_u8(), Some(1));
+        assert_eq!(reader.read_u8(), Some(2));
+        assert_eq!(reader.read_u8(), Some(0));
+        assert_eq!(reader.read_u8(), Some(0));
+        assert_eq!(reader.read_u32(), Some(10_001));
+        assert_eq!(reader.read_sbyte_string().as_deref(), Some("KarusBot"));
+        assert_eq!(reader.read_u32(), Some(42));
+        assert_eq!(reader.read_sbyte_string().as_deref(), Some("ElmoUser"));
+        assert_eq!(reader.read_u16(), Some(1054));
+        assert_eq!(reader.read_u16(), Some(1082));
+        assert_eq!(reader.remaining(), 0);
     }
 
     /// Test WIZ_CHAT_TARGET success response wire format.

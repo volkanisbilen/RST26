@@ -13,15 +13,47 @@
 //! | u8    | Echo flag          |
 //! | u32le | Max HP             |
 //! | u32le | Current HP         |
-//! | u32le | Damage (0)         |
-//! | u32le | Reserved (0)       |
-//! | u8    | Reserved (0)       |
+//! | i32le | HP change/damage   |
+//! | i32le | Score delta        |
+//! | u8    | Reserved (must be 0)|
 
 use ko_protocol::{Opcode, Packet, PacketReader};
+
+/// Hook sub-opcode: `[u32 target id][u16 level]` (answers every target HP poll).
+pub const EXT_SUB_TARGET_LEVEL: u8 = 0xB6;
 
 use crate::npc::NPC_BAND;
 use crate::session::{ClientSession, SessionState};
 use crate::zone::SessionId;
+
+/// Build the v2625 `WIZ_TARGET_HP` response.
+///
+/// The supplied v2625 executable's `sub_81DF70` reads the first trailing
+/// dword into the damage-message path (multiplied by ten at `0x0081E537`) and
+/// passes the second trailing dword to the score accumulator via
+/// `sub_74A200`. Negative HP change means damage; positive means healing.
+///
+/// The final byte remains reserved in the v2625 client. A non-zero value here was
+/// confirmed in `ko-server_20260821_195135.log` to make the client disconnect
+/// immediately after selecting a Ronark Land monster.
+pub(crate) fn build_target_hp_packet(
+    target_id: u32,
+    echo: u8,
+    max_hp: u32,
+    current_hp: u32,
+    hp_change: i32,
+    score_delta: i32,
+) -> Packet {
+    let mut response = Packet::new(Opcode::WizTargetHp as u8);
+    response.write_u32(target_id);
+    response.write_u8(echo);
+    response.write_u32(max_hp);
+    response.write_u32(current_hp);
+    response.write_i32(hp_change);
+    response.write_i32(score_delta);
+    response.write_u8(0);
+    response
+}
 
 /// Handle WIZ_TARGET_HP from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
@@ -39,26 +71,33 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
     let world = session.world().clone();
 
-    let (max_hp, current_hp) = if target_id >= NPC_BAND {
-        // Check bot first — bots use IDs >= BOT_ID_BASE (which is >= NPC_BAND)
-        if let Some(bot) = world.get_bot(target_id) {
-            (bot.max_hp as u32, bot.hp.max(0) as u32)
-        } else {
-            // NPC/Monster target
-            let instance = match world.get_npc_instance(target_id) {
-                Some(n) => n,
-                None => return Ok(()),
-            };
-            let template = match world.get_npc_template(instance.proto_id, instance.is_monster) {
-                Some(t) => t,
-                None => return Ok(()),
-            };
-            // Use actual NPC HP from world state (updated by combat)
-            let current = world
-                .get_npc_hp(target_id)
-                .unwrap_or(template.max_hp as i32);
-            (template.max_hp, current.max(0) as u32)
-        }
+    // target_sid: the NPC/monster's template SID (npc_template.s_sid) for GM identification
+    // (+ekle, drop editor, etc. all key off this number); 0 for bots/players, which have none.
+    let (max_hp, current_hp, target_level, target_sid) = if let Some(bot) = world.get_bot(target_id)
+    {
+        // Resolve runtime bots before numeric bands. This remains correct if a
+        // future shard changes its bot ID allocation.
+        (bot.max_hp as u32, bot.hp.max(0) as u32, bot.level as u16, 0u32)
+    } else if target_id >= NPC_BAND {
+        // NPC/Monster target
+        let instance = match world.get_npc_instance(target_id) {
+            Some(n) => n,
+            None => return Ok(()),
+        };
+        let template = match world.get_npc_template(instance.proto_id, instance.is_monster) {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+        // Use actual NPC HP from world state (updated by combat)
+        let current = world
+            .get_npc_hp(target_id)
+            .unwrap_or(template.max_hp as i32);
+        (
+            template.max_hp,
+            current.max(0) as u32,
+            template.level as u16,
+            instance.proto_id as u32,
+        )
     } else {
         // Player target
         let other_sid = target_id as SessionId;
@@ -66,15 +105,19 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
             Some(c) => c,
             None => return Ok(()),
         };
-        (ch.max_hp as u32, ch.hp as u32)
+        (ch.max_hp as u32, ch.hp as u32, ch.level as u16, 0u32)
     };
 
-    // C++ stores m_targetID for use by GM commands like +npcinfo
+    // C++ stores m_targetID for use by GM commands like +npcinfo.  Its target
+    // handler does not report ordinary NPCs or monsters; it prints one chat
+    // line only when a GM selects a runtime bot.  NPC/monster data remains an
+    // explicit +npcinfo action, so target-HP polls cannot spam the chat.
     let sid = session.session_id();
+    let previous_target = world.with_session(sid, |h| h.target_id).unwrap_or(0);
     world.update_session(sid, |h| h.target_id = target_id);
 
-    // ── GM debug: show target info (NPC/monster ID, level, name) ────
-    if target_id >= NPC_BAND {
+    // Match reference_cpp/GameServer/User.cpp::CUser::HandleTargetHP.
+    if previous_target != target_id {
         let is_gm = world
             .get_character_info(sid)
             .map(|c| c.authority == 0 || c.authority == 2)
@@ -82,39 +125,28 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if is_gm {
             if let Some(bot) = world.get_bot(target_id) {
                 let debug_msg = format!(
-                    "[GM] BOT id={} lv={} hp={}/{}",
-                    target_id, bot.level, bot.hp, bot.max_hp
-                );
-                super::client_event::send_gm_debug_chat(&world, sid, &debug_msg);
-            } else if let Some(inst) = world.get_npc_instance(target_id) {
-                let name = world
-                    .get_npc_template(inst.proto_id, inst.is_monster)
-                    .map(|t| t.name.clone())
-                    .unwrap_or_default();
-                let level = world
-                    .get_npc_template(inst.proto_id, inst.is_monster)
-                    .map(|t| t.level)
-                    .unwrap_or(0);
-                let is_mon = if inst.is_monster { "MON" } else { "NPC" };
-                let debug_msg = format!(
-                    "[GM] {} id={} proto={} name={} lv={} hp={}/{}",
-                    is_mon, target_id, inst.proto_id, name, level, current_hp, max_hp
+                    "ID = {}, Name = {}, Nation = {}",
+                    target_id, bot.name, bot.nation
                 );
                 super::client_event::send_gm_debug_chat(&world, sid, &debug_msg);
             }
         }
     }
 
-    let mut response = Packet::new(Opcode::WizTargetHp as u8);
-    response.write_u32(target_id);
-    response.write_u8(echo);
-    response.write_u32(max_hp);
-    response.write_u32(current_hp);
-    response.write_u32(0); // damage
-    response.write_u32(0); // reserved
-    response.write_u8(0); // reserved
+    let response = build_target_hp_packet(target_id, echo, max_hp, current_hp, 0, 0);
 
     session.send_packet(&response).await?;
+
+    // JstKO client: the level of the target, drawn on its HP bar together with the HP numbers.
+    // The trailing SID is only ever shown by the client when the local player is a GM
+    // (target_hp.cpp's IsGM(), same check as gm_panel.cpp) -- sent for every target regardless,
+    // it's 0 for players/bots and harmless for a non-GM client to receive but never render.
+    let mut info = Packet::new(ko_protocol::Opcode::EXT_HOOK_S2C);
+    info.write_u8(EXT_SUB_TARGET_LEVEL);
+    info.write_u32(target_id);
+    info.write_u16(target_level);
+    info.write_u32(target_sid);
+    session.send_packet(&info).await?;
 
     tracing::debug!(
         "[{}] TARGET_HP: target={}, hp={}/{}",
@@ -208,15 +240,7 @@ mod tests {
 
     #[test]
     fn test_s2c_target_hp_response_format() {
-        // S2C: [u32 target_id] [u8 echo] [u32 max_hp] [u32 cur_hp] [u32 damage=0] [u32 reserved=0] [u8 reserved=0]
-        let mut pkt = Packet::new(Opcode::WizTargetHp as u8);
-        pkt.write_u32(10042); // target_id
-        pkt.write_u8(1); // echo
-        pkt.write_u32(5000); // max_hp
-        pkt.write_u32(3500); // current_hp
-        pkt.write_u32(0); // damage
-        pkt.write_u32(0); // reserved
-        pkt.write_u8(0); // reserved
+        let pkt = build_target_hp_packet(10042, 1, 5000, 3500, -123, -45);
 
         assert_eq!(pkt.data.len(), 22); // 4+1+4+4+4+4+1
 
@@ -225,8 +249,8 @@ mod tests {
         assert_eq!(r.read_u8(), Some(1));
         assert_eq!(r.read_u32(), Some(5000));
         assert_eq!(r.read_u32(), Some(3500));
-        assert_eq!(r.read_u32(), Some(0));
-        assert_eq!(r.read_u32(), Some(0));
+        assert_eq!(r.read_i32(), Some(-123));
+        assert_eq!(r.read_i32(), Some(-45));
         assert_eq!(r.read_u8(), Some(0));
         assert_eq!(r.remaining(), 0);
     }
@@ -372,7 +396,10 @@ mod tests {
         pkt.write_u8(0); // reserved u8
 
         let mut r = PacketReader::new(&pkt.data);
-        r.read_u32(); r.read_u8(); r.read_u32(); r.read_u32();
+        r.read_u32();
+        r.read_u8();
+        r.read_u32();
+        r.read_u32();
         assert_eq!(r.read_u32(), Some(0), "damage always 0");
         assert_eq!(r.read_u32(), Some(0), "reserved u32 always 0");
         assert_eq!(r.read_u8(), Some(0), "reserved u8 always 0");

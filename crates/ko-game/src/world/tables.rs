@@ -65,6 +65,11 @@ impl WorldState {
     pub fn get_magic_type6(&self, i_num: i32) -> Option<MagicType6Row> {
         self.magic_type6.get(&i_num).map(|r| r.clone())
     }
+    /// Insert a magic type 6 (transform) row. Used for tests.
+    #[cfg(test)]
+    pub(crate) fn insert_magic_type6(&self, row: MagicType6Row) {
+        self.magic_type6.insert(row.i_num, row);
+    }
     /// Look up magic type 7 (summon/CC) parameters by n_index.
     pub fn get_magic_type7(&self, n_index: i32) -> Option<MagicType7Row> {
         self.magic_type7.get(&n_index).map(|r| r.clone())
@@ -81,6 +86,18 @@ impl WorldState {
     ///
     pub fn get_item(&self, item_id: u32) -> Option<Item> {
         self.items.get(&item_id).map(|r| r.clone())
+    }
+    /// Number of loaded item definitions.
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+    /// Clone every item definition matching `pred` (full-table scan; cache the result).
+    pub fn collect_items_matching(&self, pred: impl Fn(&Item) -> bool) -> Vec<Item> {
+        self.items
+            .iter()
+            .filter(|entry| pred(entry.value()))
+            .map(|entry| entry.value().clone())
+            .collect()
     }
     /// Insert an item template (for testing).
     #[cfg(test)]
@@ -263,6 +280,13 @@ impl WorldState {
     pub fn achieve_main(&self, s_index: i32) -> Option<AchieveMainRow> {
         self.achieve_main.get(&s_index).map(|r| r.clone())
     }
+    /// Snapshot all achievement master definitions.
+    pub fn all_achieve_main(&self) -> Vec<AchieveMainRow> {
+        self.achieve_main
+            .iter()
+            .map(|r| r.value().clone())
+            .collect()
+    }
     /// Look up an achievement title by title index.
     ///
     pub fn achieve_title(&self, s_index: i32) -> Option<AchieveTitleRow> {
@@ -273,20 +297,38 @@ impl WorldState {
     pub fn achieve_war(&self, s_index: i32) -> Option<AchieveWarRow> {
         self.achieve_war.get(&s_index).map(|r| r.clone())
     }
+    pub fn all_achieve_war(&self) -> Vec<AchieveWarRow> {
+        self.achieve_war.iter().map(|r| r.value().clone()).collect()
+    }
     /// Look up a normal-type achievement by s_index.
     ///
     pub fn achieve_normal(&self, s_index: i32) -> Option<AchieveNormalRow> {
         self.achieve_normal.get(&s_index).map(|r| r.clone())
+    }
+    pub fn all_achieve_normal(&self) -> Vec<AchieveNormalRow> {
+        self.achieve_normal
+            .iter()
+            .map(|r| r.value().clone())
+            .collect()
     }
     /// Look up a monster-kill achievement by s_index.
     ///
     pub fn achieve_monster(&self, s_index: i32) -> Option<AchieveMonsterRow> {
         self.achieve_monster.get(&s_index).map(|r| r.clone())
     }
+    pub fn all_achieve_monster(&self) -> Vec<AchieveMonsterRow> {
+        self.achieve_monster
+            .iter()
+            .map(|r| r.value().clone())
+            .collect()
+    }
     /// Look up a composite (requirement-based) achievement by s_index.
     ///
     pub fn achieve_com(&self, s_index: i32) -> Option<AchieveComRow> {
         self.achieve_com.get(&s_index).map(|r| r.clone())
+    }
+    pub fn all_achieve_com(&self) -> Vec<AchieveComRow> {
+        self.achieve_com.iter().map(|r| r.value().clone()).collect()
     }
     /// Get filtered mining/fishing item list based on table type and tool type.
     ///
@@ -325,6 +367,23 @@ impl WorldState {
     ///
     pub fn get_upgrade_recipes(&self, origin_number: i32) -> Option<Vec<NewUpgradeRow>> {
         self.upgrade_recipes.get(&origin_number).map(|r| r.clone())
+    }
+    /// Find the recipe that produced an upgraded item with one of the given materials.
+    ///
+    /// Used by accessory disassemble: +N accessory -> three copies of +(N-1).
+    pub fn find_upgrade_recipe_by_new_number_and_req_items(
+        &self,
+        new_number: i32,
+        req_items: &[i32],
+    ) -> Option<NewUpgradeRow> {
+        for entry in self.upgrade_recipes.iter() {
+            for recipe in entry.value() {
+                if recipe.new_number == new_number && req_items.contains(&recipe.req_item) {
+                    return Some(recipe.clone());
+                }
+            }
+        }
+        None
     }
     /// Iterate all upgrade settings to find a matching entry.
     ///
@@ -959,6 +1018,10 @@ impl WorldState {
     pub fn get_quest_helper(&self, n_index: u32) -> Option<QuestHelperRow> {
         self.quest_helpers.get(&n_index).map(|r| r.clone())
     }
+
+    pub fn is_boosted_collection_drop(&self, zone: u16, item: u32) -> bool {
+        matches!(zone, 1 | 11 | 12) && self.collection_drop_items.contains_key(&item)
+    }
     /// Look up a quest monster definition by quest num (sEventDataIndex).
     ///
     pub fn get_quest_monster(&self, quest_num: u16) -> Option<QuestMonsterRow> {
@@ -1066,9 +1129,35 @@ impl WorldState {
         if !(1..=2).contains(&nation) || amount == 0 {
             return;
         }
+        let zone_id = self.with_session(sid, |h| h.position.zone_id).unwrap_or(0);
+        let mut loyalty_daily = amount;
+        let mut loyalty_premium_bonus = 0;
+        self.update_session(sid, |h| {
+            h.pk_loyalty_daily = h.pk_loyalty_daily.saturating_add(amount).min(2_100_000_000);
+            loyalty_daily = h.pk_loyalty_daily;
+            loyalty_premium_bonus = h.pk_loyalty_premium_bonus;
+        });
+
         let idx = (nation - 1) as usize;
         if let Some(mut r) = self.pk_zone_rankings[idx].get_mut(&sid) {
-            r.loyalty_daily = r.loyalty_daily.saturating_add(amount).min(2_100_000_000);
+            r.zone_id = zone_id;
+            r.loyalty_daily = loyalty_daily;
+            r.loyalty_premium_bonus = loyalty_premium_bonus;
+        } else {
+            // Zone changes do not re-run GAMESTART, so lazily register the
+            // player on their first PK gain if the rank entry is absent.
+            let other_idx = if idx == 0 { 1 } else { 0 };
+            self.pk_zone_rankings[other_idx].remove(&sid);
+            self.pk_zone_rankings[idx].insert(
+                sid,
+                PkZoneRanking {
+                    session_id: sid,
+                    zone_id,
+                    nation,
+                    loyalty_daily,
+                    loyalty_premium_bonus,
+                },
+            );
         }
     }
     /// Get sorted PK zone rankings for a nation, filtered by zone.
@@ -1358,6 +1447,31 @@ impl WorldState {
     pub fn get_respawn_chain(&self, dead_sid: i16) -> Option<MonsterRespawnLoopRow> {
         self.monster_respawn_loop.get(&dead_sid).map(|r| r.clone())
     }
+
+    /// Return Juraid Mountain spawn rows for a family/stage.
+    ///
+    /// Families 21-28 are the per-room Juraid waves loaded from
+    /// `monster_juraid_respawn_list`.
+    pub fn get_juraid_respawn_family(
+        &self,
+        family: i16,
+    ) -> Vec<ko_db::models::MonsterJuraidRespawnRow> {
+        self.monster_juraid_respawn
+            .read()
+            .iter()
+            .filter(|row| row.family == family)
+            .cloned()
+            .collect()
+    }
+
+    /// Return the configured Juraid Deva Bird template for a family.
+    pub fn get_juraid_deva_sid(&self, family: i16) -> Option<u16> {
+        self.monster_juraid_respawn
+            .read()
+            .iter()
+            .find(|row| row.family == family && row.s_sid == 8106)
+            .map(|row| row.s_sid as u16)
+    }
     /// Get all boss random spawn candidates for a given stage.
     pub fn get_boss_spawn_candidates(&self, stage: i32) -> Vec<MonsterBossRandomSpawnRow> {
         self.boss_random_spawn
@@ -1635,6 +1749,40 @@ impl WorldState {
         self.juraid_bridge_states.clear();
     }
 
+    /// Schedule a Juraid Monument respawn for a specific room and nation.
+    pub fn set_juraid_monument_respawn(&self, room_id: u8, nation: u8, due_at: u64) {
+        if room_id == 0 || !matches!(nation, 1 | 2) {
+            return;
+        }
+        self.juraid_monument_respawns
+            .insert((room_id, nation), due_at);
+    }
+
+    /// Drain Juraid Monument respawns whose due timestamp has passed.
+    pub fn take_due_juraid_monument_respawns(&self, now: u64) -> Vec<(u8, u8)> {
+        let due: Vec<(u8, u8)> = self
+            .juraid_monument_respawns
+            .iter()
+            .filter_map(|entry| {
+                if *entry.value() <= now {
+                    Some(*entry.key())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for key in &due {
+            self.juraid_monument_respawns.remove(key);
+        }
+        due
+    }
+
+    /// Clear pending Juraid Monument respawns (called on event start/cleanup).
+    pub fn clear_juraid_monument_respawns(&self) {
+        self.juraid_monument_respawns.clear();
+    }
+
     // ── Monster Stone ────────────────────────────────────────────
 
     /// Get a read lock on the Monster Stone manager.
@@ -1816,7 +1964,7 @@ impl WorldState {
     /// Get the CSW (Castle Siege War) master knights clan ID.
     ///
     pub(crate) fn get_csw_master_knights(&self) -> u16 {
-        self.siege_war.blocking_read().master_knights
+        self.siege_war.try_read().map(|state| state.master_knights).unwrap_or(0)
     }
 
     /// Get a player's rebirth level from session.

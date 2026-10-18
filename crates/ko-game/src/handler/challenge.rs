@@ -132,7 +132,12 @@ async fn handle_pvp_request(
 
     // Validate self: not already in challenge, not in arena, not in party/trading/merchanting
     let (self_requesting, self_requested, _, self_zone_id) = match world.with_session(sid, |h| {
-        (h.requesting_challenge, h.challenge_requested, h.challenge_user, h.position.zone_id)
+        (
+            h.requesting_challenge,
+            h.challenge_requested,
+            h.challenge_user,
+            h.position.zone_id,
+        )
     }) {
         Some(v) => v,
         None => return Ok(()),
@@ -318,7 +323,12 @@ async fn handle_cvc_request(
 
     // Validate self state
     let (self_requesting, self_requested, _, self_zone_id) = match world.with_session(sid, |h| {
-        (h.requesting_challenge, h.challenge_requested, h.challenge_user, h.position.zone_id)
+        (
+            h.requesting_challenge,
+            h.challenge_requested,
+            h.challenge_user,
+            h.position.zone_id,
+        )
     }) {
         Some(v) => v,
         None => return Ok(()),

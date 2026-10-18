@@ -123,9 +123,16 @@ pub fn generate_handler(handler: &MissingHandler, tbl: &TblData) -> String {
             let _ = writeln!(code, "\t\tSelectMsg(UID, 2, -1, 8779, NPC, 10, -1);");
             let _ = writeln!(code, "\telse");
             if *exchange_index > 0 {
-                let _ = writeln!(code, "\t\tRunQuestExchange(UID, {});", exchange_index);
+                let _ = writeln!(
+                    code,
+                    "\t\tif (RunQuestExchange(UID, {})) then",
+                    exchange_index
+                );
+                let _ = writeln!(code, "\t\t\tSaveEvent(UID, {});", save_event_index);
+                let _ = writeln!(code, "\t\tend");
+            } else {
+                let _ = writeln!(code, "\t\tSaveEvent(UID, {});", save_event_index);
             }
-            let _ = writeln!(code, "\t\tSaveEvent(UID, {});", save_event_index);
             let _ = writeln!(code, "\tend");
         }
 
@@ -145,9 +152,16 @@ pub fn generate_handler(handler: &MissingHandler, tbl: &TblData) -> String {
             let _ = writeln!(code, "\t\tSelectMsg(UID, 2, -1, 8779, NPC, 10, -1);");
             let _ = writeln!(code, "\telse");
             if *exchange_index > 0 {
-                let _ = writeln!(code, "\t\tRunQuestExchange(UID, {});", exchange_index);
+                let _ = writeln!(
+                    code,
+                    "\t\tif (RunQuestExchange(UID, {})) then",
+                    exchange_index
+                );
+                let _ = writeln!(code, "\t\t\tSaveEvent(UID, {});", save_event_index);
+                let _ = writeln!(code, "\t\tend");
+            } else {
+                let _ = writeln!(code, "\t\tSaveEvent(UID, {});", save_event_index);
             }
-            let _ = writeln!(code, "\t\tSaveEvent(UID, {});", save_event_index);
             let _ = writeln!(code, "\tend");
         }
 
@@ -270,11 +284,10 @@ pub fn apply_generated(
         // Read existing content
         let existing = std::fs::read_to_string(&path)?;
 
-        // Strip existing auto-generated block if present (replace mode)
-        let base_content = strip_autogen_block(&existing);
-
-        // Append generated code
-        let mut new_content = base_content;
+        // Append only events proven missing. Keeping handlers from earlier
+        // passes makes shared-trigger generation convergent instead of making
+        // successive runs replace (and lose) one another's event groups.
+        let mut new_content = existing;
         if !new_content.ends_with('\n') {
             new_content.push('\n');
         }

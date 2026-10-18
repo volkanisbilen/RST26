@@ -119,7 +119,9 @@ mod tests {
     /// Known sub-opcodes: 0xF0, 0x02, 0x03, 0x04-0x09, 0x0E.
     #[test]
     fn test_continuous_sub_opcodes() {
-        let known_subs: [u8; 11] = [0xF0, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0E, 0xF0];
+        let known_subs: [u8; 11] = [
+            0xF0, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0E, 0xF0,
+        ];
         assert!(known_subs.contains(&0xF0), "resource reload");
         assert!(known_subs.contains(&0x02), "compressed ACK match");
         assert!(known_subs.contains(&0x06), "download data chunks");
@@ -153,7 +155,10 @@ mod tests {
     /// Opcode from_byte roundtrip for 0x9C.
     #[test]
     fn test_continuous_opcode_from_byte() {
-        assert_eq!(Opcode::from_byte(0x9C), Some(Opcode::WizContinousPacketData));
+        assert_eq!(
+            Opcode::from_byte(0x9C),
+            Some(Opcode::WizContinousPacketData)
+        );
         assert_eq!(Opcode::WizContinousPacketData as u8, 0x9C);
     }
 

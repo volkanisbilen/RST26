@@ -143,7 +143,7 @@ impl WorldState {
         self.sessions
             .get(&sid)
             .map(|h| h.merchant_state != MERCHANT_STATE_NONE)
-            .unwrap_or(false)
+            .unwrap_or_else(|| self.get_bot(sid as u32).is_some_and(|b| b.is_merchanting()))
     }
     /// Check if a player is currently mining.
     ///
@@ -180,7 +180,10 @@ impl WorldState {
         self.sessions
             .get(&sid)
             .map(|h| h.merchant_state == MERCHANT_STATE_SELLING)
-            .unwrap_or(false)
+            .unwrap_or_else(|| {
+                self.get_bot(sid as u32)
+                    .is_some_and(|b| b.merchant_state == 0)
+            })
     }
     /// Set selling merchant preparing state.
     pub fn set_selling_merchant_preparing(&self, sid: SessionId, val: bool) {
@@ -198,19 +201,26 @@ impl WorldState {
     }
     /// Get a merchant item slot (cloned).
     pub fn get_merchant_item(&self, sid: SessionId, slot: usize) -> Option<MerchData> {
-        self.sessions.get(&sid).and_then(|h| {
-            if slot < MAX_MERCH_ITEMS {
-                Some(h.merchant_items[slot].clone())
-            } else {
-                None
-            }
-        })
+        self.sessions
+            .get(&sid)
+            .and_then(|h| {
+                if slot < MAX_MERCH_ITEMS {
+                    Some(h.merchant_items[slot].clone())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                self.get_bot(sid as u32)
+                    .and_then(|b| (slot < MAX_MERCH_ITEMS).then(|| b.merchant_items[slot].clone()))
+            })
     }
     /// Get all merchant items for a session (cloned).
     pub fn get_merchant_items(&self, sid: SessionId) -> [MerchData; MAX_MERCH_ITEMS] {
         self.sessions
             .get(&sid)
             .map(|h| h.merchant_items.clone())
+            .or_else(|| self.get_bot(sid as u32).map(|b| b.merchant_items.clone()))
             .unwrap_or_default()
     }
     /// Activate selling merchant state (after insert).
@@ -232,17 +242,28 @@ impl WorldState {
             h.buying_merchant_preparing = false;
             h.merchant_items = Default::default();
             h.merchant_looker = None;
+        } else {
+            self.update_bot(sid as u32, |bot| {
+                bot.merchant_state = MERCHANT_STATE_NONE;
+                bot.merchant_items = Default::default();
+                bot.merchant_looker = None;
+            });
         }
     }
     /// Set the merchant looker (who is browsing my shop).
     pub fn set_merchant_looker(&self, merchant_sid: SessionId, looker: Option<SessionId>) {
         if let Some(mut h) = self.sessions.get_mut(&merchant_sid) {
             h.merchant_looker = looker;
+        } else {
+            self.update_bot(merchant_sid as u32, |bot| bot.merchant_looker = looker);
         }
     }
     /// Get the merchant looker for a session.
     pub fn get_merchant_looker(&self, sid: SessionId) -> Option<SessionId> {
-        self.sessions.get(&sid).and_then(|h| h.merchant_looker)
+        self.sessions
+            .get(&sid)
+            .and_then(|h| h.merchant_looker)
+            .or_else(|| self.get_bot(sid as u32).and_then(|b| b.merchant_looker))
     }
     /// Set which merchant shop this player is browsing.
     pub fn set_browsing_merchant(&self, sid: SessionId, merchant: Option<SessionId>) {
@@ -274,6 +295,16 @@ impl WorldState {
                     slot.sold_out = false;
                 }
             }
+        } else {
+            self.update_bot(merchant_sid as u32, |bot| {
+                if item_slot < MAX_MERCH_ITEMS {
+                    let slot = &mut bot.merchant_items[item_slot];
+                    if slot.item_id == expected_item_id {
+                        slot.sell_count = slot.sell_count.saturating_add(count);
+                        slot.sold_out = false;
+                    }
+                }
+            });
         }
     }
 
@@ -310,6 +341,23 @@ impl WorldState {
                 slot.sold_out = true;
             }
             Some(snapshot)
+        } else if let Some(mut bot) = self.bots.get_mut(&(merchant_sid as u32)) {
+            if item_slot >= MAX_MERCH_ITEMS {
+                return None;
+            }
+            let slot = &mut bot.merchant_items[item_slot];
+            if slot.item_id == 0
+                || slot.item_id != expected_item_id
+                || slot.sold_out
+                || slot.sell_count < buy_count
+                || slot.price == 0
+            {
+                return None;
+            }
+            let snapshot = slot.clone();
+            slot.sell_count = slot.sell_count.saturating_sub(buy_count);
+            slot.sold_out = slot.sell_count == 0;
+            Some(snapshot)
         } else {
             None
         }
@@ -320,7 +368,10 @@ impl WorldState {
         self.sessions
             .get(&sid)
             .map(|h| h.merchant_state == MERCHANT_STATE_BUYING)
-            .unwrap_or(false)
+            .unwrap_or_else(|| {
+                self.get_bot(sid as u32)
+                    .is_some_and(|b| b.merchant_state == 1)
+            })
     }
 
     /// Set buying merchant preparing state.
@@ -354,10 +405,8 @@ impl WorldState {
         let merchant_sid = self.get_browsing_merchant(sid);
         if let Some(msid) = merchant_sid {
             // Clear the merchant's looker if it's us
-            if let Some(mut h) = self.sessions.get_mut(&msid) {
-                if h.merchant_looker == Some(sid) {
-                    h.merchant_looker = None;
-                }
+            if self.get_merchant_looker(msid) == Some(sid) {
+                self.set_merchant_looker(msid, None);
             }
         }
         self.set_browsing_merchant(sid, None);

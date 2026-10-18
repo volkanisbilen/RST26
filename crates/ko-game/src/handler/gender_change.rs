@@ -351,16 +351,28 @@ mod tests {
     #[test]
     fn test_gender_change_kurian_blocked() {
         assert!(!validate_race_nation(KURIAN, 1), "Kurian blocked in Karus");
-        assert!(!validate_race_nation(KURIAN, 2), "Kurian blocked in ElMorad");
-        assert!(!validate_race_nation(KURIAN, 0), "Kurian blocked for nation 0");
+        assert!(
+            !validate_race_nation(KURIAN, 2),
+            "Kurian blocked in ElMorad"
+        );
+        assert!(
+            !validate_race_nation(KURIAN, 0),
+            "Kurian blocked for nation 0"
+        );
     }
 
     /// Boundary race values: 0, 5, 10, 15 are all invalid.
     #[test]
     fn test_gender_change_race_boundary_values() {
         for race in [0u8, 5, 10, 15, 255] {
-            assert!(!validate_race_nation(race, 1), "race {race} invalid for Karus");
-            assert!(!validate_race_nation(race, 2), "race {race} invalid for ElMorad");
+            assert!(
+                !validate_race_nation(race, 1),
+                "race {race} invalid for Karus"
+            );
+            assert!(
+                !validate_race_nation(race, 2),
+                "race {race} invalid for ElMorad"
+            );
         }
     }
 

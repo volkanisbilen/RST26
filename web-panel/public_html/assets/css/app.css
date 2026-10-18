@@ -1,0 +1,37 @@
+body {
+  background-image: radial-gradient(circle at 20% 0%, rgba(250, 204, 21, 0.06), transparent 40%),
+    radial-gradient(circle at 100% 20%, rgba(99, 102, 241, 0.05), transparent 45%);
+}
+
+.card {
+  background: #141925;
+  border: 1px solid #232a3b;
+  border-radius: 0.75rem;
+}
+
+.input {
+  width: 100%;
+  background: #0b0e14;
+  border: 1px solid #232a3b;
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  color: #e5e7eb;
+  font-size: 0.875rem;
+}
+.input:focus {
+  outline: none;
+  border-color: #facc15;
+  box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.25);
+}
+
+.btn-primary {
+  background: #eab308;
+  color: #0b0e14;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  padding: 0.65rem 1.25rem;
+  transition: background 0.15s;
+}
+.btn-primary:hover { background: #facc15; }
+
+.table-row:nth-child(even) { background: rgba(255, 255, 255, 0.02); }

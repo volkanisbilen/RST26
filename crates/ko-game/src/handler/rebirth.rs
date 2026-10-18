@@ -174,7 +174,8 @@ async fn handle_rebirth_request(session: &mut ClientSession) -> anyhow::Result<(
 
     // ── 1. Gather player state ──
     let (
-        exp_percent,
+        exp,
+        level,
         gold,
         loyalty,
         rebirth_level,
@@ -186,14 +187,9 @@ async fn handle_rebirth_request(session: &mut ClientSession) -> anyhow::Result<(
         cha_val,
     ) = match world.with_session(sid, |h| {
         h.character.as_ref().map(|ch| {
-            let max_exp = ch.max_exp;
-            let pct = if max_exp > 0 {
-                ((ch.exp as f64 / max_exp as f64) * 100.0) as i32
-            } else {
-                0
-            };
             (
-                pct,
+                ch.exp,
+                ch.level,
                 ch.gold,
                 ch.loyalty,
                 ch.rebirth_level,
@@ -208,6 +204,16 @@ async fn handle_rebirth_request(session: &mut ClientSession) -> anyhow::Result<(
     }) {
         Some(Some(data)) => data,
         _ => return Ok(()),
+    };
+
+    // Use the same level-up table predicate as the Lua NPC quest flow. The
+    // cached max_exp may be stale after rebirth/level changes, and percentage
+    // rounding can falsely reject a character at the level cap.
+    let required_exp = world.get_exp_by_level(level, rebirth_level);
+    let exp_percent = if required_exp > 0 && exp == required_exp as u64 {
+        100
+    } else {
+        0
     };
 
     // ── 2. Validate requirements (Binary/ RebirthBas parity) ──
