@@ -98,6 +98,53 @@ async function evHistory(box){
   clear(box).append(h('div',{class:'card'},h('div',{class:'tw'},h('table',{},h('tbody',{},cm.map(c=>h('tr',{},h('td',{class:'xs muted nowrap'},when(c.created_at)),h('td',{},c.command),h('td',{class:'xs muted'},JSON.stringify(c.args)),h('td',{},h('span',{class:'chip '+(c.status==='done'?'ok':c.status==='failed'?'bad':'')},c.status)),h('td',{class:'xs muted'},c.result))))))));
 }
 
+/* PK bot wave: spawn/clear GM bots in Ronark Land (71) / Ardream (72) / Ronark Land Base (73)
+   from the panel, via the same admin_command queue the event center uses. */
+const BOT_ZONES=[[71,'Ronark Land'],[72,'Ardream (max lvl 59)'],[73,'Ronark Land Base']];
+
+async function botsRun(path,body,busyLabel){
+  let id;try{id=(await api(path,{body})).id}catch(_){return null}
+  for(let i=0;i<14;i++){
+    await new Promise(r=>setTimeout(r,700));
+    let r;try{r=await api('/bots/command/'+id,{quiet:true})}catch(_){continue}
+    if(r.status==='done'){toast(r.result||busyLabel+': tamam','ok');return true}
+    if(r.status==='failed'||r.status==='expired'){toast(r.result||r.status,'err');return false}
+  }
+  toast('Komut sıraya alındı; oyun sunucusu yanıt vermedi (kapalı olabilir).','err');
+  return false;
+}
+
+PAGE.bots=async function(main){
+  const zone=h('select',{},BOT_ZONES.map(([id,name])=>h('option',{value:id},id+' · '+name)));
+  const fillAll=h('input',{type:'checkbox'});
+  const count=h('input',{type:'number',min:'1',value:'20',style:'width:100%'});
+  const level=h('input',{type:'number',min:'1',max:'83',placeholder:'Varsayılan (83, Ardream 59)'});
+  const toggleCount=()=>{count.disabled=fillAll.checked};
+  fillAll.onchange=toggleCount;toggleCount();
+
+  const spawnBtn=h('button',{class:'btn primary',onclick:async()=>{
+    spawnBtn.disabled=true;
+    await botsRun('/bots/spawn',{zone:Number(zone.value),count_per_nation:fillAll.checked?null:Number(count.value)||null,level:level.value?Number(level.value):null},'Bot dalgası');
+    spawnBtn.disabled=false;
+  }},ico('plus'),'Bot dalgası gönder');
+
+  const clearBtn=h('button',{class:'btn danger',onclick:async()=>{
+    if(!await confirmBox('Botları temizle','Seçili bölgedeki tüm GM PK botları kaldırılacak.','Temizle',true))return;
+    clearBtn.disabled=true;
+    await botsRun('/bots/clear',{zone:Number(zone.value)},'Bot temizleme');
+    clearBtn.disabled=false;
+  }},ico('trash'),'Bu bölgeyi temizle');
+
+  main.append(head('PK Bot Dalgası','+pkbots komutunun panel karşılığı — her sınıftan (Kurian/Porutu dahil) bot, iki ırk için de aynı anda'),
+    h('div',{class:'card'},h('div',{class:'form'},
+      field('Bölge',zone),
+      field('Oyuncu/ırk sayısı',count),
+      h('label',{class:'row',style:'gap:6px;margin:4px 0 10px'},fillAll,'Kapasiteyi tamamen doldur'),
+      field('Seviye',level)),
+      h('div',{class:'row',style:'gap:8px;margin-top:10px'},spawnBtn,clearBtn)),
+    h('div',{class:'hint',style:'margin-top:10px'},'Oyun içinde incelemek için +botitems <isim> komutunu kullanabilirsin.'));
+};
+
 PAGE.events=async function(main){
   let tab='live',data=await api('/events/live'),timer=null;
   const body=h('div',{});

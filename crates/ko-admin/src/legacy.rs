@@ -197,7 +197,10 @@ pub fn routes() -> Router<App> {
                 post(edit_starting_item),
             )
             .route("/jstkoadminpanel/api/control", post(control))
-            
+            .route("/jstkoadminpanel/api/bots/spawn", post(bots_spawn))
+            .route("/jstkoadminpanel/api/bots/clear", post(bots_clear))
+            .route("/jstkoadminpanel/api/bots/command/{id}", get(bots_command_result))
+
     }
 }
 
@@ -2299,6 +2302,70 @@ async fn control(
     audit(&mut tx, &s.actor, "control.queue", &p.kind, detail, peer.ip()).await?;
     tx.commit().await.map_err(|_| ApiError::Internal)?;
     Ok(Json(json!({"ok":true,"queued":id,"note":"Komut sıraya alındı; oyun sunucusu çalışıyorsa birkaç saniye içinde uygular."})))
+}
+
+#[derive(Deserialize)]
+struct BotSpawn {
+    zone: u16,
+    count_per_nation: Option<u32>,
+    level: Option<u8>,
+}
+// Valid PK bot zones -- kept in sync with ZONE_RONARK_LAND/ZONE_ARDREAM/ZONE_RONARK_LAND_BASE
+// in ko-game (crates/ko-game/src/world/types.rs); ko-admin has no dependency on that crate.
+const PK_BOT_ZONES: [u16; 3] = [71, 72, 73];
+async fn bots_spawn(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Json(p): Json<BotSpawn>,
+) -> Result<Json<Value>, ApiError> {
+    let (_, s) = auth(&headers, true)?;
+    if !PK_BOT_ZONES.contains(&p.zone) {
+        return Err(ApiError::BadRequest);
+    }
+    if p.level.is_some_and(|l| !(1..=83).contains(&l)) {
+        return Err(ApiError::BadRequest);
+    }
+    let detail = json!({"action":"spawn","zone":p.zone,"count_per_nation":p.count_per_nation,"level":p.level});
+    let id = queue_command(&app.pool, "bot", detail.clone()).await?;
+    let mut tx = app.pool.begin().await.map_err(|_| ApiError::Internal)?;
+    audit(&mut tx, &s.actor, "bot.spawn.queue", &p.zone.to_string(), detail, peer.ip()).await?;
+    tx.commit().await.map_err(|_| ApiError::Internal)?;
+    Ok(Json(json!({"ok":true,"id":id})))
+}
+
+#[derive(Deserialize)]
+struct BotClear {
+    zone: u16,
+}
+async fn bots_clear(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Json(p): Json<BotClear>,
+) -> Result<Json<Value>, ApiError> {
+    let (_, s) = auth(&headers, true)?;
+    if !PK_BOT_ZONES.contains(&p.zone) {
+        return Err(ApiError::BadRequest);
+    }
+    let detail = json!({"action":"clear","zone":p.zone});
+    let id = queue_command(&app.pool, "bot", detail.clone()).await?;
+    let mut tx = app.pool.begin().await.map_err(|_| ApiError::Internal)?;
+    audit(&mut tx, &s.actor, "bot.clear.queue", &p.zone.to_string(), detail, peer.ip()).await?;
+    tx.commit().await.map_err(|_| ApiError::Internal)?;
+    Ok(Json(json!({"ok":true,"id":id})))
+}
+
+async fn bots_command_result(headers: HeaderMap, State(app): State<App>, Path(id): Path<i64>) -> Result<Json<Value>, ApiError> {
+    auth(&headers, false)?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT status, result FROM admin_command WHERE id=$1 AND command='bot'")
+            .bind(id)
+            .fetch_optional(&app.pool)
+            .await
+            .map_err(|_| ApiError::Internal)?;
+    let (status, result) = row.ok_or(ApiError::NotFound)?;
+    Ok(Json(json!({"status":status,"result":result})))
 }
 
 /// Queue a command for the running game server (it polls `admin_command`). With the server down

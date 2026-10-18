@@ -2661,7 +2661,7 @@ fn handle_bot_spawn(
 /// priest). Only zones with patrol waypoints are accepted.
 fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     use crate::systems::bot_ai;
-    use crate::world::{BotAiState, ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
+    use crate::world::{ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
 
     let world = session.world().clone();
     let sid = session.session_id();
@@ -2723,99 +2723,49 @@ fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
         send_help(session, "Error: Invalid zone. Use 71, 72, or here.");
         return Ok(());
     };
-    if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE) {
-        send_help(
-            session,
-            "Error: PK bot waves currently support Ronark Land (71), Ardream (72), and Ronark Land Base (73).",
-        );
-        return Ok(());
-    }
 
-    let remaining_capacity = 5_000usize.saturating_sub(world.bot_count());
-    let max_per_nation = remaining_capacity / 2;
     let count_per_nation = if args[1].eq_ignore_ascii_case("all") {
-        max_per_nation
+        None
     } else {
         match args[1].parse::<usize>() {
-            Ok(count) if count > 0 => count.min(max_per_nation),
-            _ => {
+            Ok(count) => Some(count),
+            Err(_) => {
                 send_help(session, "Error: CountPerNation must be positive or 'all'.");
                 return Ok(());
             }
         }
     };
-    if count_per_nation == 0 {
-        send_help(session, "Bot socket capacity is already full.");
-        return Ok(());
-    }
-
-    let default_level = if zone_id == ZONE_ARDREAM { 59 } else { 83 };
     let level = match args.get(2) {
         Some(value) => match value.parse::<u8>() {
-            Ok(level) if (1..=83).contains(&level) => level,
-            _ => {
+            Ok(level) => Some(level),
+            Err(_) => {
                 send_help(session, "Error: Level must be between 1 and 83.");
                 return Ok(());
             }
         },
-        None => default_level,
-    };
-    if zone_id == ZONE_ARDREAM && level > 59 {
-        send_help(session, "Error: Ardream PK bots cannot be above level 59.");
-        return Ok(());
-    }
-
-    let Some(zone) = world.get_zone(zone_id) else {
-        send_help(session, "Error: Target zone is not loaded.");
-        return Ok(());
+        None => None,
     };
 
-    // Warrior, Rogue, Mage, Priest, Kurian/Porutu (5th job) -- see
-    // bot_ai::gm_class_to_real_class for how each shorthand resolves.
-    const GM_CLASSES: [u16; 5] = [1, 2, 3, 4, 13];
-
-    let mut spawned = 0usize;
-    for nation in [1u8, 2u8] {
-        for index in 0..count_per_nation {
-            let class = GM_CLASSES[index % GM_CLASSES.len()];
-            let (x, z) = bot_ai::get_bot_respawn_position(zone_id, nation);
-            if !zone.is_valid_position(x, z) {
-                warn!(zone_id, nation, x, z, "GM PK bot start position is invalid");
-                continue;
-            }
-
-            bot_ai::spawn_gm_bot(
-                &world,
-                bot_ai::SpawnGmBotParams {
-                    zone_id,
-                    x,
-                    y: 0.0,
-                    z,
-                    class,
-                    level,
-                    nation,
-                    ai_state: BotAiState::Pk,
-                },
+    match bot_ai::spawn_pk_bot_wave(&world, zone_id, count_per_nation, level) {
+        Ok(result) => {
+            send_help(
+                session,
+                &format!(
+                    "Spawned {} PK bots in zone {} ({} requested per nation, level {}).",
+                    result.spawned, result.zone_id, result.count_per_nation, result.level
+                ),
             );
-            spawned += 1;
+            info!(
+                "[{}] GM +pkbots: spawned {} PK bots in zone {} (per_nation={}, level={})",
+                session.addr(),
+                result.spawned,
+                result.zone_id,
+                result.count_per_nation,
+                result.level,
+            );
         }
+        Err(e) => send_help(session, &format!("Error: {e}")),
     }
-
-    send_help(
-        session,
-        &format!(
-            "Spawned {} PK bots in zone {} ({} requested per nation, level {}).",
-            spawned, zone_id, count_per_nation, level
-        ),
-    );
-    info!(
-        "[{}] GM +pkbots: spawned {} PK bots in zone {} (per_nation={}, level={})",
-        session.addr(),
-        spawned,
-        zone_id,
-        count_per_nation,
-        level,
-    );
 
     Ok(())
 }

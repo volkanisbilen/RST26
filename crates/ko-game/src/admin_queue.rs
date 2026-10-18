@@ -145,6 +145,30 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 .map(|d| d.to_string())
                 .map_err(|e| e.to_string())
         }
+        "bot" => {
+            let zone_id = args.get("zone").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            match s("action").as_str() {
+                "spawn" => {
+                    let count_per_nation = args
+                        .get("count_per_nation")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize);
+                    let level = args.get("level").and_then(|v| v.as_u64()).map(|v| v as u8);
+                    crate::systems::bot_ai::spawn_pk_bot_wave(world, zone_id, count_per_nation, level)
+                        .map(|r| {
+                            format!(
+                                "Spawned {} PK bots in zone {} ({} per nation, level {})",
+                                r.spawned, r.zone_id, r.count_per_nation, r.level
+                            )
+                        })
+                }
+                "clear" => {
+                    let removed = crate::systems::bot_ai::despawn_gm_pk_bots_in_zone(world, zone_id);
+                    Ok(format!("Removed {removed} PK bot(s) from zone {zone_id}"))
+                }
+                other => Err(format!("unknown bot action {other}")),
+            }
+        }
         other => {
             warn!(command = other, "unknown admin command");
             Err(format!("unknown command {other}"))

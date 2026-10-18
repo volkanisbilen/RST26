@@ -5825,6 +5825,100 @@ pub fn despawn_bots_in_zone(world: &WorldState, zone_id: u16) -> usize {
     count
 }
 
+/// Outcome of a successful `spawn_pk_bot_wave` call.
+pub struct PkBotWaveResult {
+    pub spawned: usize,
+    pub zone_id: u16,
+    pub count_per_nation: usize,
+    pub level: u8,
+}
+
+/// Validate and spawn a PK bot wave: `count_per_nation` bots of each nation
+/// (every job including Kurian/Porutu) in `zone_id`, clamped to remaining
+/// bot-socket capacity, at `level` (clamped to the zone's cap, defaulting to
+/// 59 in Ardream / 83 elsewhere). `count_per_nation: None` means "fill
+/// remaining capacity" (the in-game command's "all"). Shared by the in-game
+/// `+pkbots` command (`operator::handle_pk_bots`) and the admin panel's
+/// queued bot-spawn command, so both validate and spawn identically.
+pub fn spawn_pk_bot_wave(
+    world: &WorldState,
+    zone_id: u16,
+    count_per_nation: Option<usize>,
+    level: Option<u8>,
+) -> Result<PkBotWaveResult, String> {
+    use crate::world::{BotAiState, ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
+
+    if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE) {
+        return Err(
+            "PK bot waves currently support Ronark Land (71), Ardream (72), and Ronark Land Base (73)."
+                .into(),
+        );
+    }
+
+    let remaining_capacity = 5_000usize.saturating_sub(world.bot_count());
+    let max_per_nation = remaining_capacity / 2;
+    let count_per_nation = match count_per_nation {
+        Some(count) if count > 0 => count.min(max_per_nation),
+        Some(_) => return Err("CountPerNation must be positive.".into()),
+        None => max_per_nation,
+    };
+    if count_per_nation == 0 {
+        return Err("Bot socket capacity is already full.".into());
+    }
+
+    let default_level = if zone_id == ZONE_ARDREAM { 59 } else { 83 };
+    let level = match level {
+        Some(level) if (1..=83).contains(&level) => level,
+        Some(_) => return Err("Level must be between 1 and 83.".into()),
+        None => default_level,
+    };
+    if zone_id == ZONE_ARDREAM && level > 59 {
+        return Err("Ardream PK bots cannot be above level 59.".into());
+    }
+
+    let Some(zone) = world.get_zone(zone_id) else {
+        return Err("Target zone is not loaded.".into());
+    };
+
+    // Warrior, Rogue, Mage, Priest, Kurian/Porutu (5th job) -- see
+    // gm_class_to_real_class for how each shorthand resolves.
+    const GM_CLASSES: [u16; 5] = [1, 2, 3, 4, 13];
+
+    let mut spawned = 0usize;
+    for nation in [1u8, 2u8] {
+        for index in 0..count_per_nation {
+            let class = GM_CLASSES[index % GM_CLASSES.len()];
+            let (x, z) = get_bot_respawn_position(zone_id, nation);
+            if !zone.is_valid_position(x, z) {
+                tracing::warn!(zone_id, nation, x, z, "GM PK bot start position is invalid");
+                continue;
+            }
+
+            spawn_gm_bot(
+                world,
+                SpawnGmBotParams {
+                    zone_id,
+                    x,
+                    y: 0.0,
+                    z,
+                    class,
+                    level,
+                    nation,
+                    ai_state: BotAiState::Pk,
+                },
+            );
+            spawned += 1;
+        }
+    }
+
+    Ok(PkBotWaveResult {
+        spawned,
+        zone_id,
+        count_per_nation,
+        level,
+    })
+}
+
 /// Return the number of temporary PK bots created through GM commands in a zone.
 /// Database-backed bots are deliberately excluded (`db_id != 0`).
 pub fn count_gm_pk_bots_in_zone(world: &WorldState, zone_id: u16) -> usize {
