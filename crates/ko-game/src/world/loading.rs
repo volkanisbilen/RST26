@@ -1313,7 +1313,9 @@ impl WorldState {
                 Ok(smd) => {
                     tracing::debug!(zone_id, smd_name = %row.smd_name, map_size = smd.map_size, map_width = smd.map_width, warps = smd.warps.len(), "SMD loaded");
                     smd_loaded += 1;
-                    Some(crate::zone::MapData::new(smd))
+                    let map = crate::zone::MapData::new(smd);
+                    // BDW arena: the terrain mask closes the spawn room for bots
+                    Some(if zone_id == crate::systems::bdw::ZONE_BDW { map.with_event_grid_navigation() } else { map })
                 }
                 Err(e) => {
                     tracing::warn!(zone_id, smd_name = %row.smd_name, error = %e, "SMD file not found or failed to parse");

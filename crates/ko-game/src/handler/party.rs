@@ -855,6 +855,9 @@ fn handle_party_permit(
         }
     }
 
+    // BDW: the room's filler bots of his nation join the party of the players
+    crate::systems::event_bots::fill_party_with_room_bots(&world, party_id);
+
     debug!(
         "[sid={}] Joined party {} (leader={})",
         sid, party_id, leader_sid

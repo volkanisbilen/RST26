@@ -63,10 +63,10 @@ const EVENTS: &[Def] = &[
     Def {
         key: "bdw",
         name: "Border Defence War",
-        support: "partial",
+        support: "full",
         capacity: 8,
         team_label: "ulus (oda başına)",
-        note: "Botlar iki ulusun boş yerlerini doldurur ve karşı ulusla savaşır, skor oyuncular gibi işlenir. Altar bayrağı yalnızca oyuncular tarafından taşınır (bot altar'a dokunmaz).",
+        note: "Botlar boş yerleri doldurur; karşı ulusta hiç oyuncu yoksa o ulusa oyuncu sayısı kadar bot eklenir. Botlar merkezdeki altar için savaşır, altarı (yavaşlayarak) üssüne taşır ve teslim eder, oyuncunun partisine katılır. Bota asla ödül verilmez.",
     },
     Def {
         key: "ultima",

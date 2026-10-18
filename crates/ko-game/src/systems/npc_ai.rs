@@ -3082,7 +3082,7 @@ fn send_npc_despawn(world: &WorldState, npc_id: NpcId, ai: &NpcAiState) {
 }
 
 /// Send NPC respawn (INOUT_IN) to region.
-fn send_npc_respawn(
+pub(crate) fn send_npc_respawn(
     world: &WorldState,
     npc_id: NpcId,
     zone_id: u16,

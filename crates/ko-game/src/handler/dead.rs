@@ -784,12 +784,17 @@ pub(super) fn broadcast_to_bdw_room(world: &WorldState, room_id: u8, pkt: &Packe
 /// The buff is already removed by `clear_all_buffs()`, so this only needs to
 /// clear the room-level `has_altar_obtained` flag and start the respawn timer.
 fn bdw_flag_carrier_death(world: &WorldState, dead_sid: SessionId) {
-    use crate::systems::event_room::{self, TempleEventType};
-
     let user_name = match world.get_character_info(dead_sid) {
         Some(ch) => ch.name.clone(),
         None => return,
     };
+    bdw_flag_carrier_death_named(world, dead_sid, &user_name);
+}
+
+/// [`bdw_flag_carrier_death`] for a carrier known by name (also used for dead event bots).
+pub(crate) fn bdw_flag_carrier_death_named(world: &WorldState, dead_sid: SessionId, user_name: &str) {
+    use crate::systems::event_room::{self, TempleEventType};
+    let user_name = user_name.to_string();
 
     let is_bdw_active = world
         .event_room_manager
@@ -829,6 +834,7 @@ fn bdw_flag_carrier_death(world: &WorldState, dead_sid: SessionId) {
     };
 
     if had_flag {
+        bdw::clear_fragment_effect(world, dead_sid);
         let timer_pkt = event_room::build_altar_timer_packet(bdw::ALTAR_RESPAWN_DELAY_SECS as u16);
         broadcast_to_bdw_room(world, room_id, &timer_pkt);
 

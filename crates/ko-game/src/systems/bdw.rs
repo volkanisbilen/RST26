@@ -52,7 +52,7 @@ pub use crate::buff_constants::BUFF_TYPE_FRAGMENT_OF_MANES;
 /// `m_bSpeedAmount = pType->bSpeed` — 50 means 50% movement speed.
 /// Default (no buff) is 100. The exact DB value may differ; 50 is a safe
 /// reference default matching common KO server setups.
-pub const FRAGMENT_SPEED_VALUE: i32 = 50;
+pub const FRAGMENT_SPEED_VALUE: i32 = 75;
 
 // ── Delivery Zone Coordinates ────────────────────────────────────────────
 
@@ -526,6 +526,146 @@ pub fn find_flag_carrier(room: &EventRoom) -> Option<(String, u16, u8)> {
         }
     }
     None
+}
+
+// ── Fragment of Manes (altar carrier) effect ─────────────────────────────────
+
+/// Give the altar carrier the Fragment of Manes state: a permanent Type4 buff (server-side
+/// speed 75 from `magic_type4` skill 492063, fallback [`FRAGMENT_SPEED_VALUE`]) plus the client
+/// side `MAGIC_EFFECTING` for skill 492063 (C++ `BDWMonumentAltarSystem` runs the same skill on the
+/// carrier), which makes the client slow the character down and play the skill's effect on it.
+/// Cleared by [`clear_fragment_effect`] on delivery, death, logout, leave and event end.
+pub fn apply_fragment_effect(world: &crate::world::WorldState, sid: crate::zone::SessionId) {
+    use crate::world::ActiveBuff;
+    use ko_protocol::{Opcode, Packet};
+
+    let t4 = world.get_magic_type4(BUFF_FRAGMENT_OF_MANES_SKILL as i32);
+    let speed = t4
+        .as_ref()
+        .and_then(|t| t.speed)
+        .filter(|s| (1..100).contains(s))
+        .unwrap_or(FRAGMENT_SPEED_VALUE);
+    world.apply_buff(
+        sid,
+        ActiveBuff {
+            skill_id: BUFF_FRAGMENT_OF_MANES_SKILL,
+            buff_type: BUFF_TYPE_FRAGMENT_OF_MANES,
+            caster_sid: sid,
+            start_time: std::time::Instant::now(),
+            duration_secs: 0, // permanent until explicitly removed
+            attack_speed: 0,
+            speed,
+            ac: 0,
+            ac_pct: 0,
+            attack: 0,
+            magic_attack: 0,
+            max_hp: 0,
+            max_hp_pct: 0,
+            max_mp: 0,
+            max_mp_pct: 0,
+            str_mod: 0,
+            sta_mod: 0,
+            dex_mod: 0,
+            intel_mod: 0,
+            cha_mod: 0,
+            fire_r: 0,
+            cold_r: 0,
+            lightning_r: 0,
+            magic_r: 0,
+            disease_r: 0,
+            poison_r: 0,
+            hit_rate: 0,
+            avoid_rate: 0,
+            weapon_damage: 0,
+            ac_sour: 0,
+            duration_extended: false,
+            is_buff: true, // C++ classifies this as buff (not debuff)
+        },
+    );
+    world.set_user_ability(sid);
+
+    let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+    pkt.write_u8(3); // MAGIC_EFFECTING
+    pkt.write_u32(BUFF_FRAGMENT_OF_MANES_SKILL);
+    pkt.write_u32(sid as u32);
+    pkt.write_u32(sid as u32);
+    for v in [0u32, 1, 0, 0, 0, speed as u32, 0] {
+        pkt.write_u32(v);
+    }
+    if let Some((pos, room)) = world.with_session(sid, |h| (h.position, h.event_room)) {
+        world.broadcast_to_region_sync(
+            pos.zone_id,
+            pos.region_x,
+            pos.region_z,
+            std::sync::Arc::new(pkt),
+            None,
+            room,
+        );
+    }
+}
+
+/// Undo [`apply_fragment_effect`]: drop the buff, tell the client the buff ended and refresh the
+/// derived stats. Returns whether the player was carrying the effect.
+pub fn clear_fragment_effect(world: &crate::world::WorldState, sid: crate::zone::SessionId) -> bool {
+    if world.remove_buff(sid, BUFF_TYPE_FRAGMENT_OF_MANES).is_none() {
+        return false;
+    }
+    world.send_to_session_owned(
+        sid,
+        crate::systems::buff_tick::build_buff_expired_packet(BUFF_TYPE_FRAGMENT_OF_MANES as u8),
+    );
+    world.set_user_ability(sid);
+    true
+}
+
+/// Test helper: the Altar of Manes template (max HP 1000).
+#[cfg(test)]
+pub(crate) fn test_altar_template() -> crate::npc::NpcTemplate {
+    crate::npc::NpcTemplate {
+        s_sid: ALTAR_OF_MANES,
+        is_monster: true,
+        name: "Altar".into(),
+        pid: 0,
+        size: 100,
+        weapon_1: 0,
+        weapon_2: 0,
+        group: 0,
+        act_type: 1,
+        npc_type: NPC_BORDER_MONUMENT,
+        family_type: 0,
+        selling_group: 0,
+        level: 1,
+        max_hp: 1000,
+        max_mp: 0,
+        attack: 0,
+        ac: 0,
+        hit_rate: 0,
+        evade_rate: 0,
+        damage: 0,
+        attack_delay: 1500,
+        speed_1: 0,
+        speed_2: 0,
+        stand_time: 3000,
+        search_range: 0,
+        attack_range: 0,
+        direct_attack: 0,
+        tracing_range: 0,
+        magic_1: 0,
+        magic_2: 0,
+        magic_3: 0,
+        magic_attack: 0,
+        fire_r: 0,
+        cold_r: 0,
+        lightning_r: 0,
+        magic_r: 0,
+        disease_r: 0,
+        poison_r: 0,
+        exp: 0,
+        loyalty: 0,
+        money: 0,
+        item_table: 0,
+        area_range: 0.0,
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1230,5 +1370,77 @@ mod tests {
         // Each Karus user got +10 twice = 20
         assert_eq!(room.karus_users.get("k1").unwrap().bdw_points, 20);
         assert_eq!(room.karus_users.get("k2").unwrap().bdw_points, 20);
+    }
+
+    // ── Fragment of Manes (carrier slow + effect) ────────────────────
+
+    fn carrier_world(sid: u16) -> (crate::world::WorldState, tokio::sync::mpsc::UnboundedReceiver<std::sync::Arc<ko_protocol::Packet>>) {
+        use crate::world::{CharacterInfo, Position};
+        let world = crate::world::WorldState::new();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(sid, tx);
+        world.register_ingame(
+            sid,
+            CharacterInfo {
+                session_id: sid,
+                name: "Carrier".into(),
+                nation: 1,
+                level: 70,
+                hp: 100,
+                max_hp: 100,
+                authority: 1,
+                ..Default::default()
+            },
+            Position {
+                zone_id: ZONE_BDW,
+                x: 100.0,
+                y: 0.0,
+                z: 100.0,
+                region_x: crate::zone::calc_region(100.0),
+                region_z: crate::zone::calc_region(100.0),
+            },
+        );
+        (world, rx)
+    }
+
+    #[test]
+    fn fragment_effect_slows_the_carrier_and_tells_the_client() {
+        let (world, mut rx) = carrier_world(1);
+        apply_fragment_effect(&world, 1);
+        let buffs = world.get_active_buffs(1);
+        let b = buffs
+            .iter()
+            .find(|b| b.buff_type == BUFF_TYPE_FRAGMENT_OF_MANES)
+            .expect("carrier buff stored");
+        assert!(b.speed > 0 && b.speed < 100, "slowed, not frozen: {}", b.speed);
+        assert_eq!(b.skill_id, BUFF_FRAGMENT_OF_MANES_SKILL);
+        // the client gets the MAGIC_EFFECTING of skill 492063 (speed in data[5])
+        let mut effecting = false;
+        while let Ok(p) = rx.try_recv() {
+            if p.opcode == ko_protocol::Opcode::WizMagicProcess as u8
+                && p.data.first() == Some(&3)
+                && p.data.get(1..5) == Some(&BUFF_FRAGMENT_OF_MANES_SKILL.to_le_bytes()[..])
+            {
+                effecting = true;
+            }
+        }
+        assert!(effecting, "MAGIC_EFFECTING for the Fragment of Manes skill was sent");
+    }
+
+    #[test]
+    fn fragment_effect_clears_once_and_notifies_the_client() {
+        let (world, mut rx) = carrier_world(1);
+        apply_fragment_effect(&world, 1);
+        while rx.try_recv().is_ok() {}
+        assert!(clear_fragment_effect(&world, 1));
+        assert!(!world.has_buff(1, BUFF_TYPE_FRAGMENT_OF_MANES));
+        let mut ended = false;
+        while let Ok(p) = rx.try_recv() {
+            if p.opcode == ko_protocol::Opcode::WizMagicProcess as u8 {
+                ended = true;
+            }
+        }
+        assert!(ended, "buff-expired packet sent so the client drops the effect");
+        assert!(!clear_fragment_effect(&world, 1), "second clear is a no-op");
     }
 }

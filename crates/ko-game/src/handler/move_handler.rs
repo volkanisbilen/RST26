@@ -596,9 +596,22 @@ fn bdw_monument_point_process(world: &WorldState, sid: SessionId) {
         None => return,
     };
 
-    // C++ uses pos / 10.0 for zone coordinate check
-    let check_x = pos.x;
-    let check_z = pos.z;
+    bdw_altar_delivery(world, sid, &user_name, nation, pos.x, pos.z);
+}
+
+/// Altar delivery for an explicit carrier (`user_name` / `nation` at `(check_x, check_z)`); used by
+/// players through [`bdw_monument_point_process`] and by the event bots (they have no character info).
+pub(crate) fn bdw_altar_delivery(
+    world: &WorldState,
+    sid: SessionId,
+    user_name: &str,
+    nation: u8,
+    check_x: f32,
+    check_z: f32,
+) {
+    use crate::systems::bdw;
+    use crate::systems::event_room::{self, TempleEventType};
+    let user_name = user_name.to_string();
 
     // Quick check: is the player in any delivery zone?
     if !bdw::is_in_delivery_zone(nation, check_x, check_z) {
@@ -709,7 +722,7 @@ fn bdw_monument_point_process(world: &WorldState, sid: SessionId) {
     }
 
     // Remove speed debuff from carrier on delivery
-    world.remove_buff(sid, crate::systems::bdw::BUFF_TYPE_FRAGMENT_OF_MANES);
+    crate::systems::bdw::clear_fragment_effect(world, sid);
 
     tracing::info!(
         "BDW altar delivery: '{}' (nation={}) in room {}, scores: K={} E={}",

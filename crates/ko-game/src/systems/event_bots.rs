@@ -40,6 +40,8 @@ use crate::world::types::USER_DEAD;
 use crate::world::{BotAiState, BotId, BotInstance, BotPresence, WorldState, BOT_ID_BASE};
 use crate::zone::{calc_region, SessionId};
 
+mod bdw_ai;
+
 // ── Kinds ────────────────────────────────────────────────────────────────
 
 /// An event the bot system knows about.
@@ -102,8 +104,8 @@ impl EventBotKind {
 
     pub fn support(self) -> Support {
         match self {
-            EventBotKind::Chaos | EventBotKind::Ultima => Support::Full,
-            EventBotKind::Bdw | EventBotKind::Rift => Support::Partial,
+            EventBotKind::Chaos | EventBotKind::Ultima | EventBotKind::Bdw => Support::Full,
+            EventBotKind::Rift => Support::Partial,
             EventBotKind::Juraid | EventBotKind::ForgottenTemple | EventBotKind::Manes => {
                 Support::Unsupported
             }
@@ -225,10 +227,20 @@ pub fn plan_room_fill(kind: EventBotKind, cfg: &EventBotConfig, humans: [usize; 
     if kind.is_ffa() {
         return [bots_needed(cfg, total, kind.team_capacity()), 0];
     }
-    [
+    let mut plan = [
         bots_needed(cfg, humans[0], kind.team_capacity()),
         bots_needed(cfg, humans[1], kind.team_capacity()),
-    ]
+    ];
+    // BDW: a nation without any human gets exactly as many bots as the other side has players
+    // (mirror), so one player fights an even match instead of a fixed `bots_per_team` crowd.
+    if kind == EventBotKind::Bdw {
+        for side in 0..2 {
+            if humans[side] == 0 && humans[1 - side] > 0 {
+                plan[side] = humans[1 - side].min(kind.team_capacity());
+            }
+        }
+    }
+    plan
 }
 
 // ── Registry ─────────────────────────────────────────────────────────────
@@ -629,6 +641,11 @@ pub fn fill_temple_rooms(world: &WorldState, event_type: TempleEventType) -> usi
 
 // ── Cleanup ──────────────────────────────────────────────────────────────
 
+/// BDW: fill a real player's party with the free bots of his nation in the room.
+pub fn fill_party_with_room_bots(world: &WorldState, party_id: u16) -> usize {
+    bdw_ai::fill_party(world, party_id)
+}
+
 /// Remove one event bot completely: registry entry, room membership, runtime bot and the
 /// "disappear" packet for its room.
 pub fn despawn_event_bot(world: &WorldState, id: BotId) {
@@ -821,6 +838,9 @@ pub fn handle_bot_death(world: &WorldState, bot_id: BotId, now_ms: u64) -> bool 
         b.last_attacker_id = -1;
     });
     world.clear_npc_dots(bot_id);
+    if entry.kind == EventBotKind::Bdw {
+        bdw_ai::on_bot_death(world, &entry, bot_id);
+    }
     world.event_bots.update(bot_id, |e| {
         e.respawn_at_ms = now_ms.saturating_add(RESPAWN_MS);
         e.target = None;
@@ -937,6 +957,11 @@ fn tick_bot(world: &WorldState, id: BotId, now_ms: u64, fighting: bool) {
         return;
     }
 
+    // BDW: altar objective / party following (returns true when it drove the bot this tick)
+    if entry.kind == EventBotKind::Bdw && bdw_ai::drive(world, &entry, &bot, now_ms) {
+        return;
+    }
+
     // keep the current target while it stays valid, rescan now and then
     let mut target = entry.target.and_then(|t| resolve_target(world, &entry, &bot, t));
     if target.is_none() || now_ms >= entry.next_scan_ms {
@@ -952,19 +977,23 @@ fn tick_bot(world: &WorldState, id: BotId, now_ms: u64, fighting: bool) {
         });
     }
     let Some(target) = target else { return };
+    engage(world, &entry, &bot, target, now_ms);
+}
 
-    let range = attack_range(&bot);
+/// Attack `target` when in range (respecting the cooldown), walk toward it otherwise.
+fn engage(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, now_ms: u64) {
+    let range = attack_range(bot);
     let dx = target.x - bot.x;
     let dz = target.z - bot.z;
     let dist = (dx * dx + dz * dz).sqrt();
     if dist <= range {
         if now_ms >= entry.next_attack_ms {
-            reg.update(id, |e| e.next_attack_ms = now_ms + attack_cooldown(&bot));
-            attack(world, &entry, &bot, target, now_ms);
+            world.event_bots.update(bot.id, |e| e.next_attack_ms = now_ms + attack_cooldown(bot));
+            attack(world, entry, bot, target, now_ms);
         }
         return;
     }
-    walk_toward(world, &entry, &bot, target, now_ms);
+    walk_toward(world, entry, bot, target, now_ms);
 }
 
 fn attack_range(bot: &BotInstance) -> f32 {
@@ -1080,8 +1109,13 @@ fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Optio
 
 /// One walking step toward the target, broadcast to the bot's room.
 fn walk_toward(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, _now_ms: u64) {
+    walk_toward_step(world, entry, bot, target, STEP_PER_TICK);
+}
+
+/// [`walk_toward`] with an explicit step length (the BDW altar carrier is slowed down).
+fn walk_toward_step(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, step: f32) {
     let mut path = entry.path.clone();
-    let Some((nx, ny, nz)) = step_toward(world, bot, (target.x, target.z), STEP_PER_TICK, &mut path) else {
+    let Some((nx, ny, nz)) = step_toward(world, bot, (target.x, target.z), step, &mut path) else {
         // unreachable: forget the target so the next scan can pick another one
         world.event_bots.update(bot.id, |e| {
             e.target = None;
@@ -1415,8 +1449,14 @@ mod tests {
     fn nation_events_fill_both_teams_independently() {
         let mut cfg = on(EventBotKind::Bdw);
         cfg.bots_per_team = 4;
-        // a lone Karus player: Karus gets 3 teammates, El Morad a full enemy team
-        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [1, 0]), [3, 4]);
+        // a lone Karus player: Karus gets 3 teammates, El Morad (no human) mirrors the 1 player
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [1, 0]), [3, 1]);
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [0, 3]), [3, 1]);
+        // 5 Karus players: 5 mirror bots on the empty El Morad side, capped by the team capacity
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [5, 0]), [0, 5]);
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [8, 0])[1], 8);
+        // both sides have humans: no mirroring
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [2, 1]), [2, 3]);
     }
 
     #[test]
@@ -1491,6 +1531,26 @@ mod tests {
         assert!(reg.visible_in_room(20_002, 4));
         assert_eq!(reg.event_room_of(20_001), 3);
         assert_eq!(reg.event_room_of(20_002), 0);
+    }
+
+    /// Regression: with the terrain mask alone the Karus spawn room of the BDW arena was a closed
+    /// 87 cell pocket, so bots never left it ("BDW bots do not move"). Event-grid navigation fixes it.
+    #[test]
+    fn bdw_real_map_has_a_bot_route_spawn_to_altar() {
+        use crate::systems::pathfind::{find_bot_path, nearest_bot_point};
+        use ko_protocol::smd::SmdFile;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/In_dungeon04.smd");
+        if !path.exists() {
+            eprintln!("skipping: BDW map not found");
+            return;
+        }
+        let map = crate::zone::MapData::new(SmdFile::load(&path).expect("load SMD")).with_event_grid_navigation();
+        for (name, sx, sz) in [("karus", 51.0, 58.0), ("elmo", 201.0, 207.0)] {
+            let s = nearest_bot_point(&map, sx, sz, 8).expect("spawn walkable");
+            let g = nearest_bot_point(&map, 127.0, 131.0, 8).expect("altar walkable");
+            let r = find_bot_path(&map, s.0, s.1, g.0, g.1);
+            assert!(r.found, "{name} route to altar");
+        }
     }
 
     // ── world level tests ────────────────────────────────────────────
@@ -1579,17 +1639,17 @@ mod tests {
         world.event_bots.set_config(EventBotKind::Bdw, cfg);
 
         let added = fill_temple_rooms(&world, TempleEventType::BorderDefenceWar);
-        // Karus: 3 - 1 human = 2 teammates; El Morad: 3 enemies
-        assert_eq!(added, 5);
-        assert_eq!(world.event_bots.count(EventBotKind::Bdw), 5);
-        assert_eq!(world.bot_count(), 5);
+        // Karus: 3 - 1 human = 2 teammates; El Morad has no human: 1 mirror bot
+        assert_eq!(added, 3);
+        assert_eq!(world.event_bots.count(EventBotKind::Bdw), 3);
+        assert_eq!(world.bot_count(), 3);
         {
             let room = world
                 .event_room_manager
                 .get_room(TempleEventType::BorderDefenceWar, 1)
                 .unwrap();
             assert_eq!(room.karus_users.len(), 3);
-            assert_eq!(room.elmorad_users.len(), 3);
+            assert_eq!(room.elmorad_users.len(), 1);
             // bots are flagged as already rewarded and carry bot-band session ids
             assert!(room.elmorad_users.values().all(|u| u.prize_given && u.session_id as u32 >= BOT_ID_BASE));
         }
@@ -1599,7 +1659,7 @@ mod tests {
         }
         assert!(!is_event_bot_sid(&world, 1));
 
-        assert_eq!(cleanup_kind(&world, EventBotKind::Bdw), 5);
+        assert_eq!(cleanup_kind(&world, EventBotKind::Bdw), 3);
         assert_eq!(world.bot_count(), 0);
         assert_eq!(world.event_bots.total(), 0);
         let room = world
@@ -1843,6 +1903,161 @@ mod tests {
         world.event_bots.insert(20_500, BotEntry::new(EventBotKind::Chaos, 1, 1, "Ghost".into()));
         tick_bot(&world, 20_500, 1_000, true);
         assert!(world.event_bots.get(20_500).is_none());
+    }
+
+    // ── BDW objective / party tests ──────────────────────────────────
+
+    fn altar_template() -> crate::npc::NpcTemplate {
+        crate::systems::bdw::test_altar_template()
+    }
+
+    /// A BDW room 1 with one Karus human (sid 1), bots enabled; returns the world.
+    fn bdw_world_with_bots() -> WorldState {
+        let world = world_with_zone_start(84);
+        add_human(&world, 1, 1, 84, 1, "Human");
+        open_room_with_humans(&world, TempleEventType::BorderDefenceWar, &[(1, 1, "Human")]);
+        world.bdw_manager_write().room_states.insert(1, crate::systems::bdw::BdwRoomState::new());
+        let mut cfg = on(EventBotKind::Bdw);
+        cfg.bots_per_team = 4;
+        world.event_bots.set_config(EventBotKind::Bdw, cfg);
+        fill_temple_rooms(&world, TempleEventType::BorderDefenceWar);
+        world
+    }
+
+    fn bots_of(world: &WorldState, nation: u8) -> Vec<BotId> {
+        world
+            .event_bots
+            .ids_of(EventBotKind::Bdw)
+            .into_iter()
+            .filter(|id| world.get_bot(*id).unwrap().nation == nation)
+            .collect()
+    }
+
+    #[test]
+    fn bdw_event_party_contains_the_nations_bots() {
+        let world = bdw_world_with_bots();
+        assert_eq!(bots_of(&world, 1).len(), 3);
+        crate::systems::event_room::temple_event_create_parties(&world, TempleEventType::BorderDefenceWar);
+        let pid = world.get_party_id(1).expect("the lone human gets a party because bots exist");
+        let party = world.get_party(pid).unwrap();
+        assert_eq!(party.leader_sid(), Some(1));
+        for id in bots_of(&world, 1) {
+            assert_eq!(world.get_party_id(id as SessionId), Some(pid), "Karus bot {id} in the party");
+        }
+        for id in bots_of(&world, 2) {
+            assert_eq!(world.get_party_id(id as SessionId), None, "enemy bot {id} not in the party");
+        }
+        assert_eq!(party.member_count(), 4);
+    }
+
+    #[test]
+    fn bdw_party_fill_respects_the_size_limit_and_keeps_slots_free() {
+        let world = bdw_world_with_bots();
+        for i in 0..5 {
+            let (id, name) =
+                spawn_event_bot(&world, EventBotKind::Bdw, 1, 84, 1, i, 70, &HashSet::new()).unwrap();
+            world
+                .event_room_manager
+                .get_room_mut(TempleEventType::BorderDefenceWar, 1)
+                .unwrap()
+                .add_user(EventUser {
+                    user_name: name,
+                    session_id: id as SessionId,
+                    nation: 1,
+                    prize_given: true,
+                    logged_out: false,
+                    kills: 0,
+                    deaths: 0,
+                    bdw_points: 0,
+                    has_altar_obtained: false,
+                });
+        }
+        let pid = world.create_party(1).unwrap();
+        let added = fill_party_with_room_bots(&world, pid);
+        assert_eq!(world.get_party(pid).unwrap().member_count(), 6, "two slots stay free for humans");
+        assert_eq!(added, 5);
+        assert_eq!(fill_party_with_room_bots(&world, pid), 0, "idempotent");
+    }
+
+    #[test]
+    fn bdw_party_fill_does_nothing_outside_a_bdw_room() {
+        let world = bdw_world_with_bots();
+        let pid = world.create_party(1).unwrap();
+        world.update_session(1, |h| h.event_room = 0);
+        assert_eq!(fill_party_with_room_bots(&world, pid), 0);
+    }
+
+    #[test]
+    fn bdw_bot_kills_the_altar_carries_it_home_and_scores_without_a_reward() {
+        let world = bdw_world_with_bots();
+        world.ensure_zone(84, 512);
+        world.insert_npc_template(altar_template());
+        let altar = world.spawn_event_npc(crate::systems::bdw::ALTAR_OF_MANES, true, 84, 127.0, 131.0, 1)[0];
+        let mut inst = (*world.get_npc_instance(altar).unwrap()).clone();
+        inst.event_room = 1;
+        world.insert_npc_instance(inst);
+
+        let bot_id = bots_of(&world, 1)[0];
+        world.update_bot(bot_id, |b| {
+            b.x = 127.0;
+            b.z = 131.0;
+        });
+        let entry = world.event_bots.get(bot_id).unwrap();
+        let mut now = 10_000u64;
+        for _ in 0..40 {
+            let bot = world.get_bot(bot_id).unwrap();
+            let entry = world.event_bots.get(bot_id).unwrap();
+            assert!(bdw_ai::drive(&world, &entry, &bot, now));
+            now += 2_000;
+            if world.get_npc_hp(altar) == Some(0) {
+                break;
+            }
+        }
+        assert_eq!(world.get_npc_hp(altar), Some(0), "the bots hit the altar down");
+        {
+            let room = world.event_room_manager.get_room(TempleEventType::BorderDefenceWar, 1).unwrap();
+            let carrier = crate::systems::bdw::find_flag_carrier(&room).expect("a bot carries the altar");
+            assert_eq!(carrier.0, entry.name);
+            assert!(room.karus_users[&entry.name].prize_given, "the bot is never rewarded");
+        }
+
+        // the carrier walks home (slowly) and delivers inside the base
+        let (hx, hz) = bdw_ai::base_centre(1);
+        world.update_bot(bot_id, |b| {
+            b.x = hx;
+            b.z = hz;
+        });
+        let bot = world.get_bot(bot_id).unwrap();
+        assert!(bdw_ai::drive(&world, &entry, &bot, now));
+        let room = world.event_room_manager.get_room(TempleEventType::BorderDefenceWar, 1).unwrap();
+        assert!(room.karus_score >= 10, "delivery scored: {}", room.karus_score);
+        assert!(crate::systems::bdw::find_flag_carrier(&room).is_none());
+        drop(room);
+        let state = world.bdw_manager_read();
+        assert!(state.get_room_state(1).unwrap().altar_respawn_pending, "altar respawn timer started");
+    }
+
+    #[test]
+    fn bdw_carrier_bot_is_slower_than_a_normal_step() {
+        assert!(bdw_ai::carrier_step() < STEP_PER_TICK);
+        assert!(bdw_ai::carrier_step() > 0.0);
+    }
+
+    #[test]
+    fn dead_bdw_carrier_bot_drops_the_altar_and_starts_the_respawn() {
+        let world = bdw_world_with_bots();
+        let bot_id = bots_of(&world, 1)[0];
+        let name = world.event_bots.get(bot_id).unwrap().name;
+        {
+            let mut room = world.event_room_manager.get_room_mut(TempleEventType::BorderDefenceWar, 1).unwrap();
+            crate::systems::bdw::flag_pickup(&mut room, &name);
+        }
+        world.update_bot(bot_id, |b| b.last_attacker_id = -1);
+        handle_bot_death(&world, bot_id, 5_000);
+        let room = world.event_room_manager.get_room(TempleEventType::BorderDefenceWar, 1).unwrap();
+        assert!(crate::systems::bdw::find_flag_carrier(&room).is_none());
+        drop(room);
+        assert!(world.bdw_manager_read().get_room_state(1).unwrap().altar_respawn_pending);
     }
 
     #[test]

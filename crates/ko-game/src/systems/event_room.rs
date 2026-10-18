@@ -1585,7 +1585,12 @@ pub fn temple_event_create_parties(world: &WorldState, event_type: TempleEventTy
                 .copied()
                 .collect();
 
-            if valid_sids.len() <= 1 {
+            // BDW: a lone human with filler bots of his nation still gets a party (the bots join it).
+            let has_bots = event_type == TempleEventType::BorderDefenceWar
+                && nation_sids
+                    .iter()
+                    .any(|s| crate::systems::event_bots::is_event_bot_sid(world, *s));
+            if valid_sids.is_empty() || (valid_sids.len() == 1 && !has_bots) {
                 continue;
             }
 
@@ -1643,6 +1648,11 @@ pub fn temple_event_create_parties(world: &WorldState, event_type: TempleEventTy
                     let info_pkt = build_party_member_info(&joiner_ch, 1, target_number_id, 0, lr);
                     world.send_to_party(party_id, &info_pkt);
                 }
+            }
+
+            // BDW: the room's filler bots of this nation join the humans' party
+            if event_type == TempleEventType::BorderDefenceWar {
+                crate::systems::event_bots::fill_party_with_room_bots(world, party_id);
             }
 
             tracing::debug!(
@@ -1755,7 +1765,7 @@ pub fn temple_event_room_close(world: &WorldState, event_type: TempleEventType, 
             if event_type == TempleEventType::BorderDefenceWar {
                 for (sid, _nation, _level) in &users {
                     // Remove BDW speed debuff if the player still has it
-                    world.remove_buff(*sid, crate::systems::bdw::BUFF_TYPE_FRAGMENT_OF_MANES);
+                    crate::systems::bdw::clear_fragment_effect(world, *sid);
                 }
             }
 

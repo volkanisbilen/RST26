@@ -13,7 +13,7 @@ Code: `crates/ko-game/src/systems/event_bots.rs` (new module), table `event_bot_
 | Event | Support | What the bots do |
 |-------|---------|------------------|
 | Chaos Dungeon / Expansion (zone 85) | **full** | Join the free-for-all room, hunt every other participant (humans and bots). Kills/deaths are booked in the room exactly like human kills. |
-| Border Defence War (zone 84) | **partial** | Fill both nations' free slots, fight the enemy nation, score kills like players (`+1 x nation_user_count`, win thresholds apply). The Altar flag (pickup/delivery) stays a human objective. |
+| Border Defence War (zone 84) | **full** | Fill the free slots (an empty nation mirrors the other side's human count), walk to the central Altar of Manes and fight over it, carry it (slowed) to their base and deliver, fight enemies and the enemy carrier, join the party of a real player of their nation. Kills and deliveries score like players; bots never get a reward (their `EventUser`s are `prize_given = true`). Code: `systems/event_bots/bdw_ai.rs`. |
 | Ultima's Dungeon (zone 55) | **full** | Extra raiders in the first room (existing `ultima.rs` bot driver). They count towards the 4-player minimum, so one human can start a raid. |
 | Full Moon Rift (zone 89) | **partial** | Support bots hold the Outer Tower and take monsters down to 10 % HP, but never land the killing blow, so every drop/reward stays with the players. |
 | Juraid Mountain (zone 87) | not supported | See "Why not" below. |
@@ -56,7 +56,9 @@ Changes are applied by the `event_bots_reload` admin command (queued by the pane
 server start. A change affects the **next** room that opens; running events are not touched.
 
 Examples (BDW, `bots_per_team = 4`, fill-only-when-short): 1 Karus human + 0 El Morad -> Karus
-+3 bots, El Morad +4 bots. 6 Karus humans -> no Karus bots.
++3 bots, El Morad +1 bot (a nation without any human gets exactly as many bots as the other side
+has players). 6 Karus humans -> no Karus bots, El Morad +6 bots. Both nations human: each tops up
+to `bots_per_team` alone.
 
 ## How each event runs in this codebase (research notes)
 
@@ -138,8 +140,10 @@ death of an event bot (bot_on_death hook) -> handle_bot_death(): WIZ_DEAD to the
 * Chaos: enable with 6 bots, join alone: the room has 6 extra named players in zone 85 who walk
   to you and fight; your kills/deaths and the Chaos rank EXP follow normally; you receive no NP or
   gold for bot kills; after the event the bots are gone (check `+where` / the minimap).
-* BDW: enable, join as Karus alone: 3 Karus + 4 El Morad bots appear; scoreboard rises with kills;
-  you cannot hit Karus bots; altar flag still works for you; bots vanish after the 20 s countdown.
+* BDW: enable, join as Karus alone: 3 Karus + 1 El Morad bots appear and the 3 Karus bots are in your
+  party (the room's event party; players' own parties get the room's free bots too, 2 slots stay
+  free); bots walk to the altar, one kills it and carries it slowly to its base; the scoreboard rises
+  with kills and deliveries; you cannot hit Karus bots; bots vanish after the 20 s countdown.
 * Two rooms open at once (e.g. 17+ Chaos players): players of room 1 never see room 2's bots.
 * Ultima: with the config on, a solo level-80 GM/player can start a raid (bots join room 1).
 * Rift: a solo group sees 3 support bots; monsters stop at ~10 % HP until you finish them.
@@ -147,7 +151,9 @@ death of an event bot (bot_on_death hook) -> handle_bot_death(): WIZ_DEAD to the
 
 ## Limitations
 
-* Altar flag, Juraid, Forgotten Temple and Manes are not bot-driven (see above).
+* Juraid, Forgotten Temple and Manes are not bot-driven (see above).
+* BDW altar: bot carriers have no client session, so the carrier slow-down/effect is simulated by the
+  driver (shorter steps + a MAGIC_EFFECTING broadcast); players get the real buff.
 * Bots fight with a simplified model (no skill rotation, no buffs, no potions; mages/priests only
   use the ranged attack animation). The kill feed is zone-wide, as for human PvP.
 * Ultima/Rift helper bots reuse the existing GM test-bot drivers; their swing animations are now

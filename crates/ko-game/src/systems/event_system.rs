@@ -278,29 +278,7 @@ pub fn start_event_system_task(
                 EventTickAction::BdwAltarRespawns(room_ids) => {
                     // Restore altar NPC HP and broadcast respawn packet
                     //   pAltar->SetHP(pAltar->GetMaxHP());
-                    {
-                        let bdw_mgr = world.bdw_manager_read();
-                        for &room_id in room_ids {
-                            if let Some(state) = bdw_mgr.get_room_state(room_id) {
-                                if state.altar_npc_id != 0 {
-                                    let nid = state.altar_npc_id;
-                                    if let Some(tmpl) =
-                                        world.get_npc_template(bdw::ALTAR_OF_MANES, true)
-                                    {
-                                        world.update_npc_hp(nid, tmpl.max_hp as i32);
-                                    }
-                                    // the killed altar waits for its map regen time (an hour): bring it back now
-                                    world.update_npc_ai(nid, |ai| {
-                                        if ai.state == crate::world::NpcState::Dead {
-                                            ai.state = crate::world::NpcState::Live;
-                                            ai.delay_ms = 0;
-                                            ai.last_tick_ms = 0;
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    restore_bdw_altars(&world, room_ids);
 
                     let respawn_pkt = event_room::build_altar_respawn_packet();
                     for &room_id in room_ids {
@@ -339,6 +317,7 @@ pub fn start_event_system_task(
                 }
                 EventTickAction::TransitionedToCleanup(et, user_sids)
                 | EventTickAction::ManualCloseCleanup(et, user_sids) => {
+                    pay_manual_close_rewards(&world).await;
                     // Per-user cleanup before kick teleport.
                     //
                     //   - BDW: RemoveType4Buff(BUFF_TYPE_FRAGMENT_OF_MANES)
@@ -359,10 +338,7 @@ pub fn start_event_system_task(
                     }
                     if *et == TempleEventType::BorderDefenceWar {
                         for sid in user_sids.iter() {
-                            world.remove_buff(
-                                *sid,
-                                crate::systems::bdw::BUFF_TYPE_FRAGMENT_OF_MANES,
-                            );
+                            crate::systems::bdw::clear_fragment_effect(&world, *sid);
                         }
                     }
 
@@ -435,6 +411,16 @@ pub fn start_event_system_task(
                     }) {
                         event_room::temple_event_room_close(&world, et, now);
                     }
+                }
+                // C++ runs TempleEventRoomClose every tick: a BDW room that already has a winner
+                // (score threshold / forfeit) is paid and closed 20 s later, not at the end of the
+                // whole event (rooms are kicked and rewarded individually).
+                if phase == EventPhase::Active
+                    && erm.read_temple_event(|s| s.active_event)
+                        == TempleEventType::BorderDefenceWar as i16
+                {
+                    pay_finished_bdw_rooms(&world, now).await;
+                    event_room::temple_event_room_close(&world, TempleEventType::BorderDefenceWar, now);
                 }
             }
 
@@ -1893,6 +1879,68 @@ pub fn is_manual_close_expired(mgr: &EventRoomManager, finish_delay: u64) -> boo
 
 // ── Event Tick ───────────────────────────────────────────────────────────────
 
+/// BDW rooms whose finish countdown ran out during the Active phase: pay winners and losers now
+/// (the room is closed by `temple_event_room_close` right after).
+pub async fn pay_finished_bdw_rooms(world: &WorldState, now: u64) {
+    let erm = world.event_room_manager();
+    let due: Vec<(u8, u8)> = erm
+        .list_rooms(TempleEventType::BorderDefenceWar)
+        .into_iter()
+        .filter_map(|rid| {
+            let room = erm.get_room(TempleEventType::BorderDefenceWar, rid)?;
+            (room.finish_packet_sent
+                && !room.finished
+                && room.finish_time_counter > 0
+                && room.finish_time_counter <= now)
+                .then_some((rid, room.winner_nation))
+        })
+        .collect();
+    if !due.is_empty() {
+        distribute_event_rewards(world, 9, &due).await;
+    }
+}
+
+/// Bring the killed altar NPC of each room back to life (HP restored, AI revived so the
+/// regular NPC tick re-announces it to the clients).
+///
+/// The NPC AI flips a killed NPC from `Dead` to `Live` right away and parks it for its regen time
+/// (an hour for the altar). Only accepting `Dead` here meant the altar never came back after its
+/// first kill, so `Live` is accepted too and the park delay is cleared.
+pub fn restore_bdw_altars(world: &WorldState, room_ids: &[u8]) {
+    let altar_ids: Vec<u32> = {
+        let bdw_mgr = world.bdw_manager_read();
+        room_ids
+            .iter()
+            .filter_map(|r| bdw_mgr.get_room_state(*r))
+            .map(|s| s.altar_npc_id)
+            .filter(|id| *id != 0)
+            .collect()
+    };
+    for nid in altar_ids {
+        if let Some(tmpl) = world.get_npc_template(bdw::ALTAR_OF_MANES, true) {
+            world.update_npc_hp(nid, tmpl.max_hp as i32);
+        }
+        world.update_npc_ai(nid, |ai| {
+            if matches!(ai.state, crate::world::NpcState::Dead | crate::world::NpcState::Live) {
+                ai.state = crate::world::NpcState::Live;
+                ai.delay_ms = 0;
+                ai.last_tick_ms = 0;
+            }
+        });
+        // The altar template may have no search range, i.e. no AI state at all: nothing would
+        // ever re-announce it after its death (WIZ_DEAD removed it from the clients), so show it
+        // again directly. With an AI state the NPC tick does this when it processes `Live`.
+        if world.get_npc_ai(nid).is_none() {
+            if let (Some(npc), Some(tmpl)) = (
+                world.get_npc_instance(nid),
+                world.get_npc_template(bdw::ALTAR_OF_MANES, true),
+            ) {
+                crate::systems::npc_ai::send_npc_respawn(world, nid, npc.zone_id, npc.region_x, npc.region_z, &tmpl);
+            }
+        }
+    }
+}
+
 /// Result of a single event tick, used for testing and logging.
 /// Describes what action (if any) was taken during this tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2021,6 +2069,11 @@ pub fn event_tick_at(
                         Some(TempleEventType::ChaosDungeon) => chaos::determine_all_winners(erm),
                         _ => Vec::new(),
                     };
+
+                    // Pay the participants: the rooms are gone after the cleanup below
+                    if let Some(et) = event_type {
+                        stash_manual_close_rewards(erm, et, &results);
+                    }
 
                     // Collect user sessions BEFORE cleanup destroys rooms
                     let user_sids = if let Some(et) = event_type {
@@ -2417,13 +2470,10 @@ pub async fn distribute_event_rewards(
     local_id: i16,
     winner_results: &[(u8, u8)],
 ) {
-    let rewards = match world.get_event_rewards(local_id) {
-        Some(r) => r,
-        None => {
-            tracing::warn!("No event rewards configured for local_id={}", local_id);
-            return;
-        }
-    };
+    if world.get_event_rewards(local_id).is_none() {
+        tracing::warn!("No event rewards configured for local_id={}", local_id);
+        return;
+    }
 
     let event_type = match local_id_to_event_type(local_id) {
         Some(et) => et,
@@ -2436,103 +2486,178 @@ pub async fn distribute_event_rewards(
         }
     };
 
+    let erm = world.event_room_manager();
+    let mut batch: Vec<PendingEventReward> = Vec::new();
+    for &(room_id, winner_nation) in winner_results {
+        if erm.get_room(event_type, room_id).is_none() {
+            tracing::warn!("Room {}:{} not found for reward distribution", local_id, room_id);
+            continue;
+        }
+        batch.extend(collect_reward_participants(erm, event_type, room_id, winner_nation));
+    }
+    grant_pending_event_rewards(world, local_id, batch).await;
+}
+
+/// One real participant waiting for his event reward.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingEventReward {
+    pub sid: SessionId,
+    pub room_id: u8,
+    pub nation: u8,
+    pub winner_nation: u8,
+}
+
+/// Mark every eligible participant of one room as paid and return them. Bots (their
+/// `EventUser`s carry `prize_given = true`), logged-out users and already-paid users are skipped.
+pub fn collect_reward_participants(
+    erm: &crate::systems::event_room::EventRoomManager,
+    event_type: TempleEventType,
+    room_id: u8,
+    winner_nation: u8,
+) -> Vec<PendingEventReward> {
+    let Some(mut room) = erm.get_room_mut(event_type, room_id) else {
+        return Vec::new();
+    };
+    let mut users = Vec::new();
+    let mut take = |u: &mut crate::systems::event_room::EventUser| {
+        if u.prize_given || u.logged_out {
+            return;
+        }
+        u.prize_given = true;
+        users.push(PendingEventReward { sid: u.session_id, room_id, nation: u.nation, winner_nation });
+    };
+    for u in room.karus_users.values_mut() {
+        take(u);
+    }
+    for u in room.elmorad_users.values_mut() {
+        take(u);
+    }
+    for u in room.mixed_users.values_mut() {
+        take(u);
+    }
+    users
+}
+
+/// Rewards collected by a manual close; the room is destroyed by the tick before the
+/// async handler can pay them, so they wait here.
+static PENDING_MANUAL_CLOSE_REWARDS: std::sync::Mutex<Vec<(usize, i16, PendingEventReward)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Called by the tick (sync) right before a manual close destroys the rooms.
+fn stash_manual_close_rewards(
+    erm: &crate::systems::event_room::EventRoomManager,
+    event_type: TempleEventType,
+    results: &[(u8, u8)],
+) {
+    let local_id = match event_type {
+        TempleEventType::BorderDefenceWar => 9,
+        _ => return,
+    };
+    let mut list = Vec::new();
+    for &(room_id, winner) in results {
+        list.extend(collect_reward_participants(erm, event_type, room_id, winner));
+    }
+    if let Ok(mut g) = PENDING_MANUAL_CLOSE_REWARDS.lock() {
+        let key = erm as *const _ as usize;
+        g.extend(list.into_iter().map(|p| (key, local_id, p)));
+    }
+}
+
+/// Pay the rewards stashed by a manual close.
+pub async fn pay_manual_close_rewards(world: &WorldState) {
+    let key = world.event_room_manager() as *const _ as usize;
+    let mine: Vec<(i16, PendingEventReward)> = match PENDING_MANUAL_CLOSE_REWARDS.lock() {
+        Ok(mut g) => {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *g).into_iter().partition(|(k, _, _)| *k == key);
+            *g = rest;
+            mine.into_iter().map(|(_, l, p)| (l, p)).collect()
+        }
+        Err(_) => return,
+    };
+    let mut ids: Vec<i16> = mine.iter().map(|(l, _)| *l).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        let batch: Vec<PendingEventReward> =
+            mine.iter().filter(|(l, _)| *l == id).map(|(_, p)| p.clone()).collect();
+        grant_pending_event_rewards(world, id, batch).await;
+    }
+}
+
+/// Knight Cash for one player: balance, client packet and (fire and forget) DB save.
+pub fn grant_knight_cash(world: &WorldState, sid: SessionId, amount: u32) {
+    if amount == 0 {
+        return;
+    }
+    world.update_session(sid, |h| h.knight_cash = h.knight_cash.saturating_add(amount));
+    if let Some((kc, tl)) = world.with_session(sid, |h| (h.knight_cash, h.tl_balance)) {
+        world.send_to_session_owned(sid, crate::handler::knight_cash::build_cashchange_packet(kc, tl));
+    }
+    if let Some(pool) = world.db_pool() {
+        let pool = pool.clone();
+        let account_id = world.with_session(sid, |h| h.account_id.clone()).unwrap_or_default();
+        let (kc, tl) = world.with_session(sid, |h| (h.knight_cash, h.tl_balance)).unwrap_or((0, 0));
+        if !account_id.is_empty() {
+            tokio::spawn(async move {
+                let repo = ko_db::repositories::cash_shop::CashShopRepository::new(&pool);
+                if let Err(e) = repo.update_kc_balances(&account_id, kc as i32, tl as i32).await {
+                    tracing::warn!("event reward: failed to save KC for {account_id}: {e}");
+                }
+            });
+        }
+    }
+}
+
+/// Winner / loser table rewards (`event_rewards`, panel page "Border Defence War") for a batch.
+pub async fn grant_pending_event_rewards(
+    world: &WorldState,
+    local_id: i16,
+    batch: Vec<PendingEventReward>,
+) {
+    let rewards = match world.get_event_rewards(local_id) {
+        Some(r) => r,
+        None => {
+            tracing::warn!("No event rewards configured for local_id={}", local_id);
+            return;
+        }
+    };
     let (winner_rows, loser_rows) = partition_rewards_by_winner(&rewards);
     let winner_reward = aggregate_rewards(&winner_rows);
     let loser_reward = aggregate_rewards(&loser_rows);
+    let winner_cash: i64 = winner_rows.iter().map(|r| r.cash.max(0) as i64).sum();
+    let loser_cash: i64 = loser_rows.iter().map(|r| r.cash.max(0) as i64).sum();
 
     tracing::info!(
-        "Event reward distribution for local_id={}: {} winner row(s), {} loser row(s), {} room result(s)",
+        "Event reward distribution for local_id={}: {} winner row(s), {} loser row(s), {} participant(s)",
         local_id,
         winner_rows.len(),
         loser_rows.len(),
-        winner_results.len(),
+        batch.len(),
     );
 
-    let erm = world.event_room_manager();
-
-    for &(room_id, winner_nation) in winner_results {
-        // Collect eligible participants while holding room lock, then drop it
-        let participants: Vec<(SessionId, u8)> = {
-            let Some(mut room) = erm.get_room_mut(event_type, room_id) else {
-                tracing::warn!(
-                    "Room {}:{} not found for reward distribution",
-                    local_id,
-                    room_id
-                );
-                continue;
-            };
-
-            let mut users = Vec::new();
-
-            // Collect from karus_users
-            for user in room.karus_users.values_mut() {
-                if user.prize_given || user.logged_out {
-                    continue;
-                }
-                user.prize_given = true;
-                users.push((user.session_id, user.nation));
+    for p in batch {
+        let won = p.nation == p.winner_nation;
+        let (base_reward, cash) = if won {
+            (&winner_reward, winner_cash)
+        } else {
+            (&loser_reward, loser_cash)
+        };
+        let mut reward = base_reward.clone();
+        // BDW: add per-player level-based exp bonus
+        if local_id == 9 {
+            if let Some(ch) = world.get_character_info(p.sid) {
+                reward.experience += bdw_level_exp_bonus(ch.level);
             }
-
-            // Collect from elmorad_users
-            for user in room.elmorad_users.values_mut() {
-                if user.prize_given || user.logged_out {
-                    continue;
-                }
-                user.prize_given = true;
-                users.push((user.session_id, user.nation));
-            }
-
-            // Collect from mixed_users (Chaos Dungeon uses this instead of nation-split)
-            for user in room.mixed_users.values_mut() {
-                if user.prize_given || user.logged_out {
-                    continue;
-                }
-                user.prize_given = true;
-                users.push((user.session_id, user.nation));
-            }
-
-            users
-        }; // room lock dropped here
-
-        // Grant rewards to each participant
-        for (sid, nation) in participants {
-            let base_reward = if nation == winner_nation {
-                &winner_reward
-            } else {
-                &loser_reward
-            };
-
-            // BDW: add per-player level-based exp bonus
-            if local_id == 9 {
-                if let Some(ch) = world.get_character_info(sid) {
-                    let level_bonus = bdw_level_exp_bonus(ch.level);
-                    if level_bonus > 0 {
-                        let mut modified = base_reward.clone();
-                        modified.experience += level_bonus;
-                        grant_reward(world, sid, &modified).await;
-                        tracing::debug!(
-                            "Granted {} reward (+ {} BDW level bonus) to session {} (nation={}, level={}) in room {}",
-                            if nation == winner_nation { "winner" } else { "loser" },
-                            level_bonus, sid, nation, ch.level, room_id
-                        );
-                        continue;
-                    }
-                }
-            }
-
-            grant_reward(world, sid, base_reward).await;
-            tracing::debug!(
-                "Granted {} reward to session {} (nation={}) in room {}",
-                if nation == winner_nation {
-                    "winner"
-                } else {
-                    "loser"
-                },
-                sid,
-                nation,
-                room_id
-            );
         }
+        grant_reward(world, p.sid, &reward).await;
+        grant_knight_cash(world, p.sid, cash.min(u32::MAX as i64) as u32);
+        tracing::debug!(
+            "Granted {} reward to session {} (nation={}) in room {}",
+            if won { "winner" } else { "loser" },
+            p.sid,
+            p.nation,
+            p.room_id
+        );
     }
 }
 
@@ -7159,5 +7284,269 @@ mod tests {
         // hp=0 means dead, should not receive reward
         let ch = world.get_character_info(1).unwrap();
         assert_eq!(ch.gold, 1000);
+    }
+
+    // ── BDW: altar respawn, quick start, end-of-event rewards ────────
+
+    fn altar_world(search_range: i16) -> (WorldState, u32) {
+        let world = WorldState::new();
+        world.ensure_zone(84, 512);
+        let mut tmpl = bdw::test_altar_template();
+        tmpl.search_range = search_range as _;
+        world.insert_npc_template(tmpl);
+        let altar = world.spawn_event_npc(bdw::ALTAR_OF_MANES, true, 84, 127.0, 131.0, 1)[0];
+        let erm = world.event_room_manager();
+        erm.create_rooms(TempleEventType::BorderDefenceWar, 1);
+        world.bdw_manager_write().init_rooms(erm);
+        world.bdw_manager_write().get_room_state_mut(1).unwrap().altar_npc_id = altar;
+        (world, altar)
+    }
+
+    #[test]
+    fn altar_with_ai_comes_back_after_every_kill() {
+        let (world, altar) = altar_world(5);
+        assert!(world.get_npc_ai(altar).is_some(), "template with a search range has an AI state");
+        for _ in 0..3 {
+            // killed: HP 0, and the NPC AI has already flipped it to Live, parked for an hour
+            world.update_npc_hp(altar, 0);
+            world.update_npc_ai(altar, |a| {
+                a.state = crate::world::NpcState::Live;
+                a.delay_ms = 3_600_000;
+                a.last_tick_ms = 1234;
+            });
+            restore_bdw_altars(&world, &[1]);
+            assert_eq!(world.get_npc_hp(altar), Some(1000), "HP restored");
+            let ai = world.get_npc_ai(altar).unwrap();
+            assert_eq!(ai.state, crate::world::NpcState::Live);
+            assert_eq!(ai.delay_ms, 0, "park delay cleared: the AI tick revives it right away");
+            assert_eq!(ai.last_tick_ms, 0);
+
+            // the Dead state (not yet processed by the AI tick) works too
+            world.update_npc_hp(altar, 0);
+            world.update_npc_ai(altar, |a| {
+                a.state = crate::world::NpcState::Dead;
+                a.delay_ms = 99;
+            });
+            restore_bdw_altars(&world, &[1]);
+            assert_eq!(world.get_npc_ai(altar).unwrap().state, crate::world::NpcState::Live);
+        }
+    }
+
+    #[test]
+    fn altar_without_ai_is_shown_again_to_the_room() {
+        let (world, altar) = altar_world(0);
+        assert!(world.get_npc_ai(altar).is_none(), "no AI state: nothing else would revive it");
+        let mut rx = setup_session(&world, 1, 1);
+        world.update_session(1, |h| {
+            h.position = crate::world::Position {
+                zone_id: 84,
+                x: 127.0,
+                y: 0.0,
+                z: 131.0,
+                region_x: crate::zone::calc_region(127.0),
+                region_z: crate::zone::calc_region(131.0),
+            };
+        });
+        world.get_zone(84).unwrap().add_user(
+            crate::zone::calc_region(127.0),
+            crate::zone::calc_region(131.0),
+            1,
+        );
+        while rx.try_recv().is_ok() {}
+        for _ in 0..3 {
+            world.update_npc_hp(altar, 0);
+            restore_bdw_altars(&world, &[1]);
+            assert_eq!(world.get_npc_hp(altar), Some(1000));
+        }
+        let mut npc_in = 0;
+        while let Ok(p) = rx.try_recv() {
+            if p.opcode == Opcode::WizNpcInout as u8 && p.data.first() == Some(&crate::npc::NPC_IN) {
+                npc_in += 1;
+            }
+        }
+        assert_eq!(npc_in, 3, "every respawn re-announces the altar (NPC_IN)");
+    }
+
+    #[test]
+    fn altar_respawn_timer_fires_again_for_the_next_delivery() {
+        let mut st = bdw::BdwRoomState::new();
+        for round in 0..3u64 {
+            let now = 1_000 + round * 1_000;
+            bdw::start_altar_respawn_timer(&mut st, now);
+            assert!(!bdw::altar_timer_tick(&st, now + bdw::ALTAR_RESPAWN_DELAY_SECS - 1));
+            assert!(bdw::altar_timer_tick(&st, now + bdw::ALTAR_RESPAWN_DELAY_SECS));
+            bdw::altar_respawn_complete(&mut st);
+            assert!(!bdw::altar_timer_tick(&st, now + 10_000));
+        }
+    }
+
+    #[test]
+    fn quick_start_skips_the_registration_countdown() {
+        let erm = EventRoomManager::new();
+        let opts = make_bdw_opts();
+        let now = 100_000u64;
+        // nothing open: nothing to skip
+        assert!(!crate::handler::operator::quick_start_skip_countdown(
+            &erm,
+            TempleEventType::BorderDefenceWar as i16,
+            &opts,
+            now
+        ));
+        erm.update_temple_event(|s| {
+            s.active_event = TempleEventType::BorderDefenceWar as i16;
+            s.start_time = now;
+            s.is_active = false;
+        });
+        assert!(!is_sign_expired_at(&erm, &opts, now), "the 10 minute sign window is still running");
+        assert!(crate::handler::operator::quick_start_skip_countdown(
+            &erm,
+            TempleEventType::BorderDefenceWar as i16,
+            &opts,
+            now
+        ));
+        assert!(is_sign_expired_at(&erm, &opts, now), "registration is over at once (BDW needs now > start+sign)");
+        assert!(!is_play_expired_at(&erm, &opts, now), "the play window starts now");
+        // a different event type, or an event that already runs, is left alone
+        assert!(!crate::handler::operator::quick_start_skip_countdown(
+            &erm,
+            TempleEventType::ChaosDungeon as i16,
+            &opts,
+            now
+        ));
+        erm.update_temple_event(|s| s.is_active = true);
+        assert!(!crate::handler::operator::quick_start_skip_countdown(
+            &erm,
+            TempleEventType::BorderDefenceWar as i16,
+            &opts,
+            now
+        ));
+    }
+
+    fn bdw_reward_row(is_winner: bool, exp: i64, np: i32, cash: i32, noah: i32) -> EventRewardRow {
+        EventRewardRow {
+            s_index: if is_winner { 1 } else { 2 },
+            status: true,
+            local_id: 9,
+            is_winner,
+            description: "bdw".into(),
+            item_id1: 0,
+            item_count1: 0,
+            item_expiration1: 0,
+            item_id2: 0,
+            item_count2: 0,
+            item_expiration2: 0,
+            item_id3: 0,
+            item_count3: 0,
+            item_expiration3: 0,
+            experience: exp,
+            loyalty: np,
+            cash,
+            noah,
+        }
+    }
+
+    fn bdw_room_user(name: &str, sid: u16, nation: u8, prize_given: bool) -> crate::systems::event_room::EventUser {
+        crate::systems::event_room::EventUser {
+            user_name: name.to_string(),
+            session_id: sid,
+            nation,
+            prize_given,
+            logged_out: false,
+            kills: 0,
+            deaths: 0,
+            bdw_points: 0,
+            has_altar_obtained: false,
+        }
+    }
+
+    fn bdw_reward_world() -> (WorldState, Vec<tokio::sync::mpsc::UnboundedReceiver<Arc<Packet>>>) {
+        let world = WorldState::new();
+        let rx1 = setup_session(&world, 1, 1); // Karus, winner
+        let rx2 = setup_session(&world, 2, 2); // El Morad, loser
+        let erm = world.event_room_manager();
+        let mut room = crate::systems::event_room::EventRoom::new(1, TempleEventType::BorderDefenceWar);
+        room.karus_users.insert("Player1".into(), bdw_room_user("Player1", 1, 1, false));
+        room.elmorad_users.insert("Player2".into(), bdw_room_user("Player2", 2, 2, false));
+        // a filler bot of the winning nation: never rewarded
+        room.karus_users.insert("BotK".into(), bdw_room_user("BotK", 20_001, 1, true));
+        erm.rooms.insert((TempleEventType::BorderDefenceWar, 1), room);
+        world.insert_event_rewards(
+            9,
+            vec![bdw_reward_row(true, 0, 0, 100, 10_000), bdw_reward_row(false, 0, 0, 10, 5_000)],
+        );
+        (world, vec![rx1, rx2])
+    }
+
+    #[tokio::test]
+    async fn bdw_rewards_reach_winners_and_losers_but_never_bots() {
+        let (world, _rx) = bdw_reward_world();
+        let gold1 = world.get_character_info(1).unwrap().gold;
+        let gold2 = world.get_character_info(2).unwrap().gold;
+        distribute_event_rewards(&world, 9, &[(1, 1)]).await;
+
+        assert_eq!(world.get_knight_cash(1), 100, "winner KC");
+        assert_eq!(world.get_knight_cash(2), 10, "loser KC");
+        assert_eq!(world.get_character_info(1).unwrap().gold, gold1 + 10_000);
+        assert_eq!(world.get_character_info(2).unwrap().gold, gold2 + 5_000);
+        assert_eq!(world.get_knight_cash(20_001), 0, "bots get nothing");
+        // paid exactly once
+        distribute_event_rewards(&world, 9, &[(1, 1)]).await;
+        assert_eq!(world.get_knight_cash(1), 100);
+        assert_eq!(world.get_knight_cash(2), 10);
+    }
+
+    #[tokio::test]
+    async fn bdw_manual_close_still_pays_the_participants() {
+        let (world, _rx) = bdw_reward_world();
+        let erm = world.event_room_manager();
+        // what the tick does on a manual close: collect, destroy the rooms, then pay
+        stash_manual_close_rewards(erm, TempleEventType::BorderDefenceWar, &[(1, 2)]);
+        erm.rooms.clear();
+        pay_manual_close_rewards(&world).await;
+        assert_eq!(world.get_knight_cash(1), 10, "Karus lost here (winner El Morad)");
+        assert_eq!(world.get_knight_cash(2), 100);
+        assert_eq!(world.get_knight_cash(20_001), 0);
+        // nothing left to pay
+        pay_manual_close_rewards(&world).await;
+        assert_eq!(world.get_knight_cash(2), 100);
+    }
+
+    #[test]
+    fn participants_are_collected_once_and_bots_logged_out_users_skipped() {
+        let (world, _rx) = bdw_reward_world();
+        let erm = world.event_room_manager();
+        erm.get_room_mut(TempleEventType::BorderDefenceWar, 1)
+            .unwrap()
+            .elmorad_users
+            .insert("Gone".into(), {
+                let mut u = bdw_room_user("Gone", 3, 2, false);
+                u.logged_out = true;
+                u
+            });
+        let got = collect_reward_participants(erm, TempleEventType::BorderDefenceWar, 1, 1);
+        let mut sids: Vec<u16> = got.iter().map(|p| p.sid).collect();
+        sids.sort_unstable();
+        assert_eq!(sids, vec![1, 2]);
+        assert!(collect_reward_participants(erm, TempleEventType::BorderDefenceWar, 1, 1).is_empty());
+    }
+
+    #[tokio::test]
+    async fn bdw_room_that_won_early_is_paid_when_its_countdown_ends() {
+        let (world, _rx) = bdw_reward_world();
+        let erm = world.event_room_manager();
+        {
+            let mut room = erm.get_room_mut(TempleEventType::BorderDefenceWar, 1).unwrap();
+            room.finish_packet_sent = true;
+            room.winner_nation = 1;
+            room.finish_time_counter = 1_000;
+        }
+        pay_finished_bdw_rooms(&world, 999).await;
+        assert_eq!(world.get_knight_cash(1), 0, "countdown still running");
+        pay_finished_bdw_rooms(&world, 1_000).await;
+        assert_eq!(world.get_knight_cash(1), 100, "winner");
+        assert_eq!(world.get_knight_cash(2), 10, "loser");
+        // the end-of-event pass must not pay a second time
+        distribute_event_rewards(&world, 9, &[(1, 1)]).await;
+        assert_eq!(world.get_knight_cash(1), 100);
     }
 }

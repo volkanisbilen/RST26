@@ -440,7 +440,7 @@ pub async fn trigger_zone_change(
     // 0b. BDW cleanup when warping out of zone 84
     if pos.zone_id == crate::systems::bdw::ZONE_BDW && dest_zone != crate::systems::bdw::ZONE_BDW {
         // Remove speed debuff first
-        world.remove_buff(sid, crate::systems::bdw::BUFF_TYPE_FRAGMENT_OF_MANES);
+        crate::systems::bdw::clear_fragment_effect(&world, sid);
         super::logout::bdw_user_logout(&world, sid);
     }
 

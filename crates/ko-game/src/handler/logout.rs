@@ -1101,7 +1101,7 @@ pub(crate) fn bdw_user_logout(world: &crate::world::WorldState, sid: crate::zone
         super::dead::broadcast_to_bdw_room(world, room_id, &timer_pkt);
 
         // Remove speed debuff from the carrier
-        world.remove_buff(sid, bdw::BUFF_TYPE_FRAGMENT_OF_MANES);
+        bdw::clear_fragment_effect(world, sid);
     }
 
     // Broadcast forfeit finish if applicable

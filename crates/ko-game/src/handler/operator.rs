@@ -479,6 +479,9 @@ pub async fn process_chat_command(
         "borderclose" => handle_temple_event_close(session, TempleEventKind::Bdw)?,
         "juraidopen" => handle_temple_event_open(session, TempleEventKind::Juraid)?,
         "juraidstart" => handle_juraid_event_start(session)?,
+        "borderstart" => handle_temple_event_quick_start(session, TempleEventKind::Bdw)?,
+        "bdwstart" => handle_temple_event_quick_start(session, TempleEventKind::Bdw)?,
+        "chaosstart" => handle_temple_event_quick_start(session, TempleEventKind::Chaos)?,
         "juraidclose" => handle_temple_event_close(session, TempleEventKind::Juraid)?,
         "utcopen" | "utcstart" | "undercastleopen" | "undercastlestart" => {
             handle_under_castle_open(session, &args)?
@@ -746,6 +749,9 @@ pub(crate) async fn run_event_command<C: GmCtx>(
         "borderclose" => handle_temple_event_close(ctx, TempleEventKind::Bdw)?,
         "juraidopen" => handle_temple_event_open(ctx, TempleEventKind::Juraid)?,
         "juraidstart" => handle_juraid_event_start(ctx)?,
+        "borderstart" => handle_temple_event_quick_start(ctx, TempleEventKind::Bdw)?,
+        "bdwstart" => handle_temple_event_quick_start(ctx, TempleEventKind::Bdw)?,
+        "chaosstart" => handle_temple_event_quick_start(ctx, TempleEventKind::Chaos)?,
         "juraidclose" => handle_temple_event_close(ctx, TempleEventKind::Juraid)?,
         "manesopen" => handle_manes_survival_open(ctx)?,
         "manesstart" => handle_manes_survival_start(ctx)?,
@@ -2033,8 +2039,8 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "csw - Castle siege status/control",
         "tournamentstart/close - Tournament",
         "funclass_open/close - Fun class event",
-        "chaosopen/close - Chaos dungeon",
-        "borderopen/close - BDW",
+        "chaosopen/close - Chaos dungeon (chaosstart = start now)",
+        "borderopen/close - BDW (borderstart/bdwstart = start now)",
         "juraidopen/start/close - Juraid",
         "ftopen/close - Forgotten Temple",
         "beefopen/close - Beef Roast event",
@@ -6860,6 +6866,7 @@ async fn handle_change_gm(session: &mut ClientSession, args: &[&str]) -> anyhow:
 
 /// Unified enum for the 3 temple events (Chaos, BDW, Juraid).
 /// Maps to `pvroomop[0..2]` indices and `TempleEventType` enum values.
+#[derive(Clone, Copy)]
 enum TempleEventKind {
     Bdw,
     Chaos,
@@ -6980,6 +6987,64 @@ fn handle_temple_event_open<C: GmCtx>(
     );
 
     Ok(())
+}
+
+/// +borderstart / +bdwstart / +chaosstart — quick start: open the event when it is not running yet and
+/// skip the registration countdown, so the event enters on the next event tick.
+fn handle_temple_event_quick_start<C: GmCtx>(
+    session: &mut C,
+    kind: TempleEventKind,
+) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let erm = &world.event_room_manager;
+    if erm.read_temple_event(|s| s.active_event) == -1 {
+        handle_temple_event_open(session, kind)?;
+    }
+    let Some(opts) = erm.get_vroom_opt(kind.vroom_index()) else {
+        send_help(session, &format!("{}: timer options not loaded.", kind.name()));
+        return Ok(());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let skipped = quick_start_skip_countdown(erm, kind.active_event_id(), &opts, now);
+    if !skipped {
+        send_help(
+            session,
+            &format!("{}: not in registration phase (another event is running or it already started).", kind.name()),
+        );
+        return Ok(());
+    }
+    crate::systems::event_room::broadcast_event_counter(&world);
+    send_help(
+        session,
+        &format!("{} countdown skipped. Event will start on the next tick.", kind.name()),
+    );
+    info!("[{}] quick start: {} countdown skipped", session.addr(), kind.name());
+    Ok(())
+}
+
+/// Move the registration end of the running temple event `active_event` to `now`. Returns false
+/// when that event is not in its registration phase.
+pub(crate) fn quick_start_skip_countdown(
+    erm: &crate::systems::event_room::EventRoomManager,
+    active_event: i16,
+    opts: &crate::systems::event_room::VroomOpt,
+    now: u64,
+) -> bool {
+    let sign_secs = (opts.sign.max(0) as u64) * 60;
+    let play_secs = (opts.play.max(0) as u64) * 60;
+    erm.update_temple_event(|s| {
+        if s.active_event != active_event || s.is_active {
+            return false;
+        }
+        // BDW treats the sign window as `now > start + sign`: one more second
+        s.start_time = now.saturating_sub(sign_secs + 1);
+        s.sign_remain_seconds = now;
+        s.closed_time = now + play_secs;
+        true
+    })
 }
 
 /// +juraidstart — skip the Juraid registration countdown and enter on next event tick.

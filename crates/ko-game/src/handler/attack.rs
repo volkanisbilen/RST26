@@ -4060,9 +4060,6 @@ pub(crate) fn dd_decrement_and_advance(world: &WorldState, event_room: u16) {
 /// 2. Sets `has_altar_obtained = true` (flag pickup)
 /// 3. Broadcasts `TEMPLE_EVENT_ALTAR_FLAG` (sub-opcode 49) to all users in the room
 fn bdw_altar_flag_pickup(world: &WorldState, killer_sid: SessionId, _zone_id: u16, npc_id: NpcId) {
-    use crate::systems::event_room::{self, TempleEventType};
-    use crate::world::ActiveBuff;
-
     let is_bdw_active = world
         .event_room_manager
         .read_temple_event(|s| s.is_bdw_active());
@@ -4070,10 +4067,23 @@ fn bdw_altar_flag_pickup(world: &WorldState, killer_sid: SessionId, _zone_id: u1
         return;
     }
 
-    let (killer_name, _killer_nation) = match world.get_character_info(killer_sid) {
-        Some(ch) => (ch.name.clone(), ch.nation),
+    let killer_name = match world.get_character_info(killer_sid) {
+        Some(ch) => ch.name.clone(),
         None => return,
     };
+    bdw_altar_flag_pickup_named(world, killer_sid, &killer_name, npc_id);
+}
+
+/// Flag pickup for a killer known by name (players, and the event bots which have no character
+/// info). The killer's room is found by name; a bot carrier is slowed by the bot driver itself.
+pub(crate) fn bdw_altar_flag_pickup_named(
+    world: &WorldState,
+    killer_sid: SessionId,
+    killer_name: &str,
+    npc_id: NpcId,
+) {
+    use crate::systems::event_room::{self, TempleEventType};
+    let killer_name = killer_name.to_string();
 
     // Find killer's room
     let (room_id, _) = match world
@@ -4119,45 +4129,8 @@ fn bdw_altar_flag_pickup(world: &WorldState, killer_sid: SessionId, _zone_id: u1
     let flag_pkt = event_room::build_altar_flag_packet(&killer_name, nation);
     dead::broadcast_to_bdw_room(world, room_id, &flag_pkt);
 
-    // Apply BUFF_TYPE_FRAGMENT_OF_MANES speed debuff to carrier
-    //   pTarget->m_bSpeedAmount = pType->bSpeed;
-    world.apply_buff(
-        killer_sid,
-        ActiveBuff {
-            skill_id: bdw::BUFF_FRAGMENT_OF_MANES_SKILL,
-            buff_type: bdw::BUFF_TYPE_FRAGMENT_OF_MANES,
-            caster_sid: killer_sid,
-            start_time: std::time::Instant::now(),
-            duration_secs: 0, // permanent until explicitly removed
-            attack_speed: 0,
-            speed: bdw::FRAGMENT_SPEED_VALUE,
-            ac: 0,
-            ac_pct: 0,
-            attack: 0,
-            magic_attack: 0,
-            max_hp: 0,
-            max_hp_pct: 0,
-            max_mp: 0,
-            max_mp_pct: 0,
-            str_mod: 0,
-            sta_mod: 0,
-            dex_mod: 0,
-            intel_mod: 0,
-            cha_mod: 0,
-            fire_r: 0,
-            cold_r: 0,
-            lightning_r: 0,
-            magic_r: 0,
-            disease_r: 0,
-            poison_r: 0,
-            hit_rate: 0,
-            avoid_rate: 0,
-            weapon_damage: 0,
-            ac_sour: 0,
-            duration_extended: false,
-            is_buff: true, // C++ classifies this as buff (not debuff)
-        },
-    );
+    // Fragment of Manes: slow the carrier down and show the skill effect on him
+    bdw::apply_fragment_effect(world, killer_sid);
 
     tracing::info!(
         "BDW altar flag pickup: '{}' (nation={}) in room {}, debuff applied",

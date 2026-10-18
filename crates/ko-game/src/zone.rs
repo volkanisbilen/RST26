@@ -229,12 +229,22 @@ pub struct MapData {
     /// The event grid carries no data at all (e.g. Moradon): bots then rely on the terrain
     /// mask alone. Maps with a real event grid (PK zones) keep the strict rule.
     bot_ignore_event: bool,
+    /// Bots navigate by the event grid alone (maps whose terrain mask walls in the spawn areas,
+    /// e.g. the BDW arena: the mask left the spawn room a closed pocket, the players walk out).
+    bot_event_only: bool,
 }
 
 impl MapData {
     pub fn is_bot_movable_grid(&self, x: i32, z: i32) -> bool {
         // Bot movement follows the terrain mask (zero = blocked). The legacy
         // NPC pathfinder uses the inverse convention; keep that API separate.
+        if self.bot_event_only {
+            return x >= 0
+                && z >= 0
+                && x < self.smd.map_size
+                && z < self.smd.map_size
+                && self.smd.get_event_id(x, z) > 0;
+        }
         x >= 0 && z >= 0 && x < self.smd.map_size && z < self.smd.map_size
             && (self.bot_ignore_event || self.smd.get_event_id(x, z) > 0) && (self.smd.bot_blocked.is_empty()
             || !self.smd.bot_blocked[(x * self.smd.map_size + z) as usize])
@@ -271,11 +281,17 @@ impl MapData {
             )
     }
 
+    /// Let bots navigate by the event grid only (see `bot_event_only`).
+    pub fn with_event_grid_navigation(mut self) -> Self {
+        self.bot_event_only = true;
+        self
+    }
+
     /// Create map data from a parsed SMD file.
     pub fn new(smd: SmdFile) -> Self {
         // Only trust the terrain mask when it exists, otherwise an empty-grid map would be fully open.
         let bot_ignore_event = !smd.bot_blocked.is_empty() && smd.event_grid.iter().all(|&v| v == 0);
-        Self { smd, bot_ignore_event }
+        Self { smd, bot_ignore_event, bot_event_only: false }
     }
 
     /// Check if a world position is within map boundaries.
