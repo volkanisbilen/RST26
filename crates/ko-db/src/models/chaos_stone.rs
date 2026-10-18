@@ -53,7 +53,7 @@ pub struct ChaosStoneSummonStageRow {
 }
 
 /// A row from `event_chaos_rewards` — rewards distributed by rank.
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, Default, sqlx::FromRow)]
 pub struct EventChaosRewardRow {
     /// Rank tier (1=best, 18=worst).
     pub rank_id: i16,

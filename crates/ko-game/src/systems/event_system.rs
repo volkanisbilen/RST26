@@ -196,6 +196,8 @@ pub fn start_event_system_task(
 ) -> tokio::task::JoinHandle<()> {
     // Event bots (Chaos / BDW fillers) run on their own 250 ms driver; idle without bots.
     crate::systems::event_bots::start_driver_task(world.clone());
+    // Chaos Dungeon saw blades patrol their DB route.
+    crate::systems::chaos_arena::start_saw_task(world.clone());
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(EVENT_TICK_INTERVAL_SECS));
@@ -2758,15 +2760,24 @@ pub async fn distribute_chaos_finish_exp(world: &crate::world::WorldState) {
         }; // room lock dropped
 
         // Build a ranking list sorted by kills descending (for rank-based rewards)
-        let mut ranked = participants.clone();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        // ranks are computed among humans only (event bots never take a reward rank)
+        let mut ranked: Vec<(SessionId, u32, u32)> = participants
+            .iter()
+            .copied()
+            .filter(|(sid, _, _)| !crate::systems::event_bots::is_event_bot_sid(world, *sid))
+            .collect();
+        // same order as the WIZ_RANK Chaos window: kills desc, deaths asc
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
 
         // Grant EXP and rank-based rewards to each participant
         for (sid, kills, deaths) in &participants {
+            // event bots take part in the ranking but never receive rewards
+            if crate::systems::event_bots::is_event_bot_sid(world, *sid) {
+                continue;
+            }
             let Some(ch) = world.get_character_info(*sid) else {
                 continue;
             };
-
             let (normal_exp, premium_exp) = chaos_user_exp(ch.level, *kills, *deaths);
 
             // nChangeExp = pUser->GetPremium() != 0 ? nPremiumGainedExp : nGainedExp;
@@ -5688,6 +5699,41 @@ mod tests {
         // kill_score = 15 - 5 = 10, exp = 216000 * 0.15 * 10 = 324_000
         assert_eq!(ch2.exp, 10_000 + kill_exp2 as u64 + 2000);
         assert_eq!(ch2.gold, 1000 + 200);
+    }
+
+    #[tokio::test]
+    async fn test_chaos_real_end_path_rewards_after_determine_winners() {
+        use crate::systems::event_room::EventUser;
+        let world = WorldState::new();
+        let _rx1 = setup_session(&world, 1, 1);
+        {
+            let mut rewards = world.chaos_stone_rewards_mut();
+            let mut r = ko_db::models::chaos_stone::EventChaosRewardRow::default();
+            r.rank_id = 1;
+            r.noah = 777;
+            rewards.push(r);
+        }
+        let erm = world.event_room_manager();
+        let mut room = crate::systems::event_room::EventRoom::new(1, TempleEventType::ChaosDungeon);
+        room.mixed_users.insert(
+            "Player1".to_string(),
+            EventUser {
+                user_name: "Player1".to_string(),
+                session_id: 1,
+                nation: 1,
+                prize_given: false,
+                logged_out: false,
+                kills: 4,
+                deaths: 0,
+                bdw_points: 0,
+                has_altar_obtained: false,
+            },
+        );
+        erm.rooms.insert((TempleEventType::ChaosDungeon, 1), room);
+        // the exact order the event tick uses: winners first, then rewards
+        let _ = chaos::determine_all_winners(erm);
+        distribute_chaos_finish_exp(&world).await;
+        assert_eq!(world.get_character_info(1).unwrap().gold, 1000 + 777);
     }
 
     #[tokio::test]

@@ -169,6 +169,12 @@ impl WorldState {
                 tmpl.max_hp as i32
             };
             self.npc_hp.insert(nid, init_hp);
+                // Chaos Dungeon saw blades: walk the route stored in npc_spawn.path
+                if npc_id == crate::systems::chaos_arena::SAW_BLADE_PROTO {
+                    if let Some(path) = spawn.path.as_deref() {
+                        crate::systems::chaos_arena::register_saw(nid, path);
+                    }
+                }
 
             if tmpl.is_monster && tmpl.search_range > 0 {
                 let regen_ms = if spawn.regen_time > 0 {

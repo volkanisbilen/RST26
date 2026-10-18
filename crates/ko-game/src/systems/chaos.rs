@@ -25,6 +25,14 @@ pub use crate::world::types::ZONE_CHAOS;
 /// Default maximum rooms for Chaos Dungeon.
 pub const DEFAULT_CHAOS_ROOMS: u8 = 10;
 
+/// Fixed max HP of every fighter inside the Chaos Dungeon (C++ `m_MaxHp = 10000 / 10`).
+pub const CHAOS_MAX_HP: i16 = 1000;
+
+/// Max HP forced on a player standing in `zone_id` (Some only for the Chaos Dungeon).
+pub fn max_hp_override_for_zone(zone_id: u16) -> Option<i16> {
+    (zone_id == ZONE_CHAOS).then_some(CHAOS_MAX_HP)
+}
+
 /// Maximum users per Chaos room.
 pub const MAX_USERS_PER_ROOM: usize = MAX_CHAOS_ROOM_USERS;
 
@@ -219,8 +227,10 @@ pub fn determine_all_winners(erm: &EventRoomManager) -> Vec<(u8, u8)> {
         }
 
         // Chaos has no nation-based winner — always 0
+        // NOTE: `finished` must stay false here: `distribute_chaos_finish_exp` (which runs
+        // right after this) skips rooms that are already finished, which used to swallow
+        // every Chaos reward. The distributor sets the flag itself (C++ m_bFinished).
         room.winner_nation = 0;
-        room.finished = true;
         results.push((room_id, 0u8));
     }
 
@@ -402,6 +412,8 @@ mod tests {
         assert_eq!(results.len(), 1); // Only room 1 has users
         assert_eq!(results[0].0, 1); // room_id
         assert_eq!(results[0].1, 0); // winner_nation always 0 for Chaos
+        // regression: rooms must NOT be pre-finished, or the reward pass skips them
+        assert!(!erm.get_room(TempleEventType::ChaosDungeon, 1).unwrap().finished);
     }
 
     #[test]

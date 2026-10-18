@@ -9,6 +9,7 @@ pub mod bot_ai;
 pub mod bot_waypoints;
 pub mod buff_tick;
 pub mod chaos;
+pub mod chaos_arena;
 pub mod chaos_stone_tick;
 pub mod character_save;
 pub mod concurrent_update;

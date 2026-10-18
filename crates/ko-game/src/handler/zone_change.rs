@@ -509,6 +509,7 @@ pub async fn trigger_zone_change(
             for &item_id in &[ITEM_LIGHT_PIT, ITEM_DRAIN_RESTORE, ITEM_KILLING_BLADE] {
                 world.rob_all_of_item(sid, item_id);
             }
+            crate::systems::chaos_arena::purge_warehouse(&world, sid);
 
             // Remove player from Chaos Expansion ranking
             world.chaos_remove_player(sid);
@@ -1134,6 +1135,12 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
         world.recast_saved_magic(sid);
     }
 
+    // Arrival outside the Chaos Dungeon: put the normal max HP back (a server-side teleport out of
+    // the arena cannot do it earlier because the position still said "Chaos" at that point).
+    if zone_id != ZONE_CHAOS_DUNGEON && zone_id != ZONE_DUNGEON_DEFENCE {
+        world.set_user_ability(sid);
+    }
+
     // Zone-based HP override for Chaos Dungeon (86) and Dungeon Defence (89)
     //   else if (GetZoneID() == ZONE_CHAOS_DUNGEON && iFlag == 0
     //         || (GetZoneID() == ZONE_DUNGEON_DEFENCE && iFlag == 0))
@@ -1143,12 +1150,21 @@ async fn handle_loaded(session: &mut ClientSession) -> anyhow::Result<()> {
             // the Full Moon Rift equalizes everybody to 10 000 HP (and remembers the real values)
             crate::handler::dungeon_defence::equalize(&world, sid);
         } else {
+            let max_hp = crate::systems::chaos::CHAOS_MAX_HP;
             world.update_character_stats(sid, |ch| {
-                ch.max_hp = 1000;
-                if ch.hp > 1000 {
-                    ch.hp = 1000;
-                }
+                ch.max_hp = max_hp;
+                // everybody starts the fight at full health
+                ch.hp = max_hp;
             });
+            // the client was told the formula max HP by set_user_ability above: correct it
+            world.send_to_session_owned(
+                sid,
+                crate::handler::max_hp_change::build_max_hp_change(max_hp as i32),
+            );
+            world.send_to_session_owned(
+                sid,
+                crate::systems::regen::build_hp_change_packet(max_hp, max_hp),
+            );
         }
     }
 
@@ -1470,6 +1486,14 @@ fn server_teleport_to_zone_impl(
         {
             world.manes_survival_manager.leave_event(world, sid, true);
         }
+    }
+
+    // Chaos Dungeon: a server-side teleport out (event end, kick, GM) must clean up exactly like
+    // a client zone change does (C++ ZoneChange: RobChaosSkillItems + event room reset).
+    if pos.zone_id == ZONE_CHAOS_DUNGEON && dest_zone != ZONE_CHAOS_DUNGEON {
+        crate::handler::dead::rob_chaos_skill_items(world, sid);
+        crate::systems::chaos_arena::purge_warehouse(world, sid);
+        world.chaos_remove_player(sid);
     }
 
     // Set zone_changing flag so the client triggers handle_loaded properly
