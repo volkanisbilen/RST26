@@ -1197,34 +1197,90 @@ impl WorldState {
         let item = self.get_item(item_id)?;
         let countable = item.countable.unwrap_or(0);
 
-        self.sessions.get(&sid).and_then(|h| {
-            let inv = &h.inventory;
-            if countable > 0 {
-                // Stackable: find existing stack with room, or first empty slot
-                let mut first_empty: Option<usize> = None;
-                for i in Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX) {
-                    if let Some(slot) = inv.get(i) {
-                        if slot.item_id == item_id && slot.count + count <= ITEMCOUNT_MAX {
-                            return Some(i);
-                        }
-                        if slot.item_id == 0 && first_empty.is_none() {
-                            first_empty = Some(i);
-                        }
+        self.sessions
+            .get(&sid)
+            .and_then(|h| Self::find_slot_in(&h.inventory, countable > 0, item_id, count))
+    }
+
+    /// Pure slot search used by [`find_slot_for_item`] and by the exchange
+    /// planner ([`can_hold_after_exchange`]), so the plan and the real delivery
+    /// always choose the same slots.
+    pub(crate) fn find_slot_in(
+        inv: &[UserItemSlot],
+        stackable: bool,
+        item_id: u32,
+        count: u16,
+    ) -> Option<usize> {
+        if stackable {
+            // Stackable: find existing stack with room, or first empty slot
+            let mut first_empty: Option<usize> = None;
+            for i in Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX) {
+                if let Some(slot) = inv.get(i) {
+                    // u32 math: `slot.count + count` overflowed u16 for big requests.
+                    if slot.item_id == item_id
+                        && slot.count as u32 + count as u32 <= ITEMCOUNT_MAX as u32
+                    {
+                        return Some(i);
+                    }
+                    if slot.item_id == 0 && first_empty.is_none() {
+                        first_empty = Some(i);
                     }
                 }
-                first_empty
-            } else {
-                // Non-stackable: find first empty slot
-                for i in Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX) {
-                    if let Some(slot) = inv.get(i) {
-                        if slot.item_id == 0 {
-                            return Some(i);
-                        }
-                    }
-                }
-                None
             }
-        })
+            first_empty
+        } else {
+            // Non-stackable: find first empty slot
+            (Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX))
+                .find(|&i| inv.get(i).is_some_and(|slot| slot.item_id == 0))
+        }
+    }
+
+    /// Dry-run an item exchange against the player's real bag: first take
+    /// `removals` (item id, count) out, then add `additions` (item id, count)
+    /// one by one, picking slots exactly like `give_item` does.
+    ///
+    /// Returns `false` when the bag cannot hold the result. Unlike checking each
+    /// output separately with [`find_slot_for_item`], this notices that several
+    /// outputs compete for the same free slot, and credits slots that the
+    /// removed origin items free up. Nothing is modified.
+    pub fn can_hold_after_exchange(
+        &self,
+        sid: SessionId,
+        removals: &[(u32, u16)],
+        additions: &[(u32, u16)],
+    ) -> bool {
+        let mut inv = self.get_inventory(sid);
+        let mut scratch = Vec::new();
+        for &(item_id, count) in removals {
+            if count == 0 {
+                continue;
+            }
+            let scroll = self.items.get(&item_id).and_then(|it| it.kind).unwrap_or(0) == 255;
+            scratch.clear();
+            if !Self::rob_item_from_slots(&mut inv, item_id, count, scroll, &mut scratch) {
+                return false;
+            }
+        }
+        for &(item_id, count) in additions {
+            let Some(item) = self.get_item(item_id) else {
+                continue; // unknown items are skipped by the delivery too
+            };
+            let countable = item.countable.unwrap_or(0);
+            if countable == 2 {
+                continue; // virtual item, never occupies a slot
+            }
+            let Some(pos) = Self::find_slot_in(&inv, countable > 0, item_id, count) else {
+                return false;
+            };
+            let slot = &mut inv[pos];
+            slot.item_id = item_id;
+            slot.count = if countable > 0 && item.kind.unwrap_or(0) != 255 {
+                slot.count.saturating_add(count).min(ITEMCOUNT_MAX)
+            } else {
+                1
+            };
+        }
+        true
     }
     /// Count free inventory slots (HAVE_MAX range).
     ///
@@ -1629,54 +1685,16 @@ impl WorldState {
         let is_consumable_scroll =
             self.items.get(&item_id).and_then(|it| it.kind).unwrap_or(0) == 255;
 
-        // Capture slot info for the WIZ_ITEM_COUNT_CHANGE packet.
-        let mut pkt_info: Option<(u8, u32, u16)> = None; // (bag_pos, new_count, durability)
+        // Capture slot info for the WIZ_ITEM_COUNT_CHANGE packets.
+        let mut changes: Vec<(u8, u32, u16)> = Vec::new(); // (bag_pos, new_count, durability)
 
         let ok = self.update_inventory(sid, |inv| {
-            for i in Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX) {
-                if let Some(slot) = inv.get_mut(i) {
-                    if slot.item_id != item_id {
-                        continue;
-                    }
-
-                    if is_consumable_scroll {
-                        // kind=255: durability is the usage counter (C++ sDuration).
-                        // C++ ItemHandler.cpp:204-209 — decrements sDuration, clears when <= 0.
-                        if slot.durability < count as i16 {
-                            return false;
-                        }
-                        slot.durability -= count as i16;
-                        let bag_pos = (i - Self::SLOT_MAX) as u8;
-                        if slot.durability <= 0 {
-                            *slot = UserItemSlot::default();
-                            pkt_info = Some((bag_pos, 0, 0));
-                        } else {
-                            pkt_info = Some((bag_pos, slot.count as u32, slot.durability as u16));
-                        }
-                        return true;
-                    } else {
-                        // Normal item: count is the usage counter.
-                        if slot.count < count {
-                            continue;
-                        }
-                        slot.count -= count;
-                        let new_count = slot.count;
-                        let durability = slot.durability;
-                        let bag_pos = (i - Self::SLOT_MAX) as u8;
-                        if slot.count == 0 {
-                            *slot = UserItemSlot::default();
-                        }
-                        pkt_info = Some((bag_pos, new_count as u32, durability as u16));
-                        return true;
-                    }
-                }
-            }
-            false
+            Self::rob_item_from_slots(inv, item_id, count, is_consumable_scroll, &mut changes)
         });
 
         // Send WIZ_ITEM_COUNT_CHANGE to the client so UI updates.
         if ok {
-            if let Some((slot_pos, new_count, durability)) = pkt_info {
+            for (slot_pos, new_count, durability) in changes {
                 let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
                 pkt.write_u16(1); // count_type
                 pkt.write_u8(1); // slot_section: inventory
@@ -1689,13 +1707,105 @@ impl WorldState {
                 pkt.write_u32(0); // expiration
                 pkt.write_u16(0); // v2625 SendStackChange trailing field
                 self.send_to_session_owned(sid, pkt);
-
-                // Weight notification is now integrated into set_user_ability().
-                self.set_user_ability(sid);
             }
+            // Weight notification is now integrated into set_user_ability().
+            self.set_user_ability(sid);
         }
 
         ok
+    }
+
+    /// Core of [`rob_item`]: remove `count` units of `item_id` from the bag slots.
+    ///
+    /// The original C++ `RobItem` only succeeds when ONE slot holds the whole
+    /// amount, while the quest scripts' `HowmuchItem` (and the exchange origin
+    /// check) add every slot together. Non-stackable quest items therefore passed
+    /// the "do you have enough" check and then failed to be taken (and a
+    /// multi-origin exchange could stop half-way, after already removing earlier
+    /// origins). Single-slot behaviour is kept first; only when no single slot is
+    /// big enough the amount is taken across several slots, and only if the grand
+    /// total suffices (all-or-nothing, nothing is modified on failure).
+    ///
+    /// Units are `count` for normal items and `durability` (the usage counter)
+    /// for `kind == 255` consumable scrolls.
+    pub(crate) fn rob_item_from_slots(
+        inv: &mut [UserItemSlot],
+        item_id: u32,
+        count: u16,
+        is_consumable_scroll: bool,
+        changes: &mut Vec<(u8, u32, u16)>,
+    ) -> bool {
+        let range = Self::SLOT_MAX..(Self::SLOT_MAX + Self::HAVE_MAX).min(inv.len());
+        let units = |slot: &UserItemSlot| -> u32 {
+            if is_consumable_scroll {
+                slot.durability.max(0) as u32
+            } else {
+                slot.count as u32
+            }
+        };
+
+        // Pass 1: one slot is enough (original behaviour).
+        let mut chosen: Option<usize> = None;
+        for i in range.clone() {
+            if inv[i].item_id == item_id && units(&inv[i]) >= count as u32 {
+                chosen = Some(i);
+                break;
+            }
+        }
+        // Pass 2: spread over several slots, all-or-nothing.
+        let mut plan: Vec<(usize, u32)> = Vec::new();
+        if let Some(i) = chosen {
+            plan.push((i, count as u32));
+        } else {
+            let total: u32 = range
+                .clone()
+                .filter(|&i| inv[i].item_id == item_id)
+                .map(|i| units(&inv[i]))
+                .sum();
+            if total < count as u32 {
+                return false;
+            }
+            let mut remaining = count as u32;
+            for i in range {
+                if remaining == 0 {
+                    break;
+                }
+                if inv[i].item_id != item_id {
+                    continue;
+                }
+                let take = units(&inv[i]).min(remaining);
+                if take > 0 {
+                    plan.push((i, take));
+                    remaining -= take;
+                }
+            }
+        }
+
+        for (i, take) in plan {
+            let slot = &mut inv[i];
+            let bag_pos = (i - Self::SLOT_MAX) as u8;
+            if is_consumable_scroll {
+                // kind=255: durability is the usage counter (C++ sDuration).
+                // C++ ItemHandler.cpp:204-209 — decrements sDuration, clears when <= 0.
+                slot.durability -= take as i16;
+                if slot.durability <= 0 {
+                    *slot = UserItemSlot::default();
+                    changes.push((bag_pos, 0, 0));
+                } else {
+                    changes.push((bag_pos, slot.count as u32, slot.durability as u16));
+                }
+            } else {
+                // Normal item: count is the usage counter.
+                slot.count -= take as u16;
+                let new_count = slot.count;
+                let durability = slot.durability;
+                if slot.count == 0 {
+                    *slot = UserItemSlot::default();
+                }
+                changes.push((bag_pos, new_count as u32, durability as u16));
+            }
+        }
+        true
     }
     /// Take exactly one piece of an item out of the bag, whatever its kind (unlike `rob_item`, a
     /// consumable scroll loses its stack count, not a usage counter). Used when a reward is sold or banked.

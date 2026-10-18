@@ -992,8 +992,17 @@ pub fn quest_v2_run_event(
     );
 
     // Store quest helper ID on session (C++: m_nQuestHelperID = pQuestHelper->nIndex)
+    //
+    // `by_selected_reward` is what RunQuestExchange validates against the
+    // item_exchange_exp table. It must describe THIS run: runs started from the
+    // dialog (WIZ_SELECT_MSG) carry the picked reward, every other run (NPC
+    // click, turn-in) passes -1. Without this, a reward picked in some earlier
+    // dialog stayed in the session and made every later exchange without a
+    // reward table fail with "invalid or missing selected reward" while the
+    // script went on to complete the quest.
     world.update_session(sid, |h| {
         h.quest_helper_id = helper.n_index as u32;
+        h.by_selected_reward = selected_reward;
     });
 
     // Execute the Lua script
