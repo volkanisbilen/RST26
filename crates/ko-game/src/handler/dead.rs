@@ -1040,6 +1040,42 @@ pub fn track_juraid_monster_kill(
     killed_x: f32,
     killed_z: f32,
 ) {
+    // Determine killer's nation
+    let killer_nation = match world.get_character_info(killer_sid) {
+        Some(ch) => ch.nation,
+        None => return,
+    };
+    let killer_name = match world.get_session_name(killer_sid) {
+        Some(n) => n,
+        None => return,
+    };
+    track_juraid_monster_kill_by_name(
+        world,
+        &killer_name,
+        killer_nation,
+        killed_npc_sid,
+        killed_event_room,
+        killed_summon_type,
+        killed_x,
+        killed_z,
+    );
+}
+
+/// Name based core of [`track_juraid_monster_kill`]; event bots (which have no session) enter
+/// here with their room-member name. Bots are room members flagged `prize_given`, so they never
+/// receive rewards.
+#[allow(clippy::too_many_arguments)]
+pub fn track_juraid_monster_kill_by_name(
+    world: &WorldState,
+    killer_name: &str,
+    killer_nation: u8,
+    killed_npc_sid: u16,
+    killed_event_room: u16,
+    killed_summon_type: u8,
+    killed_x: f32,
+    killed_z: f32,
+) {
+    let killer_name = killer_name.to_string();
     // Match the C++ CNpc::HandleJuraidKill gate: only Juraid-spawned
     // entities participate in the event. Ordinary zone monsters (including
     // GM-spawned monsters with summon_type=0) must not alter Juraid scores or
@@ -1061,18 +1097,6 @@ pub fn track_juraid_monster_kill(
     if !is_juraid_active {
         return;
     }
-
-    // Determine killer's nation
-    let killer_nation = match world.get_character_info(killer_sid) {
-        Some(ch) => ch.nation,
-        None => return,
-    };
-
-    // Find the room this player is in
-    let killer_name = match world.get_session_name(killer_sid) {
-        Some(n) => n,
-        None => return,
-    };
 
     let room_ids = world
         .event_room_manager

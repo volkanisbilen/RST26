@@ -700,7 +700,7 @@ fn generate_manes_survival_loot(
 /// Uses the party's `item_routing` cursor to find the next eligible member
 /// who is alive, in range, and has weight/slot capacity.
 /// Cursor increments BEFORE filtering (load balancing over time).
-pub(super) fn get_item_routing_user(
+pub(crate) fn get_item_routing_user(
     world: &WorldState,
     party_id: u16,
     sender_sid: SessionId,
@@ -728,6 +728,10 @@ pub(super) fn get_item_routing_user(
             Some(sid) => sid,
             None => continue,
         };
+        // event bots (Juraid & co.) never share in loot / chests
+        if crate::systems::event_bots::is_event_bot_sid(world, member_sid) {
+            continue;
+        }
 
         // Single DashMap read: check alive + in-range (2 reads → 1)
         let alive_in_range = world
