@@ -8,18 +8,18 @@
 //! Client -> Server:
 //! opcode=0x2B, data=[FF FF]
 //!
-//! We keep multiple response modes behind KO_VERSION_MODE so we can test
-//! client compatibility without changing code every time.
+//! We keep the historical response modes behind KO_VERSION_MODE for protocol
+//! diagnostics. Normal operation uses mode 99 and the DB-backed version.
 //!
 //! Test modes:
 //! 0 -> [00][2599][10][key][00]
-//! 1 -> [01][2599][10][key][00]
+//! 1 -> [00][2599][10][key][00]
 //! 2 -> [00][2602][10][key][00]
-//! 3 -> [01][2602][10][key][00]
+//! 3 -> [00][2602][10][key][00]
 //! 4 -> [2599][10][key][00]
 //! 5 -> [2602][10][key][00]
-//! 6 -> [01][2599][10][key] no trailer
-//! 7 -> [01][2602][10][key] no trailer
+//! 6 -> [00][2599][10][key] no trailer
+//! 7 -> [00][2602][10][key] no trailer
 
 use ko_protocol::{Opcode, Packet};
 
@@ -27,9 +27,9 @@ use crate::session::{ClientSession, SessionState};
 
 /// Fallback version if server_settings is not loaded yet.
 ///
-/// For the current 26xx client test, we use 2602.
-/// LoginServer version should also come from server_settings.game_version.
-pub const DEFAULT_SERVER_VERSION: u16 = 2602;
+/// v2625 `sub_7AE420` returns 2625 and `sub_7B5420` rejects any other
+/// GameServer wire version.
+pub const DEFAULT_SERVER_VERSION: u16 = 2625;
 
 /// Resolve the game version from DB: server_settings.game_version.
 fn resolve_version(session: &ClientSession) -> u16 {
@@ -42,13 +42,13 @@ fn resolve_version(session: &ClientSession) -> u16 {
 
 /// Read KO_VERSION_MODE from environment.
 ///
-/// Default mode is 3:
-/// [01][2602][10][key][00]
+/// Default mode is 99:
+/// [00][server_settings.game_version][10][key][00]
 fn get_version_mode() -> u8 {
     std::env::var("KO_VERSION_MODE")
         .ok()
         .and_then(|v| v.trim().parse::<u8>().ok())
-        .unwrap_or(3)
+        .unwrap_or(99)
 }
 
 /// Return the wire version used by the selected test mode.
@@ -64,18 +64,21 @@ fn mode_wire_version(mode: u8, db_version: u16) -> u16 {
 fn mode_description(mode: u8) -> &'static str {
     match mode {
         0 => "[00][2599][10][key][00]",
-        1 => "[01][2599][10][key][00]",
+        1 => "[00][2599][10][key][00]",
         2 => "[00][2602][10][key][00]",
-        3 => "[01][2602][10][key][00]",
+        3 => "[00][2602][10][key][00]",
         4 => "[2599][10][key][00]",
         5 => "[2602][10][key][00]",
-        6 => "[01][2599][10][key] no trailer",
-        7 => "[01][2602][10][key] no trailer",
-        _ => "[01][db_version][10][key][00] fallback",
+        6 => "[00][2599][10][key] no trailer",
+        7 => "[00][2602][10][key] no trailer",
+        _ => "[00][db_version][10][key][00] fallback",
     }
 }
 
 /// Build 0x2B version response payload according to KO_VERSION_MODE.
+/// The leading byte selects the cloak catalog, NOT a success status.
+/// v2625 sub_7B5420: zero loads Cloak.tbl; nonzero loads Cloak_PVP.tbl.
+/// The shipped PVP table has a legacy 7-column layout rejected by sub_52A840.
 fn build_version_response_payload(mode: u8, db_version: u16, key: &[u8; 16]) -> Packet {
     let mut response = Packet::new(Opcode::WizVersionCheck as u8);
 
@@ -89,9 +92,9 @@ fn build_version_response_payload(mode: u8, db_version: u16, key: &[u8; 16]) -> 
             response.write_u8(0);
         }
 
-        // [01][2599][10][key][00]
+        // [00][2599][10][key][00]
         1 => {
-            response.write_u8(1);
+            response.write_u8(0);
             response.write_u16(2599);
             response.write_u8(16);
             response.write_bytes(key);
@@ -107,9 +110,9 @@ fn build_version_response_payload(mode: u8, db_version: u16, key: &[u8; 16]) -> 
             response.write_u8(0);
         }
 
-        // [01][2602][10][key][00]
+        // [00][2602][10][key][00]
         3 => {
-            response.write_u8(1);
+            response.write_u8(0);
             response.write_u16(2602);
             response.write_u8(16);
             response.write_bytes(key);
@@ -132,25 +135,25 @@ fn build_version_response_payload(mode: u8, db_version: u16, key: &[u8; 16]) -> 
             response.write_u8(0);
         }
 
-        // [01][2599][10][key] no trailer
+        // [00][2599][10][key] no trailer
         6 => {
-            response.write_u8(1);
+            response.write_u8(0);
             response.write_u16(2599);
             response.write_u8(16);
             response.write_bytes(key);
         }
 
-        // [01][2602][10][key] no trailer
+        // [00][2602][10][key] no trailer
         7 => {
-            response.write_u8(1);
+            response.write_u8(0);
             response.write_u16(2602);
             response.write_u8(16);
             response.write_bytes(key);
         }
 
-        // Fallback: [01][db_version][10][key][00]
+        // Fallback: [00][db_version][10][key][00]
         _ => {
-            response.write_u8(1);
+            response.write_u8(0);
             response.write_u16(db_version);
             response.write_u8(16);
             response.write_bytes(key);
@@ -216,13 +219,13 @@ mod tests {
 
     #[test]
     fn test_default_server_version() {
-        assert_eq!(DEFAULT_SERVER_VERSION, 2602);
+        assert_eq!(DEFAULT_SERVER_VERSION, 2625);
     }
 
     #[test]
     fn test_mode_description() {
-        assert_eq!(mode_description(3), "[01][2602][10][key][00]");
-        assert_eq!(mode_description(7), "[01][2602][10][key] no trailer");
+        assert_eq!(mode_description(3), "[00][2602][10][key][00]");
+        assert_eq!(mode_description(7), "[00][2602][10][key] no trailer");
     }
 
     #[test]
@@ -232,7 +235,19 @@ mod tests {
         assert_eq!(mode_wire_version(2, 2599), 2602);
         assert_eq!(mode_wire_version(3, 2599), 2602);
         assert_eq!(mode_wire_version(7, 2599), 2602);
-        assert_eq!(mode_wire_version(99, 2602), 2602);
+        assert_eq!(mode_wire_version(99, 2625), 2625);
+    }
+
+    #[test]
+    fn test_v2625_db_response_with_aes_key() {
+        let key = [0x41u8; 16];
+        let pkt = build_version_response_payload(99, 2625, &key);
+
+        assert_eq!(pkt.opcode, Opcode::WizVersionCheck as u8);
+        assert_eq!(pkt.data.len(), 21);
+        assert_eq!(&pkt.data[..4], &[0x00, 0x41, 0x0A, 0x10]);
+        assert_eq!(&pkt.data[4..20], &key);
+        assert_eq!(pkt.data[20], 0x00);
     }
 
     #[test]
@@ -244,7 +259,7 @@ mod tests {
         assert_eq!(pkt.data.len(), 21);
 
         let mut r = PacketReader::new(&pkt.data);
-        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u8(), Some(0));
         assert_eq!(r.read_u16(), Some(2602));
         assert_eq!(r.read_u8(), Some(16));
 
@@ -267,7 +282,7 @@ mod tests {
         assert_eq!(pkt.data.len(), 20);
 
         let mut r = PacketReader::new(&pkt.data);
-        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u8(), Some(0));
         assert_eq!(r.read_u16(), Some(2602));
         assert_eq!(r.read_u8(), Some(16));
 
@@ -278,6 +293,22 @@ mod tests {
 
         assert_eq!(read_key, key);
         assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn all_prefixed_modes_select_normal_cloak_catalog() {
+        let key = [0x42; 16];
+        for mode in [0, 1, 2, 3, 6, 7, 99] {
+            let pkt = build_version_response_payload(mode, 2614, &key);
+            let mut expected = vec![0];
+            expected.extend_from_slice(&mode_wire_version(mode, 2614).to_le_bytes());
+            expected.push(16);
+            expected.extend_from_slice(&key);
+            if mode != 6 && mode != 7 {
+                expected.push(0);
+            }
+            assert_eq!(pkt.data.as_slice(), expected.as_slice(), "mode {mode}");
+        }
     }
 
     #[test]

@@ -78,6 +78,40 @@ impl<'a> QuestRepository<'a> {
         Ok(())
     }
 
+    /// Persist kill-driven progress monotonically.
+    ///
+    /// Monster deaths can enqueue several asynchronous writes in a very short
+    /// interval. `GREATEST` prevents an older write that finishes later from
+    /// rolling a quest counter or its completed state backwards.
+    pub async fn save_user_quest_progress(
+        &self,
+        char_name: &str,
+        quest_id: i16,
+        quest_state: i16,
+        kill_counts: [i16; 4],
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO user_quest (str_user_id, quest_id, quest_state, kill_count1, kill_count2, kill_count3, kill_count4)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (str_user_id, quest_id) DO UPDATE SET
+                quest_state = GREATEST(user_quest.quest_state, EXCLUDED.quest_state),
+                kill_count1 = GREATEST(user_quest.kill_count1, EXCLUDED.kill_count1),
+                kill_count2 = GREATEST(user_quest.kill_count2, EXCLUDED.kill_count2),
+                kill_count3 = GREATEST(user_quest.kill_count3, EXCLUDED.kill_count3),
+                kill_count4 = GREATEST(user_quest.kill_count4, EXCLUDED.kill_count4)",
+        )
+        .bind(char_name)
+        .bind(quest_id)
+        .bind(quest_state)
+        .bind(kill_counts[0])
+        .bind(kill_counts[1])
+        .bind(kill_counts[2])
+        .bind(kill_counts[3])
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Batch save or update all quest entries for a character in a single query.
     ///
     /// Each entry: (quest_id, quest_state, [kill_count1..4]).

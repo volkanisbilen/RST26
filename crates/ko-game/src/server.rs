@@ -71,6 +71,15 @@ impl GameServer {
             warn!("Failed to reset concurrent user count: {}", e);
         }
 
+        // Native v2615 panels are always available after a server restart.
+        // GM open/close commands remain effective for the current runtime.
+        let native_repo =
+            ko_db::repositories::native_events::NativeEventsRepository::new(&self.pool);
+        match native_repo.activate_all().await {
+            Ok(count) => info!("Native client events activated at startup: {} rows", count),
+            Err(e) => warn!("Failed to activate native client events at startup: {}", e),
+        }
+
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         info!("Listening on {}", self.config.bind_addr);
 
@@ -80,8 +89,44 @@ impl GameServer {
         // Spawn random boss monsters at startup.
         self.world.random_boss_system_load();
 
+        // Chaos Stone table loading only creates event state. Materialise the
+        // enabled stones now so Ronark Land/Ardream contain their rank-1 NPCs.
+        let chaos_stone_count =
+            crate::systems::chaos_stone_tick::spawn_initial_chaos_stones(&self.world);
+        info!("Initial Chaos Stones spawned: {}", chaos_stone_count);
+
         // Start background tick systems — collect handles for clean shutdown.
         let mut bg_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+        let pus_bind =
+            std::env::var("PUS_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
+        bg_tasks.push(crate::pus_web::start(
+            self.world.clone(),
+            self.pool.clone(),
+            pus_bind,
+        ));
+        info!("Power Up Store web service started");
+
+        // The admin panel is reachable directly at /jstkoadminpanel/.
+        let admin_bind =
+            std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".to_string());
+        bg_tasks.push(crate::admin_web::start(
+            self.world.clone(),
+            self.pool.clone(),
+            admin_bind,
+        ));
+        info!("Admin control panel service initialized");
+        bg_tasks.push(crate::admin_queue::start(self.world.clone(), self.pool.clone()));
+        info!("Admin command queue started");
+
+        // Party voice chat relay — separate, unencrypted socket (see
+        // docs/reverse-engineering/2625/VOICE_CHAT_PROTOCOL.md). The address told
+        // to clients (handler::voice_chat::relay_public_addr) is configured
+        // independently via VOICE_RELAY_PUBLIC_IP since this normally binds 0.0.0.0.
+        let voice_relay_bind =
+            std::env::var("VOICE_RELAY_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:15500".to_string());
+        bg_tasks.push(crate::systems::voice_relay::start(voice_relay_bind));
+        info!("Voice chat relay TCP server started");
 
         bg_tasks.push(crate::systems::regen::start_regen_task(self.world.clone()));
         info!("HP/MP regen tick started");
@@ -149,6 +194,14 @@ impl GameServer {
         ));
         info!("Timed notice system started");
 
+        bg_tasks.push(
+            crate::systems::letter_admin_notify::start_letter_admin_notify_task(
+                self.world.clone(),
+                self.pool.clone(),
+            ),
+        );
+        info!("Letter admin realtime notification started (500ms interval)");
+
         bg_tasks.push(crate::systems::pet_tick::start_pet_tick_task(
             self.world.clone(),
         ));
@@ -168,6 +221,13 @@ impl GameServer {
             crate::systems::chaos_stone_tick::start_chaos_stone_tick_task(self.world.clone()),
         );
         info!("Chaos stone respawn tick started (1s interval)");
+
+        bg_tasks.push(
+            crate::systems::zone_level_kick_tick::start_zone_level_kick_tick_task(
+                self.world.clone(),
+            ),
+        );
+        info!("ArdReam/Ronark Land Base level-bracket kick tick started (15s interval)");
 
         bg_tasks.push(crate::systems::daily_reset::start_daily_reset_task(
             self.world.clone(),
@@ -198,6 +258,15 @@ impl GameServer {
         ));
         info!("Zone online reward tick started (10s interval)");
 
+        // DB bot definitions are loaded above, but are materialised only by an
+        // explicit GM command. Starting thousands of bots automatically makes
+        // a development client unusable and differs from the reference flow.
+        info!(
+            templates = self.world.get_all_bot_templates().len(),
+            merchant_stalls = self.world.get_all_bot_merchant_data().len(),
+            active = self.world.bot_count(),
+            "DB bot definitions ready — manual GM spawn only"
+        );
         bg_tasks.push(crate::systems::bot_ai::start_bot_ai_task(
             self.world.clone(),
         ));
@@ -277,7 +346,10 @@ impl GameServer {
                             // allocate_session_id() internally registers in the rate limiter
                             let session_id = world.allocate_session_id();
                             tokio::spawn(async move {
+                                let stale_pool = pool.clone();
                                 let session = ClientSession::new(stream, addr, pool, session_id, world.clone());
+                                let stale_account = session.account_id().map(str::to_owned);
+                                let stale_character = session.character_id().map(str::to_owned);
                                 // Run in a nested spawn so panics are caught and
                                 // cleanup is guaranteed even if run() panics.
                                 let run_handle = tokio::spawn(async move {
@@ -293,8 +365,22 @@ impl GameServer {
                                         s.cleanup().await;
                                     }
                                     Err(join_err) => {
-                                        // Panic: session object lost — do minimal cleanup.
                                         error!("[{}] Session panicked: {}", addr, join_err);
+                                        if let Some(account_id) = stale_account.as_deref() {
+                                            let repo = ko_db::repositories::account::AccountRepository::new(&stale_pool);
+                                            if let Err(e) = repo.set_offline(account_id).await {
+                                                warn!("[{}] Failed to clear account after panic: {}", addr, e);
+                                            }
+                                        }
+                                        if let Some(character_id) = stale_character.as_deref() {
+                                            if let Err(e) = sqlx::query("DELETE FROM currentuser WHERE lower(str_char_id)=lower($1)")
+                                                .bind(character_id)
+                                                .execute(&stale_pool)
+                                                .await
+                                            {
+                                                warn!("[{}] Failed to clear currentuser after panic: {}", addr, e);
+                                            }
+                                        }
                                         world.unregister_session(session_id);
                                     }
                                 }

@@ -173,4 +173,7 @@ pub struct UserAchieveSummaryRow {
     pub cover_id: i16,
     /// Equipped skill title achievement ID.
     pub skill_id: i16,
+    /// ACHIEVE_TITLE row the player selected (stat bonus row).
+    #[sqlx(default)]
+    pub skill_title_row: i16,
 }

@@ -14,6 +14,9 @@
 use ko_protocol::{Opcode, Packet, PacketReader};
 
 use crate::session::{ClientSession, SessionState};
+use crate::world::types::UserAchieveInfo;
+use crate::world::WorldState;
+use crate::zone::SessionId;
 
 #[repr(u8)]
 #[allow(dead_code)]
@@ -42,6 +45,540 @@ enum AchieveStatus {
     Completed = 5,
 }
 
+/// Populate the per-character map from the complete client-backed master table.
+/// The original GameServer creates one entry for every ACHIEVE_main row when a
+/// character has no saved blob; missing rows are also added after client table updates.
+pub fn initialize_achievement_map(world: &WorldState, sid: SessionId) -> usize {
+    let definitions = world.all_achieve_main();
+    let mut inserted = 0usize;
+    world.update_session(sid, |h| {
+        for definition in &definitions {
+            let id = definition.s_index as u16;
+            h.achieve_map.entry(id).or_insert_with(|| {
+                inserted += 1;
+                UserAchieveInfo {
+                    status: if definition.byte2 == 41 || definition.byte2 == 42 {
+                        AchieveStatus::ChallengeIncomplete as u8
+                    } else {
+                        AchieveStatus::Incomplete as u8
+                    },
+                    count: [0, 0],
+                }
+            });
+        }
+        h.achieve_login_time = unix_time();
+    });
+    inserted
+}
+
+/// GM support: finish every v2615 achievement for an online character.
+/// Returns the number of entries changed from incomplete to finished.
+pub fn unlock_all_achievements(world: &WorldState, sid: SessionId) -> usize {
+    initialize_achievement_map(world, sid);
+    let mut definitions = world.all_achieve_main();
+    definitions.sort_by_key(|row| row.s_index);
+    let mut changed_ids = Vec::new();
+    world.update_session(sid, |h| {
+        for definition in &definitions {
+            let id = definition.s_index as u16;
+            let Some(info) = h.achieve_map.get_mut(&id) else {
+                continue;
+            };
+            if is_finished(info.status) {
+                continue;
+            }
+            info.status = AchieveStatus::Finished as u8;
+            changed_ids.push(id);
+        }
+        h.achieve_summary.total_medal = definitions
+            .iter()
+            .filter(|row| {
+                h.achieve_map
+                    .get(&(row.s_index as u16))
+                    .is_some_and(|i| is_finished(i.status))
+            })
+            .map(|row| row.point.max(0) as u32)
+            .fold(0u32, u32::saturating_add);
+        for id in changed_ids.iter().rev().take(3).rev() {
+            h.achieve_summary.recent_achieve.rotate_right(1);
+            h.achieve_summary.recent_achieve[0] = *id;
+        }
+    });
+
+    for id in &changed_ids {
+        let mut pkt = Packet::new(Opcode::WizUserAchieve as u8);
+        pkt.write_u8(AchieveOpcode::Success as u8);
+        pkt.write_u16(*id);
+        pkt.write_u8(AchieveStatus::Finished as u8);
+        world.send_to_session_owned(sid, pkt);
+    }
+
+    if let (Some(pool), Some(character_name)) =
+        (world.db_pool().cloned(), world.get_session_name(sid))
+    {
+        let entries = world
+            .with_session(sid, |h| {
+                h.achieve_map
+                    .iter()
+                    .map(|(&id, info)| {
+                        (
+                            id as i32,
+                            info.status as i16,
+                            info.count[0] as i32,
+                            info.count[1] as i32,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        tokio::spawn(async move {
+            let repo = ko_db::repositories::achieve::AchieveRepository::new(&pool);
+            if let Err(error) = repo
+                .save_user_achieves_batch(&character_name, &entries)
+                .await
+            {
+                tracing::error!(character = %character_name, %error,
+                    "GM achievement unlock batch could not be persisted");
+            }
+        });
+    }
+    changed_ids.len()
+}
+
+fn unix_time() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32
+}
+
+fn is_finished(status: u8) -> bool {
+    status == AchieveStatus::Finished as u8 || status == AchieveStatus::Completed as u8
+}
+
+fn persist_achievement(world: &WorldState, sid: SessionId, id: u16) {
+    let entry = world
+        .with_session(sid, |h| h.achieve_map.get(&id).cloned())
+        .flatten();
+    let (Some(entry), Some(pool), Some(character_name)) =
+        (entry, world.db_pool().cloned(), world.get_session_name(sid))
+    else {
+        return;
+    };
+    tokio::spawn(async move {
+        let repo = ko_db::repositories::achieve::AchieveRepository::new(&pool);
+        if let Err(error) = repo
+            .save_user_achieve(
+                &character_name,
+                id as i32,
+                entry.status as i16,
+                entry.count[0] as i32,
+                entry.count[1] as i32,
+            )
+            .await
+        {
+            tracing::error!(character = %character_name, achievement_id = id, %error,
+                "Failed to persist achievement progress");
+        }
+    });
+}
+
+/// Mark an achievement finished exactly once and apply all summary side effects.
+fn finish_achievement(world: &WorldState, sid: SessionId, id: u16) -> bool {
+    let Some(main) = world.achieve_main(id as i32) else {
+        return false;
+    };
+    let mut changed = false;
+    world.update_session(sid, |h| {
+        let Some(info) = h.achieve_map.get_mut(&id) else {
+            return;
+        };
+        if is_finished(info.status) {
+            return;
+        }
+        info.status = AchieveStatus::Finished as u8;
+        h.achieve_summary.recent_achieve[2] = h.achieve_summary.recent_achieve[1];
+        h.achieve_summary.recent_achieve[1] = h.achieve_summary.recent_achieve[0];
+        h.achieve_summary.recent_achieve[0] = id;
+        h.achieve_summary.total_medal = h
+            .achieve_summary
+            .total_medal
+            .saturating_add(main.point.max(0) as u32);
+        changed = true;
+    });
+    if !changed {
+        return false;
+    }
+    let mut pkt = Packet::new(Opcode::WizUserAchieve as u8);
+    pkt.write_u8(AchieveOpcode::Success as u8);
+    pkt.write_u16(id);
+    pkt.write_u8(AchieveStatus::Finished as u8);
+    world.send_to_session_owned(sid, pkt);
+    persist_achievement(world, sid, id);
+    evaluate_achievement_dependencies(world, sid);
+    true
+}
+
+fn achievement_is_finished(world: &WorldState, sid: SessionId, id: u16) -> bool {
+    world
+        .with_session(sid, |h| {
+            h.achieve_map
+                .get(&id)
+                .is_some_and(|i| is_finished(i.status))
+        })
+        .unwrap_or(false)
+}
+
+/// Evaluate ACHIEVE_com rows. Repeats because one composite may unlock another.
+pub fn evaluate_achievement_dependencies(world: &WorldState, sid: SessionId) {
+    loop {
+        let mut newly_finished = Vec::new();
+        for row in world.all_achieve_com() {
+            let id = row.s_index as u16;
+            if achievement_is_finished(world, sid, id) {
+                continue;
+            }
+            let requirement_met = match row.r#type {
+                1 => world
+                    .with_session(sid, |h| {
+                        let done = |qid: i32| {
+                            qid <= 0
+                                || h.quests
+                                    .get(&(qid as u16))
+                                    .is_some_and(|q| q.quest_state == 2)
+                        };
+                        done(row.req1) && done(row.req2)
+                    })
+                    .unwrap_or(false),
+                2 => {
+                    achievement_is_finished(world, sid, row.req1 as u16)
+                        && (row.req2 <= 0 || achievement_is_finished(world, sid, row.req2 as u16))
+                }
+                _ => false,
+            };
+            if requirement_met {
+                newly_finished.push(id);
+            }
+        }
+        if newly_finished.is_empty() {
+            break;
+        }
+        // Inline completion prevents recursive evaluation from nesting forever.
+        for id in newly_finished {
+            let Some(main) = world.achieve_main(id as i32) else {
+                continue;
+            };
+            let mut changed = false;
+            world.update_session(sid, |h| {
+                let Some(info) = h.achieve_map.get_mut(&id) else {
+                    return;
+                };
+                if is_finished(info.status) {
+                    return;
+                }
+                info.status = AchieveStatus::Finished as u8;
+                info.count[0] = 1;
+                h.achieve_summary.recent_achieve.rotate_right(1);
+                h.achieve_summary.recent_achieve[0] = id;
+                h.achieve_summary.total_medal = h
+                    .achieve_summary
+                    .total_medal
+                    .saturating_add(main.point.max(0) as u32);
+                changed = true;
+            });
+            if changed {
+                let mut pkt = Packet::new(Opcode::WizUserAchieve as u8);
+                pkt.write_u8(AchieveOpcode::Success as u8);
+                pkt.write_u16(id);
+                pkt.write_u8(AchieveStatus::Finished as u8);
+                world.send_to_session_owned(sid, pkt);
+                persist_achievement(world, sid, id);
+            }
+        }
+    }
+}
+
+pub fn on_quest_completed(world: &WorldState, sid: SessionId) {
+    evaluate_achievement_dependencies(world, sid);
+}
+
+/// Advance exact-monster, consecutive-monster and Ronark monster achievements.
+pub fn on_monster_killed(world: &WorldState, sid: SessionId, npc_sid: u16, zone_id: u16) {
+    let now = unix_time();
+    for row in world.all_achieve_monster() {
+        let id = row.s_index as u16;
+        let Some(main) = world.achieve_main(row.s_index) else {
+            continue;
+        };
+        if main.zone_id > 0 && main.zone_id as u16 != zone_id {
+            continue;
+        }
+        if main.req_time > 0
+            && !world
+                .with_session(sid, |h| {
+                    h.achieve_timed
+                        .get(&id)
+                        .is_some_and(|expiration| *expiration >= now)
+                })
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        let groups = [
+            (
+                [
+                    row.monster1_1,
+                    row.monster1_2,
+                    row.monster1_3,
+                    row.monster1_4,
+                ],
+                row.mon_count1,
+            ),
+            (
+                [
+                    row.monster2_1,
+                    row.monster2_2,
+                    row.monster2_3,
+                    row.monster2_4,
+                ],
+                row.mon_count2,
+            ),
+        ];
+        for (group, (monsters, required)) in groups.iter().enumerate() {
+            if *required <= 0 || !monsters.contains(&(npc_sid as i32)) {
+                continue;
+            }
+            let mut changed = false;
+            let mut complete = false;
+            world.update_session(sid, |h| {
+                let Some(info) = h.achieve_map.get_mut(&id) else {
+                    return;
+                };
+                if is_finished(info.status) {
+                    return;
+                }
+                info.count[group] = info.count[group].saturating_add(1).min(*required as u32);
+                complete = info.count[0] >= row.mon_count1.max(0) as u32
+                    && info.count[1] >= row.mon_count2.max(0) as u32;
+                changed = true;
+            });
+            if changed {
+                persist_achievement(world, sid, id);
+            }
+            if complete {
+                finish_achievement(world, sid, id);
+            }
+        }
+    }
+    // Normal type 8: defeat monsters without dying.
+    for row in world
+        .all_achieve_normal()
+        .into_iter()
+        .filter(|r| r.r#type == 8)
+    {
+        advance_single_counter(
+            world,
+            sid,
+            row.s_index as u16,
+            row.count.max(0) as u32,
+            zone_id,
+        );
+    }
+    // War type 20: monster kills in the row's configured PK zone.
+    for row in world
+        .all_achieve_war()
+        .into_iter()
+        .filter(|r| r.r#type == 20)
+    {
+        advance_single_counter(
+            world,
+            sid,
+            row.s_index as u16,
+            row.s_count.max(0) as u32,
+            zone_id,
+        );
+    }
+}
+
+/// Advance enemy-user defeat achievements (type 1), respecting ACHIEVE_main.ZoneID.
+pub fn on_enemy_user_killed(world: &WorldState, sid: SessionId, zone_id: u16) {
+    for row in world
+        .all_achieve_war()
+        .into_iter()
+        .filter(|r| r.r#type == 1)
+    {
+        advance_single_counter(
+            world,
+            sid,
+            row.s_index as u16,
+            row.s_count.max(0) as u32,
+            zone_id,
+        );
+    }
+}
+
+/// Advance event-result war achievements such as Juraid win (6) and Draki finish (21).
+pub fn on_war_event_result(world: &WorldState, sid: SessionId, war_type: i16) {
+    let zone_id = world.get_position(sid).map(|p| p.zone_id).unwrap_or(0);
+    for row in world
+        .all_achieve_war()
+        .into_iter()
+        .filter(|row| row.r#type == war_type)
+    {
+        advance_single_counter(
+            world,
+            sid,
+            row.s_index as u16,
+            row.s_count.max(0) as u32,
+            zone_id,
+        );
+    }
+}
+
+/// Reset the progress for normal type 8 ("defeat monsters without dying").
+pub fn on_player_died(world: &WorldState, sid: SessionId) {
+    for row in world
+        .all_achieve_normal()
+        .into_iter()
+        .filter(|row| row.r#type == 8)
+    {
+        let id = row.s_index as u16;
+        let mut changed = false;
+        world.update_session(sid, |h| {
+            if let Some(info) = h.achieve_map.get_mut(&id) {
+                if !is_finished(info.status) && info.count[0] != 0 {
+                    info.count[0] = 0;
+                    changed = true;
+                }
+            }
+        });
+        if changed {
+            persist_achievement(world, sid, id);
+        }
+    }
+}
+
+fn advance_single_counter(
+    world: &WorldState,
+    sid: SessionId,
+    id: u16,
+    required: u32,
+    zone_id: u16,
+) {
+    if required == 0 {
+        return;
+    }
+    let Some(main) = world.achieve_main(id as i32) else {
+        return;
+    };
+    if main.zone_id > 0 && main.zone_id as u16 != zone_id {
+        return;
+    }
+    let mut changed = false;
+    let mut complete = false;
+    world.update_session(sid, |h| {
+        let Some(info) = h.achieve_map.get_mut(&id) else {
+            return;
+        };
+        if is_finished(info.status) {
+            return;
+        }
+        info.count[0] = info.count[0].saturating_add(1).min(required);
+        complete = info.count[0] >= required;
+        changed = true;
+    });
+    if changed {
+        persist_achievement(world, sid, id);
+    }
+    if complete {
+        finish_achievement(world, sid, id);
+    }
+}
+
+/// Atomically consume an item cost and finish an achievement from a Lua NPC.
+///
+/// Return codes are intentionally numeric for Lua:
+/// 0=invalid/failure, 1=success, 2=already completed, 3=insufficient items.
+pub fn exchange_item_for_achievement(
+    world: &WorldState,
+    sid: SessionId,
+    item_id: u32,
+    item_count: u16,
+    achievement_id: u16,
+) -> i32 {
+    if item_count == 0 || world.achieve_main(achievement_id as i32).is_none() {
+        tracing::warn!(
+            "Achievement exchange rejected: invalid definition achievement_id={} item_id={} count={} sid={}",
+            achievement_id,
+            item_id,
+            item_count,
+            sid
+        );
+        return 0;
+    }
+
+    let existing_status = world
+        .with_session(sid, |h| {
+            h.achieve_map.get(&achievement_id).map(|entry| entry.status)
+        })
+        .flatten();
+    if existing_status.is_some_and(|status| status >= AchieveStatus::Finished as u8) {
+        return 2;
+    }
+
+    let owned_count: u32 = world
+        .get_inventory(sid)
+        .iter()
+        .filter(|slot| slot.item_id == item_id)
+        .map(|slot| slot.count as u32)
+        .sum();
+    if owned_count < item_count as u32 {
+        return 3;
+    }
+    if !world.rob_item(sid, item_id, item_count) {
+        tracing::warn!(
+            "Achievement exchange failed to consume item_id={} count={} achievement_id={} sid={}",
+            item_id,
+            item_count,
+            achievement_id,
+            sid
+        );
+        return 0;
+    }
+
+    world.update_session(sid, |h| {
+        let info = h
+            .achieve_map
+            .entry(achievement_id)
+            .or_insert(UserAchieveInfo {
+                status: AchieveStatus::Incomplete as u8,
+                count: [0, 0],
+            });
+        info.count[0] = item_count as u32;
+    });
+    if !finish_achievement(world, sid, achievement_id) {
+        // Consumption succeeded, so a failure here means the definition/session
+        // disappeared concurrently. Log it explicitly instead of reporting success.
+        tracing::error!(
+            sid,
+            achievement_id,
+            item_id,
+            item_count,
+            "Achievement exchange consumed items but could not finish achievement"
+        );
+        return 0;
+    }
+
+    tracing::info!(
+        "Achievement exchange completed: sid={} achievement_id={} item_id={} item_count={}",
+        sid,
+        achievement_id,
+        item_id,
+        item_count
+    );
+    1
+}
+
 /// Handle WIZ_USER_ACHIEVE from the client.
 pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
@@ -55,6 +592,15 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         Some(v) => v,
         None => return Ok(()),
     };
+
+    if (16..=19).contains(&sub_opcode) {
+        tracing::warn!(
+            sid = session.session_id(),
+            sub_opcode,
+            data = ?pkt.data,
+            "WIZ_USER_ACHIEVE title packet"
+        );
+    }
 
     match sub_opcode {
         2 => handle_gift_request(session, &mut r).await,
@@ -543,19 +1089,44 @@ async fn handle_skill_title(
     let sid = session.session_id();
 
     // Check achievement status
-    let status_ok = world.with_session(sid, |h| {
-        h.achieve_map.get(&cover_id).map(|info| {
-            info.status == AchieveStatus::Finished as u8
-                || info.status == AchieveStatus::Completed as u8
-        })
-    });
-
+    let finished = |h: &crate::world::SessionHandle, id: u16| {
+        h.achieve_map
+            .get(&id)
+            .map(|info| {
+                info.status == AchieveStatus::Finished as u8
+                    || info.status == AchieveStatus::Completed as u8
+            })
+            .unwrap_or(false)
+    };
+    let status_ok = world.with_session(sid, |h| finished(h, cover_id));
+    // Client contract (confirmed from packets): `cover_id` is the ACHIEVE_MAIN id, while
+    // `skill_id` is the ACHIEVE_TITLE row of the ticked title (its stat bonuses). Only when
+    // no such row exists is it read as an achievement id and resolved through its title.
+    let skill_is_achievement = false;
     let main_entry = world.achieve_main(cover_id as i32);
-    let title_entry = main_entry
-        .as_ref()
-        .and_then(|m| world.achieve_title(m.title_id as i32));
+    let title_entry = world.achieve_title(skill_id as i32).or_else(|| {
+        let finished_skill = world
+            .with_session(sid, |h| finished(h, skill_id))
+            .unwrap_or(false);
+        if finished_skill {
+            world
+                .achieve_main(skill_id as i32)
+                .and_then(|m| world.achieve_title(m.title_id as i32))
+        } else {
+            None
+        }
+    });
+    tracing::warn!(
+        sid,
+        cover_id,
+        skill_id,
+        skill_is_achievement,
+        status_ok = ?status_ok,
+        title_row = ?title_entry.as_ref().map(|t| t.s_index),
+        "skill title equip request"
+    );
 
-    if !status_ok.flatten().unwrap_or(false) || main_entry.is_none() || title_entry.is_none() {
+    if !status_ok.unwrap_or(false) || main_entry.is_none() || title_entry.is_none() {
         // Reset skill title
         world.update_session(sid, |h| {
             h.achieve_summary.skill_title = 0;
@@ -582,6 +1153,8 @@ async fn handle_skill_title(
     world.update_session(sid, |h| {
         h.achieve_summary.skill_id = cover_id;
         h.achieve_summary.skill_title = main.title_id as u16;
+        h.achieve_summary.skill_title_row = title.s_index as u16;
+        h.achieve_title_idx = title.s_index;
         // Apply stat bonuses
         h.achieve_stat_bonuses = [
             title.str,
@@ -604,6 +1177,16 @@ async fn handle_skill_title(
 
     // Recalculate stats with new title bonuses
     world.set_user_ability(sid);
+    world.send_item_move_refresh(sid);
+    // the client rebuilds its own title display after the answer: send the stats once more
+    {
+        let w = world.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            w.set_user_ability(sid);
+            w.send_item_move_refresh(sid);
+        });
+    }
     Ok(())
 }
 
@@ -637,6 +1220,8 @@ async fn handle_skill_title_reset(session: &mut ClientSession) -> anyhow::Result
     world.update_session(sid, |h| {
         h.achieve_summary.skill_title = 0;
         h.achieve_summary.skill_id = 0;
+        h.achieve_summary.skill_title_row = 0;
+        h.achieve_title_idx = 0;
         h.achieve_stat_bonuses = [0i16; 7];
     });
 
@@ -648,6 +1233,16 @@ async fn handle_skill_title_reset(session: &mut ClientSession) -> anyhow::Result
 
     // Recalculate stats after clearing title bonuses
     world.set_user_ability(sid);
+    world.send_item_move_refresh(sid);
+    // the client rebuilds its own title display after the answer: send the stats once more
+    {
+        let w = world.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            w.set_user_ability(sid);
+            w.send_item_move_refresh(sid);
+        });
+    }
     Ok(())
 }
 
@@ -658,10 +1253,7 @@ async fn handle_skill_title_reset(session: &mut ClientSession) -> anyhow::Result
 /// Send completed achievement notifications on game entry.
 /// Sniffer-verified (session 3, seq 38-39): original server sends
 /// `[sub=1][achieve_id:u16][status:u8]` for each completed achievement.
-pub fn send_achieve_status_on_login(
-    world: &crate::world::WorldState,
-    sid: crate::zone::SessionId,
-) {
+pub fn send_achieve_status_on_login(world: &crate::world::WorldState, sid: crate::zone::SessionId) {
     let achieves: Vec<(u16, u8)> = world
         .with_session(sid, |h| {
             h.achieve_map
@@ -767,6 +1359,7 @@ mod tests {
             cover_title: 0,
             skill_id: 0,
             skill_title: 0,
+            skill_title_row: 0,
         };
         let type_counts = (5u16, 3u16, 2u16, 1u16, 0u16);
         let pkt = build_summary_packet(&summary, type_counts);

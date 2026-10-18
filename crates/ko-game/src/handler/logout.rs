@@ -40,6 +40,11 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
     let char_id = session.character_id().unwrap_or("").to_string();
     let account_id = session.account_id().unwrap_or("").to_string();
 
+    // ── 0. Fun Class: give the character its own identity back BEFORE it is saved ──
+    crate::handler::dungeon_defence::restore_on_disconnect(&world, sid);
+            world.manes_survival_manager.leave_event(&world, sid, false);
+    crate::handler::cinderella::cinderella_logout(&world, sid, true);
+
     // ── 1. Save character stats + position to DB ────────────────────
     if !char_id.is_empty() {
         // Save stats (hp, mp, exp, gold, loyalty, loyalty_monthly, manner_point)
@@ -156,7 +161,7 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
     // IMPORTANT: This save MUST complete before the player can re-select the
     // character, otherwise the re-login load may see stale/empty DB data.
     if !char_id.is_empty() {
-        let inventory = world.get_inventory(sid);
+        let inventory = world.get_persistent_inventory(sid);
         if !inventory.is_empty() {
             let non_empty_count = inventory.iter().filter(|s| s.item_id != 0).count();
             debug!(
@@ -476,6 +481,7 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
                         ],
                         summary.cover_id as i16,
                         summary.skill_id as i16,
+                        summary.skill_title_row as i16,
                     )
                     .await
                 {
@@ -913,6 +919,8 @@ pub async fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result
     }
 
     // ── 7c. Cinderella War cleanup ──────────────────────────────────
+    crate::handler::dungeon_defence::restore_on_disconnect(&world, sid);
+            world.manes_survival_manager.leave_event(&world, sid, false);
     crate::handler::cinderella::cinderella_logout(&world, sid, true);
 
     // ── 7d. Wanted event cleanup ────────────────────────────────────
@@ -2032,7 +2040,9 @@ mod tests {
         let invite = world.with_session(1, |h| h.pending_knights_invite);
         assert_eq!(invite, Some(42));
         world.unregister_session(1);
-        assert!(world.with_session(1, |h| h.pending_knights_invite).is_none());
+        assert!(world
+            .with_session(1, |h| h.pending_knights_invite)
+            .is_none());
     }
 
     /// Target ID defaults to 0 on fresh session.

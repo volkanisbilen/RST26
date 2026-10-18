@@ -17,20 +17,194 @@
 
 use std::collections::HashMap;
 
+use ko_db::models::MonsterJuraidRespawnRow;
+
 use crate::systems::event_room::{
     EventRoom, EventRoomManager, EventUser, RoomState, TempleEventType, MAX_ROOM_USERS_PER_NATION,
 };
+use crate::world::WorldState;
 
 pub use crate::world::types::ZONE_JURAID;
 
 /// Default maximum rooms for Juraid.
-pub const DEFAULT_JURAID_ROOMS: u8 = 10;
+/// The 2615 database contains families 21..28 (eight instanced rooms).
+pub const DEFAULT_JURAID_ROOMS: u8 = 8;
 
 /// Number of bridge gates in Juraid Mountain.
 pub const NUM_BRIDGES: usize = 3;
 
+/// Each strong monster death releases five lower monsters.
+/// This matches the C++ `HandleJuraidKill()` implementation, which summons
+/// `sCount = 5`; four children leave each side short of the documented
+/// 20/40/60 bridge thresholds and prevent the final Deva room from opening.
+pub const ROOM_CHILD_MONSTER_COUNT: u16 = 5;
+
+/// Monster kill totals required to open the three room bridges.
+pub const ROOM_BRIDGE_KILL_THRESHOLDS: [i32; NUM_BRIDGES] = [20, 40, 60];
+pub const ROOM_MAIN_KILL_THRESHOLDS: [u16; NUM_BRIDGES] = [4, 8, 12];
+
 /// Bridge open delays in seconds from event start.
-pub const BRIDGE_OPEN_DELAYS: [u64; NUM_BRIDGES] = [1200, 1800, 2400];
+// The event lasts 35 minutes and each section has a documented 10-minute
+// fallback. 20/30/40 made the last fallback occur after the event had ended.
+pub const BRIDGE_OPEN_DELAYS: [u64; NUM_BRIDGES] = [600, 1200, 1800];
+
+pub const DEVA_BIRD_SID: u16 = 8106;
+pub const BRIDGE_SID: u16 = 8110;
+// KO_DATABASE_SERVER_001 K_MONSTER2369 contains the actual nation monument
+// models as 9702/9703 (PIDs 14003/14004).  8113/8114 are quest/exchange IDs;
+// the earlier synthetic templates reused bridge PID 6700 and could therefore
+// never render as the two Deva-room monuments.
+pub const KARUS_MONUMENT_SID: u16 = 9702;
+pub const ELMORAD_MONUMENT_SID: u16 = 9703;
+pub const JURAID_CHILD_SIDS: [u16; 3] = [2152, 8007, 1772];
+pub const MONUMENT_RESPAWN_SECS: u64 = 60;
+/// Deva is at (510, 510); place both objectives 16 metres to either side so
+/// they remain inside the final combat area instead of the old 48m offsets.
+pub const KARUS_MONUMENT_POSITION: (f32, f32) = (494.0, 510.0);
+pub const ELMORAD_MONUMENT_POSITION: (f32, f32) = (526.0, 510.0);
+
+pub const SUMMON_JURAID_MAIN: u8 = 2;
+pub const SUMMON_JURAID_CHILD: u8 = 3;
+pub const SUMMON_JURAID_DEVA: u8 = 4;
+pub const SUMMON_JURAID_MONUMENT: u8 = 5;
+pub const SUMMON_JURAID_BRIDGE: u8 = 6;
+
+pub const GEM_GREEN: u32 = 389201000;
+pub const GEM_BLUE: u32 = 389199000;
+pub const GEM_YELLOW: u32 = 389198000;
+pub const GEM_RED: u32 = 389197000;
+pub const GEM_SILVERY: u32 = 389196000;
+pub const GEM_FORTIFIED_STERLING: u32 = 811137000;
+
+pub fn is_deva_bird(sid: u16) -> bool {
+    sid == DEVA_BIRD_SID
+}
+
+pub fn is_bridge(sid: u16) -> bool {
+    sid == BRIDGE_SID
+}
+
+pub fn is_juraid_monument(sid: u16) -> bool {
+    sid == KARUS_MONUMENT_SID || sid == ELMORAD_MONUMENT_SID
+}
+
+pub fn monument_nation(sid: u16) -> u8 {
+    match sid {
+        KARUS_MONUMENT_SID => 1,
+        ELMORAD_MONUMENT_SID => 2,
+        _ => 0,
+    }
+}
+
+/// Whether killing this monument grants one scoreboard point. Objectives are
+/// enemy-only, and the design document permits scoring only while tied or
+/// trailing.
+pub fn can_monument_score(
+    killer_nation: u8,
+    monument_sid: u16,
+    karus_score: i32,
+    elmorad_score: i32,
+) -> bool {
+    let owner = monument_nation(monument_sid);
+    if owner == 0 || owner == killer_nation {
+        return false;
+    }
+    match killer_nation {
+        1 => karus_score <= elmorad_score,
+        2 => elmorad_score <= karus_score,
+        _ => false,
+    }
+}
+
+pub fn is_wave_monster(row: &MonsterJuraidRespawnRow) -> bool {
+    row.b_type == 0
+        && !is_deva_bird(row.s_sid as u16)
+        && !is_bridge(row.s_sid as u16)
+        && !is_juraid_monument(row.s_sid as u16)
+}
+
+pub fn is_main_monster(world: &WorldState, room_id: u8, sid: u16) -> bool {
+    let family = 20 + room_id as i16;
+    let rows = world.get_juraid_respawn_family(family);
+    rows.iter()
+        .any(|row| is_wave_monster(row) && row.s_sid as u16 == sid)
+}
+
+pub fn spawn_deva_bird(world: &WorldState, room_id: u8) -> usize {
+    let family = 20 + room_id as i16;
+    let rows = world.get_juraid_respawn_family(family);
+    let (x, z) = rows
+        .iter()
+        .find(|row| row.s_sid as u16 == DEVA_BIRD_SID)
+        .map(|row| (row.x as f32, row.z as f32))
+        // Old databases may have the Deva template but no respawn-list row.
+        .unwrap_or((510.0, 510.0));
+
+    world
+        .spawn_event_npc_ex(
+            DEVA_BIRD_SID,
+            true,
+            ZONE_JURAID,
+            x,
+            z,
+            1,
+            room_id as u16,
+            SUMMON_JURAID_DEVA,
+        )
+        .len()
+}
+
+pub fn spawn_monument(world: &WorldState, room_id: u8, nation: u8) -> usize {
+    let (sid, x, z) = match nation {
+        1 => (
+            KARUS_MONUMENT_SID,
+            KARUS_MONUMENT_POSITION.0,
+            KARUS_MONUMENT_POSITION.1,
+        ),
+        2 => (
+            ELMORAD_MONUMENT_SID,
+            ELMORAD_MONUMENT_POSITION.0,
+            ELMORAD_MONUMENT_POSITION.1,
+        ),
+        _ => return 0,
+    };
+    world
+        .spawn_event_npc_ex(
+            sid,
+            true,
+            ZONE_JURAID,
+            x,
+            z,
+            1,
+            room_id as u16,
+            SUMMON_JURAID_MONUMENT,
+        )
+        .len()
+}
+
+pub fn spawn_deva_room_monuments(world: &WorldState, room_id: u8) -> usize {
+    spawn_monument(world, room_id, 1) + spawn_monument(world, room_id, 2)
+}
+
+pub fn juraid_winner_gem(level: u8, rebirth_level: u8) -> Option<u32> {
+    match level {
+        75 | 76 => Some(GEM_GREEN),
+        77 | 78 => Some(GEM_BLUE),
+        79 | 80 => Some(GEM_YELLOW),
+        81 | 82 => Some(GEM_RED),
+        83 if rebirth_level >= 6 => Some(GEM_FORTIFIED_STERLING),
+        83 => Some(GEM_SILVERY),
+        _ => None,
+    }
+}
+
+pub fn juraid_reward_gem_count(is_winner: bool) -> u16 {
+    if is_winner {
+        10
+    } else {
+        3
+    }
+}
 
 // ── Juraid Bridge State ─────────────────────────────────────────────────────
 
@@ -46,6 +220,12 @@ pub struct JuraidBridgeState {
     pub karus_bridge_npcs: [u32; NUM_BRIDGES],
     /// NPC IDs for El Morad bridge gates (0 = no NPC).
     pub elmorad_bridge_npcs: [u32; NUM_BRIDGES],
+    /// Legacy C++ progression counters. A gate opens at main/sub pairs
+    /// 4/20, 8/40 and 12/60 for each nation independently.
+    pub karus_main_kills: u16,
+    pub karus_sub_kills: u16,
+    pub elmorad_main_kills: u16,
+    pub elmorad_sub_kills: u16,
 }
 
 impl JuraidBridgeState {
@@ -56,6 +236,10 @@ impl JuraidBridgeState {
             elmorad_bridges: [false; NUM_BRIDGES],
             karus_bridge_npcs: [0; NUM_BRIDGES],
             elmorad_bridge_npcs: [0; NUM_BRIDGES],
+            karus_main_kills: 0,
+            karus_sub_kills: 0,
+            elmorad_main_kills: 0,
+            elmorad_sub_kills: 0,
         }
     }
 
@@ -413,16 +597,22 @@ pub fn determine_all_winners(erm: &EventRoomManager, juraid: &JuraidManager) -> 
     let mut results = Vec::with_capacity(room_ids.len());
 
     for room_id in room_ids {
-        let juraid_state = match juraid.get_room_state(room_id) {
-            Some(s) => s,
-            None => continue,
-        };
-
         if let Some(mut room) = erm.get_room_mut(TempleEventType::JuraidMountain, room_id) {
             if room.finished || room.state != RoomState::Running {
                 continue;
             }
-            let winner = determine_winner(juraid_state);
+            let winner = if room.winner_nation != 0 {
+                room.winner_nation
+            } else if room.karus_score > room.elmorad_score {
+                1
+            } else if room.elmorad_score > room.karus_score {
+                2
+            } else {
+                juraid
+                    .get_room_state(room_id)
+                    .map(determine_winner)
+                    .unwrap_or(0)
+            };
             room.winner_nation = winner;
             room.finish_packet_sent = true;
             results.push((room_id, winner));
@@ -674,24 +864,24 @@ mod tests {
         juraid.start_bridge_timer(10000);
 
         // Before any bridge opens
-        let opened = check_bridge_timers(&mut juraid, 10000 + 1199);
+        let opened = check_bridge_timers(&mut juraid, 10000 + 599);
         assert!(opened.is_empty());
 
-        // Bridge 0 opens at +1200
-        let opened = check_bridge_timers(&mut juraid, 10000 + 1200);
+        // Bridge 0 opens at +600
+        let opened = check_bridge_timers(&mut juraid, 10000 + 600);
         assert_eq!(opened, vec![0]);
         assert!(juraid.bridge_checks[0]);
 
         // Bridge 0 already opened, no re-trigger
-        let opened = check_bridge_timers(&mut juraid, 10000 + 1200);
+        let opened = check_bridge_timers(&mut juraid, 10000 + 600);
         assert!(opened.is_empty());
 
-        // Bridge 1 opens at +1800
-        let opened = check_bridge_timers(&mut juraid, 10000 + 1800);
+        // Bridge 1 opens at +1200
+        let opened = check_bridge_timers(&mut juraid, 10000 + 1200);
         assert_eq!(opened, vec![1]);
 
-        // Bridge 2 opens at +2400
-        let opened = check_bridge_timers(&mut juraid, 10000 + 2400);
+        // Bridge 2 opens at +1800
+        let opened = check_bridge_timers(&mut juraid, 10000 + 1800);
         assert_eq!(opened, vec![2]);
 
         // All opened, nothing more
@@ -885,8 +1075,29 @@ mod tests {
     fn test_constants() {
         assert_eq!(ZONE_JURAID, 87);
         assert_eq!(NUM_BRIDGES, 3);
-        assert_eq!(BRIDGE_OPEN_DELAYS, [1200, 1800, 2400]);
-        assert_eq!(DEFAULT_JURAID_ROOMS, 10);
+        assert_eq!(BRIDGE_OPEN_DELAYS, [600, 1200, 1800]);
+        assert_eq!(DEFAULT_JURAID_ROOMS, 8);
+        assert_eq!(KARUS_MONUMENT_POSITION, (494.0, 510.0));
+        assert_eq!(ELMORAD_MONUMENT_POSITION, (526.0, 510.0));
+    }
+
+    #[test]
+    fn test_monument_score_requires_enemy_and_tied_or_trailing() {
+        // Karus may destroy the El Morad monument while tied/trailing.
+        assert!(can_monument_score(1, ELMORAD_MONUMENT_SID, 0, 0));
+        assert!(can_monument_score(1, ELMORAD_MONUMENT_SID, 0, 1));
+        assert!(!can_monument_score(1, ELMORAD_MONUMENT_SID, 2, 1));
+
+        // Own monument and non-monument entities never score.
+        assert!(!can_monument_score(1, KARUS_MONUMENT_SID, 0, 0));
+        assert!(!can_monument_score(2, ELMORAD_MONUMENT_SID, 0, 0));
+        assert!(!can_monument_score(1, DEVA_BIRD_SID, 0, 0));
+    }
+
+    #[test]
+    fn test_juraid_reward_gem_quantities() {
+        assert_eq!(juraid_reward_gem_count(true), 10);
+        assert_eq!(juraid_reward_gem_count(false), 3);
     }
 
     // ── Full Lifecycle Test ─────────────────────────────────────────────
@@ -924,7 +1135,7 @@ mod tests {
 
         // Check bridges
         let opened = check_bridge_timers(&mut juraid, 10000 + 1500);
-        assert_eq!(opened, vec![0]);
+        assert_eq!(opened, vec![0, 1]);
 
         open_bridge_for_all_rooms(&mut juraid, 0);
         assert!(juraid

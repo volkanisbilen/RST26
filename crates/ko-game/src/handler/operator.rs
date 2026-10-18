@@ -265,6 +265,8 @@ pub async fn process_chat_command(
         "money_add" => handle_money_add(session, &args)?,
         "np_add" => handle_np_add(session, &args)?,
         "drop_add" => handle_drop_add(session, &args)?,
+        "drop_rate" => handle_monster_drop_rate(session, &args).await?,
+        "drop" => handle_drop_test(session, &args)?,
         "np_change" => handle_np_change(session, &args)?,
         "exp_change" => handle_exp_change(session, &args)?,
         "hapis" => handle_prison(session, &args)?,
@@ -273,20 +275,27 @@ pub async fn process_chat_command(
         "war_close" => handle_war_close(session, &args)?,
         "clear" => handle_clear(session, &args)?,
         "reload_scripts" => handle_reload_scripts(session)?,
-        "botspawn" | "farmbotspawn" | "afkbotspawn" | "pkbotspawn" => {
-            handle_bot_spawn(session, &args)?
+        "botspawn" | "farmbotspawn" => {
+            handle_bot_spawn(session, &args, crate::world::BotAiState::Farmer)?
         }
+        "afkbotspawn" => handle_bot_spawn(session, &args, crate::world::BotAiState::Afk)?,
+        "pkbotspawn" => handle_bot_spawn(session, &args, crate::world::BotAiState::Pk)?,
+        "pkbots" => handle_pk_bots(session, &args)?,
+        "botitems" => handle_bot_items(session, &args)?,
+        "dbbots" => handle_database_bots(session, &args)?,
         "botkill" | "allbotkill" => handle_bot_kill(session, &args, &command)?,
         "funclass_open" => handle_funclass_open(session, &args)?,
         "funclass_close" => handle_funclass_close(session)?,
         "tournamentstart" => handle_tournament_start(session, &args)?,
         "tournamentclose" => handle_tournament_close(session, &args)?,
         "cswstart" => handle_csw_start(session, &args).await?,
+        "cswfast" => handle_csw_fast(session).await?,
         "cswclose" => handle_csw_close(session).await?,
         "bifroststart" => handle_bifrost_start(session, &args)?,
         "bifrostclose" => handle_bifrost_close(session)?,
         "level" => handle_level_change(session, &args)?,
         "petlevel" => handle_pet_level(session, &args).await?,
+        "petexp" => handle_pet_exp(session, &args).await?,
         "kc" => handle_kc_change(session, &args)?,
         "countzone" => handle_count_zone(session)?,
         "countlevel" => handle_count_level(session, &args)?,
@@ -314,7 +323,7 @@ pub async fn process_chat_command(
         "angelclose" => handle_santa(session, FLYING_NONE),
         "permanent" => handle_permanent_chat(session, &args)?,
         "offpermanent" => handle_permanent_chat_off(session)?,
-        "tl" => handle_tl_balance(session, &args)?,
+        "tl" => handle_tl_balance(session, &args).await?,
         "block" => handle_block(session, &args).await?,
         "unblock" => handle_unblock(session, &args).await?,
         "genie" => handle_genie_toggle(session, &args)?,
@@ -328,6 +337,7 @@ pub async fn process_chat_command(
         "open_skill" => handle_open_skill(session, &args)?,
         "open_master" => handle_open_master(session, &args).await?,
         "open_questskill" => handle_open_questskill(session, &args).await?,
+        "master" | "open_all_master" => handle_open_all_master(session, &args).await?,
         "bowlevent" => handle_bowlevent(session, &args)?,
         "mode_gamemaster" => handle_mode_gamemaster(session)?,
         "exp" => handle_exp_change(session, &args)?,
@@ -341,6 +351,116 @@ pub async fn process_chat_command(
         "beefopen" => handle_beef_open(session)?,
         "beefclose" => handle_beef_close(session)?,
         "ftopen" => handle_ft_open(session, &args)?,
+        "ultimaopen" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::ultima::gm_open(session.world(), minutes);
+            send_help(session, msg);
+        }
+        "ultimastart" => {
+            let msg = super::ultima::gm_start(session.world());
+            send_help(session, msg);
+        }
+        "eventbotfill" => handle_event_bot_fill(session, &args).await?,
+        "riftreg" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::rift_entry::gm_open(session.world(), minutes);
+            send_help(session, msg);
+        }
+        "riftstart" => {
+            let msg = super::rift_entry::gm_start(session.world());
+            send_help(session, msg);
+        }
+        "riftend" => {
+            let msg = super::rift_entry::gm_cancel(session.world());
+            send_help(session, msg);
+            let closed = super::dungeon_defence::gm_close_rooms(session.world());
+            if closed > 0 {
+                send_help(session, &format!("{closed} running rift room(s) are closing."));
+            }
+        }
+        "riftid" => {
+            if let Some(id) = args.first().and_then(|a| a.parse::<i16>().ok()) {
+                super::rift_entry::set_event_id(id);
+            }
+            let msg = format!("Rift registration window id: {}", super::rift_entry::event_id());
+            send_help(session, &msg);
+        }
+        "riftopen" => {
+            let d = match args.first().map(|a| a.to_ascii_lowercase()).as_deref() {
+                Some("normal") | Some("2") => super::dungeon_defence::DdDifficulty::Normal,
+                Some("hard") | Some("3") => super::dungeon_defence::DdDifficulty::Hard,
+                _ => super::dungeon_defence::DdDifficulty::Easy,
+            };
+            let msg = super::dungeon_defence::gm_open(session.world(), session.session_id(), d);
+            send_help(session, &msg);
+        }
+        "golemopen" => {
+            let msg = super::golem_war::gm_open(session.world());
+            send_help(session, msg);
+        }
+        "golemend" => {
+            let msg = super::golem_war::gm_end(session.world());
+            send_help(session, msg);
+        }
+        "golemauto" => {
+            let on = args.first().is_some_and(|a| a.eq_ignore_ascii_case("on"));
+            super::golem_war::set_auto(on);
+            send_help(session, if on { "Fire & Ice auto schedule: ON (14:00 and 22:00 server time)." } else { "Fire & Ice auto schedule: OFF." });
+        }
+        "ultimabot" => {
+            let count = args.first().and_then(|a| a.parse::<usize>().ok()).unwrap_or(5);
+            let class = args.get(1).and_then(|a| a.parse::<u16>().ok()).unwrap_or(1);
+            let msg = super::ultima::gm_spawn_bots(session.world(), session.session_id(), count, class);
+            send_help(session, &msg);
+        }
+        "killnear" => handle_kill_near(session, &args).await?,
+        "ekle" => handle_add_spawn(session, &args).await?,
+        "aggro" => handle_aggro(session, &args),
+        "ultimaid" => {
+            match args.first().and_then(|a| a.parse::<i16>().ok()) {
+                Some(id) => {
+                    super::ultima::set_event_id(id);
+                    send_help(session, &format!("Ultima registration event id set to {id}."));
+                }
+                None => {
+                    let id = super::ultima::event_id();
+                    send_help(session, &format!("Ultima registration event id is {id}. Usage: +ultimaid <id>"));
+                }
+            }
+        }
+        "tev" => {
+            // probe: show the client's temple-event registration window for an event id (to yourself)
+            let id = args.first().and_then(|a| a.parse::<i16>().ok()).unwrap_or(24);
+            let secs = args.get(1).and_then(|a| a.parse::<u16>().ok()).unwrap_or(300);
+            let pkt = crate::systems::event_room::build_event_start_broadcast(id, secs);
+            session.world().send_to_session_owned(session.session_id(), pkt);
+            send_help(session, &format!("Temple event window shown for id {id}."));
+        }
+        "tevsweep" => {
+            // probe: cycle ids from..to every 2 seconds and print each id, to find which one shows "Ultima"
+            let from = args.first().and_then(|a| a.parse::<i16>().ok()).unwrap_or(1);
+            let to = args.get(1).and_then(|a| a.parse::<i16>().ok()).unwrap_or(130);
+            let world = session.world().clone();
+            let sid = session.session_id();
+            tokio::spawn(async move {
+                for id in from..=to {
+                    world.send_to_session_owned(
+                        sid,
+                        crate::systems::event_room::build_event_start_broadcast(id, 300),
+                    );
+                    world.send_to_session_owned(
+                        sid,
+                        crate::systems::timed_notice::build_notice_packet(8, &format!("[tevsweep] event id {id}")),
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            });
+            send_help(session, &format!("Sweeping temple event ids {from}..{to} (2 s each)."));
+        }
+        "ultimaend" => {
+            let msg = super::ultima::gm_end(session.world());
+            send_help(session, msg);
+        }
         "ftclose" => handle_ft_close(session)?,
         "lottery" => handle_lottery_start(session, &args).await?,
         "lotteryclose" => handle_lottery_close(session)?,
@@ -348,7 +468,7 @@ pub async fn process_chat_command(
         "cindopen" => handle_funclass_open(session, &args)?,
         "cindclose" => handle_funclass_close(session)?,
         "resetloyalty" => handle_reset_loyalty(session).await?,
-        "cropen" => handle_cr_open(session, &args)?,
+        "cropen" => handle_cr_open(session, &args).await?,
         "crclose" => handle_cr_close(session)?,
         "npcinfo" => handle_npc_info(session)?,
         "bug" => handle_bug_rescue(session, &args)?,
@@ -358,17 +478,103 @@ pub async fn process_chat_command(
         "borderopen" => handle_temple_event_open(session, TempleEventKind::Bdw)?,
         "borderclose" => handle_temple_event_close(session, TempleEventKind::Bdw)?,
         "juraidopen" => handle_temple_event_open(session, TempleEventKind::Juraid)?,
+        "juraidstart" => handle_juraid_event_start(session)?,
         "juraidclose" => handle_temple_event_close(session, TempleEventKind::Juraid)?,
+        "utcopen" | "utcstart" | "undercastleopen" | "undercastlestart" => {
+            handle_under_castle_open(session, &args)?
+        }
+        "utcclose" | "utcstop" | "undercastleclose" | "undercastlestop" => {
+            handle_under_castle_close(session)?
+        }
+        "manesopen" => handle_manes_survival_open(session)?,
+        "manesstart" => handle_manes_survival_start(session)?,
+        "manesclose" => handle_manes_survival_close(session)?,
+        "attendanceopen" => handle_native_event_toggle(session, "attendance", true).await?,
+        "attendanceclose" => handle_native_event_toggle(session, "attendance", false).await?,
+        "rouletteopen" => handle_native_event_toggle(session, "roulette", true).await?,
+        "rouletteclose" => handle_native_event_toggle(session, "roulette", false).await?,
+        "puzzleopen" | "jigsawopen" => handle_native_event_toggle(session, "jigsaw", true).await?,
+        "puzzleclose" | "jigsawclose" => {
+            handle_native_event_toggle(session, "jigsaw", false).await?
+        }
+        "coinopen" => handle_native_event_toggle(session, "coin", true).await?,
+        "coinclose" => handle_native_event_toggle(session, "coin", false).await?,
+        "marbleopen" => handle_native_event_toggle(session, "marble", true).await?,
+        "marbleclose" => handle_native_event_toggle(session, "marble", false).await?,
         "reloadranks" => {
             let world = session.world();
             let pool = session.pool();
             world.reload_user_rankings(pool).await;
-            send_help(session, "+reloadranks: User rankings reloaded from DB.");
+            let moraranker_result = world.reload_moraranker(pool, true).await;
+            if let Err(error) = moraranker_result {
+                send_help(
+                    session,
+                    &format!("+reloadranks: MORANKER reload failed: {error}"),
+                );
+            } else {
+                send_help(
+                    session,
+                    "+reloadranks: Rankings and MORANKER statues reloaded.",
+                );
+            }
             info!("[{}] +reloadranks: rankings reloaded", session.addr());
         }
-        // Reload commands — require server restart (hot-reload not yet implemented)
-        "reloadnotice" | "reloadtables" | "reloadtables2" | "reloadtables3" | "reloadmagics"
-        | "reloadquests" | "reloaddrops" | "reloaddrops2" | "reloadkings" | "reloadtitle"
+        "reloaddrops" | "reloaddrops2" => {
+            let world = session.world().clone();
+            let pool = session.pool();
+            match world.reload_monster_drop_tables(pool).await {
+                Ok(count) => send_help(
+                    session,
+                    &format!("+{command}: {count} monster drop rows reloaded."),
+                ),
+                Err(error) => send_help(session, &format!("+{command}: reload failed: {error}")),
+            }
+            info!(
+                "[{}] +{}: monster drop cache reloaded",
+                session.addr(),
+                command
+            );
+        }
+        "reloadgroupitems" => {
+            let world = session.world().clone();
+            let pool = session.pool();
+            match world.reload_make_item_groups(pool).await {
+                Ok(count) => send_help(
+                    session,
+                    &format!("+reloadgroupitems: {count} item groups reloaded."),
+                ),
+                Err(error) => send_help(
+                    session,
+                    &format!("+reloadgroupitems: reload failed: {error}"),
+                ),
+            }
+            info!(
+                "[{}] +reloadgroupitems: item-group cache reloaded",
+                session.addr()
+            );
+        }
+        "reloadtables" | "reloadtables2" | "reloadtables3" => {
+            let world = session.world().clone();
+            let pool = session.pool();
+            let drops = world.reload_monster_drop_tables(pool).await;
+            let groups = world.reload_make_item_groups(pool).await;
+            match (drops, groups) {
+                (Ok(drops), Ok(groups)) => send_help(
+                    session,
+                    &format!("+{command}: reloaded {drops} drop rows and {groups} item groups."),
+                ),
+                (Err(error), _) | (_, Err(error)) => {
+                    send_help(session, &format!("+{command}: reload failed: {error}"))
+                }
+            }
+            info!(
+                "[{}] +{}: editable drop/group caches reloaded",
+                session.addr(),
+                command
+            );
+        }
+        // Other legacy reload commands still need dedicated safe reload implementations.
+        "reloadnotice" | "reloadmagics" | "reloadquests" | "reloadkings" | "reloadtitle"
         | "reloadpus" | "reloaditems" | "reloaddungeon" | "reloaddraki" | "reloadevent"
         | "reloadpremium" | "reloadsocial" | "reloadclanpnotice" | "reload_item"
         | "reloadupgrade" | "reloadbug" | "reloadlreward" | "reloadmreward" | "reloadzoneon"
@@ -390,6 +596,7 @@ pub async fn process_chat_command(
         "seasonitem" => handle_season_item(session, &args)?,
         "effect" => handle_effect(session, &args)?,
         "collection" => handle_collection_notify(session, &args)?,
+        "achieve" => handle_achieve_unlock(session, &args)?,
         "clannotify" => handle_clannotify(session, &args)?,
         "stateflag" => handle_stateflag(session, &args)?,
         _ => return Ok(false),
@@ -397,30 +604,229 @@ pub async fn process_chat_command(
 
     Ok(true)
 }
+
+/// Unlock all v2615 achievements/titles for an online character.
+fn handle_achieve_unlock(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    if args.len() != 1 {
+        send_help(session, "Usage: +achieve CharacterName");
+        return Ok(());
+    }
+    let world = session.world().clone();
+    let Some(target_sid) = world.find_session_by_name(args[0]) else {
+        send_help(session, &format!("+achieve: '{}' is not online.", args[0]));
+        return Ok(());
+    };
+    let changed = super::achieve::unlock_all_achievements(&world, target_sid);
+    let total = world.all_achieve_main().len();
+    let gm_name = world
+        .get_session_name(session.session_id())
+        .unwrap_or_default();
+    tracing::info!(gm = %gm_name, target = %args[0], changed, total,
+        "GM unlocked all achievements");
+    send_help(
+        session,
+        &format!(
+            "+achieve: {} achievement entries synchronized for '{}' ({} newly unlocked).",
+            total, args[0], changed
+        ),
+    );
+    Ok(())
+}
 /// Send a help/feedback message to the GM via PUBLIC_CHAT.
 /// Uses WIZ_CHAT with PUBLIC_CHAT type, sent only to the GM who issued the command.
-fn send_help(session: &mut ClientSession, message: &str) {
-    let world = session.world().clone();
-    let sid = session.session_id();
+fn send_help<C: GmCtx + ?Sized>(session: &mut C, message: &str) {
+    session.say(message);
+}
 
-    let char_info = match world.get_character_info(sid) {
-        Some(ch) => ch,
-        None => return,
-    };
+/// What an event/GM command handler needs from whoever runs it: a GM's game session, or the
+/// web panel and the scheduler (which only collect the answer lines).
+pub(crate) trait GmCtx {
+    fn world(&self) -> &Arc<crate::world::WorldState>;
+    fn pool(&self) -> &ko_db::DbPool;
+    fn addr(&self) -> String;
+    fn say(&mut self, message: &str);
+}
 
-    // C++ builds: Packet result(WIZ_CHAT, (uint8)ChatType::PUBLIC_CHAT);
-    //             result << pUser->GetNation() << uint32(pUser->GetSocketID()) << uint8(0) << sHelpMessage;
-    let mut pkt = Packet::new(Opcode::WizChat as u8);
-    pkt.write_u8(7); // PUBLIC_CHAT
-    pkt.write_u8(char_info.nation);
-    pkt.write_u32(sid as u32);
-    pkt.write_u8(0); // name length (SByte empty)
-    pkt.write_string(message); // DByte message
-    pkt.write_i8(0); // personal_rank
-    pkt.write_u8(0); // authority
-    pkt.write_u8(0); // system_msg
+impl GmCtx for ClientSession {
+    fn world(&self) -> &Arc<crate::world::WorldState> {
+        ClientSession::world(self)
+    }
+    fn pool(&self) -> &ko_db::DbPool {
+        ClientSession::pool(self)
+    }
+    fn addr(&self) -> String {
+        ClientSession::addr(self).to_string()
+    }
+    fn say(&mut self, message: &str) {
+        let world = ClientSession::world(self).clone();
+        let sid = self.session_id();
 
-    world.send_to_session_owned(sid, pkt);
+        let char_info = match world.get_character_info(sid) {
+            Some(ch) => ch,
+            None => return,
+        };
+
+        // C++ builds: Packet result(WIZ_CHAT, (uint8)ChatType::PUBLIC_CHAT);
+        //             result << pUser->GetNation() << uint32(pUser->GetSocketID()) << uint8(0) << sHelpMessage;
+        let mut pkt = Packet::new(Opcode::WizChat as u8);
+        pkt.write_u8(7); // PUBLIC_CHAT
+        pkt.write_u8(char_info.nation);
+        pkt.write_u32(sid as u32);
+        pkt.write_u8(0); // name length (SByte empty)
+        pkt.write_string(message); // DByte message
+        pkt.write_i8(0); // personal_rank
+        pkt.write_u8(0); // authority
+        pkt.write_u8(0); // system_msg
+
+        world.send_to_session_owned(sid, pkt);
+    }
+}
+
+/// Runs event commands for the web panel and the scheduler; the answer lines are collected.
+pub(crate) struct VirtualGm {
+    world: Arc<crate::world::WorldState>,
+    pool: ko_db::DbPool,
+    pub lines: Vec<String>,
+}
+
+impl VirtualGm {
+    pub(crate) fn new(world: Arc<crate::world::WorldState>, pool: ko_db::DbPool) -> Self {
+        Self {
+            world,
+            pool,
+            lines: Vec::new(),
+        }
+    }
+}
+
+impl GmCtx for VirtualGm {
+    fn world(&self) -> &Arc<crate::world::WorldState> {
+        &self.world
+    }
+    fn pool(&self) -> &ko_db::DbPool {
+        &self.pool
+    }
+    fn addr(&self) -> String {
+        "panel".to_string()
+    }
+    fn say(&mut self, message: &str) {
+        self.lines.push(message.to_string());
+    }
+}
+
+/// The GM event commands, runnable without a game session. Returns false for any other word.
+pub(crate) async fn run_event_command<C: GmCtx>(
+    ctx: &mut C,
+    command: &str,
+    args: &[&str],
+) -> anyhow::Result<bool> {
+    match command {
+        "open1" => handle_nation_war_open(ctx, 1)?,
+        "open2" => handle_nation_war_open(ctx, 2)?,
+        "open3" => handle_nation_war_open(ctx, 3)?,
+        "open4" => handle_nation_war_open(ctx, 4)?,
+        "open5" => handle_nation_war_open(ctx, 5)?,
+        "open6" => handle_nation_war_open(ctx, 6)?,
+        "snow" => handle_snow_war_open(ctx)?,
+        "close" => handle_nation_war_close(ctx).await?,
+        "beefopen" => handle_beef_open(ctx)?,
+        "beefclose" => handle_beef_close(ctx)?,
+        "ftopen" => handle_ft_open(ctx, args)?,
+        "ftclose" => handle_ft_close(ctx)?,
+        "utcopen" => handle_under_castle_open(ctx, args)?,
+        "utcclose" => handle_under_castle_close(ctx)?,
+        "cropen" => handle_cr_open(ctx, args).await?,
+        "crclose" => handle_cr_close(ctx)?,
+        "lottery" => handle_lottery_start(ctx, args).await?,
+        "lotteryclose" => handle_lottery_close(ctx)?,
+        "csw" => handle_csw_start(ctx, args).await?,
+        "chaosopen" => handle_temple_event_open(ctx, TempleEventKind::Chaos)?,
+        "chaosclose" => handle_temple_event_close(ctx, TempleEventKind::Chaos)?,
+        "borderopen" => handle_temple_event_open(ctx, TempleEventKind::Bdw)?,
+        "borderclose" => handle_temple_event_close(ctx, TempleEventKind::Bdw)?,
+        "juraidopen" => handle_temple_event_open(ctx, TempleEventKind::Juraid)?,
+        "juraidstart" => handle_juraid_event_start(ctx)?,
+        "juraidclose" => handle_temple_event_close(ctx, TempleEventKind::Juraid)?,
+        "manesopen" => handle_manes_survival_open(ctx)?,
+        "manesstart" => handle_manes_survival_start(ctx)?,
+        "manesclose" => handle_manes_survival_close(ctx)?,
+        "attendanceopen" => handle_native_event_toggle(ctx, "attendance", true).await?,
+        "attendanceclose" => handle_native_event_toggle(ctx, "attendance", false).await?,
+        "rouletteopen" => handle_native_event_toggle(ctx, "roulette", true).await?,
+        "rouletteclose" => handle_native_event_toggle(ctx, "roulette", false).await?,
+        "puzzleopen" => handle_native_event_toggle(ctx, "jigsaw", true).await?,
+        "puzzleclose" => handle_native_event_toggle(ctx, "jigsaw", false).await?,
+        "coinopen" => handle_native_event_toggle(ctx, "coin", true).await?,
+        "coinclose" => handle_native_event_toggle(ctx, "coin", false).await?,
+        "marbleopen" => handle_native_event_toggle(ctx, "marble", true).await?,
+        "marbleclose" => handle_native_event_toggle(ctx, "marble", false).await?,
+        "ultimaopen" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::ultima::gm_open(ctx.world(), minutes);
+            send_help(ctx, msg);
+        }
+        "ultimastart" => {
+            let msg = super::ultima::gm_start(ctx.world());
+            send_help(ctx, msg);
+        }
+        "ultimaend" => {
+            let msg = super::ultima::gm_end(ctx.world());
+            send_help(ctx, msg);
+        }
+        "riftreg" => {
+            let minutes = args.first().and_then(|a| a.parse::<u64>().ok());
+            let msg = super::rift_entry::gm_open(ctx.world(), minutes);
+            send_help(ctx, msg);
+        }
+        "riftstart" => {
+            let msg = super::rift_entry::gm_start(ctx.world());
+            send_help(ctx, msg);
+        }
+        "riftend" => {
+            let msg = super::rift_entry::gm_cancel(ctx.world());
+            send_help(ctx, msg);
+            let closed = super::dungeon_defence::gm_close_rooms(ctx.world());
+            if closed > 0 {
+                send_help(ctx, &format!("{closed} running rift room(s) are closing."));
+            }
+        }
+        "golemopen" => {
+            let msg = super::golem_war::gm_open(ctx.world());
+            send_help(ctx, msg);
+        }
+        "golemend" => {
+            let msg = super::golem_war::gm_end(ctx.world());
+            send_help(ctx, msg);
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// Enable/disable one of the v2615 native client event panels.
+async fn handle_native_event_toggle<C: GmCtx>(
+    session: &mut C,
+    event_key: &str,
+    active: bool,
+) -> anyhow::Result<()> {
+    let pool = session.pool().clone();
+    let repo = ko_db::repositories::native_events::NativeEventsRepository::new(&pool);
+    if !repo.set_active(event_key, active).await? {
+        send_help(
+            session,
+            "Native event configuration row was not found. Run migrations first.",
+        );
+        return Ok(());
+    }
+    let state = if active { "opened" } else { "closed" };
+    send_help(session, &format!("Native {event_key} event {state}."));
+    info!(
+        "[{}] native event toggle: key={} active={}",
+        session.addr(),
+        event_key,
+        active
+    );
+    Ok(())
 }
 
 /// +give <charname> <itemid> <count> <time> — Give item to another player.
@@ -918,9 +1324,18 @@ fn handle_notice(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<(
 fn handle_count(session: &mut ClientSession) -> anyhow::Result<()> {
     let world = session.world().clone();
 
-    let count = world.online_count();
+    let players = world.online_count();
+    let bots = world.bot_count();
 
-    send_help(session, &format!("Online players: {}", count));
+    send_help(
+        session,
+        &format!(
+            "Online: Total={}, Players={}, Bots={}",
+            players + bots,
+            players,
+            bots
+        ),
+    );
 
     Ok(())
 }
@@ -1252,6 +1667,145 @@ fn handle_drop_add(session: &mut ClientSession, args: &[&str]) -> anyhow::Result
     set_event_rate(session, args, &tw.drop_event_amount, "drop_add", "Drop")
 }
 
+/// +drop_rate <percent> — Persistently increase all drop-slot rates for the selected monster.
+async fn handle_monster_drop_rate(
+    session: &mut ClientSession,
+    args: &[&str],
+) -> anyhow::Result<()> {
+    let Some(percent) = args.first().and_then(|value| value.parse::<u16>().ok()) else {
+        send_help(session, "Usage: select a monster, then +drop_rate Percent (1-10000; permanently raises all its drops)");
+        return Ok(());
+    };
+    if !(1..=10_000).contains(&percent) {
+        send_help(
+            session,
+            "Drop increase must be between 1 and 10000 percent.",
+        );
+        return Ok(());
+    }
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let target_id = world
+        .with_session(sid, |handle| handle.target_id)
+        .unwrap_or(0);
+    let Some(npc) = world.get_npc_instance(target_id) else {
+        send_help(session, "Select a monster first (NPC target required).");
+        return Ok(());
+    };
+    if !npc.is_monster {
+        send_help(session, "The selected target is not a monster.");
+        return Ok(());
+    }
+    let Some(template) = world.get_npc_template(npc.proto_id, true) else {
+        send_help(session, "Monster template was not found.");
+        return Ok(());
+    };
+    let pool = session.pool().clone();
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            warn!(proto=npc.proto_id,error=%error,"GM drop-rate transaction failed to start");
+            send_help(session, "Could not start the drop-rate database update.");
+            return Ok(());
+        }
+    };
+    let old_table = template.item_table;
+    let reference_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM npc_template WHERE is_monster=true AND s_item=$1",
+    )
+    .bind(old_table)
+    .fetch_one(&mut *tx)
+    .await?;
+    // Some monsters share one K_MONSTER_ITEM row. Give the selected prototype
+    // its own copy first so the command never changes a different monster.
+    let table_index = if old_table <= 0 || reference_count > 1 {
+        let free_index = sqlx::query_scalar::<_, i16>(
+            r#"SELECT free_id::smallint FROM generate_series(1,32767) AS free_id
+               WHERE NOT EXISTS(SELECT 1 FROM monster_item WHERE s_index=free_id)
+                 AND NOT EXISTS(SELECT 1 FROM npc_template WHERE is_monster=true AND s_item=free_id)
+               ORDER BY free_id DESC LIMIT 1"#,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(new_table) = free_index else {
+            tx.rollback().await?;
+            send_help(
+                session,
+                "No free monster drop-table ID remains; nothing changed.",
+            );
+            return Ok(());
+        };
+        if old_table > 0 {
+            let cloned = sqlx::query(
+                r#"INSERT INTO monster_item(s_index,item01,percent01,item02,percent02,item03,percent03,item04,percent04,item05,percent05,item06,percent06,item07,percent07,item08,percent08,item09,percent09,item10,percent10,item11,percent11,item12,percent12)
+                 SELECT $1,item01,percent01,item02,percent02,item03,percent03,item04,percent04,item05,percent05,item06,percent06,item07,percent07,item08,percent08,item09,percent09,item10,percent10,item11,percent11,item12,percent12 FROM monster_item WHERE s_index=$2"#,
+            )
+            .bind(new_table)
+            .bind(old_table)
+            .execute(&mut *tx)
+            .await?;
+            if cloned.rows_affected() == 0 {
+                sqlx::query("INSERT INTO monster_item(s_index) VALUES($1)")
+                    .bind(new_table)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        } else {
+            sqlx::query("INSERT INTO monster_item(s_index) VALUES($1)")
+                .bind(new_table)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("UPDATE npc_template SET s_item=$2 WHERE s_sid=$1 AND is_monster=true")
+            .bind(npc.proto_id as i16)
+            .bind(new_table)
+            .execute(&mut *tx)
+            .await?;
+        new_table
+    } else {
+        old_table
+    };
+    sqlx::query("INSERT INTO monster_item(s_index) VALUES($1) ON CONFLICT(s_index) DO NOTHING")
+        .bind(table_index)
+        .execute(&mut *tx)
+        .await?;
+    let assignments = (1..=12).map(|slot| format!(
+        "percent{slot:02}=CASE WHEN item{slot:02}>0 AND percent{slot:02}>0 THEN GREATEST(0,LEAST(10000,ROUND(percent{slot:02}::numeric*(100+$2)::numeric/100)::integer))::smallint ELSE percent{slot:02} END"
+    )).collect::<Vec<_>>().join(",");
+    let query = format!("UPDATE monster_item SET {assignments} WHERE s_index=$1");
+    sqlx::query(&query)
+        .bind(table_index)
+        .bind(percent as i32)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    world.set_monster_drop_table(npc.proto_id, table_index);
+    match world.reload_monster_drop_tables(&pool).await {
+        Ok(_) => {
+            send_help(session, &format!(
+                "{} (ID {}) drop rates increased by {}% in PostgreSQL and saved permanently. Only this monster was changed.",
+                template.name, npc.proto_id, percent
+            ));
+            info!(
+                "[{}] GM +drop_rate: monster={} proto={} table={} increase={}%, PostgreSQL updated",
+                session.addr(),
+                template.name,
+                npc.proto_id,
+                table_index,
+                percent
+            );
+        }
+        Err(error) => {
+            warn!(proto=npc.proto_id,error=%error,"drop table reload after persistent GM update failed");
+            send_help(
+                session,
+                "Database updated, but live cache reload failed; use +reloaddrops.",
+            );
+        }
+    }
+    Ok(())
+}
+
 /// +np_change <charname> <amount> — Change a player's loyalty (NP) points.
 fn handle_np_change(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     if args.len() < 2 {
@@ -1426,10 +1980,13 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "item ItemID [Count] - Give item to self",
         "noah CharName Gold(+/-) - Change player gold",
         "level CharName Level - Set player level",
+        "petlevel Level - Set summoned pet level",
+        "petexp Amount [Character] - Add EXP to summoned pet",
         "kc CharName Amount - Set knight cash",
         "tl CharName Amount - Set TL balance",
         "np_change CharName Amount - Change NP",
         "exp_change CharName Amount - Change EXP",
+        "exp CharName Amount - Add EXP | np CharName Amount - Add NP",
         "job CharName ClassID - Change class",
         "gender CharName - Toggle gender",
         "nation_change CharName Nation(1/2) - Change nation",
@@ -1439,6 +1996,7 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "hapis CharName - Send to prison",
         "block CharName - Block account",
         "unblock CharName - Unblock account",
+        "pcblock CharName - Block PC/HWID",
         "-- Teleport --",
         "zone ZoneID - Teleport to zone",
         "goto X Z - Teleport to coordinates",
@@ -1464,18 +2022,29 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "-- Events --",
         "exp_add Pct - EXP event | money_add - Gold event",
         "np_add Pct - NP event | drop_add - Drop event",
+        "drop Count - Test selected NPC drops (max 9999)",
+        "drop_rate Percent - Permanently increase all selected monster drop slots (%)",
+        "zone_give_item Zone ItemID Count - Give item in zone",
+        "online_give_item ItemID Count - Give item to online players",
         "war_open/close Type - War event",
         "open1-6 / close - Nation war gates",
         "snow - Snow war | bifroststart/close",
-        "cswstart/close - Castle siege",
+        "cswstart/close/fast - Castle siege",
+        "csw - Castle siege status/control",
+        "tournamentstart/close - Tournament",
+        "funclass_open/close - Fun class event",
         "chaosopen/close - Chaos dungeon",
         "borderopen/close - BDW",
-        "juraidopen/close - Juraid",
+        "juraidopen/start/close - Juraid",
         "ftopen/close - Forgotten Temple",
+        "beefopen/close - Beef Roast event",
         "cindopen/close - Cinderella",
         "cropen/close - Collection Race",
         "lottery/lotteryclose - Lottery",
         "bowlevent - Bowling event",
+        "utcopen/utcstart/utcclose - Under the Castle",
+        "manesopen/manesstart/manesclose - Manes Survival",
+        "santa/santaclose | angel/angelclose - Seasonal NPC events",
         "-- GM Tools --",
         "gm - Toggle GM/User mode",
         "mode_gamemaster - Check GM status",
@@ -1483,11 +2052,38 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "clear [CharName] - Clear inventory",
         "clearinventory CharName - Clear all items",
         "changegm CharName - Grant GM authority",
+        "master [CharName] - Open novice/master/quest skills",
+        "open_skill/open_master/open_questskill CharName - Unlock skills",
+        "allow/disable CharName - Enable/disable player access",
+        "changeroom RoomID - Change event room",
+        "captain CharName - Assign war captain",
+        "discount/alldiscount/offdiscount - Merchant discounts",
+        "warresult Nation - Set war winner",
+        "resetranking/resetloyalty - Reset ranking/loyalty",
         "reload_scripts - Reload quest scripts",
         "reloadranks - Reload rankings",
+        "reloaddrops - Reload monster drop cache immediately",
+        "reloadgroupitems - Reload grouped item cache immediately",
+        "reloadtables - Reload drop and grouped item caches immediately",
+        "reloaditems/reloadmagics/reloadquests - Other table reloads (restart)",
+        "attendanceopen/close - Native Attendance",
+        "rouletteopen/close - Native Lucky Wheel",
+        "puzzleopen/close - Native Jigsaw Puzzle",
+        "coinopen/close - Native Coin Event",
+        "marbleopen/close - Native Knight Marble",
         "bug CharName - Rescue stuck player",
+        "season/seasonitem - Season controls",
+        "effect EffectID - Apply visual effect",
+        "collection - Collection Race controls",
+        "achieve CharName - Unlock achievement titles",
+        "clannotify Message - Clan notification",
+        "stateflag Flag Value - Set character state flag",
         "-- Bot/Genie --",
         "botspawn Class Level [Nation] [Count]",
+        "farmbotspawn/afkbotspawn Class Level [Nation] [Count]",
+        "pkbots Zone|here CountPerNation [Level] - Spawn balanced PK bot wave",
+        "dbbots merchant|pk|farmer Count|all - Spawn saved DB bots manually",
+        "pkbots clear Zone|here - Remove GM PK bots only",
         "botkill/allbotkill - Kill bots",
         "genie CharName on/off - Toggle genie",
         "givegenietime CharName Hours",
@@ -1593,28 +2189,38 @@ fn handle_war_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result
     if opened {
         // Send the event sign-up UI broadcast to all eligible players.
         let sign_secs = (params.vroom_opts.sign as u64) * 60;
-        let start_pkt = crate::systems::event_room::build_event_start_broadcast(
-            event_type as i16,
-            sign_secs as u16,
-        );
-        const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
-        world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
-
-        // Also send a chat notice
-        let sid = session.session_id();
-        if let Some(char_info) = world.get_character_info(sid) {
-            let notice_msg = format!("War event '{}' registration open!", war_type);
-            let pkt = super::chat::build_chat_packet(
-                8, // WAR_SYSTEM_CHAT
-                char_info.nation,
-                sid,
-                &char_info.name,
-                &notice_msg,
-                0,
-                0,
-                0,
+        if event_type == crate::systems::event_room::TempleEventType::JuraidMountain {
+            crate::systems::event_room::broadcast_juraid_window(&world, sign_secs as u16);
+        } else {
+            let start_pkt = crate::systems::event_room::build_event_start_broadcast(
+                event_type as i16,
+                sign_secs as u16,
             );
-            world.broadcast_to_all(Arc::new(pkt), None);
+            const EXCLUDED_ZONES: &[u16] = &[81, 82, 83, 84, 85, 87, 92];
+            world.broadcast_to_all_excluding_zones(Arc::new(start_pkt), EXCLUDED_ZONES);
+        }
+
+        if event_type == crate::systems::event_room::TempleEventType::JuraidMountain {
+            crate::systems::event_system::broadcast_juraid_registration_notice(
+                &world,
+                sign_secs as u16,
+            );
+        } else {
+            let sid = session.session_id();
+            if let Some(char_info) = world.get_character_info(sid) {
+                let notice_msg = format!("War event '{}' registration open!", war_type);
+                let pkt = super::chat::build_chat_packet(
+                    8, // WAR_SYSTEM_CHAT
+                    char_info.nation,
+                    sid,
+                    &char_info.name,
+                    &notice_msg,
+                    0,
+                    0,
+                    0,
+                );
+                world.broadcast_to_all(Arc::new(pkt), None);
+            }
         }
     }
 
@@ -1704,6 +2310,13 @@ fn handle_war_close(session: &mut ClientSession, args: &[&str]) -> anyhow::Resul
 fn handle_funclass_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     let world = session.world().clone();
 
+    // The Fun Class event is disabled: it swaps the character's class, level and items in
+    // memory and an interrupted session used to save that preset over the real character.
+    send_help(session, "Fun Class event is disabled on this server.");
+    if true {
+        return Ok(());
+    }
+
     if args.is_empty() {
         send_help(session, "Usage: +funclass_open <setting_id (0-4)>");
         return Ok(());
@@ -1735,7 +2348,8 @@ fn handle_funclass_open(session: &mut ClientSession, args: &[&str]) -> anyhow::R
         }
     };
 
-    let zone_id = setting.zone_id as u16;
+    // Fun Class runs on the mini maps (107 / 115), like C++ GetCindirellaForcedZone
+    let zone_id = super::cinderella::forced_event_zone(setting.zone_id as u16);
     let prepare_secs = (setting.preparetime as u64) * 60;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1754,6 +2368,16 @@ fn handle_funclass_open(session: &mut ClientSession, args: &[&str]) -> anyhow::R
         ev.karus_kills = 0;
     }
     world.set_cinderella_active(true, zone_id);
+
+    // PvP zones are closed during the event: everyone still there goes back to Moradon.
+    for sid in world.all_ingame_session_ids() {
+        let in_closed = world
+            .get_position(sid)
+            .is_some_and(|p| super::warp_list::is_funclass_closed_zone(p.zone_id));
+        if in_closed {
+            super::zone_change::server_teleport_to_zone(&world, sid, crate::world::types::ZONE_MORADON, 0.0, 0.0);
+        }
+    }
 
     // Announce
     let msg = format!(
@@ -1791,6 +2415,7 @@ fn handle_funclass_close(session: &mut ClientSession) -> anyhow::Result<()> {
         world.send_to_session_arc(sid, Arc::clone(&arc_finish));
     }
 
+    let event_zone = world.cinderella_zone_id();
     for &sid in &users {
         super::cinderella::cinderella_logout(&world, sid, false);
     }
@@ -1801,6 +2426,7 @@ fn handle_funclass_close(session: &mut ClientSession) -> anyhow::Result<()> {
         *ev = super::cinderella::CindirellaEventState::default();
     }
     world.set_cinderella_active(false, 0);
+    super::cinderella::kick_out_event_zone(&world, event_zone);
 
     // Announce
     let msg = "Fun Class Event has been closed by a GM.";
@@ -1836,7 +2462,13 @@ fn handle_clear(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()
         session.session_id()
     };
 
-    // Clear all bag inventory slots (14..42) — keep equipment slots (0..14)
+    // Clear all bag inventory slots (14..42) — keep equipment slots (0..14).
+    // One WIZ_ITEM_COUNT_CHANGE per slot, not a single bulk WIZ_ITEM_MOVE refresh:
+    // that bulk packet only refreshes derived equipment stats client-side and
+    // leaves deleted bag items visible as ghosts the player can't interact with
+    // (see manes_survival.rs's cleanup_temporary_items_for_session for the same
+    // finding) — exactly the "cleared server-side but still shown" symptom this
+    // command was supposed to produce for GM testing.
     world.update_session(target_sid, |h| {
         for slot in h.inventory.iter_mut().skip(14).take(28) {
             slot.item_id = 0;
@@ -1848,23 +2480,21 @@ fn handle_clear(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()
         }
     });
 
-    // C++ sends WIZ_ITEM_MOVE (type=2, success=1) with all cleared slot data
-    // so the client's inventory UI refreshes properly.
-    let mut refresh = Packet::new(Opcode::WizItemMove as u8);
-    refresh.write_u8(2); // type = inventory refresh
-    refresh.write_u8(1); // success
-    for _slot_idx in 0..28 {
-        // All slots are zeroed: nNum(u32) + sDuration(u16) + sCount(u16) +
-        // bFlag(u8) + sRemainingRentalTime(u16) + padding(u32) + nExpirationTime(u32)
-        refresh.write_u32(0); // item_id
-        refresh.write_u16(0); // durability
-        refresh.write_u16(0); // count
-        refresh.write_u8(0); // flag
-        refresh.write_u16(0); // rental_time
-        refresh.write_u32(0); // padding
-        refresh.write_u32(0); // expiration
+    for slot_idx in 0..28u8 {
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(slot_idx);
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem = false
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
+        world.send_to_session_owned(target_sid, pkt);
     }
-    world.send_to_session_owned(target_sid, refresh);
+    world.set_user_ability(target_sid);
 
     let name_display = target_name.unwrap_or("self");
     send_help(session, &format!("Inventory cleared for {}.", name_display));
@@ -1908,11 +2538,15 @@ fn handle_reload_scripts(session: &mut ClientSession) -> anyhow::Result<()> {
 /// - nation: 1=Karus, 2=ElMorad (default: GM's nation)
 /// - count: 1-10 (default: 1)
 /// Spawns bots at the GM's current position with random offset (C++: myrand(1,5)).
-fn handle_bot_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+fn handle_bot_spawn(
+    session: &mut ClientSession,
+    args: &[&str],
+    ai_state: crate::world::BotAiState,
+) -> anyhow::Result<()> {
     if args.len() < 2 {
         send_help(
             session,
-            "Usage: +botspawn Class Level [Nation] [Count]  (Class: 1=war,2=rog,3=mage,4=priest)",
+            "Usage: +botspawn Class Level [Nation] [Count]  (Class: 1=war,2=rog,3=mage,4=priest,13=kurian/porutu)",
         );
         return Ok(());
     }
@@ -1925,7 +2559,7 @@ fn handle_bot_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Resul
         Err(_) => {
             send_help(
                 session,
-                "Error: Invalid class (1=war,2=rog,3=mage,4=priest)",
+                "Error: Invalid class (1=war,2=rog,3=mage,4=priest,13=kurian/porutu)",
             );
             return Ok(());
         }
@@ -1958,9 +2592,14 @@ fn handle_bot_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Resul
         gm_info.nation
     };
 
-    // C++ caps at 100; we cap at 10 for GM command to prevent abuse.
+    // Runtime capacity is the C++ bot socket band (5000..9999), not an
+    // arbitrary per-command test limit.
+    let remaining_capacity = 5_000usize.saturating_sub(world.bot_count());
     let count: u16 = if args.len() > 3 {
-        args[3].parse().unwrap_or(1u16).clamp(1, 10)
+        args[3]
+            .parse::<usize>()
+            .unwrap_or(1)
+            .clamp(1, remaining_capacity.max(1)) as u16
     } else {
         1
     };
@@ -1984,7 +2623,7 @@ fn handle_bot_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Resul
                 class: gm_class,
                 level,
                 nation,
-                ai_state: crate::world::BotAiState::Farmer,
+                ai_state,
             },
         );
         spawned_ids.push(bot_id);
@@ -1993,15 +2632,16 @@ fn handle_bot_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Resul
     send_help(
         session,
         &format!(
-            "Spawned {} bot(s) (class={}, lv={}, nation={}) IDs: {:?}",
-            count, gm_class, level, nation, spawned_ids
+            "Spawned {} {:?} bot(s) (class={}, lv={}, nation={}) IDs: {:?}",
+            count, ai_state, gm_class, level, nation, spawned_ids
         ),
     );
 
     info!(
-        "[{}] GM +botspawn: spawned {} bot(s) class={} lv={} nation={} at zone {} ({:.0},{:.0})",
+        "[{}] GM +botspawn: spawned {} {:?} bot(s) class={} lv={} nation={} at zone {} ({:.0},{:.0})",
         session.addr(),
         count,
+        ai_state,
         gm_class,
         level,
         nation,
@@ -2010,6 +2650,240 @@ fn handle_bot_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Resul
         gm_pos.z,
     );
 
+    Ok(())
+}
+
+/// +pkbots <zone|here> <count_per_nation> [level]
+/// +pkbots clear <zone|here>
+///
+/// Spawns an equal number of Karus and El Morad PK bots at their nation start
+/// positions. Classes are distributed round-robin (warrior, rogue, mage,
+/// priest). Only zones with patrol waypoints are accepted.
+fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    use crate::systems::bot_ai;
+    use crate::world::{ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
+
+    let world = session.world().clone();
+    let sid = session.session_id();
+
+    let resolve_zone = |value: &str| -> Option<u16> {
+        if value.eq_ignore_ascii_case("here") {
+            world.get_position(sid).map(|p| p.zone_id)
+        } else {
+            value.parse::<u16>().ok()
+        }
+    };
+
+    if args
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("clear"))
+    {
+        let Some(zone_arg) = args.get(1) else {
+            send_help(session, "Usage: +pkbots clear <ZoneID|here>");
+            return Ok(());
+        };
+        let Some(zone_id) = resolve_zone(zone_arg) else {
+            send_help(session, "Error: Invalid zone. Use 71, 72, 73, or here.");
+            return Ok(());
+        };
+        if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE) {
+            send_help(
+                session,
+                "Error: PK bot waves currently support Ronark Land (71), Ardream (72), and Ronark Land Base (73).",
+            );
+            return Ok(());
+        }
+
+        let removed = bot_ai::despawn_gm_pk_bots_in_zone(&world, zone_id);
+        send_help(
+            session,
+            &format!(
+                "Removed {} temporary GM PK bot(s) from zone {}.",
+                removed, zone_id
+            ),
+        );
+        info!(
+            "[{}] GM +pkbots clear: removed {} temporary PK bots from zone {}",
+            session.addr(),
+            removed,
+            zone_id,
+        );
+        return Ok(());
+    }
+
+    if args.len() < 2 {
+        send_help(
+            session,
+            "Usage: +pkbots <ZoneID|here> <CountPerNation|all> [Level]",
+        );
+        return Ok(());
+    }
+
+    let Some(zone_id) = resolve_zone(args[0]) else {
+        send_help(session, "Error: Invalid zone. Use 71, 72, or here.");
+        return Ok(());
+    };
+
+    let count_per_nation = if args[1].eq_ignore_ascii_case("all") {
+        None
+    } else {
+        match args[1].parse::<usize>() {
+            Ok(count) => Some(count),
+            Err(_) => {
+                send_help(session, "Error: CountPerNation must be positive or 'all'.");
+                return Ok(());
+            }
+        }
+    };
+    let level = match args.get(2) {
+        Some(value) => match value.parse::<u8>() {
+            Ok(level) => Some(level),
+            Err(_) => {
+                send_help(session, "Error: Level must be between 1 and 83.");
+                return Ok(());
+            }
+        },
+        None => None,
+    };
+
+    match bot_ai::spawn_pk_bot_wave(&world, zone_id, count_per_nation, level) {
+        Ok(result) => {
+            send_help(
+                session,
+                &format!(
+                    "Spawned {} PK bots in zone {} ({} requested per nation, level {}).",
+                    result.spawned, result.zone_id, result.count_per_nation, result.level
+                ),
+            );
+            info!(
+                "[{}] GM +pkbots: spawned {} PK bots in zone {} (per_nation={}, level={})",
+                session.addr(),
+                result.spawned,
+                result.zone_id,
+                result.count_per_nation,
+                result.level,
+            );
+        }
+        Err(e) => send_help(session, &format!("Error: {e}")),
+    }
+
+    Ok(())
+}
+
+/// +botitems [NameSubstring]
+/// Dumps each matching bot's 8 equipped visual slots (item id + name) so a GM
+/// can diagnose a bad-looking model (e.g. a weapon with no matching visual)
+/// without a DB console. With no filter, every active bot is logged to the
+/// server log only (chat would be unreadable at bot-wave scale); with a
+/// filter, matches are also echoed directly into GM chat.
+fn handle_bot_items(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    const EQUIP_SLOT_NAMES: [&str; 8] = [
+        "BREAST", "LEG", "HEAD", "GLOVE", "FOOT", "SHOULDER", "RIGHTHAND", "LEFTHAND",
+    ];
+
+    let world = session.world().clone();
+    let filter = args.first().map(|s| s.to_ascii_lowercase());
+
+    let mut matched = 0usize;
+    for entry in world.bots.iter() {
+        let bot = entry.value();
+        if let Some(f) = &filter {
+            if !bot.name.to_ascii_lowercase().contains(f.as_str()) {
+                continue;
+            }
+        }
+        matched += 1;
+
+        let mut line = format!(
+            "{} (id={} lvl={} class={} zone={}):",
+            bot.name, bot.id, bot.level, bot.class, bot.zone_id
+        );
+        for (slot_name, &(item_id, _durability, _flag)) in
+            EQUIP_SLOT_NAMES.iter().zip(bot.equip_visual.iter())
+        {
+            if item_id == 0 {
+                continue;
+            }
+            let item_name = world
+                .get_item(item_id)
+                .and_then(|it| it.str_name)
+                .unwrap_or_else(|| "?".to_string());
+            line.push_str(&format!(" {slot_name}={item_id}[{item_name}]"));
+        }
+        info!("[botitems] {}", line);
+        if filter.is_some() {
+            send_help(session, &line);
+        }
+    }
+
+    if matched == 0 {
+        send_help(session, "No matching bots found.");
+    } else if filter.is_none() {
+        send_help(
+            session,
+            &format!(
+                "Logged equipment for {matched} bot(s) to the server log (journalctl -u ko-server | grep botitems). Use +botitems <NameSubstring> to see it in chat instead."
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// +dbbots merchant|pk|farmer <count|all>
+/// Materialises saved bot characters on demand from bot_handler_farm and
+/// bot_merchant_data. The command is intentionally manual: server startup only
+/// loads definitions and never places bots into the world.
+fn handle_database_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    use crate::systems::bot_ai::{self, DatabaseBotKind};
+
+    if args.len() < 2 {
+        send_help(
+            session,
+            "Usage: +dbbots merchant|pk|farmer <Count|all>  (remove: +botkill all)",
+        );
+        return Ok(());
+    }
+
+    let kind = match args[0].to_ascii_lowercase().as_str() {
+        "merchant" | "market" | "pazar" => DatabaseBotKind::Merchant,
+        "pk" | "ronark" => DatabaseBotKind::Pk,
+        "farmer" | "farm" => DatabaseBotKind::Farmer,
+        _ => {
+            send_help(session, "Error: Type must be merchant, pk, or farmer.");
+            return Ok(());
+        }
+    };
+    let requested = if args[1].eq_ignore_ascii_case("all") {
+        usize::MAX
+    } else {
+        match args[1].parse::<usize>() {
+            Ok(value) if value > 0 => value,
+            _ => {
+                send_help(session, "Error: Count must be positive or 'all'.");
+                return Ok(());
+            }
+        }
+    };
+
+    let world = session.world().clone();
+    let summary = bot_ai::spawn_database_bots(&world, kind, requested);
+    send_help(
+        session,
+        &format!(
+            "DB bots spawned: total={}, merchants={}, pk={}, farmers={}, skipped={}",
+            summary.total, summary.merchants, summary.pk, summary.farmers, summary.skipped
+        ),
+    );
+    info!(
+        "[{}] GM +dbbots {:?}: total={} merchants={} pk={} farmers={} skipped={}",
+        session.addr(),
+        kind,
+        summary.total,
+        summary.merchants,
+        summary.pk,
+        summary.farmers,
+        summary.skipped,
+    );
     Ok(())
 }
 
@@ -2133,7 +3007,7 @@ fn handle_tournament_close(session: &mut ClientSession, args: &[&str]) -> anyhow
 /// GM command: `+cswstart [PrepMinutes] [WarMinutes]`
 /// Starts Castle Siege War with preparation phase followed by war phase.
 /// Defaults: PrepMinutes=10, WarMinutes=40 (read from DB if available).
-async fn handle_csw_start(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+async fn handle_csw_start<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     let world = session.world().clone();
 
     // Check if already active
@@ -2196,6 +3070,23 @@ async fn handle_csw_start(session: &mut ClientSession, args: &[&str]) -> anyhow:
     Ok(())
 }
 
+/// GM test command: `+cswfast` skips preparation and opens the siege immediately.
+async fn handle_csw_fast(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let wartime = world.get_csw_opt().map(|o| o.war_time as u32).unwrap_or(40);
+    {
+        let mut state = world.csw_event().write().await;
+        super::siege::csw_prepare_open(&mut state, 0, now);
+        super::siege::csw_war_open(&mut state, wartime, now);
+    }
+    world.update_battle_state(|s| s.battle_open = crate::systems::war::SIEGE_BATTLE);
+    world.broadcast_to_all(Arc::new(super::siege::build_csw_notice(crate::world::types::CswNotice::War)), None);
+    send_help(session, "CSW hızlı test: savaş fazı hemen açıldı.");
+    Ok(())
+}
+
 /// GM command: `+cswclose`
 /// Immediately closes Castle Siege War and resets all state.
 async fn handle_csw_close(session: &mut ClientSession) -> anyhow::Result<()> {
@@ -2220,15 +3111,28 @@ async fn handle_csw_close(session: &mut ClientSession) -> anyhow::Result<()> {
         s.battle_open = NO_BATTLE;
     });
 
+    evacuate_csw_players(&world);
+
     // Broadcast finish notice
     let pkt = super::siege::build_csw_notice(crate::world::types::CswNotice::CswFinish);
     world.broadcast_to_all(Arc::new(pkt), None);
 
-    send_help(session, "CSW closed.");
+    let winner = world.get_csw_master_knights();
+    send_help(session, &format!("CSW kapatıldı. Kazanan klan: {}. Oyuncular Moradon'a gönderildi.", winner));
 
     tracing::info!("CSW: closed via GM command");
 
     Ok(())
+}
+
+fn evacuate_csw_players(world: &crate::world::WorldState) {
+    for zone in [crate::world::types::ZONE_DELOS, 35u16, 32u16, 33u16] {
+        for sid in world.sessions_in_zone(zone) {
+            crate::handler::zone_change::server_teleport_to_zone(
+                world, sid, crate::world::types::ZONE_MORADON, 816.0, 496.0,
+            );
+        }
+    }
 }
 
 /// Handle `+bifroststart [minutes]` GM command.
@@ -2518,6 +3422,7 @@ fn refresh_gm_pet_client(
             .as_ref()
             .map(|row| row.pet_res.max(0) as u16)
             .unwrap_or(0),
+        items: pet.items.clone(),
     };
 
     let status_packet = crate::handler::pet::build_pet_spawn_packet(&spawn_info);
@@ -2880,11 +3785,24 @@ fn handle_count_zone(session: &mut ClientSession) -> anyhow::Result<()> {
 
     let zone_id = world.with_session(sid, |h| h.position.zone_id).unwrap_or(0);
 
-    let (total, karus, elmorad) = world.count_players_in_zone(zone_id);
+    let (player_total, player_karus, player_elmorad) = world.count_players_in_zone(zone_id);
+    let bots = world.get_bots_in_zone_live(zone_id);
+    let bot_karus = bots.iter().filter(|bot| bot.nation == 1).count();
+    let bot_elmorad = bots.iter().filter(|bot| bot.nation == 2).count();
+    let bot_total = bot_karus + bot_elmorad;
 
     send_help(
         session,
-        &format!("Zone {zone_id}: Total={total}, Karus={karus}, Elmorad={elmorad}"),
+        &format!(
+            "Zone {zone_id}: Total={}, Players={} (K={}, E={}), Bots={} (K={}, E={})",
+            player_total as usize + bot_total,
+            player_total,
+            player_karus,
+            player_elmorad,
+            bot_total,
+            bot_karus,
+            bot_elmorad
+        ),
     );
     Ok(())
 }
@@ -2910,9 +3828,22 @@ fn handle_count_level(session: &mut ClientSession, args: &[&str]) -> anyhow::Res
     }
 
     let world = session.world().clone();
-    let count = world.count_players_at_level(level);
+    let players = world.count_players_at_level(level);
+    let bots = world
+        .bots
+        .iter()
+        .filter(|bot| bot.in_game && bot.level == level)
+        .count();
 
-    send_help(session, &format!("Level {level}: {count} players online"));
+    send_help(
+        session,
+        &format!(
+            "Level {level}: Total={}, Players={}, Bots={}",
+            players as usize + bots,
+            players,
+            bots
+        ),
+    );
     Ok(())
 }
 
@@ -3135,7 +4066,7 @@ fn kick_out_zone_users(world: &std::sync::Arc<crate::world::WorldState>, zone_id
 
 /// Handle +open1..+open6 — Open a nation battle war zone.
 /// calls `BattleZoneOpen(BATTLEZONE_OPEN, zone_index)`.
-fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow::Result<()> {
+fn handle_nation_war_open<C: GmCtx>(session: &mut C, zone_index: u8) -> anyhow::Result<()> {
     use crate::systems::war;
     let world = session.world().clone();
 
@@ -3145,6 +4076,13 @@ fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow
         .as_secs() as i32;
 
     let opened = world.update_battle_state(|state| {
+        if state.is_war_open() {
+            war::reset_battle_zone(state);
+        }
+        // GM opens are not scheduled events. Always initialize a full one-hour
+        // duration instead of carrying a stale/zero value from the last war.
+        state.battle_time = 3600;
+        state.battle_remaining_time = 3600;
         war::battle_zone_open(state, war::BATTLEZONE_OPEN, zone_index, now_unix)
     });
 
@@ -3170,7 +4108,13 @@ fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow
         }
 
         send_help(session, &format!("Nation war zone {zone_index} opened"));
-        tracing::info!("GM +open{zone_index}: Nation war opened");
+        let state = world.get_battle_state();
+        tracing::info!(
+            zone = zone_index,
+            battle_time = state.battle_time,
+            remaining_time = state.battle_remaining_time,
+            "GM nation war opened"
+        );
     } else {
         send_help(session, "War is already open or invalid zone");
     }
@@ -3179,7 +4123,7 @@ fn handle_nation_war_open(session: &mut ClientSession, zone_index: u8) -> anyhow
 
 /// Handle +snow — Open a snow battle war zone.
 /// calls `BattleZoneOpen(SNOW_BATTLE)`.
-fn handle_snow_war_open(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_snow_war_open<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     use crate::systems::war;
     let world = session.world().clone();
 
@@ -3206,7 +4150,7 @@ fn handle_snow_war_open(session: &mut ClientSession) -> anyhow::Result<()> {
 
 /// Handle +close — Close the active nation/snow war.
 /// calls `BattleZoneClose()`.
-async fn handle_nation_war_close(session: &mut ClientSession) -> anyhow::Result<()> {
+async fn handle_nation_war_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     use crate::systems::war;
     let world = session.world().clone();
 
@@ -3681,13 +4625,10 @@ fn handle_war_result(session: &mut ClientSession, args: &[&str]) -> anyhow::Resu
     Ok(())
 }
 
-/// +tl <charname> <amount> — Transfer Knight Cash (KC/TL) to a target player.
-/// This is the C++ "+tl" command which adds/removes KC from a target player.
-/// Functionally identical to our existing "+kc" command — delegates to the same
-/// cash_gain/cash_lose functions.
-fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+/// +tl <charname> <amount> — adjust only the target account's TL balance.
+async fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     if args.len() < 2 {
-        send_help(session, "Usage: +tl CharacterName KC(+/-)");
+        send_help(session, "Usage: +tl CharacterName TL(+/-)");
         return Ok(());
     }
 
@@ -3695,7 +4636,7 @@ fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Resu
     let amount: i32 = match args[1].parse() {
         Ok(v) => v,
         Err(_) => {
-            send_help(session, "Invalid KC amount");
+            send_help(session, "Invalid TL amount");
             return Ok(());
         }
     };
@@ -3714,19 +4655,26 @@ fn handle_tl_balance(session: &mut ClientSession, args: &[&str]) -> anyhow::Resu
         }
     };
 
-    let pool = session.pool().clone();
-    if amount > 0 {
-        super::knight_cash::cash_gain(&world, &pool, target_sid, amount as u32);
-        send_help(session, "User has received TL.");
-    } else {
-        super::knight_cash::cash_lose(&world, &pool, target_sid, (-amount) as u32);
-        send_help(
-            session,
-            &format!("Removed {} TL from {target_name}", -amount),
-        );
-    }
-
-    info!("GM +tl: {} KC={}", target_name, amount);
+    let account = world
+        .with_session(target_sid, |h| h.account_id.clone())
+        .unwrap_or_default();
+    let repo = ko_db::repositories::cash_shop::CashShopRepository::new(session.pool());
+    let Some(new_tl) = repo.adjust_tl_balance(&account, amount).await? else {
+        send_help(session, "TL balance is insufficient or outside the allowed range.");
+        return Ok(());
+    };
+    world.update_session(target_sid, |h| h.tl_balance = new_tl as u32);
+    let kc = world.get_knight_cash(target_sid);
+    world.send_to_session_owned(
+        target_sid,
+        super::knight_cash::build_cashchange_packet(kc, new_tl as u32),
+    );
+    world.send_to_session_owned(
+        target_sid,
+        super::knight_cash::build_kc_chat_packet(kc, new_tl as u32),
+    );
+    send_help(session, &format!("{target_name}: TL {amount:+}; balance {new_tl} TL"));
+    info!("GM +tl: {} TL={}", target_name, amount);
     Ok(())
 }
 
@@ -4157,22 +5105,25 @@ fn handle_clear_inventory(session: &mut ClientSession, args: &[&str]) -> anyhow:
         }
     });
 
-    // Build WIZ_ITEM_MOVE response packet (sub 2, type 1) with cleared items
-    // C++ sends: [u8(2)] [u8(1)] then for each slot: [u32 nNum] [u16 sDuration]
-    //            [u16 sCount] [u8 bFlag] [u16 sRemainingRentalTime] [u32 0] [u32 nExpirationTime]
-    let mut result = Packet::new(Opcode::WizItemMove as u8);
-    result.write_u8(2); // sub-opcode
-    result.write_u8(1); // type
-    for _i in 0..super::HAVE_MAX {
-        result.write_u32(0); // nNum (cleared)
-        result.write_u16(0); // sDuration
-        result.write_u16(0); // sCount
-        result.write_u8(0); // bFlag
-        result.write_u16(0); // sRemainingRentalTime
-        result.write_u32(0); // reserved
-        result.write_u32(0); // nExpirationTime
+    // One WIZ_ITEM_COUNT_CHANGE per slot, not a single bulk WIZ_ITEM_MOVE refresh:
+    // that bulk packet only refreshes derived equipment stats client-side and
+    // leaves deleted bag items visible as ghosts the player can't interact with
+    // (see manes_survival.rs's cleanup_temporary_items_for_session for the same
+    // finding, and handle_clear's "+clear" above for the identical bug).
+    for slot_idx in 0..super::HAVE_MAX as u8 {
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(slot_idx);
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem = false
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
+        world.send_to_session_owned(target_sid, pkt);
     }
-    world.send_to_session_owned(target_sid, result);
 
     // Update abilities (weight notification is integrated into set_user_ability)
     world.set_user_ability(target_sid);
@@ -4429,6 +5380,7 @@ fn handle_open_skill(session: &mut ClientSession, args: &[&str]) -> anyhow::Resu
 
     // C++ also calls KnightsCurrentMember — update clan if applicable
     // (clan info already tracks class via CharacterInfo, no separate update needed)
+    persist_class_change(session, target_ch.name.clone(), new_class, target_ch.race);
 
     info!(
         "[{}] +open_skill: promoted {} class {}→{}",
@@ -4507,6 +5459,7 @@ async fn handle_open_master(session: &mut ClientSession, args: &[&str]) -> anyho
 
     // Recalculate abilities.
     world.set_user_ability(target_sid);
+    persist_class_change(session, target_ch.name.clone(), new_class, target_ch.race);
 
     // bBaseClass = (bOldClass / 2) - 1
     let base_class = (class_type / 2).saturating_sub(1) as u16;
@@ -4551,6 +5504,73 @@ async fn handle_open_master(session: &mut ClientSession, args: &[&str]) -> anyho
     );
 
     Ok(())
+}
+
+/// +master [CharName] — one-shot GM helper for opening novice, master and quest skills.
+async fn handle_open_all_master(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let target_name = if args.is_empty() {
+        session
+            .world()
+            .get_character_info(session.session_id())
+            .map(|ch| ch.name)
+            .unwrap_or_default()
+    } else {
+        args[0].to_string()
+    };
+
+    if target_name.is_empty() {
+        send_help(session, "Usage: +master [CharName]");
+        return Ok(());
+    }
+
+    let world = session.world().clone();
+    let target_sid = match world.find_session_by_name(&target_name) {
+        Some(sid) => sid,
+        None => {
+            send_help(session, "Player not found or not online.");
+            return Ok(());
+        }
+    };
+    let target_arg = [target_name.as_str()];
+
+    if let Some(ch) = world.get_character_info(target_sid) {
+        if super::class_change::is_beginner(ch.class) {
+            handle_open_skill(session, &target_arg)?;
+        }
+    }
+
+    if let Some(ch) = world.get_character_info(target_sid) {
+        if super::class_change::is_novice(ch.class) {
+            handle_open_master(session, &target_arg).await?;
+        }
+    }
+
+    if let Some(ch) = world.get_character_info(target_sid) {
+        if super::class_change::is_mastered(ch.class) {
+            handle_open_questskill(session, &target_arg).await?;
+            send_help(
+                session,
+                &format!("{} master class and quest skills are open.", target_name),
+            );
+        } else {
+            send_help(session, "Target could not be promoted to master class.");
+        }
+    }
+
+    Ok(())
+}
+
+fn persist_class_change(session: &ClientSession, char_name: String, class: u16, race: u8) {
+    let pool = session.pool().clone();
+    tokio::spawn(async move {
+        let repo = ko_db::repositories::character::CharacterRepository::new(&pool);
+        if let Err(e) = repo
+            .save_class_change(&char_name, class as i16, race as i16)
+            .await
+        {
+            tracing::warn!("Failed to save class change for {char_name}: {e}");
+        }
+    });
 }
 
 /// +open_questskill <CharName> — save class-specific quest skill events.
@@ -4948,6 +5968,9 @@ async fn handle_gm_toggle(session: &mut ClientSession) -> anyhow::Result<()> {
         let ac = clan
             .as_ref()
             .and_then(|ki| super::region::resolve_alliance_cape(ki, &world));
+        let is_king = ch_opt
+            .as_ref()
+            .is_some_and(|ch| world.is_king(ch.nation, &ch.name));
 
         if new_abnormal == 0 {
             // Going invisible: broadcast INOUT_OUT to remove GM from others' screens
@@ -4958,6 +5981,7 @@ async fn handle_gm_toggle(session: &mut ClientSession) -> anyhow::Result<()> {
                 &pos,
                 clan.as_ref(),
                 ac,
+                is_king,
                 0,
                 new_abnormal,
                 &bs,
@@ -4980,6 +6004,7 @@ async fn handle_gm_toggle(session: &mut ClientSession) -> anyhow::Result<()> {
                 &pos,
                 clan.as_ref(),
                 ac,
+                is_king,
                 0,
                 new_abnormal,
                 &bs,
@@ -5151,7 +6176,7 @@ fn handle_change_room(session: &mut ClientSession, args: &[&str]) -> anyhow::Res
 }
 
 /// +beefopen — start the Beef/Monument event in Bifrost zone.
-fn handle_beef_open(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_beef_open<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
 
     let state = world.get_beef_event();
@@ -5160,37 +6185,13 @@ fn handle_beef_open(session: &mut ClientSession) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Activate the beef event
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    world.update_beef_event(|e| {
-        e.is_active = true;
-        e.is_attackable = true;
-        e.is_monument_dead = false;
-        e.winner_nation = 0;
-        e.is_farming_play = false;
-        e.farming_end_time = 0;
-        e.loser_sign_time = 0;
-        e.is_loser_sign = false;
-    });
-
-    let msg = "Beef Event Basladi. Bifrost bolgesine girebilirsiniz.";
-    broadcast_war_system_chat(&world, msg);
-
-    info!(
-        "[{}] +beefopen: started at timestamp {}",
-        session.addr(),
-        now,
-    );
-
+    super::bifrost::bifrost_start(&world, None);
+    send_help(session, "Bifrost basladi. Monument kirildiginda kazanan irkin girisi acilir.");
     Ok(())
 }
 
 /// +beefclose — close the Beef/Monument event.
-fn handle_beef_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_beef_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
 
     // Reset beef event state
@@ -5261,7 +6262,7 @@ fn handle_mode_gamemaster(session: &mut ClientSession) -> anyhow::Result<()> {
 /// +ftopen [Type] — open Forgotten Temple event.
 /// Calls `ForgettenTempleManuelOpening(Type)` which validates ptimeopt,
 /// resets state, then calls `ForgettenTempleStart(1, MinLevel, MaxLevel)`.
-fn handle_ft_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+fn handle_ft_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     let _event_type: u16 = if !args.is_empty() {
         match args[0].parse::<u16>() {
             Ok(t) if t > 0 => t,
@@ -5320,7 +6321,7 @@ fn handle_ft_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
     );
 
     // C++ calls Announcement(IDS_MONSTER_CHALLENGE_OPEN)
-    broadcast_war_system_chat(&world, "Monster Challenge has started!");
+    broadcast_war_system_chat(&world, "Forgotten Temple has started!");
 
     info!(
         "[{}] +ftopen: FT event started (level {}-{}, {}min)",
@@ -5336,7 +6337,7 @@ fn handle_ft_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
 /// +ftclose — close Forgotten Temple event.
 /// If active: kicks zone users, resets state, announces close.
 /// If not active: just resets state.
-fn handle_ft_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_ft_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     let ft = world.forgotten_temple_state();
 
@@ -5351,7 +6352,7 @@ fn handle_ft_close(session: &mut ClientSession) -> anyhow::Result<()> {
 
     ft.reset();
 
-    broadcast_war_system_chat(&world, "Monster Challenge has been closed!");
+    broadcast_war_system_chat(&world, "Forgotten Temple has been closed!");
 
     info!("[{}] +ftclose: FT event closed", session.addr());
 
@@ -5361,7 +6362,7 @@ fn handle_ft_close(session: &mut ClientSession) -> anyhow::Result<()> {
 /// +lottery <ID> — start lottery event from DB settings.
 /// Loads lottery config from `lottery_event_settings` table by ID,
 /// then starts the lottery event.
-async fn handle_lottery_start(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+async fn handle_lottery_start<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     if args.is_empty() {
         send_help(session, "Usage: +lottery ID");
         return Ok(());
@@ -5442,7 +6443,7 @@ async fn handle_lottery_start(session: &mut ClientSession, args: &[&str]) -> any
 /// +lotteryclose — close the running lottery event, refunding participants.
 /// If active: refunds all participants' required items, resets state, broadcasts end.
 /// If not active: sends error message.
-fn handle_lottery_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_lottery_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     let lottery = world.lottery_process();
 
@@ -5556,7 +6557,7 @@ async fn handle_reset_loyalty(session: &mut ClientSession) -> anyhow::Result<()>
 
 /// +cropen <EventID> — start Collection Race event.
 /// Loads event definition from WorldState settings, then starts the event.
-fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+async fn handle_cr_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
     if args.is_empty() {
         send_help(session, "Usage: +cropen EventID");
         return Ok(());
@@ -5580,11 +6581,21 @@ fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
         }
     };
 
-    // Build rewards from event_rewards table (rewards are loaded from DB at startup)
-    // C++ uses LoadCollectionReward which populates pCollectionRaceEvent.RewardItemID/Count/Time
-    // Our start_event expects: &[(item_id, count, time, rate, session)]
-    // For simplicity, pass empty rewards — the event system loads them separately if available.
-    let rewards: Vec<(u32, u32, u32, u8, u8)> = Vec::new();
+    let repository = ko_db::repositories::collection_race::CollectionRaceRepository::new(
+        session.pool(),
+    );
+    let reward_rows = repository.load_rewards_by_event(event_id).await?;
+    let rewards: Vec<(u32, u32, u32, u8, u8)> = reward_rows
+        .iter()
+        .take(super::collection_race::CR_REWARD_SLOTS)
+        .map(|reward| (
+            reward.item_id.max(0) as u32,
+            reward.item_count.max(0) as u32,
+            reward.item_time.max(0) as u32,
+            reward.rate.clamp(0, 100) as u8,
+            reward.item_session.clamp(0, 255) as u8,
+        ))
+        .collect();
 
     let cr = world.collection_race_event();
     let now = std::time::SystemTime::now()
@@ -5598,6 +6609,7 @@ fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
     }
 
     broadcast_war_system_chat(&world, "Collection Race Event has started!");
+    super::collection_race::broadcast_start(&world, def.event_time_mins * 60);
     info!(
         "[{}] +cropen: started CR event '{}' (ID={})",
         session.addr(),
@@ -5609,7 +6621,7 @@ fn handle_cr_open(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
 }
 
 /// +crclose — close the active Collection Race event.
-fn handle_cr_close(session: &mut ClientSession) -> anyhow::Result<()> {
+fn handle_cr_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
     let world = session.world().clone();
     let cr = world.collection_race_event();
 
@@ -5671,6 +6683,84 @@ fn handle_npc_info(session: &mut ClientSession) -> anyhow::Result<()> {
         ),
     );
 
+    Ok(())
+}
+
+/// +drop <count> — C++ compatible selected NPC/monster drop tester.
+fn handle_drop_test(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let count: u16 = match args.first().and_then(|value| value.parse::<u16>().ok()) {
+        Some(count @ 1..=9999) => count,
+        _ => {
+            send_help(
+                session,
+                "Usage: select an NPC/monster and use +drop Count (1-9999)",
+            );
+            return Ok(());
+        }
+    };
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let target_id = world.with_session(sid, |h| h.target_id).unwrap_or(0);
+    if target_id < crate::npc::NPC_BAND {
+        send_help(session, "No NPC/monster targeted. Select one first.");
+        return Ok(());
+    }
+
+    let summary = match super::npc_loot::simulate_npc_drops(&world, sid, target_id, count) {
+        Ok(summary) => summary,
+        Err(message) => {
+            send_help(session, &message);
+            return Ok(());
+        }
+    };
+
+    send_help(
+        session,
+        &format!(
+            "--------------------{}--------------------",
+            summary.npc_name
+        ),
+    );
+    send_help(
+        session,
+        &format!("[Drop Test] Total Coins: {}", summary.coins),
+    );
+    world.gold_gain_with_bonus(sid, summary.coins.min(u32::MAX as u64) as u32);
+
+    for (item_id, item_count, item_name) in &summary.items {
+        send_help(
+            session,
+            &format!(
+                "[Drop Test] ItemName: {}, ItemID: {}, ItemCount: {}",
+                item_name, item_id, item_count
+            ),
+        );
+        let mut remaining = *item_count;
+        while remaining > 0 {
+            let batch = remaining.min(crate::world::ITEMCOUNT_MAX as u32) as u16;
+            if !world.give_item(sid, *item_id, batch) {
+                send_help(
+                    session,
+                    &format!(
+                        "[Drop Test] Inventory full; could not give {} x{}.",
+                        item_name, remaining
+                    ),
+                );
+                break;
+            }
+            remaining -= batch as u32;
+        }
+    }
+    send_help(session, "------------------------------------------");
+    info!(
+        "[{}] GM +drop: npc={} target_id={} rolls={} coins={} distinct_items={}",
+        session.addr(),
+        summary.npc_name,
+        target_id,
+        count,
+        summary.coins,
+        summary.items.len()
+    );
     Ok(())
 }
 
@@ -5816,8 +6906,8 @@ impl TempleEventKind {
 /// +chaosopen / +borderopen / +juraidopen — manually start a temple event.
 /// `BorderDefenceWarManuelOpening`, `JuraidMountainManuelOpening`.
 /// Validates timer opts, resets state, sets fields, broadcasts sign-up packet.
-fn handle_temple_event_open(
-    session: &mut ClientSession,
+fn handle_temple_event_open<C: GmCtx>(
+    session: &mut C,
     kind: TempleEventKind,
 ) -> anyhow::Result<()> {
     let world = session.world().clone();
@@ -5871,11 +6961,16 @@ fn handle_temple_event_open(
 
     // Broadcast sign-up packet
     let remaining_secs = (opts.sign as u16) * 60;
-    let pkt = crate::systems::event_room::build_event_start_broadcast(
-        kind.active_event_id(),
-        remaining_secs,
-    );
-    world.broadcast_to_all(Arc::new(pkt), None);
+    if matches!(kind, TempleEventKind::Juraid) {
+        crate::systems::event_room::broadcast_juraid_window(&world, remaining_secs);
+        crate::systems::event_system::broadcast_juraid_registration_notice(&world, remaining_secs);
+    } else {
+        let pkt = crate::systems::event_room::build_event_start_broadcast(
+            kind.active_event_id(),
+            remaining_secs,
+        );
+        world.broadcast_to_all(Arc::new(pkt), None);
+    }
 
     send_help(session, &format!("{} event started.", kind.name()));
     info!(
@@ -5890,12 +6985,139 @@ fn handle_temple_event_open(
     Ok(())
 }
 
+/// +juraidstart — skip the Juraid registration countdown and enter on next event tick.
+fn handle_juraid_event_start<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
+    use crate::systems::event_room::TempleEventType;
+
+    let world = session.world().clone();
+    let erm = &world.event_room_manager;
+    let Some(opts) = erm.get_vroom_opt(TempleEventKind::Juraid.vroom_index()) else {
+        send_help(session, "Juraid Mountain: timer options not loaded.");
+        return Ok(());
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let sign_secs = (opts.sign.max(0) as u64) * 60;
+    let play_secs = (opts.play.max(0) as u64) * 60;
+
+    let updated = erm.update_temple_event(|s| {
+        if s.active_event != TempleEventType::JuraidMountain as i16 {
+            return false;
+        }
+        if s.is_active {
+            return false;
+        }
+
+        s.start_time = now.saturating_sub(sign_secs);
+        s.sign_remain_seconds = now;
+        s.closed_time = now + play_secs;
+        true
+    });
+
+    if !updated {
+        send_help(session, "Juraid Mountain is not in registration phase.");
+        return Ok(());
+    }
+
+    let signed = erm.signed_up_count();
+    crate::systems::event_room::broadcast_event_counter(&world);
+    crate::systems::event_system::broadcast_juraid_force_start_notice(&world, signed);
+    send_help(
+        session,
+        "Juraid Mountain countdown skipped. Event will start on the next tick.",
+    );
+    info!(
+        "[{}] +juraidstart: countdown skipped (signed={})",
+        session.addr(),
+        signed
+    );
+
+    Ok(())
+}
+
+/// +utcstart [minutes] (or +utcopen) — start Under The Castle using the loaded DB spawn table.
+fn handle_under_castle_open<C: GmCtx>(session: &mut C, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let duration_minutes = args
+        .first()
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(180);
+    let spawn_count = world.utc_spawns().read().len();
+    if spawn_count == 0 {
+        send_help(
+            session,
+            "Under The Castle: monster_under_the_castle table is empty.",
+        );
+        return Ok(());
+    }
+
+    let state = world.under_the_castle_state();
+    if !crate::handler::under_castle::activate_event(
+        state,
+        duration_minutes,
+        crate::handler::under_castle::MIN_LEVEL_UNDER_CASTLE,
+        83,
+    ) {
+        send_help(
+            session,
+            "Under The Castle is already active or duration is invalid.",
+        );
+        return Ok(());
+    }
+
+    let msg = format!(
+        "Under The Castle has started. Duration: {} minute(s).",
+        duration_minutes
+    );
+    world.broadcast_to_all(
+        Arc::new(crate::systems::timed_notice::build_notice_packet(8, &msg)),
+        None,
+    );
+    send_help(session, &msg);
+    info!(
+        "[{}] +utcopen: Under The Castle started (duration={}min, spawns={})",
+        session.addr(),
+        duration_minutes,
+        spawn_count
+    );
+    Ok(())
+}
+
+/// +utcclose — stop Under The Castle on the next UTC timer tick.
+fn handle_under_castle_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let state = world.under_the_castle_state();
+    if !state.is_active.load(std::sync::atomic::Ordering::Relaxed) {
+        send_help(session, "Under The Castle is not active.");
+        return Ok(());
+    }
+
+    crate::handler::under_castle::force_stop_event(state);
+    world.broadcast_to_all(
+        Arc::new(crate::systems::timed_notice::build_notice_packet(
+            8,
+            "Under The Castle is closing.",
+        )),
+        None,
+    );
+    send_help(session, "Under The Castle close submitted.");
+    info!(
+        "[{}] +utcclose: Under The Castle close submitted",
+        session.addr()
+    );
+    Ok(())
+}
+
 /// +chaosclose / +borderclose / +juraidclose — manually close a temple event.
 /// `BorderDefenceWarManuelClosed`, `JuraidMountainManuelClosed`.
 /// Sets the manual close flag and timer finish control to trigger cleanup
 /// on the next event system tick.
-fn handle_temple_event_close(
-    session: &mut ClientSession,
+fn handle_temple_event_close<C: GmCtx>(
+    session: &mut C,
     kind: TempleEventKind,
 ) -> anyhow::Result<()> {
     let world = session.world().clone();
@@ -5915,7 +7137,20 @@ fn handle_temple_event_close(
     }
 
     if !is_active {
-        send_help(session, "Event is still in sign-up phase, not active yet.");
+        // still signing up: cancel the registration
+        erm.clear_signed_up_users();
+        erm.reset_temple_event();
+        if matches!(kind, TempleEventKind::Juraid) {
+            crate::systems::event_room::broadcast_juraid_window_close(&world);
+        }
+        world.broadcast_to_all(
+            Arc::new(crate::systems::timed_notice::build_notice_packet(
+                8,
+                &format!("{} registration was cancelled.", kind.name()),
+            )),
+            None,
+        );
+        send_help(session, &format!("{} registration cancelled.", kind.name()));
         return Ok(());
     }
 
@@ -5924,18 +7159,11 @@ fn handle_temple_event_close(
         return Ok(());
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // C++ sets manual_close + timer_finish_control, which triggers
-    // the normal event finish flow on next tick.
-    erm.update_temple_event(|s| {
-        s.manual_close = true;
-        s.timer_finish_control = true;
-        s.manual_closed_time = now;
-    });
+    // the event tick finishes the event (winners, rewards, kick) after the configured finish delay
+    if !crate::systems::event_system::manual_close(erm) {
+        send_help(session, "The event cannot be closed right now.");
+        return Ok(());
+    }
 
     send_help(session, &format!("{} manual close submitted.", kind.name()));
     info!(
@@ -6663,27 +7891,34 @@ mod tests {
 
     // ── Clear command tests ──────────────────────────────────────
 
-    /// Test WIZ_ITEM_MOVE refresh packet format for inventory clear.
+    /// Test +clear's per-slot WIZ_ITEM_COUNT_CHANGE packet format. A single bulk
+    /// WIZ_ITEM_MOVE refresh (the old approach) only updates derived equipment
+    /// stats client-side and leaves cleared bag items visible as ghosts — see
+    /// manes_survival.rs's cleanup_temporary_items_for_session for the same
+    /// finding, which is why +clear sends one packet per slot instead.
     #[test]
-    fn test_clear_item_move_packet_format() {
-        let mut refresh = Packet::new(Opcode::WizItemMove as u8);
-        refresh.write_u8(2); // type = inventory refresh
-        refresh.write_u8(1); // success
+    fn test_clear_item_count_change_packet_format() {
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(0); // slot_idx
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
 
-        assert_eq!(refresh.opcode, Opcode::WizItemMove as u8);
-        assert_eq!(refresh.data[0], 2);
-        assert_eq!(refresh.data[1], 1);
+        assert_eq!(pkt.opcode, Opcode::WizItemCountChange as u8);
+        // u16 + u8 + u8 + u32 + u32 + u8 + u16 + u32 + u32 + u16 = 25 bytes
+        assert_eq!(pkt.data.len(), 25);
     }
 
-    /// Test clear inventory slot data size (28 slots, 17 bytes each).
+    /// Test +clear sends one WIZ_ITEM_COUNT_CHANGE per bag slot (28 slots).
     #[test]
-    fn test_clear_slot_data_size() {
-        // Each cleared slot writes: u32 + u16 + u16 + u8 + u16 + u32 + u32 = 17 bytes
-        let slot_size = 4 + 2 + 2 + 1 + 2 + 4 + 4;
-        assert_eq!(slot_size, 19); // 19 bytes per slot (corrected from comment)
-                                   // Total for 28 slots = 28 * 19 = 532 bytes + 2 header bytes
-        let total = 28 * slot_size + 2;
-        assert_eq!(total, 534);
+    fn test_clear_slot_count() {
+        assert_eq!(super::super::HAVE_MAX, 28);
     }
 
     // ── Bot spawn/kill command parsing tests ──────────────────────
@@ -7018,27 +8253,25 @@ mod tests {
         assert!(over_limit > max_words);
     }
 
-    /// Test +clearinventory packet format (WIZ_ITEM_MOVE sub 2, type 1).
+    /// Test +clearinventory's per-slot WIZ_ITEM_COUNT_CHANGE packet format —
+    /// same fix and same reasoning as +clear above (test_clear_item_count_change_packet_format).
     #[test]
     fn test_clearinventory_packet_format() {
-        let mut result = Packet::new(Opcode::WizItemMove as u8);
-        result.write_u8(2); // sub-opcode
-        result.write_u8(1); // type
-        for _ in 0..super::super::HAVE_MAX {
-            result.write_u32(0); // nNum
-            result.write_u16(0); // sDuration
-            result.write_u16(0); // sCount
-            result.write_u8(0); // bFlag
-            result.write_u16(0); // sRemainingRentalTime
-            result.write_u32(0); // reserved
-            result.write_u32(0); // nExpirationTime
-        }
+        let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
+        pkt.write_u16(1); // count_type
+        pkt.write_u8(1); // slot_section: inventory
+        pkt.write_u8(0); // slot_idx
+        pkt.write_u32(0); // item_id = 0 (removed)
+        pkt.write_u32(0); // count = 0
+        pkt.write_u8(0); // bNewItem
+        pkt.write_u16(0); // durability
+        pkt.write_u32(0); // reserved
+        pkt.write_u32(0); // expiration
+        pkt.write_u16(0); // v2625 SendStackChange trailing field
 
-        let _r = PacketReader::new(&result.data);
-        assert_eq!(result.opcode, Opcode::WizItemMove as u8);
-        // sub=2, type=1, then 28 items × 19 bytes each = 2 + 28*19 = 534 bytes
-        // Each item: u32(4) + u16(2) + u16(2) + u8(1) + u16(2) + u32(4) + u32(4) = 19 bytes
-        assert_eq!(result.data.len(), 2 + super::super::HAVE_MAX * 19);
+        let _r = PacketReader::new(&pkt.data);
+        assert_eq!(pkt.opcode, Opcode::WizItemCountChange as u8);
+        assert_eq!(pkt.data.len(), 25);
     }
 
     /// Test +clearinventory slot range constants.
@@ -8298,6 +9531,7 @@ mod tests {
             "tournamentstart",
             "tournamentclose",
             "cswstart",
+            "cswfast",
             "cswclose",
             "bifroststart",
             "bifrostclose",
@@ -8436,18 +9670,13 @@ mod tests {
         assert!(aliases.iter().all(|a| a.ends_with("botspawn")));
     }
 
-    /// 24+ reload stub commands return "hot-reload not supported".
+    /// All listed reload stub commands return "hot-reload not supported".
     #[test]
     fn test_reload_commands_stub_count() {
         let reload_cmds = [
             "reloadnotice",
-            "reloadtables",
-            "reloadtables2",
-            "reloadtables3",
             "reloadmagics",
             "reloadquests",
-            "reloaddrops",
-            "reloaddrops2",
             "reloadkings",
             "reloadtitle",
             "reloadpus",
@@ -8469,7 +9698,7 @@ mod tests {
             "reload_table",
             "aireset",
         ];
-        assert!(reload_cmds.len() >= 24);
+        assert!(reload_cmds.len() >= 23);
         // All start with "reload" or "aireset"
         assert!(reload_cmds
             .iter()
@@ -8581,6 +9810,7 @@ mod tests {
             "tournamentstart",
             "tournamentclose",
             "cswstart",
+            "cswfast",
             "cswclose",
             "bifroststart",
             "bifrostclose",
@@ -8675,4 +9905,289 @@ mod tests {
         // Gap between CUTOFF(5) and SUMMON(7): 1 unused opcode (6)
         assert_eq!(OPERATOR_SUMMON - OPERATOR_CUTOFF, 2);
     }
+}
+
+/// +manesopen — open the verified 2615 registration window without spawning monsters.
+fn handle_manes_survival_open<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    if !world.manes_survival_manager.open_registration() {
+        let state = if world.manes_survival_manager.is_active() {
+            "active"
+        } else {
+            "registration is already open"
+        };
+        send_help(session, &format!("Manes Survival {state}."));
+        return Ok(());
+    }
+
+    let participants = world
+        .manes_survival_manager
+        .participant_count()
+        .min(u16::MAX as usize) as u16;
+    let open = Arc::new(crate::handler::survival::build_registration_open(
+        crate::handler::survival::REGISTRATION_DURATION_SECONDS,
+        participants,
+    ));
+    for sid in world.get_in_game_session_ids() {
+        world.send_to_session_arc(sid, Arc::clone(&open));
+    }
+    crate::handler::survival::broadcast_registration_status(&world, 0);
+
+    send_help(
+        session,
+        "Manes Survival registration opened; the Apply window was sent to online players.",
+    );
+    info!("[{}] +manesopen: registration UI opened", session.addr());
+    Ok(())
+}
+
+/// +manesstart — test-only transition from registration to the active monster phase.
+fn handle_manes_survival_start<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    match world.manes_survival_manager.start_registered_event(&world) {
+        Ok((0, _)) => send_help(session, "Manes Survival is already active."),
+        Ok((count, participants)) => {
+            send_help(
+                session,
+                &format!(
+                    "Manes Survival started with {} registered participants and {count} monsters across zones 57-60.",
+                    participants
+                ),
+            );
+            info!(
+                "[{}] +manesstart: placed {} participants and spawned {} runtime monsters across zones 57-60",
+                session.addr(),
+                participants,
+                count
+            );
+        }
+        Err(error) => {
+            warn!("[{}] +manesstart failed: {error:#}", session.addr());
+            send_help(session, &format!("Manes Survival could not start: {error}"));
+        }
+    }
+    Ok(())
+}
+
+/// +manesclose — close registration and remove only Manes-owned runtime NPCs.
+fn handle_manes_survival_close<C: GmCtx>(session: &mut C) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    if !world.manes_survival_manager.is_active()
+        && !world.manes_survival_manager.is_registration_open()
+    {
+        send_help(
+            session,
+            "Manes Survival is not active and registration is closed.",
+        );
+        return Ok(());
+    }
+
+    let active = world.manes_survival_manager.is_active();
+    let (rewarded, failed) = if active {
+        world.manes_survival_manager.finish_event(&world)
+    } else {
+        world.manes_survival_manager.stop(&world);
+        (0, 0)
+    };
+    send_help(
+        session,
+        &format!(
+            "Manes Survival stopped; rewards delivered to {rewarded} participant(s), failed={failed}. Participants will exit in {} seconds.",
+            crate::systems::manes_survival::MANES_EXIT_DELAY_SECONDS
+        ),
+    );
+    info!(
+        "[{}] +manesclose: Manes Survival stopped rewarded={} failed={}",
+        session.addr(),
+        rewarded,
+        failed
+    );
+    Ok(())
+}
+
+
+/// +aggro [level <n> | assist <metres> | gm on|off] - monster behaviour (monster_behavior.cfg):
+/// monsters of level >= n attack passing players, hit monsters call their kind within `metres`,
+/// `gm on` lets monsters attack GM characters too.
+fn handle_aggro(session: &mut ClientSession, args: &[&str]) {
+    use crate::monster_behavior as mb;
+    match (args.first().map(|a| a.to_ascii_lowercase()), args.get(1)) {
+        (Some(k), Some(v)) if k == "level" => {
+            if let Ok(n) = v.parse::<u32>() {
+                mb::set_aggro_min_level(n);
+            }
+        }
+        (Some(k), Some(v)) if k == "assist" => {
+            if let Ok(m) = v.parse::<f32>() {
+                mb::set_assist_range(m);
+            }
+        }
+        (Some(k), Some(v)) if k == "gm" => mb::set_gm_aggro(v.eq_ignore_ascii_case("on")),
+        _ => {}
+    }
+    let changed = session.world().reapply_monster_behavior();
+    send_help(
+        session,
+        &format!(
+            "Monsters level {}+ are aggressive, assist range {} m, GM aggro {} ({} monsters updated). Use: +aggro level <n> | assist <m> | gm on/off",
+            mb::aggro_min_level(),
+            mb::assist_range(),
+            if mb::gm_aggro() { "ON" } else { "OFF" },
+            changed
+        ),
+    );
+}
+
+/// +killnear [radius=50] - really kill every monster within `radius` metres of the GM (death
+/// broadcast, experience, drops/loot box), instead of just removing them.
+async fn handle_kill_near(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let radius = args
+        .first()
+        .and_then(|a| a.parse::<f32>().ok())
+        .unwrap_or(50.0)
+        .clamp(1.0, 100.0);
+    let Some(pos) = world.get_position(sid) else {
+        return Ok(());
+    };
+    let room = world.get_event_room(sid);
+    let mut killed = 0u32;
+    for npc in world.npcs_near(pos.zone_id, pos.x, pos.z, radius, room) {
+        if !npc.is_monster || world.is_npc_dead(npc.nid) {
+            continue;
+        }
+        let Some(tmpl) = world.get_npc_template(npc.proto_id, true) else {
+            continue;
+        };
+        world.update_npc_hp(npc.nid, 0);
+        if !world.is_npc_dead(npc.nid) {
+            continue; // protected (e.g. a sealed boss)
+        }
+        super::attack::handle_npc_death(&world, sid, npc.nid, &npc, &tmpl, false).await;
+        killed += 1;
+    }
+    send_help(session, &format!("{killed} monster(s) within {radius} m killed."));
+    Ok(())
+}
+
+
+/// +ekle <npc/canavar SID> [adet=1] - spawns `adet` of that NPC/monster at the GM's own current
+/// position right now (no restart needed to see them), and writes one npc_spawn row (num_npc=
+/// adet) so the same spot keeps respawning them after a server restart too -- same table and
+/// shape as the map editor's own "add spawn" (crates/ko-admin/src/world.rs::spawn_create).
+async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let Some(npc_id) = args.first().and_then(|a| a.parse::<u16>().ok()) else {
+        send_help(session, "Kullanım: +ekle <npc/canavar SID> [adet=1]");
+        return Ok(());
+    };
+    let count = args
+        .get(1)
+        .and_then(|a| a.parse::<u16>().ok())
+        .unwrap_or(1)
+        .clamp(1, 50);
+    let Some(pos) = world.get_position(sid) else {
+        return Ok(());
+    };
+    let is_monster = if world.get_npc_template(npc_id, true).is_some() {
+        true
+    } else if world.get_npc_template(npc_id, false).is_some() {
+        false
+    } else {
+        send_help(session, &format!("#{npc_id} bulunamadı (ne canavar ne NPC tablosunda)."));
+        return Ok(());
+    };
+
+    let pool = session.pool().clone();
+    let spawn_id: Option<i32> = sqlx::query_scalar(
+        "INSERT INTO npc_spawn(zone_id,npc_id,is_monster,act_type,left_x,top_z,num_npc,spawn_range,regen_time,direction) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+    )
+    .bind(pos.zone_id as i16)
+    .bind(npc_id as i16)
+    .bind(is_monster)
+    .bind(if is_monster { 1i16 } else { 0i16 })
+    .bind(pos.x as i32)
+    .bind(pos.z as i32)
+    .bind(count as i16)
+    .bind(5i16)
+    .bind(30i16)
+    .bind(0i32)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+
+    let spawned = world.spawn_event_npc(npc_id, is_monster, pos.zone_id, pos.x, pos.z, count);
+    let name = world
+        .get_npc_template(npc_id, is_monster)
+        .map(|t| t.name.clone())
+        .unwrap_or_default();
+
+    send_help(
+        session,
+        &match spawn_id {
+            Some(id) => format!(
+                "{count}x {name} (#{npc_id}) eklendi, {} tanesi hemen göründü. Spawn kaydı #{id} (veritabanına yazıldı, kalıcı -- sunucu yeniden başlasa da kalır).",
+                spawned.len()
+            ),
+            None => format!(
+                "{count}x {name} (#{npc_id}) şimdilik göründü ({} tanesi), ama veritabanına yazılamadı -- sunucu yeniden başlarsa kaybolur.",
+                spawned.len()
+            ),
+        },
+    );
+    Ok(())
+}
+
+/// +eventbotfill <count> - GM panel "Bot Type 6 (event)". Does the sensible thing for the event the
+/// GM is in: Ultima rooms get fighting bots, an open Ultima registration gets bot registrants, any
+/// other zone gets PK-style bots of the opposite nation.
+async fn handle_event_bot_fill(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let sid = session.session_id();
+    let count = args.first().and_then(|a| a.parse::<usize>().ok()).unwrap_or(5).clamp(1, 200);
+    let class = rand::random::<u16>() % 4 + 1;
+
+    if world.get_event_room(sid) > 0
+        && world.get_position(sid).is_some_and(|p| p.zone_id == crate::world::types::ZONE_DUNGEON_DEFENCE)
+    {
+        let msg = super::dungeon_defence::gm_spawn_bots(&world, sid, count, class);
+        send_help(session, &msg);
+        return Ok(());
+    }
+
+    let in_room = world.get_event_room(sid) >= 200
+        && world.get_position(sid).is_some_and(|p| p.zone_id == super::ultima::ZONE_ULTIMA);
+    if in_room {
+        let msg = super::ultima::gm_spawn_bots(&world, sid, count, class);
+        send_help(session, &msg);
+        return Ok(());
+    }
+    if let Some(msg) = super::ultima::gm_registration_bots(&world, count) {
+        send_help(session, &msg);
+        return Ok(());
+    }
+
+    // any other event / zone: PK bots around the GM. Half are of the GM's nation (they form
+    // parties and invite players who type "party" / open Seek), half are the enemy.
+    let my_nation = world.get_character_info(sid).map(|c| c.nation).unwrap_or(1);
+    let (ally, enemy) = if my_nation == 1 { ("1", "2") } else { ("2", "1") };
+    let allies = (count + 1) / 2;
+    let enemies = count - allies;
+    for (nation, n) in [(ally, allies), (enemy, enemies)] {
+        if n == 0 {
+            continue;
+        }
+        let class_s = ((rand::random::<u16>() % 4) + 1).to_string();
+        let count_s = n.to_string();
+        handle_bot_spawn(
+            session,
+            &[class_s.as_str(), "83", nation, count_s.as_str()],
+            crate::world::BotAiState::Pk,
+        )?;
+    }
+    Ok(())
 }

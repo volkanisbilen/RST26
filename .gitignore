@@ -6,6 +6,7 @@
 # IDE
 .idea/
 .vscode/
+*.vcxproj.user
 *.swp
 *.swo
 *~
@@ -53,8 +54,24 @@ Binary/
 *.exe
 *.dll
 
+# Packaged launcher patch set (built locally by package_patch.py, uploaded straight to the VPS)
+NTT2625-d3d9proxy/client_patch_release/
+
+# Launcher build output (MSBuild intermediates / Release binaries)
+NTT2625-d3d9proxy/Launcher/Intermediate/
+NTT2625-d3d9proxy/Launcher/Release_x86/
+NTT2625-d3d9proxy/Launcher/Release_x64/
+NTT2625-d3d9proxy/Launcher/x64/
+NTT2625-d3d9proxy/Launcher/.vs/
+
 # Config with secrets (template is committed, actual is not)
 config/server.local.toml
+web-panel/public_html/config.php
+
+# Uploaded images (content/news) -- live on the hosting, not in git
+web-panel/public_html/uploads/*
+!web-panel/public_html/uploads/.gitkeep
+!web-panel/public_html/uploads/.htaccess
 
 # Decompilation output
 docs/decompiled/
@@ -98,3 +115,25 @@ db_backup/
 # Runtime logs and dumps
 *.log
 *.dmp
+
+# Local deployment staging and client executable backups
+/.codex-tmp/
+*.exe.pus-backup
+
+# Build leftovers and editor backups (never part of the repo)
+*.obj
+*.exp
+*.lib
+*.before_*
+*_before_ref/
+*.dll.new
+.vs/
+NTT2625-d3d9proxy/obj/
+_obj/
+__junk_list.txt
+
+# Review packages generated on request
+docs/ko-admin-paket/
+docs/ko-admin-paket.zip
+docs/rift_review/
+docs/rift_review.zip

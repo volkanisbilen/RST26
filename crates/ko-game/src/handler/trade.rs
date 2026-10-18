@@ -95,16 +95,26 @@ async fn exchange_req(
 
     // Validate target exists, is in-game, same zone, not busy
     // Single DashMap read per player: char_info + position + account_id (3 reads → 1)
-    let (my_info, my_pos, my_account) = match world.with_session(sid, |h| {
-        h.character.as_ref().map(|ch| (ch.clone(), h.position, h.account_id.clone()))
-    }).flatten() {
+    let (my_info, my_pos, my_account) = match world
+        .with_session(sid, |h| {
+            h.character
+                .as_ref()
+                .map(|ch| (ch.clone(), h.position, h.account_id.clone()))
+        })
+        .flatten()
+    {
         Some(v) => v,
         None => return send_cancel(session).await,
     };
 
-    let (target_info, target_pos, target_account) = match world.with_session(target_id, |h| {
-        h.character.as_ref().map(|ch| (ch.clone(), h.position, h.account_id.clone()))
-    }).flatten() {
+    let (target_info, target_pos, target_account) = match world
+        .with_session(target_id, |h| {
+            h.character
+                .as_ref()
+                .map(|ch| (ch.clone(), h.position, h.account_id.clone()))
+        })
+        .flatten()
+    {
         Some(v) => v,
         None => return send_cancel(session).await,
     };
@@ -355,13 +365,21 @@ async fn exchange_add(
     {
         let (my_account, my_name) = world
             .with_session(sid, |h| {
-                let name = h.character.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+                let name = h
+                    .character
+                    .as_ref()
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
                 (h.account_id.clone(), name)
             })
             .unwrap_or_default();
         let (partner_account, partner_name) = world
             .with_session(partner_sid, |h| {
-                let name = h.character.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+                let name = h
+                    .character
+                    .as_ref()
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
                 (h.account_id.clone(), name)
             })
             .unwrap_or_default();
@@ -1052,7 +1070,11 @@ async fn send_add_fail(session: &mut ClientSession) -> anyhow::Result<()> {
 /// Send a full inventory refresh packet (WIZ_ITEM_MOVE type=2) after exchange cancel.
 /// resyncs its inventory UI after items are returned from the exchange.
 /// Calls `SetSpecialItemBuffer` per slot for Cypher Ring / pet data (C++ line 604).
-pub async fn send_inventory_refresh(world: &crate::world::WorldState, pool: &ko_db::DbPool, sid: u16) {
+pub async fn send_inventory_refresh(
+    world: &crate::world::WorldState,
+    pool: &ko_db::DbPool,
+    sid: u16,
+) {
     let rebirth_level = world
         .get_character_info(sid)
         .map(|c| c.rebirth_level)
@@ -2144,7 +2166,13 @@ mod tests {
     #[test]
     fn test_exchange_client_vs_server_opcodes() {
         // Client sends these
-        let client_ops = [EXCHANGE_REQ, EXCHANGE_AGREE, EXCHANGE_ADD, EXCHANGE_DECIDE, EXCHANGE_CANCEL];
+        let client_ops = [
+            EXCHANGE_REQ,
+            EXCHANGE_AGREE,
+            EXCHANGE_ADD,
+            EXCHANGE_DECIDE,
+            EXCHANGE_CANCEL,
+        ];
         assert_eq!(client_ops.len(), 5);
         // Server sends these (not handled from client)
         let server_ops = [EXCHANGE_OTHERADD, EXCHANGE_OTHERDECIDE, EXCHANGE_DONE];

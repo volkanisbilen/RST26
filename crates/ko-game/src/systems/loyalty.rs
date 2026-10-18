@@ -590,6 +590,70 @@ pub fn loyalty_divide(
     );
 }
 
+/// PvP-kill NP for an opposing-nation PK bot kill — the bot-kill counterpart
+/// to `dead::pvp_loyalty_on_death` (which calls `get_character_info` on the
+/// victim and so silently no-ops for a bot, since bots have no
+/// `CharacterInfo`). Takes the bot's nation directly instead of looking it
+/// up, and only grants NP to the killer side — bots have no persistent
+/// loyalty to deduct from, unlike a real player victim.
+/// Zone-gating for WHERE a bot kill is eligible at all is the caller's
+/// responsibility, matching the existing CR_PK_BOT_KILL_PROTO_ID call sites;
+/// this only re-checks the zone's own `give_loyalty` ability flag.
+pub fn pvp_loyalty_on_bot_kill(world: &WorldState, killer_id: SessionId, victim_nation: u8) {
+    let killer = match world.get_character_info(killer_id) {
+        Some(c) => c,
+        None => return,
+    };
+    if victim_nation == killer.nation {
+        return;
+    }
+
+    let killer_zone = world
+        .get_position(killer_id)
+        .map(|p| p.zone_id)
+        .unwrap_or(0);
+    let zone_gives_loy = world
+        .get_zone(killer_zone)
+        .and_then(|z| z.zone_info.as_ref().map(|zi| zi.abilities.give_loyalty))
+        .unwrap_or(false);
+    if !zone_gives_loy {
+        return;
+    }
+
+    let rates = LoyaltyRates::default();
+    let in_party = world.is_in_party(killer_id);
+    if in_party {
+        if let Some(pid) = world.get_party_id(killer_id) {
+            if let Some(party) = world.get_party(pid) {
+                let members: Vec<SessionId> = party.members.iter().filter_map(|&m| m).collect();
+                let total_members = members.len() as u8;
+                if total_members > 0 {
+                    let source = get_loyalty_divide_source(killer_zone, total_members, &rates);
+                    if source != 0 {
+                        for &member_id in &members {
+                            let alive = world
+                                .get_character_info(member_id)
+                                .is_some_and(|c| c.hp > 0);
+                            if alive {
+                                send_loyalty_change(world, member_id, source as i32, true, false, false);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    if is_excluded_pvp_zone(killer_zone) {
+        return;
+    }
+    let (source, _target) = get_zone_loyalty_rates(killer_zone, &rates);
+    if source != 0 {
+        send_loyalty_change(world, killer_id, source as i32, true, false, false);
+    }
+}
+
 /// Get zone-based loyalty rates for a solo kill.
 fn get_zone_loyalty_rates(zone_id: u16, rates: &LoyaltyRates) -> (i16, i16) {
     if zone_id == ZONE_ARDREAM {

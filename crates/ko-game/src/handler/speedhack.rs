@@ -274,7 +274,11 @@ mod tests {
     #[test]
     fn test_all_non_rogue_classes() {
         for base in [1u16, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15] {
-            assert!(!matches!(base, 2 | 7 | 8), "base {} should NOT be rogue", base);
+            assert!(
+                !matches!(base, 2 | 7 | 8),
+                "base {} should NOT be rogue",
+                base
+            );
         }
     }
 
@@ -285,9 +289,9 @@ mod tests {
         let mut pkt = ko_protocol::Packet::new(Opcode::WizMove as u8);
         pkt.write_u16(2500); // warp_x
         pkt.write_u16(3000); // warp_z
-        pkt.write_u16(0);    // Y
-        pkt.write_i16(0);    // speed
-        pkt.write_u8(2);     // echo = stop
+        pkt.write_u16(0); // Y
+        pkt.write_i16(0); // speed
+        pkt.write_u8(2); // echo = stop
 
         let mut r = PacketReader::new(&pkt.data);
         assert_eq!(r.read_u16(), Some(2500));

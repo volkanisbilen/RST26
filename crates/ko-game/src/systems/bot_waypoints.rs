@@ -5,13 +5,31 @@
 //! Data format: each waypoint is `(karus_x, karus_z, elmo_x, elmo_z)`.
 //! A `(0, 0)` coordinate means the waypoint is invalid for that nation.
 
-use crate::world::types::{ZONE_ARDREAM, ZONE_RONARK_LAND};
+use crate::world::types::{ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
 use crate::world::NATION_KARUS;
 
 // ── Route count per zone ────────────────────────────────────────────────
 
 /// Number of patrol routes for Ronark Land.
 const RONARK_ROUTE_COUNT: u8 = 10;
+
+/// Compact Ronark bowl circuit. Runtime PK bots use these points instead of
+/// repeatedly travelling from one nation base to the other. Route ID rotates
+/// the starting point and nations walk the loop in opposite directions.
+const RONARK_BOWL: [(i16, i16); 12] = [
+    (1024, 850),
+    (1110, 875),
+    (1170, 935),
+    (1195, 1024),
+    (1170, 1110),
+    (1110, 1170),
+    (1024, 1195),
+    (935, 1170),
+    (875, 1110),
+    (850, 1024),
+    (875, 935),
+    (935, 875),
+];
 
 /// Number of patrol routes for Ardream.
 const ARDREAM_ROUTE_COUNT: u8 = 10;
@@ -571,9 +589,15 @@ const ARDREAM_ROUTES: [&[(i16, i16, i16, i16)]; 10] = [
 
 /// Select a random patrol route for the given zone.
 /// Returns a route ID (1-based) or 0 if the zone has no routes.
+///
+/// Ronark Land Base (73) was missing from this match entirely, which left
+/// every zone-73 PK bot with `move_route == 0` and therefore permanently
+/// frozen at spawn. It has no surveyed route table of its own, so it reuses
+/// Ronark Land's route count as the rotation seed for its own local patrol
+/// orbit (see `get_ronark_base_orbit_waypoint`).
 pub fn random_route(zone_id: u16) -> u8 {
     let count = match zone_id {
-        ZONE_RONARK_LAND => RONARK_ROUTE_COUNT,
+        ZONE_RONARK_LAND | ZONE_RONARK_LAND_BASE => RONARK_ROUTE_COUNT,
         ZONE_ARDREAM => ARDREAM_ROUTE_COUNT,
         _ => return 0,
     };
@@ -638,11 +662,329 @@ pub fn get_waypoint(zone_id: u16, route: u8, state: u8, nation: u8) -> Option<(f
     Some((x as f32, z as f32))
 }
 
+/// Return a smooth Ronark bowl patrol point. Route rotates the starting point
+/// so a wave does not stack, while nations walk the circuit in opposite
+/// directions and naturally encounter each other.
+pub fn get_bowl_waypoint(route: u8, state: u8, nation: u8) -> Option<(f32, f32)> {
+    let len = RONARK_BOWL.len();
+    let route_offset = route.saturating_sub(1) as usize % len;
+    let state_offset = state.checked_sub(1)? as usize;
+    if state_offset >= len {
+        return None;
+    }
+    let forward = (route_offset + state_offset) % len;
+    let index = if nation == NATION_KARUS {
+        forward
+    } else {
+        (len - forward) % len
+    };
+    let (x, z) = RONARK_BOWL[index];
+    Some((x as f32, z as f32))
+}
+
+pub const fn bowl_waypoint_count() -> u8 {
+    RONARK_BOWL.len() as u8
+}
+
+/// Ronark Land Base (73) has no surveyed route table of its own, and its
+/// nation spawn pockets turned out NOT to be connected to Ronark Land's bowl
+/// on `freezone_c.smd` (`find_bot_path` reports no route at all between
+/// them — see `ronark_land_base_orbit_is_reachable_from_spawn`). Bots there
+/// instead loop on a small ring around their own spawn point; a radius of
+/// 100 was empirically confirmed fully reachable (24/24 probe points) from
+/// both nation spawns against the real map data -- reachability starts
+/// degrading past ~130 (probed up to 250). Centers must match
+/// `get_bot_respawn_position(ZONE_RONARK_LAND_BASE, _)`.
+const RONARK_BASE_ORBIT_RADIUS: f32 = 100.0;
+const RONARK_BASE_ORBIT_POINTS: usize = 12;
+const RONARK_BASE_KARUS_CENTER: (f32, f32) = (515.0, 104.0);
+const RONARK_BASE_ELMO_CENTER: (f32, f32) = (513.0, 916.0);
+
+/// Return a Ronark Land Base local patrol orbit point, analogous to
+/// `get_bowl_waypoint` but centered on the bot's own nation spawn instead of
+/// a shared bowl.
+pub fn get_ronark_base_orbit_waypoint(route: u8, state: u8, nation: u8) -> Option<(f32, f32)> {
+    let state_offset = state.checked_sub(1)? as usize;
+    if state_offset >= RONARK_BASE_ORBIT_POINTS {
+        return None;
+    }
+    let route_offset = route.saturating_sub(1) as usize % RONARK_BASE_ORBIT_POINTS;
+    let index = (route_offset + state_offset) % RONARK_BASE_ORBIT_POINTS;
+    let (cx, cz) = if nation == NATION_KARUS {
+        RONARK_BASE_KARUS_CENTER
+    } else {
+        RONARK_BASE_ELMO_CENTER
+    };
+    let angle = index as f32 / RONARK_BASE_ORBIT_POINTS as f32 * std::f32::consts::TAU;
+    Some((
+        cx + angle.cos() * RONARK_BASE_ORBIT_RADIUS,
+        cz + angle.sin() * RONARK_BASE_ORBIT_RADIUS,
+    ))
+}
+
+pub const fn ronark_base_orbit_point_count() -> u8 {
+    RONARK_BASE_ORBIT_POINTS as u8
+}
+
 use rand::Rng;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::pathfind::find_bot_path;
+    use crate::world::NATION_ELMORAD;
+    use crate::zone::MapData;
+    use ko_protocol::smd::SmdFile;
+    use std::path::Path;
+
+    #[test]
+    fn ronark_pk_patrol_points_can_be_projected_to_safe_reachable_tiles() {
+        let smd_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_b.smd");
+        let map = MapData::new(SmdFile::load(&smd_path).expect("load Ronark Land SMD"));
+        let starts = [(1050.0, 842.0), (886.0, 1102.0)];
+        for (x, z) in starts {
+            let (mut from_x, mut from_z) =
+                crate::systems::pathfind::nearest_bot_point(&map, x, z, 8)
+                    .expect("find a walkable Ronark bowl spawn tile");
+            let mut reachable_points = 0;
+            for &(raw_x, raw_z) in &RONARK_BOWL {
+                let (goal_x, goal_z) = crate::systems::pathfind::nearest_bot_point(
+                    &map,
+                    raw_x as f32,
+                    raw_z as f32,
+                    8,
+                )
+                .expect("find a safe tile near every patrol point");
+                let result = find_bot_path(&map, from_x, from_z, goal_x, goal_z);
+                if result.found {
+                    reachable_points += 1;
+                    from_x = goal_x;
+                    from_z = goal_z;
+                }
+            }
+            assert!(reachable_points >= 4, "only {reachable_points} Ronark patrol destinations are reachable from spawn ({x},{z})");
+        }
+    }
+
+    /// Regression test: Ardream's `freezone_a.smd` once had a garbage
+    /// collision face that rasterized as "blocked" across virtually the
+    /// whole bot nav grid (see the `smd.rs` parser fix), leaving zone-72 PK
+    /// bots with no walkable step anywhere, including right at their own
+    /// spawn point. Confirm both nation spawns are still walkable and most
+    /// of the grid is not blocked.
+    #[test]
+    fn ardream_spawns_are_bot_walkable() {
+        let smd_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_a.smd");
+        let smd = SmdFile::load(&smd_path).expect("load Ardream SMD");
+        let blocked_ratio = smd.bot_blocked.iter().filter(|&&b| b).count() as f64 / smd.bot_blocked.len() as f64;
+        assert!(
+            blocked_ratio < 0.5,
+            "Ardream bot_blocked ratio should be well under 50%, got {:.1}%",
+            blocked_ratio * 100.0
+        );
+        let map = MapData::new(smd);
+        for (x, z) in [(851.0, 136.0), (190.0, 897.0)] {
+            assert!(
+                crate::systems::pathfind::nearest_bot_point(&map, x, z, 8).is_some(),
+                "Ardream spawn ({x},{z}) should have a walkable bot tile nearby"
+            );
+        }
+    }
+
+    /// Ardream (zone 72) PK bots should be able to reach a reasonable number
+    /// of their own patrol-route waypoints from spawn — otherwise they sit
+    /// frozen even though a route was assigned.
+    #[test]
+    fn ardream_patrol_points_are_reachable_from_spawn() {
+        let smd_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_a.smd");
+        let map = MapData::new(SmdFile::load(&smd_path).expect("load Ardream SMD"));
+        let starts = [(851.0, 136.0, 1u8), (190.0, 897.0, 2u8)];
+        for (x, z, nation) in starts {
+            let (mut from_x, mut from_z) = crate::systems::pathfind::nearest_bot_point(&map, x, z, 8)
+                .expect("find a walkable Ardream spawn tile");
+            let mut reachable_points = 0;
+            let mut total_points = 0;
+            for route in 1..=10u8 {
+                for state in 1..=14u8 {
+                    let Some((raw_x, raw_z)) = get_waypoint(ZONE_ARDREAM, route, state, nation) else {
+                        continue;
+                    };
+                    total_points += 1;
+                    if let Some((goal_x, goal_z)) =
+                        crate::systems::pathfind::nearest_bot_point(&map, raw_x, raw_z, 8)
+                    {
+                        if find_bot_path(&map, from_x, from_z, goal_x, goal_z).found {
+                            reachable_points += 1;
+                            from_x = goal_x;
+                            from_z = goal_z;
+                        }
+                    }
+                }
+            }
+            assert!(
+                reachable_points * 2 >= total_points,
+                "only {reachable_points}/{total_points} Ardream patrol waypoints reachable from ({x},{z})"
+            );
+        }
+    }
+
+    // ── Zone 72/73 PK bot spawn tiles ───────────────────────────────────
+    //
+    // `spawn_pk_bot_wave` places bots at `get_bot_respawn_position` (nation
+    // base + a random 0..=5 offset on each axis) without projecting onto the
+    // bot nav grid. On the real maps part of that 6x6 box is blocked: 8/36 for
+    // Ardream Karus and 18/36 for Ronark Land Base Elmorad. A bot that starts
+    // on a blocked cell can never move (`find_bot_path` rejects a blocked start
+    // and `is_bot_move_valid` rejects the first step), so it cycles through all
+    // its waypoints, "completes" the route and re-rolls it forever, in place.
+
+    fn load_pk_map(file: &str) -> MapData {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map").join(file);
+        MapData::new(SmdFile::load(&p).expect("load SMD"))
+    }
+
+    /// Every possible raw spawn tile must project (as `spread_pk_spawn` does)
+    /// onto a walkable tile that can path to the nation's patrol area.
+    #[test]
+    fn pk_wave_spawn_offsets_project_to_connected_walkable_tiles() {
+        use crate::systems::pathfind::nearest_bot_point;
+        for (zone, file) in [(ZONE_ARDREAM, "freezone_a.smd"), (ZONE_RONARK_LAND_BASE, "freezone_c.smd")] {
+            let map = load_pk_map(file);
+            for nation in [NATION_KARUS, NATION_ELMORAD] {
+                let (bx, bz) = match (zone, nation) {
+                    (ZONE_ARDREAM, NATION_KARUS) => (851, 136),
+                    (ZONE_ARDREAM, _) => (190, 897),
+                    (_, NATION_KARUS) => (515, 104),
+                    _ => (513, 916),
+                };
+                // First patrol goal of route 1 that is itself reachable from the
+                // nation's base tile.
+                let (base_x, base_z) = nearest_bot_point(&map, bx as f32, bz as f32, 8).unwrap();
+                let goal = (1..=14u8)
+                    .filter_map(|st| {
+                        if zone == ZONE_ARDREAM {
+                            get_waypoint(zone, 1, st, nation)
+                        } else {
+                            get_ronark_base_orbit_waypoint(1, st, nation)
+                        }
+                    })
+                    .filter_map(|(x, z)| nearest_bot_point(&map, x, z, 8))
+                    .find(|&(gx, gz)| find_bot_path(&map, base_x, base_z, gx, gz).found)
+                    .expect("nation base must reach some patrol waypoint");
+                let mut seen = std::collections::HashSet::new();
+                for ox in 0..=5 {
+                    for oz in 0..=5 {
+                        let (x, z) = ((bx + ox) as f32, (bz + oz) as f32);
+                        let (sx, sz) = nearest_bot_point(&map, x, z, 8)
+                            .unwrap_or_else(|| panic!("zone {zone} nation {nation}: no walkable tile near ({x},{z})"));
+                        assert!(map.is_bot_movable(sx, sz));
+                        if seen.insert((sx as i32, sz as i32)) {
+                            assert!(
+                                find_bot_path(&map, sx, sz, goal.0, goal.1).found,
+                                "zone {zone} nation {nation}: projected spawn ({sx},{sz}) from ({x},{z}) is cut off from patrol area"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Documents the actual bug: `spawn_pk_bot_wave` must not leave bots on
+    /// blocked tiles. Fails until the wave spawn snaps with `nearest_bot_point`
+    /// (see `spread_pk_spawn`), so it is ignored by default.
+    #[test]
+    fn pk_wave_bots_never_spawn_on_blocked_tiles() {
+        use crate::world::WorldState;
+        for (zone, file) in [(ZONE_ARDREAM, "freezone_a.smd"), (ZONE_RONARK_LAND_BASE, "freezone_c.smd")] {
+            let world = WorldState::new();
+            let info = crate::zone::ZoneInfo {
+                smd_name: String::new(),
+                zone_name: "Sim".into(),
+                zone_type: crate::zone::ZoneAbilityType::Neutral,
+                min_level: 0,
+                max_level: 83,
+                init_x: 0.0,
+                init_z: 0.0,
+                init_y: 0.0,
+                abilities: crate::zone::ZoneAbilities::default(),
+                status: 1,
+            };
+            world.set_zone_with_map(zone, info, load_pk_map(file));
+            // 100 per nation: ~certain to hit every 6x6 offset cell class.
+            crate::systems::bot_ai::spawn_pk_bot_wave(&world, zone, Some(100), Some(59)).unwrap();
+            let map = load_pk_map(file);
+            let blocked: Vec<_> = world
+                .bots
+                .iter()
+                .filter(|e| !map.is_bot_movable(e.value().x, e.value().z))
+                .map(|e| (e.value().nation, e.value().x, e.value().z))
+                .collect();
+            assert!(blocked.is_empty(), "zone {zone}: {} bots spawned on blocked tiles, e.g. {:?}", blocked.len(), blocked.first());
+        }
+    }
+
+    #[test]
+    fn test_get_ronark_base_orbit_waypoint_rotates_with_route() {
+        let p1 = get_ronark_base_orbit_waypoint(1, 1, NATION_KARUS).unwrap();
+        let p2 = get_ronark_base_orbit_waypoint(2, 1, NATION_KARUS).unwrap();
+        assert_ne!(p1, p2, "different routes should start at a different orbit point");
+    }
+
+    #[test]
+    fn test_get_ronark_base_orbit_waypoint_out_of_range() {
+        assert!(get_ronark_base_orbit_waypoint(1, ronark_base_orbit_point_count() + 1, NATION_KARUS).is_none());
+        assert!(get_ronark_base_orbit_waypoint(1, 0, NATION_KARUS).is_none());
+    }
+
+    #[test]
+    fn test_get_ronark_base_orbit_waypoint_nation_centers_differ() {
+        // Karus and Elmo spawn on opposite sides of the map, so their orbit
+        // centers (and therefore their waypoints) must not coincide.
+        let karus = get_ronark_base_orbit_waypoint(1, 1, NATION_KARUS).unwrap();
+        let elmo = get_ronark_base_orbit_waypoint(1, 1, NATION_ELMORAD).unwrap();
+        let dist_sq = (karus.0 - elmo.0).powi(2) + (karus.1 - elmo.1).powi(2);
+        assert!(dist_sq > 100.0 * 100.0);
+    }
+
+    /// Ronark Land Base (zone 73) has no surveyed route table of its own.
+    /// It was first wired to reuse Ronark Land's shared bowl circuit, but
+    /// that bowl turned out not to be reachable at all from zone 73's own
+    /// spawn pockets on `freezone_c.smd` — confirmed by `find_bot_path`
+    /// finding zero bowl points reachable from either nation spawn. It now
+    /// gets its own small local orbit instead; confirm that orbit actually
+    /// is reachable (and mutually so) from both nation spawns on zone 73's
+    /// own map.
+    #[test]
+    fn ronark_land_base_orbit_is_reachable_from_spawn() {
+        let smd_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_c.smd");
+        let map = MapData::new(SmdFile::load(&smd_path).expect("load Ronark Land Base SMD"));
+        for nation in [NATION_KARUS, NATION_ELMORAD] {
+            let (spawn_x, spawn_z) = crate::systems::bot_ai::get_bot_respawn_position(
+                ZONE_RONARK_LAND_BASE,
+                nation,
+            );
+            let (from_x, from_z) = crate::systems::pathfind::nearest_bot_point(&map, spawn_x, spawn_z, 8)
+                .expect("Ronark Land Base spawn should be walkable");
+            let mut reachable_points = 0;
+            for state in 1..=ronark_base_orbit_point_count() {
+                let (raw_x, raw_z) = get_ronark_base_orbit_waypoint(1, state, nation).unwrap();
+                if let Some((goal_x, goal_z)) =
+                    crate::systems::pathfind::nearest_bot_point(&map, raw_x, raw_z, 8)
+                {
+                    if find_bot_path(&map, from_x, from_z, goal_x, goal_z).found {
+                        reachable_points += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                reachable_points,
+                ronark_base_orbit_point_count(),
+                "nation {nation}: only {reachable_points}/{} orbit points reachable from spawn",
+                ronark_base_orbit_point_count()
+            );
+        }
+    }
 
     #[test]
     fn test_random_route_ronark() {
@@ -663,6 +1005,18 @@ mod tests {
     #[test]
     fn test_random_route_non_pk_zone() {
         assert_eq!(random_route(21), 0, "non-PK zone should return 0");
+    }
+
+    /// Ronark Land Base (73) was missing from `random_route`'s match entirely,
+    /// so every zone-73 PK bot got `move_route == 0` and never moved from
+    /// spawn. It reuses Ronark Land's route count as its own orbit's
+    /// rotation seed, so the range is the same.
+    #[test]
+    fn test_random_route_ronark_land_base() {
+        for _ in 0..50 {
+            let r = random_route(ZONE_RONARK_LAND_BASE);
+            assert!((1..=10).contains(&r), "route {} out of range", r);
+        }
     }
 
     #[test]

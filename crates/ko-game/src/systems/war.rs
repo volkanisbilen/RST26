@@ -416,6 +416,16 @@ pub fn battle_zone_open(state: &mut BattleState, n_type: u8, zone: u8, now_unix:
     if (n_type == BATTLEZONE_OPEN || n_type == SNOW_BATTLEZONE_OPEN) && !state.is_war_open() {
         reset_battle_zone(state);
 
+        // Scheduled events set this explicitly; GM-triggered opens do not.
+        // A zero duration makes the first war tick close the event immediately.
+        if state.battle_time <= 0 {
+            state.battle_time = if n_type == SNOW_BATTLEZONE_OPEN {
+                1800
+            } else {
+                3600
+            };
+        }
+
         state.battle_open = if n_type == BATTLEZONE_OPEN {
             NATION_BATTLE
         } else {
@@ -1073,6 +1083,16 @@ async fn csw_tick_world(world: &WorldState) {
             world.update_battle_state(|s| {
                 s.battle_open = NO_BATTLE;
             });
+
+            // Never leave users in a closed CSW instance; return them to Moradon
+            // using the same forced zone-change path as the GM close command.
+            for zone in [crate::world::types::ZONE_DELOS, crate::world::types::ZONE_DELOS_CASTELLAN, 32u16, 33u16] {
+                for sid in world.sessions_in_zone(zone) {
+                    crate::handler::zone_change::server_teleport_to_zone(
+                        world, sid, crate::world::types::ZONE_MORADON, 816.0, 496.0,
+                    );
+                }
+            }
 
             // Broadcast finish notice
             let pkt = build_csw_notice(CswNotice::CswFinish);

@@ -7,13 +7,7 @@ use ko_protocol::{Opcode, Packet};
 
 /// Build a server change redirect packet.
 /// Format: `[SByte ip][u16 port][u8 init][u16 zone][u8 nation]`
-pub fn build_server_change(
-    ip: &str,
-    port: u16,
-    init_flag: u8,
-    zone_id: u16,
-    nation: u8,
-) -> Packet {
+pub fn build_server_change(ip: &str, port: u16, init_flag: u8, zone_id: u16, nation: u8) -> Packet {
     let mut pkt = Packet::new(Opcode::WizServerChange as u8);
     pkt.write_sbyte_string(ip);
     pkt.write_u16(port);

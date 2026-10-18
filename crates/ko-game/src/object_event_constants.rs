@@ -96,7 +96,13 @@ mod tests {
     /// Gate-related types are distinct.
     #[test]
     fn test_gate_types_distinct() {
-        let gates = [OBJECT_GATE, OBJECT_GATE2, OBJECT_GATE_LEVER, OBJECT_WARP_GATE, OBJECT_KROWAZ_GATE];
+        let gates = [
+            OBJECT_GATE,
+            OBJECT_GATE2,
+            OBJECT_GATE_LEVER,
+            OBJECT_WARP_GATE,
+            OBJECT_KROWAZ_GATE,
+        ];
         for i in 0..gates.len() {
             for j in (i + 1)..gates.len() {
                 assert_ne!(gates[i], gates[j]);
@@ -133,9 +139,16 @@ mod tests {
     #[test]
     fn test_no_gap_in_core_range() {
         let core = [
-            OBJECT_BIND, OBJECT_GATE, OBJECT_GATE2, OBJECT_GATE_LEVER,
-            OBJECT_FLAG_LEVER, OBJECT_WARP_GATE, OBJECT_WALL,
-            OBJECT_REMOVE_BIND, OBJECT_ANVIL, OBJECT_ARTIFACT,
+            OBJECT_BIND,
+            OBJECT_GATE,
+            OBJECT_GATE2,
+            OBJECT_GATE_LEVER,
+            OBJECT_FLAG_LEVER,
+            OBJECT_WARP_GATE,
+            OBJECT_WALL,
+            OBJECT_REMOVE_BIND,
+            OBJECT_ANVIL,
+            OBJECT_ARTIFACT,
         ];
         assert_eq!(core.len(), 10);
         for (i, val) in core.iter().enumerate() {

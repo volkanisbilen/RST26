@@ -11,7 +11,7 @@
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CreateNewCharSetRow {
     /// Row identifier.
-    pub id: i32,
+    pub id: i64,
     /// Class type (1=Warrior, 2=Rogue, 3=Mage, 4=Priest, 13=Kurian).
     pub class_type: i16,
     /// Inventory slot index (0-74).
