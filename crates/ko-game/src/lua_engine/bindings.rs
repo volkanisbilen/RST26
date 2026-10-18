@@ -4802,20 +4802,38 @@ fn lua_genie_exchange(lua: &Lua, (uid, item_id, hours): (i32, u32, u32)) -> LuaR
         return Ok(());
     }
 
+    // Refuse before anything is consumed when the extra time would not fit the
+    // cap (see GENIE_MAX_HOURS) — `hours * 3600` could also wrap a u32.
+    let fits = w
+        .with_session(sid, |h| {
+            crate::handler::genie::genie_abs_after(
+                h.genie_time_abs,
+                crate::handler::genie::now_secs(),
+                hours,
+            )
+            .is_some()
+        })
+        .unwrap_or(false);
+    if !fits {
+        return Ok(());
+    }
+
     // Check item exists and remove it (skip for item_id == 0 which means newChar)
     if item_id != 0 {
         if !w.check_exist_item(sid, item_id, 1) {
             return Ok(());
         }
-        w.rob_item(sid, item_id, 1);
+        if !w.rob_item(sid, item_id, 1) {
+            return Ok(());
+        }
     }
 
     // Extend genie time (absolute timestamp)
-    let duration_secs = hours * 3600;
-    let now = crate::handler::genie::now_secs();
-    w.update_session(sid, |h| {
-        h.genie_time_abs = h.genie_time_abs.max(now) + duration_secs;
-    });
+    if crate::handler::genie::grant_genie_hours(&w, sid, hours).is_none() {
+        return Ok(());
+    }
+    // The voucher is gone: write the new expiry now instead of waiting for the periodic save.
+    crate::handler::genie::persist_genie_time(&w, sid, "GenieExchange");
 
     // Send WIZ_GENIE packet
     // C++ Wire: [u8(GenieUseSpiringPotion)] [u8(GenieUseSpiringPotion)] [u16 hours]
