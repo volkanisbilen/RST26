@@ -4313,7 +4313,10 @@ fn bot_regene(world: &WorldState, bot_id: BotId, now_ms: u64) {
     out_pkt.write_u32(bot_id);
     broadcast_to_bot_region(world, zone_id, old_rx, old_rz, &out_pkt);
 
-    // Step 2: Determine respawn position.
+    // Step 2: Determine respawn position. get_bot_respawn_position only has
+    // entries for the 3 PK zones and returns (0.0, 0.0) for anything else —
+    // non-PK bots (farmer/afk) must respawn where they died, not get reset
+    // to the map origin.
     let respawn = if original_state == BotAiState::Pk {
         spread_pk_spawn(
             world,
@@ -4322,7 +4325,7 @@ fn bot_regene(world: &WorldState, bot_id: BotId, now_ms: u64) {
             bot_id.saturating_sub(crate::world::BOT_ID_BASE) as usize,
         )
     } else {
-        Some(get_bot_respawn_position(zone_id, nation))
+        None
     };
     let (new_x, new_z) = respawn.unwrap_or((bot.x, bot.z));
     let new_rx = calc_region(new_x);
@@ -7518,6 +7521,7 @@ mod tests {
     #[test]
     fn test_tick_fighting_moves_toward_target() {
         let world = WorldState::new();
+        create_zone_with_event_grid(&world, 72, 400, vec![1i16; 400 * 400]);
         // Karus bot at (100, 100).
         let karus_row = make_farm_row(1, "Karus", 72);
         let karus_id = do_spawn(&world, &karus_row, 72, 100.0, 100.0, 0, BotAiState::Pk);
@@ -7582,6 +7586,7 @@ mod tests {
     #[test]
     fn test_tick_fighting_flees_on_low_hp() {
         let world = WorldState::new();
+        create_zone_with_event_grid(&world, 72, 400, vec![1i16; 400 * 400]);
         let row = make_farm_row(1, "FleeBot", 72);
         let id = do_spawn(&world, &row, 72, 100.0, 100.0, 0, BotAiState::Pk);
         world.update_bot(id, |b| {
@@ -7612,6 +7617,7 @@ mod tests {
     #[test]
     fn test_tick_fighting_movement_is_independent_from_attack_cooldown() {
         let world = WorldState::new();
+        create_zone_with_event_grid(&world, 72, 400, vec![1i16; 400 * 400]);
         let row = make_farm_row(1, "CoolBot", 72);
         let id = do_spawn(&world, &row, 72, 100.0, 100.0, 0, BotAiState::Pk);
         let now_ms = tick_ms();
@@ -9813,6 +9819,7 @@ mod tests {
         // Bot dies at (500, 500) in zone 71 (Ronark Land) with nation 1 (Karus).
         // PK bots respawn dispersed around the Karus start instead of stacking.
         let world = WorldState::new();
+        create_zone_with_event_grid(&world, 71, 400, vec![1i16; 400 * 400]);
         let row = make_farm_row(1, "RegeneMove", 71);
         let id = do_spawn(&world, &row, 71, 500.0, 500.0, 0, BotAiState::Pk);
 
@@ -9839,6 +9846,7 @@ mod tests {
     fn test_bot_regene_non_pk_zone_stays_at_current_pos() {
         // Bot in zone 21 (Moradon) — should respawn at current position.
         let world = WorldState::new();
+        create_zone_with_event_grid(&world, 21, 400, vec![1i16; 400 * 400]);
         let row = make_farm_row(1, "MoradonBot", 21);
         let id = do_spawn(&world, &row, 21, 260.0, 320.0, 0, BotAiState::Farmer);
 
@@ -10317,6 +10325,7 @@ mod tests {
     #[test]
     fn test_waypoint_patrol_moves_bot_toward_waypoint() {
         let world = WorldState::new();
+        create_zone_with_event_grid(&world, 71, 400, vec![1i16; 400 * 400]);
 
         // Karus bot in Ronark Land (zone 71) at start position.
         let mut bot = make_combat_bot(BOT_ID_BASE, "KarusPatrol", 1, 106, 71, 1375.0, 1099.0);
@@ -10520,6 +10529,7 @@ mod tests {
     #[test]
     fn test_tick_fighting_no_target_triggers_patrol() {
         let world = WorldState::new();
+        create_zone_with_event_grid(&world, 71, 400, vec![1i16; 400 * 400]);
 
         // Lone PK bot in Ronark Land with no enemies.
         let mut bot = make_combat_bot(BOT_ID_BASE, "LoneBot", 1, 106, 71, 1375.0, 1099.0);

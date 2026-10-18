@@ -2491,6 +2491,11 @@ mod tests {
 
     #[test]
     fn test_find_friends_activates_same_family() {
+        // find_friends() gates distance on the live-configurable assist_range()
+        // global (default 1.0m), not the NPC template's own tracing_range — pin
+        // it so this test is deterministic regardless of ambient/default value
+        // or what other tests set it to.
+        crate::monster_behavior::set_assist_range(5.0);
         let world = WorldState::new();
         let (caller_nid, friend_nid) = setup_friend_pair(
             &world,
@@ -3176,6 +3181,8 @@ mod tests {
     #[test]
     fn test_find_friends_multiple_npcs_activated() {
         // When a pack NPC is attacked, ALL eligible friends should be activated.
+        // See test_find_friends_activates_same_family for why assist_range is pinned.
+        crate::monster_behavior::set_assist_range(5.0);
         let world = WorldState::new();
         let caller_nid: NpcId = 8000;
 

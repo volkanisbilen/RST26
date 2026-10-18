@@ -902,7 +902,8 @@ mod tests {
         assert_eq!(r.read_u16(), Some(0)); // durability
         assert_eq!(r.read_u32(), Some(0)); // reserved
         assert_eq!(r.read_u32(), Some(0)); // expiration
-        assert_eq!(r.remaining(), 0); // v2600: no trailing padding
+        assert_eq!(r.read_u16(), Some(0)); // v2625 SendStackChange trailing field
+        assert_eq!(r.remaining(), 0);
     }
 
     #[test]

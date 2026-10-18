@@ -7744,8 +7744,46 @@ mod tests {
     #[test]
     fn test_csw_winner_members_alliance_match() {
         let (lua, world) = setup_lua_world();
-        // Set up master_knights = 200
+        // Set up master_knights = 200 -- the function requires this clan to
+        // actually exist (real gameplay: it's the clan that won the siege),
+        // so it must be registered even though the player belongs to 100.
         world.siege_war().blocking_write().master_knights = 200;
+        world.insert_knights(KnightsInfo {
+            id: 200,
+            flag: 2,
+            nation: 1,
+            grade: 3,
+            ranking: 1,
+            name: "OwnerClan".into(),
+            chief: "Owner".into(),
+            vice_chief_1: String::new(),
+            vice_chief_2: String::new(),
+            vice_chief_3: String::new(),
+            members: 5,
+            points: 1000,
+            clan_point_fund: 0,
+            notice: String::new(),
+            cape: 0,
+            cape_r: 0,
+            cape_g: 0,
+            cape_b: 0,
+            mark_version: 0,
+            mark_data: Vec::new(),
+            alliance: 0,
+            castellan_cape: false,
+            cast_cape_id: 0,
+            cast_cape_r: 0,
+            cast_cape_g: 0,
+            cast_cape_b: 0,
+            cast_cape_time: 0,
+            alliance_req: 0,
+            clan_point_method: 0,
+            premium_time: 0,
+            premium_in_use: 0,
+            online_members: 0,
+            online_np_count: 0,
+            online_exp_count: 0,
+        });
         // Player's clan = 100, alliance links 100 with 200
         let clan = KnightsInfo {
             id: 100,
