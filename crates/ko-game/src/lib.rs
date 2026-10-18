@@ -32,6 +32,7 @@ pub mod race_constants;
 pub mod rate_limiter;
 pub mod server;
 pub mod session;
+pub mod spawn_circle;
 pub mod state_change_constants;
 pub mod systems;
 pub mod world;

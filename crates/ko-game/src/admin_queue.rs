@@ -74,6 +74,11 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 .await
                 .map(|n| format!("{n} quest helper rows"))
                 .map_err(|e| e.to_string()),
+            "npc_spawn" | "npc_spawns" => world
+                .reload_npc_spawns(pool)
+                .await
+                .map(|(a, r, c, s)| format!("npc_spawn: +{a} added, -{r} removed, ~{c} changed, {s} skipped"))
+                .map_err(|e| e.to_string()),
             "rankings" => {
                 world.reload_user_rankings(pool).await;
                 Ok("user rankings reloaded".into())

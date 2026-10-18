@@ -5,7 +5,7 @@
 const SRV_GROUPS=[
   ['Oyun içeriği',[
     ['drops','Drop tabloları','monster_item'],['groups','Item grupları','make_item_group'],['quest','Quest yardımcıları','quest helper'],
-    ['item_exchange','Item takası (exchange)','item_exchange'],['pus','Power Up Store','cash shop']]],
+    ['item_exchange','Item takası (exchange)','item_exchange'],['npc_spawn','Yaratıklar (npc_spawn)','npc_spawn'],['pus','Power Up Store','cash shop']]],
   ['Etkinlik & ödül',[
     ['event_schedule','Etkinlik çizelgesi','event_schedule'],['event_rewards','Etkinlik ödülleri',''],['chaos_rewards','Chaos ödülleri',''],
     ['cinderella','Cinderella ödülleri',''],['zone_rewards','Bölge ödülleri',''],['collection_race','Collection Race tanımları',''],

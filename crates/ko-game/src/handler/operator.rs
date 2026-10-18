@@ -535,6 +535,17 @@ pub async fn process_chat_command(
                 command
             );
         }
+        "reloadnpc" | "reloadspawns" | "reloadnpcspawn" => {
+            let world = session.world().clone();
+            let pool = session.pool().clone();
+            match world.reload_npc_spawns(&pool).await {
+                Ok((a, r, c, k)) => send_help(
+                    session,
+                    &format!("+{command}: npc_spawn reloaded (+{a} added, -{r} removed, ~{c} changed, {k} skipped)."),
+                ),
+                Err(error) => send_help(session, &format!("+{command}: reload failed: {error}")),
+            }
+        }
         "reloadgroupitems" => {
             let world = session.world().clone();
             let pool = session.pool();
@@ -10078,15 +10089,20 @@ async fn handle_kill_near(session: &mut ClientSession, args: &[&str]) -> anyhow:
 }
 
 
-/// +ekle <npc/canavar SID> [adet=1] - spawns `adet` of that NPC/monster at the GM's own current
-/// position right now (no restart needed to see them), and writes one npc_spawn row (num_npc=
-/// adet) so the same spot keeps respawning them after a server restart too -- same table and
-/// shape as the map editor's own "add spawn" (crates/ko-admin/src/world.rs::spawn_create).
+/// +ekle <npc/canavar SID> [adet=1] [cap_metre=15] - places `adet` of that NPC/monster evenly on a
+/// circle (default 15 m diameter, radius 7.5) around the GM, each point clamped to a walkable tile.
+/// Every monster is written as its own npc_spawn row (num_npc=1, gm_added=true when the column
+/// exists) and then the live spawn reload is run, so they appear at once, survive a restart and are
+/// covered by `+reload npc_spawn` / the panel's reload button -- never spawned twice.
 async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    use crate::spawn_circle::{place_on_circle, DEFAULT_DIAMETER, MAX_DIAMETER, MIN_DIAMETER};
     let world = session.world().clone();
     let sid = session.session_id();
     let Some(npc_id) = args.first().and_then(|a| a.parse::<u16>().ok()) else {
-        send_help(session, "Kullanım: +ekle <npc/canavar SID> [adet=1]");
+        send_help(
+            session,
+            "Kullanım: +ekle <npc/canavar SID> [adet=1] [çap_metre=15] -- GM'in etrafında daire şeklinde eşit aralıklı yerleştirir",
+        );
         return Ok(());
     };
     let count = args
@@ -10094,6 +10110,11 @@ async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow:
         .and_then(|a| a.parse::<u16>().ok())
         .unwrap_or(1)
         .clamp(1, 50);
+    let diameter = args
+        .get(2)
+        .and_then(|a| a.parse::<f32>().ok())
+        .unwrap_or(DEFAULT_DIAMETER)
+        .clamp(MIN_DIAMETER, MAX_DIAMETER);
     let Some(pos) = world.get_position(sid) else {
         return Ok(());
     };
@@ -10106,45 +10127,80 @@ async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow:
         return Ok(());
     };
 
-    let pool = session.pool().clone();
-    let spawn_id: Option<i32> = sqlx::query_scalar(
-        "INSERT INTO npc_spawn(zone_id,npc_id,is_monster,act_type,left_x,top_z,num_npc,spawn_range,regen_time,direction) \
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
-    )
-    .bind(pos.zone_id as i16)
-    .bind(npc_id as i16)
-    .bind(is_monster)
-    .bind(if is_monster { 1i16 } else { 0i16 })
-    .bind(pos.x as i32)
-    .bind(pos.z as i32)
-    .bind(count as i16)
-    .bind(5i16)
-    .bind(30i16)
-    .bind(0i32)
-    .fetch_optional(&pool)
-    .await
-    .ok()
-    .flatten();
+    // A single one goes on the GM's own tile; several form the ring (random start angle so
+    // repeated commands do not stack on the same points).
+    let zone = world.get_zone(pos.zone_id);
+    let ok = |x: f32, z: f32| {
+        x >= 1.0 && z >= 1.0 && zone.as_ref().is_none_or(|zn| zn.is_valid_position(x, z) && zn.is_movable(x, z))
+    };
+    let points: Vec<(f32, f32)> = if count == 1 {
+        vec![(pos.x, pos.z)]
+    } else {
+        let start = (rand::random::<u16>() % 360) as f32;
+        place_on_circle(pos.x, pos.z, count as usize, diameter / 2.0, start, ok)
+    };
 
-    let spawned = world.spawn_event_npc(npc_id, is_monster, pos.zone_id, pos.x, pos.z, count);
+    let pool = session.pool().clone();
+    let mut saved = 0usize;
+    for &(x, z) in &points {
+        let sql = |marker: bool| {
+            format!(
+                "INSERT INTO npc_spawn(zone_id,npc_id,is_monster,act_type,left_x,top_z,num_npc,spawn_range,regen_time,direction{})                  VALUES($1,$2,$3,$4,$5,$6,1,0,$7,$8{}) RETURNING id",
+                if marker { ",gm_added" } else { "" },
+                if marker { ",TRUE" } else { "" },
+            )
+        };
+        let mut inserted = false;
+        for marker in [true, false] {
+            let r = sqlx::query_scalar::<_, i32>(&sql(marker))
+                .bind(pos.zone_id as i16)
+                .bind(npc_id as i16)
+                .bind(is_monster)
+                .bind(if is_monster { 1i16 } else { 0i16 })
+                .bind(x.round() as i32)
+                .bind(z.round() as i32)
+                .bind(30i16)
+                .bind(0i32)
+                .fetch_one(&pool)
+                .await;
+            if r.is_ok() {
+                inserted = true;
+                break;
+            }
+        }
+        if inserted {
+            saved += 1;
+        }
+    }
+
     let name = world
         .get_npc_template(npc_id, is_monster)
         .map(|t| t.name.clone())
         .unwrap_or_default();
-
-    send_help(
-        session,
-        &match spawn_id {
-            Some(id) => format!(
-                "{count}x {name} (#{npc_id}) eklendi, {} tanesi hemen göründü. Spawn kaydı #{id} (veritabanına yazıldı, kalıcı -- sunucu yeniden başlasa da kalır).",
-                spawned.len()
+    if saved > 0 {
+        let live = world.reload_npc_spawns(&pool).await;
+        send_help(
+            session,
+            &match live {
+                Ok((added, ..)) => format!(
+                    "{count}x {name} (#{npc_id}) {diameter:.0} m çaplı daire üzerine eklendi: {saved} spawn kaydı yazıldı (kalıcı), canlı yüklemede {added} yeni kayıt işlendi."
+                ),
+                Err(e) => format!("{saved} spawn kaydı yazıldı ama canlı yükleme başarısız ({e}); '+reload npc_spawn' deneyin."),
+            },
+        );
+    } else {
+        // DB unavailable: still show them for this session of the server.
+        let mut spawned = 0usize;
+        for &(x, z) in &points {
+            spawned += world.spawn_event_npc(npc_id, is_monster, pos.zone_id, x, z, 1).len();
+        }
+        send_help(
+            session,
+            &format!(
+                "{count}x {name} (#{npc_id}) şimdilik göründü ({spawned} tanesi), ama veritabanına yazılamadı -- sunucu yeniden başlarsa kaybolur."
             ),
-            None => format!(
-                "{count}x {name} (#{npc_id}) şimdilik göründü ({} tanesi), ama veritabanına yazılamadı -- sunucu yeniden başlarsa kaybolur.",
-                spawned.len()
-            ),
-        },
-    );
+        );
+    }
     Ok(())
 }
 

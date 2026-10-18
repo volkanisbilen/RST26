@@ -53,12 +53,291 @@ use crate::systems::daily_reset::get_knights_grade;
 use crate::zone::{calc_region, ObjectEventInfo, ZoneState};
 
 use super::{
-    events_from_rows, is_gate_npc_type, is_guard_npc_type, map_act_type, zone_info_from_row,
+    npc_spawn_signature, events_from_rows, is_gate_npc_type, is_guard_npc_type, map_act_type, zone_info_from_row,
     BurningFeatureRates, ElectionListEntry, KingSystem, KnightsAlliance, KnightsInfo,
     NominationEntry, NpcAiState, NpcState, SiegeWarfare, WorldState,
 };
 
 impl WorldState {
+    /// Live `npc_spawn` reload: re-read the table and apply only the differences. New rows get
+    /// instances, vanished rows have theirs removed, changed rows are replaced, unchanged rows are
+    /// left untouched (their NPCs keep their HP/state). Rows are tracked by id, so a row can never
+    /// be instantiated twice. Returns (added, removed, changed, skipped).
+    pub async fn reload_npc_spawns(&self, pool: &DbPool) -> anyhow::Result<(usize, usize, usize, usize)> {
+        let rows = NpcRepository::new(pool).load_all_spawns().await?;
+        let live: HashMap<i32, u64> = self.npc_spawn_live.iter().map(|e| (*e.key(), e.value().0)).collect();
+        let db: Vec<(i32, u64)> = rows.iter().map(|r| (r.id, npc_spawn_signature(r))).collect();
+        let diff = crate::spawn_circle::diff_spawns(&live, &db);
+        for id in diff.removed.iter().chain(diff.changed.iter()) {
+            if let Some((_, (_, nids))) = self.npc_spawn_live.remove(id) {
+                for nid in nids {
+                    self.kill_npc(nid);
+                }
+            }
+        }
+        let by_id: HashMap<i32, &ko_db::models::NpcSpawnRow> = rows.iter().map(|r| (r.id, r)).collect();
+        let mut skipped = 0usize;
+        for id in diff.added.iter().chain(diff.changed.iter()) {
+            let Some(spawn) = by_id.get(id) else { continue };
+            let npc_id = spawn.npc_id as u16;
+            let tmpl = self
+                .npc_templates
+                .get(&(npc_id, spawn.is_monster))
+                .map(|t| t.clone())
+                .or_else(|| self.npc_templates.get(&(npc_id, !spawn.is_monster)).map(|t| t.clone()));
+            let (Some(tmpl), Some(zone)) = (tmpl, self.get_zone(spawn.zone_id as u16)) else {
+                skipped += 1;
+                continue;
+            };
+            let nids = self.instantiate_spawn_row(spawn, &tmpl, &zone);
+            self.npc_spawn_live.insert(*id, (npc_spawn_signature(spawn), nids));
+        }
+        tracing::info!(added = diff.added.len(), removed = diff.removed.len(), changed = diff.changed.len(), skipped, "npc_spawn live reload completed");
+        Ok((diff.added.len(), diff.removed.len(), diff.changed.len(), skipped))
+    }
+
+    /// Create the live NPC instances (+ HP/AI state) for one `npc_spawn` row.
+    /// Shared by the startup loader and the live `npc_spawn` reload.
+    pub(crate) fn instantiate_spawn_row(
+        &self,
+        spawn: &ko_db::models::NpcSpawnRow,
+        tmpl: &Arc<NpcTemplate>,
+        zone: &Arc<ZoneState>,
+    ) -> Vec<crate::npc::NpcId> {
+        let zone_id = spawn.zone_id as u16;
+        let npc_id = spawn.npc_id as u16;
+        let mut out = Vec::new();
+        let num = spawn.num_npc.max(1) as u32;
+        let base_x = spawn.left_x as f32;
+        let base_z = spawn.top_z as f32;
+        let range = spawn.spawn_range as f32;
+
+        for i in 0..num {
+            let nid = self.allocate_npc_id();
+            out.push(nid);
+
+            let (x, z) = if num == 1 || range <= 0.0 {
+                (base_x, base_z)
+            } else {
+                let offset = (i as f32 / num as f32) * std::f32::consts::TAU;
+                let scatter = range * 0.5;
+                (
+                    base_x + offset.cos() * scatter,
+                    base_z + offset.sin() * scatter,
+                )
+            };
+
+            let region_x = calc_region(x);
+            let region_z = calc_region(z);
+
+            // spawn.room as their event_room for instance isolation.
+            let event_room = if spawn.room > 0 { spawn.room as u16 } else { 0 };
+
+            let instance = Arc::new(NpcInstance {
+                nid,
+                proto_id: npc_id,
+                is_monster: tmpl.is_monster,
+                zone_id,
+                x,
+                y: 0.0,
+                z,
+                direction: spawn.direction.rem_euclid(256) as u8,
+                region_x,
+                region_z,
+                gate_open: 0,
+                object_type: 0,
+                nation: if tmpl.is_monster { 0 } else { tmpl.group },
+                special_type: spawn.special_type,
+                trap_number: spawn.trap_number,
+                event_room,
+                is_event_npc: false,
+                summon_type: 0,
+                user_name: String::new(),
+                pet_name: String::new(),
+                clan_name: String::new(),
+                clan_id: 0,
+                clan_mark_version: 0,
+            });
+
+            zone.add_npc(region_x, region_z, nid);
+            self.npc_instances.insert(nid, instance);
+            // Non-monster NPCs (merchants, event NPCs, etc.) never die in combat.
+            // If their template HP is 0, use 1 so is_npc_dead() doesn't filter them out.
+            let init_hp = if !tmpl.is_monster && tmpl.max_hp == 0 {
+                1
+            } else {
+                tmpl.max_hp as i32
+            };
+            self.npc_hp.insert(nid, init_hp);
+
+            if tmpl.is_monster && tmpl.search_range > 0 {
+                let regen_ms = if spawn.regen_time > 0 {
+                    spawn.regen_time as u64 * 1000
+                } else {
+                    30_000
+                };
+                let (is_aggressive, attack_type, has_friends) =
+                    crate::monster_behavior::ai_flags(&tmpl, zone_id);
+                self.npc_ai.insert(
+                    nid,
+                    NpcAiState {
+                        state: NpcState::Standing,
+                        spawn_x: x,
+                        spawn_z: z,
+                        cur_x: x,
+                        cur_z: z,
+                        target_id: None,
+                        npc_target_id: None,
+                        delay_ms: tmpl.stand_time as u64,
+                        last_tick_ms: 0,
+                        regen_time_ms: regen_ms,
+                        is_aggressive,
+                        zone_id,
+                        region_x,
+                        region_z,
+                        fainting_until_ms: 0,
+                        old_state: NpcState::Standing,
+                        active_skill_id: 0,
+                        active_target_id: -1,
+                        active_cast_time_ms: 0,
+                        has_friends,
+                        family_type: tmpl.family_type,
+                        skill_cooldown_ms: 0,
+                        nation: tmpl.group,
+                        is_tower_owner: false,
+                        attack_type,
+                        last_combat_time_ms: 0,
+                        duration_secs: 0,
+                        spawned_at_ms: 0,
+                        last_hp_regen_ms: 0,
+                        gate_open: 0,
+                        wood_cooldown_count: 0,
+                        utc_second: 0,
+                        path_waypoints: Vec::new(),
+                        path_index: 0,
+                        path_target_x: 0.0,
+                        path_target_z: 0.0,
+                        path_is_direct: false,
+                        dest_x: 0.0,
+                        dest_z: 0.0,
+                        pattern_frame: 0,
+                    },
+                );
+            }
+
+            // Guard NPCs need AI to detect and attack enemy players.
+            //   CheckFindEnemy() → FindEnemy() in the AI loop.
+            if is_guard_npc_type(tmpl.npc_type) && !self.npc_ai.contains_key(&nid) {
+                let regen_ms = if spawn.regen_time > 0 {
+                    spawn.regen_time as u64 * 1000
+                } else {
+                    30_000
+                };
+                self.npc_ai.insert(
+                    nid,
+                    NpcAiState {
+                        state: NpcState::Standing,
+                        spawn_x: x,
+                        spawn_z: z,
+                        cur_x: x,
+                        cur_z: z,
+                        target_id: None,
+                        npc_target_id: None,
+                        delay_ms: tmpl.stand_time as u64,
+                        last_tick_ms: 0,
+                        regen_time_ms: regen_ms,
+                        // Guards are always aggressive
+                        is_aggressive: true,
+                        zone_id,
+                        region_x,
+                        region_z,
+                        fainting_until_ms: 0,
+                        old_state: NpcState::Standing,
+                        active_skill_id: 0,
+                        active_target_id: -1,
+                        active_cast_time_ms: 0,
+                        has_friends: false,
+                        family_type: tmpl.family_type,
+                        skill_cooldown_ms: 0,
+                        nation: tmpl.group,
+                        is_tower_owner: false,
+                        attack_type: map_act_type(tmpl.act_type),
+                        last_combat_time_ms: 0,
+                        duration_secs: 0,
+                        spawned_at_ms: 0,
+                        last_hp_regen_ms: 0,
+                        gate_open: 0,
+                        wood_cooldown_count: 0,
+                        utc_second: 0,
+                        path_waypoints: Vec::new(),
+                        path_index: 0,
+                        path_target_x: 0.0,
+                        path_target_z: 0.0,
+                        path_is_direct: false,
+                        dest_x: 0.0,
+                        dest_z: 0.0,
+                        pattern_frame: 0,
+                    },
+                );
+            }
+
+            if is_gate_npc_type(tmpl.npc_type) && !self.npc_ai.contains_key(&nid) {
+                let stand_time = if tmpl.stand_time > 0 {
+                    tmpl.stand_time as u64
+                } else {
+                    3000
+                };
+                self.npc_ai.insert(
+                    nid,
+                    NpcAiState {
+                        state: NpcState::Standing,
+                        spawn_x: x,
+                        spawn_z: z,
+                        cur_x: x,
+                        cur_z: z,
+                        target_id: None,
+                        npc_target_id: None,
+                        delay_ms: stand_time,
+                        last_tick_ms: 0,
+                        regen_time_ms: 0,
+                        is_aggressive: false,
+                        zone_id,
+                        region_x,
+                        region_z,
+                        fainting_until_ms: 0,
+                        old_state: NpcState::Standing,
+                        active_skill_id: 0,
+                        active_target_id: -1,
+                        active_cast_time_ms: 0,
+                        has_friends: false,
+                        family_type: 0,
+                        skill_cooldown_ms: 0,
+                        nation: tmpl.group,
+                        is_tower_owner: false,
+                        attack_type: 0,
+                        last_combat_time_ms: 0,
+                        duration_secs: 0,
+                        spawned_at_ms: 0,
+                        last_hp_regen_ms: 0,
+                        gate_open: 0,
+                        wood_cooldown_count: 0,
+                        utc_second: 0,
+                        path_waypoints: Vec::new(),
+                        path_index: 0,
+                        path_target_x: 0.0,
+                        path_target_z: 0.0,
+                        path_is_direct: false,
+                        dest_x: 0.0,
+                        dest_z: 0.0,
+                        pattern_frame: 0,
+                    },
+                );
+            }
+
+        }
+        out
+    }
+
     /// Reload the live monster drop cache without restarting the game server.
     /// Read the full result before touching the cache so a database error never
     /// leaves the running world with a partially-cleared drop table.
@@ -1437,234 +1716,9 @@ impl WorldState {
                 }
             };
 
-            let num = spawn.num_npc.max(1) as u32;
-            let base_x = spawn.left_x as f32;
-            let base_z = spawn.top_z as f32;
-            let range = spawn.spawn_range as f32;
-
-            for i in 0..num {
-                let nid = self.allocate_npc_id();
-
-                let (x, z) = if num == 1 || range <= 0.0 {
-                    (base_x, base_z)
-                } else {
-                    let offset = (i as f32 / num as f32) * std::f32::consts::TAU;
-                    let scatter = range * 0.5;
-                    (
-                        base_x + offset.cos() * scatter,
-                        base_z + offset.sin() * scatter,
-                    )
-                };
-
-                let region_x = calc_region(x);
-                let region_z = calc_region(z);
-
-                // spawn.room as their event_room for instance isolation.
-                let event_room = if spawn.room > 0 { spawn.room as u16 } else { 0 };
-
-                let instance = Arc::new(NpcInstance {
-                    nid,
-                    proto_id: npc_id,
-                    is_monster: tmpl.is_monster,
-                    zone_id,
-                    x,
-                    y: 0.0,
-                    z,
-                    direction: spawn.direction.rem_euclid(256) as u8,
-                    region_x,
-                    region_z,
-                    gate_open: 0,
-                    object_type: 0,
-                    nation: if tmpl.is_monster { 0 } else { tmpl.group },
-                    special_type: spawn.special_type,
-                    trap_number: spawn.trap_number,
-                    event_room,
-                    is_event_npc: false,
-                    summon_type: 0,
-                    user_name: String::new(),
-                    pet_name: String::new(),
-                    clan_name: String::new(),
-                    clan_id: 0,
-                    clan_mark_version: 0,
-                });
-
-                zone.add_npc(region_x, region_z, nid);
-                self.npc_instances.insert(nid, instance);
-                // Non-monster NPCs (merchants, event NPCs, etc.) never die in combat.
-                // If their template HP is 0, use 1 so is_npc_dead() doesn't filter them out.
-                let init_hp = if !tmpl.is_monster && tmpl.max_hp == 0 {
-                    1
-                } else {
-                    tmpl.max_hp as i32
-                };
-                self.npc_hp.insert(nid, init_hp);
-
-                if tmpl.is_monster && tmpl.search_range > 0 {
-                    let regen_ms = if spawn.regen_time > 0 {
-                        spawn.regen_time as u64 * 1000
-                    } else {
-                        30_000
-                    };
-                    let (is_aggressive, attack_type, has_friends) =
-                        crate::monster_behavior::ai_flags(&tmpl, zone_id);
-                    self.npc_ai.insert(
-                        nid,
-                        NpcAiState {
-                            state: NpcState::Standing,
-                            spawn_x: x,
-                            spawn_z: z,
-                            cur_x: x,
-                            cur_z: z,
-                            target_id: None,
-                            npc_target_id: None,
-                            delay_ms: tmpl.stand_time as u64,
-                            last_tick_ms: 0,
-                            regen_time_ms: regen_ms,
-                            is_aggressive,
-                            zone_id,
-                            region_x,
-                            region_z,
-                            fainting_until_ms: 0,
-                            old_state: NpcState::Standing,
-                            active_skill_id: 0,
-                            active_target_id: -1,
-                            active_cast_time_ms: 0,
-                            has_friends,
-                            family_type: tmpl.family_type,
-                            skill_cooldown_ms: 0,
-                            nation: tmpl.group,
-                            is_tower_owner: false,
-                            attack_type,
-                            last_combat_time_ms: 0,
-                            duration_secs: 0,
-                            spawned_at_ms: 0,
-                            last_hp_regen_ms: 0,
-                            gate_open: 0,
-                            wood_cooldown_count: 0,
-                            utc_second: 0,
-                            path_waypoints: Vec::new(),
-                            path_index: 0,
-                            path_target_x: 0.0,
-                            path_target_z: 0.0,
-                            path_is_direct: false,
-                            dest_x: 0.0,
-                            dest_z: 0.0,
-                            pattern_frame: 0,
-                        },
-                    );
-                }
-
-                // Guard NPCs need AI to detect and attack enemy players.
-                //   CheckFindEnemy() → FindEnemy() in the AI loop.
-                if is_guard_npc_type(tmpl.npc_type) && !self.npc_ai.contains_key(&nid) {
-                    let regen_ms = if spawn.regen_time > 0 {
-                        spawn.regen_time as u64 * 1000
-                    } else {
-                        30_000
-                    };
-                    self.npc_ai.insert(
-                        nid,
-                        NpcAiState {
-                            state: NpcState::Standing,
-                            spawn_x: x,
-                            spawn_z: z,
-                            cur_x: x,
-                            cur_z: z,
-                            target_id: None,
-                            npc_target_id: None,
-                            delay_ms: tmpl.stand_time as u64,
-                            last_tick_ms: 0,
-                            regen_time_ms: regen_ms,
-                            // Guards are always aggressive
-                            is_aggressive: true,
-                            zone_id,
-                            region_x,
-                            region_z,
-                            fainting_until_ms: 0,
-                            old_state: NpcState::Standing,
-                            active_skill_id: 0,
-                            active_target_id: -1,
-                            active_cast_time_ms: 0,
-                            has_friends: false,
-                            family_type: tmpl.family_type,
-                            skill_cooldown_ms: 0,
-                            nation: tmpl.group,
-                            is_tower_owner: false,
-                            attack_type: map_act_type(tmpl.act_type),
-                            last_combat_time_ms: 0,
-                            duration_secs: 0,
-                            spawned_at_ms: 0,
-                            last_hp_regen_ms: 0,
-                            gate_open: 0,
-                            wood_cooldown_count: 0,
-                            utc_second: 0,
-                            path_waypoints: Vec::new(),
-                            path_index: 0,
-                            path_target_x: 0.0,
-                            path_target_z: 0.0,
-                            path_is_direct: false,
-                            dest_x: 0.0,
-                            dest_z: 0.0,
-                            pattern_frame: 0,
-                        },
-                    );
-                }
-
-                if is_gate_npc_type(tmpl.npc_type) && !self.npc_ai.contains_key(&nid) {
-                    let stand_time = if tmpl.stand_time > 0 {
-                        tmpl.stand_time as u64
-                    } else {
-                        3000
-                    };
-                    self.npc_ai.insert(
-                        nid,
-                        NpcAiState {
-                            state: NpcState::Standing,
-                            spawn_x: x,
-                            spawn_z: z,
-                            cur_x: x,
-                            cur_z: z,
-                            target_id: None,
-                            npc_target_id: None,
-                            delay_ms: stand_time,
-                            last_tick_ms: 0,
-                            regen_time_ms: 0,
-                            is_aggressive: false,
-                            zone_id,
-                            region_x,
-                            region_z,
-                            fainting_until_ms: 0,
-                            old_state: NpcState::Standing,
-                            active_skill_id: 0,
-                            active_target_id: -1,
-                            active_cast_time_ms: 0,
-                            has_friends: false,
-                            family_type: 0,
-                            skill_cooldown_ms: 0,
-                            nation: tmpl.group,
-                            is_tower_owner: false,
-                            attack_type: 0,
-                            last_combat_time_ms: 0,
-                            duration_secs: 0,
-                            spawned_at_ms: 0,
-                            last_hp_regen_ms: 0,
-                            gate_open: 0,
-                            wood_cooldown_count: 0,
-                            utc_second: 0,
-                            path_waypoints: Vec::new(),
-                            path_index: 0,
-                            path_target_x: 0.0,
-                            path_target_z: 0.0,
-                            path_is_direct: false,
-                            dest_x: 0.0,
-                            dest_z: 0.0,
-                            pattern_frame: 0,
-                        },
-                    );
-                }
-
-                total_instances += 1;
-            }
+            let nids = self.instantiate_spawn_row(spawn, &tmpl, &zone);
+            total_instances += nids.len() as u32;
+            self.npc_spawn_live.insert(spawn.id, (npc_spawn_signature(spawn), nids));
         }
 
         if skipped_spawns > 0 {

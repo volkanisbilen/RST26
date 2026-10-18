@@ -104,6 +104,7 @@ pub fn reload_target(table: &str) -> Option<&'static str> {
         "cindwar_reward" | "cindwar_reward_item" => "cinderella",
         "collection_race_reward" | "collection_race_settings" => "collection_race",
         "event_reward_rule" => "reward_rules",
+        "npc_spawn" => "npc_spawn",
         "send_messages" => "send_messages",
         "item_exchange" => "item_exchange",
         "pus_category" | "pus_items" => "pus",
@@ -876,6 +877,7 @@ mod tests {
     #[test]
     fn reload_map() {
         assert_eq!(reload_target("quest_monster"), Some("quest_tables"));
+        assert_eq!(reload_target("npc_spawn"), Some("npc_spawn"));
         assert_eq!(reload_target("item"), None);
     }
 }
