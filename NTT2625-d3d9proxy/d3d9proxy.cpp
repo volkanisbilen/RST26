@@ -12,6 +12,8 @@ static const char* g_names[6] = {
     "D3DPERF_EndEvent", "D3DPERF_SetMarker", "D3DPERF_GetStatus"
 };
 
+void Ov_Init();                    // overlay_d3d.cpp: panels are drawn inside the D3D frame
+void Ov_OnD3D9Created(void* d3d);
 void Pus_Init();
 void Pus_OnRecv(const BYTE* buf, size_t len);
 void Pus_FlushSendQueue();
@@ -219,7 +221,7 @@ static DWORD WINAPI LauncherSwap(LPVOID)
 
 extern "C" {
 __declspec(dllexport) void* WINAPI Direct3DCreate9(UINT v)
-{ JstKOSplash_Wait(); LoadReal(); return g_fn[0] ? ((void*(WINAPI*)(UINT))g_fn[0])(v) : nullptr; }   // JstKO ACS loading bar first
+{ JstKOSplash_Wait(); LoadReal(); void* r = g_fn[0] ? ((void*(WINAPI*)(UINT))g_fn[0])(v) : nullptr; if (r) Ov_OnD3D9Created(r); return r; }   // JstKO ACS loading bar first
 __declspec(dllexport) HRESULT WINAPI Direct3DCreate9Ex(UINT v, void** p)
 { JstKOSplash_Wait(); LoadReal(); return g_fn[1] ? ((HRESULT(WINAPI*)(UINT, void**))g_fn[1])(v, p) : E_FAIL; }
 __declspec(dllexport) int WINAPI D3DPERF_BeginEvent(DWORD c, LPCWSTR n)
@@ -503,6 +505,7 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
             LoadGuard(nullptr);
         else
             Log("JstKO.dll / OPSGUARD.dll not present, proxy-only test");
+        Ov_Init();            // UpdateLayeredWindow import hook (overlay_d3d.cpp), before any panel window exists
         LaunchGuard_Init();   // not started by Launcher.exe -> message + exit
         JstKOBanner_Init();   // JstKO ACS splash + 10 s loading bar (the game waits for it in Direct3DCreate9)
         CrashTrap_Init();

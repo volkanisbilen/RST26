@@ -69,6 +69,7 @@ exit /b 0</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="d3d9proxy.cpp" />
+    <ClCompile Include="overlay_d3d.cpp" />
     <ClCompile Include="pus_store.cpp" />
     <ClCompile Include="rce_store.cpp" />
     <ClCompile Include="cr_panel.cpp" />
