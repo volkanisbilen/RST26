@@ -1663,6 +1663,8 @@ async fn handle_phase2(session: &mut ClientSession) -> anyhow::Result<()> {
         for item_id in &chaos_items {
             world.rob_all_of_item(sid, *item_id);
         }
+        // ...and from the vault, where older builds let them be stored
+        crate::systems::chaos_arena::purge_warehouse(&world, sid);
     }
 
     // 15b. AchieveNormalCountAdd(AchieveReachLevel) — update level-based achievements

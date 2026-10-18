@@ -1081,7 +1081,8 @@ fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Optio
 /// One walking step toward the target, broadcast to the bot's room.
 fn walk_toward(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, _now_ms: u64) {
     let mut path = entry.path.clone();
-    let Some((nx, ny, nz)) = step_toward(world, bot, (target.x, target.z), STEP_PER_TICK, &mut path) else {
+    let free_roam = entry.kind == EventBotKind::Chaos;
+    let Some((nx, ny, nz)) = step_toward(world, bot, (target.x, target.z), STEP_PER_TICK, &mut path, free_roam) else {
         // unreachable: forget the target so the next scan can pick another one
         world.event_bots.update(bot.id, |e| {
             e.target = None;
@@ -1130,6 +1131,40 @@ fn walk_toward(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: 
 /// Next position of a walk from the bot toward `goal`. Uses the map's walkability grid with A*
 /// detours when the map is loaded, plain straight steps otherwise (tests / maps without SMD).
 fn step_toward(
+    world: &WorldState,
+    bot: &BotInstance,
+    goal: (f32, f32),
+    step: f32,
+    path: &mut Option<PathState>,
+    free_roam: bool,
+) -> Option<(f32, f32, f32)> {
+    let nav = step_toward_nav(world, bot, goal, step, path);
+    if nav.is_some() || !free_roam {
+        return nav;
+    }
+    // Chaos Dungeon (sky_war_2009.smd): the terrain-derived bot mask shatters the arena into
+    // tiny islands (floors are object meshes, not terrain), so A* never finds a route and the
+    // bots used to stand still. Roam in a straight line inside the map instead.
+    let (dx, dz) = (goal.0 - bot.x, goal.1 - bot.z);
+    let dist = (dx * dx + dz * dz).sqrt();
+    if !dist.is_finite() || dist < 0.001 {
+        return None;
+    }
+    let t = (step / dist).min(1.0);
+    let (sx, sz) = (bot.x + dx * t, bot.z + dz * t);
+    let zone = world.get_zone(bot.zone_id);
+    match zone.as_ref().and_then(|z| z.map_data.as_ref()) {
+        Some(map) => {
+            if !map.is_valid_position(sx, sz) {
+                return None;
+            }
+            Some((sx, map.terrain_height(sx, sz).unwrap_or(bot.y), sz))
+        }
+        None => Some((sx, bot.y, sz)),
+    }
+}
+
+fn step_toward_nav(
     world: &WorldState,
     bot: &BotInstance,
     goal: (f32, f32),
@@ -1851,5 +1886,68 @@ mod tests {
         let erm = EventRoomManager::new();
         erm.create_rooms(TempleEventType::ChaosDungeon, 1);
         assert_eq!(erm.list_rooms(TempleEventType::ChaosDungeon).len(), 1);
+    }
+
+    /// Chaos on the REAL map (sky_war_2009.smd): the bots must leave their spawn and close in on a
+    /// human standing inside the arena.
+    #[test]
+    fn chaos_bots_roam_on_the_real_map() {
+        use crate::zone::{MapData, ZoneInfo};
+        let world = WorldState::new();
+        world.insert_start_position(ko_db::models::StartPositionRow {
+            zone_id: 85,
+            karus_x: 126,
+            karus_z: 130,
+            elmorad_x: 126,
+            elmorad_z: 130,
+            karus_gate_x: 0,
+            karus_gate_z: 0,
+            elmo_gate_x: 0,
+            elmo_gate_z: 0,
+            range_x: 10,
+            range_z: 30,
+        });
+        let smd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/sky_war_2009.smd");
+        world.set_zone_with_map(
+            85,
+            ZoneInfo {
+                smd_name: String::new(),
+                zone_name: "Chaos".to_string(),
+                zone_type: crate::zone::ZoneAbilityType::PvP,
+                min_level: 0,
+                max_level: 83,
+                init_x: 0.0,
+                init_z: 0.0,
+                init_y: 0.0,
+                abilities: crate::zone::ZoneAbilities::default(),
+                status: 1,
+            },
+            MapData::new(ko_protocol::smd::SmdFile::load(&smd).expect("load Chaos SMD")),
+        );
+        fill_chaos_with_one_human_and_bots(&world, 4);
+        phase_active(&world);
+        assert!(world.event_bots.count(EventBotKind::Chaos) >= 4);
+        let before: Vec<(BotId, f32, f32)> = world
+            .event_bots
+            .ids()
+            .into_iter()
+            .map(|id| {
+                let b = world.get_bot(id).unwrap();
+                (id, b.x, b.z)
+            })
+            .collect();
+        let mut now = 10_000u64;
+        for _ in 0..80 {
+            now += DRIVER_TICK_MS;
+            tick(&world, now);
+        }
+        let moved = before
+            .iter()
+            .filter(|(id, x, z)| {
+                let b = world.get_bot(*id).unwrap();
+                (b.x - x).abs() + (b.z - z).abs() > 1.0
+            })
+            .count();
+        assert!(moved > 0, "no Chaos bot left its spawn on the real map");
     }
 }
