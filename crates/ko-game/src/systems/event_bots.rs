@@ -1155,14 +1155,24 @@ fn step_toward(
     let height = |x: f32, z: f32| map.terrain_height(x, z).unwrap_or(bot.y);
 
     use crate::systems::pathfind::{bot_segment_walkable, find_bot_path, nearest_bot_point, step_move};
-    if bot_segment_walkable(map, bot.x, bot.z, goal.0, goal.1) {
+    // same rule as bot_ai: the whole way to the goal and the next step must both be clear
+    if bot_segment_walkable(map, bot.x, bot.z, goal.0, goal.1)
+        && bot_segment_walkable(map, bot.x, bot.z, sx, sz)
+    {
         *path = None;
         return Some((sx, height(sx, sz), sz));
     }
     let (gx, gz) = nearest_bot_point(map, goal.0, goal.1, 8)?;
+    let unit = map.unit_dist().max(1.0);
     let refresh = path.as_ref().is_none_or(|p| {
         let (ddx, ddz) = (p.goal.0 - gx, p.goal.1 - gz);
-        ddx * ddx + ddz * ddz > 64.0 || p.index >= p.waypoints.len()
+        ddx * ddx + ddz * ddz > 64.0
+            || p.index >= p.waypoints.len()
+            // no longer near the route (relocated / a step was refused): plan again
+            || p.waypoints.get(p.index).is_some_and(|&(wx, wz)| {
+                let (rx, rz) = (wx - bot.x, wz - bot.z);
+                rx * rx + rz * rz > (2.5 * unit + step).powi(2)
+            })
     });
     if refresh {
         let result = find_bot_path(map, bot.x, bot.z, gx, gz);
