@@ -89,7 +89,8 @@ if (EVENT == 6093) then
 end
 
 if (EVENT == 6095) then
-	MonsterStoneQuestJoin(UID,199);
+	-- Same dedicated Stone 2 spawn set as Captain Fargo (Karus twin): ZoneID=82, Family=71.
+	MonsterStoneQuestJoin(UID,199,82,71);
 	EVENT = 6096
 end
 

@@ -44,6 +44,36 @@ Solar 3d 810922000->978129000, 7d 810923000->978130000; War 1/3/7/15d 814613000/
 3. Councilor (14407/24407) turn-ins work (RobItem without count).
 4. Iruta tattoo vouchers exchange.
 
+## Round 2: Luferson / El Morad / Eslant line quests (weapon and accessory rewards)
+
+Method: every `RunQuestExchange` id used by NPCs 11xxx/14xxx/21xxx-24xxx was compared (a) against its Karus/El Morad twin
+(same quest class-by-class, via `quest_helper`) and (b) against the client `docs/data/Item_Exchange.tbl`
+(`tbl_dump docs/data/Item_Exchange.tbl 0 100000 > client_ex.txt`, columns: c0 id, c1 flag, c3..c12 origin, c13..c22 reward).
+`quest_helper` for these NPCs is identical to the client `Quest_Helper.tbl` (El Morad has the same structure as Karus; the
+only differences are the shared nation-3 "255" gate rows, which the client table lacks too). No column-shifted
+`item_exchange` rows remain (0 rows with `origin_item_num1 = 0` and a count >= 100000).
+
+| # | Finding | Fix |
+|---|---|---|
+| 11 | **Captain Falkwine (11510_Forkwain.lua, El Morad) "Monster Suppression Squad (II)"** called `MonsterStoneQuestJoin(UID,199)` = default Stone 1 / family 4, while Captain Fargo (21510_Hwargo.lua, Karus) was already changed to `(UID,199,82,71)` = Stone 2 spawn set (`monster_stone_respawn_list` zone 82, family 71, 30 spawns). | El Morad script now calls `MonsterStoneQuestJoin(UID,199,82,71)` (identical behaviour). The other 6 differences between the two scripts are text ids / quest numbers only. |
+| 12 | **Reward items missing in `item_exchange`** (weapons, rings, earrings, pendants, belts): the server rows pay only EXP (or nothing) where the client table lists the items. Quests: Wolf (Jalk 892-895 / Melverick 888-891), Orc (Cheina 953-955 / Kape 957-959), Clarence weapon quest (214-221), accessory quests Teils/Rucel (earring 1122-1129, pendant 1130-1137) and Cheina/Kape (ring 1106-1113, belt 1114-1121). The Quest completed with EXP only. | Migration `20261018250000_quest_reward_items_restore.sql` restores the client reward items per class row (66 rows); EXP/gold the server row paid is kept unless the matching `item_exchange_exp` choice row pays the same EXP (would double). |
+| 13 | **Rows with EMPTY rewards** (all `exchange_item_*` = 0): Della/Elrod 148-155 (Outpost Captain weapons), Ascetic Veda 493-496 (Karus Eslant weapons of `<selfname>`). The quest completed and gave nothing. | Same migration, client rewards restored. |
+
+Left unchanged on purpose (server row differs from the client on purpose, not a missing reward): 944/945 (Weapon/Armor
+Enchant Scroll ids), 985-992 (`[Quest]` water/potion ids), 1042/1043 (Green Treasure Chest vs Dark Mithril Fragment), and the
+origin/amount differences of the class-mastery quests (39-41, 308-315 ...). Rewards of these rows are paid (all slots of
+the row are given, `RunQuestExchange` needs one free slot per item, e.g. 4 weapons for the warrior rows).
+
+New checks in `tools/quest_audit.py`: `EXCHANGE_NO_OUTPUT` (used exchange with no reward at all) and, with
+`--client-exchange client_ex.txt`, `EXCHANGE_CLIENT_ITEMS` (client lists reward items the server row does not give).
+After the migration: 95 -> 21 `EXCHANGE_CLIENT_ITEMS` and 20 -> 7 `EXCHANGE_NO_OUTPUT` (the rest are the intentional rows above and
+non-line NPCs: Caval 4000, Hill/Rily 16260-16266, 6165, 6230).
+
+Owner checklist (in game): (1) El Morad Captain Falkwine "Monster Suppression Squad (II)" -> teleports into Monster Stone
+2 like the Karus Fargo quest. (2) Do the Wolf (Jalk/Melverick), Orc (Cheina/Kape) weapon quests and a Teils/Rucel or
+Cheina/Kape accessory quest with a class: the weapon/ring/earring/pendant/belt arrives together with the quest completing
+(keep 4-5 free bag slots). (3) Clarence level-71 weapon quest.
+
 <!-- AUTO:BEGIN -->
 (State AFTER the migration: generated from the live snapshot with the 960 shifted exchange rows realigned. Before: 227 ERROR, 17+1 shifted-row findings.)
 
