@@ -316,11 +316,17 @@ impl SmdFile {
             for vertex in &mut v {
                 for coordinate in vertex { *coordinate = read_f32(reader)?; }
             }
-            if v.iter().flatten().any(|c| !c.is_finite()) {
-                // Some exported SMDs (e.g. the "freezone" event maps) contain a handful of
-                // degenerate/garbage collision faces. The original client tolerates this
-                // silently; aborting the whole map load over one bad face took down the
-                // entire zone (no warps, no NPCs, nothing). Skip just this face instead.
+            // Some exported SMDs (e.g. the "freezone" event maps) contain a handful of
+            // degenerate/garbage collision faces. The original client tolerates this
+            // silently; aborting the whole map load over one bad face took down the
+            // entire zone (no warps, no NPCs, nothing). Skip just this face instead.
+            // `is_finite()` alone misses garbage that happens to decode to a huge but
+            // finite float (e.g. ~1e29): freezone_a.smd has one, and its absurd bounding
+            // box rasterized as "blocked" across virtually the whole grid, leaving PK
+            // bots in Ardream with nowhere walkable to step to. Any vertex far outside
+            // plausible map coordinates is the same kind of garbage.
+            const VERTEX_SANITY_LIMIT: f32 = 100_000.0;
+            if v.iter().flatten().any(|c| !c.is_finite() || c.abs() > VERTEX_SANITY_LIMIT) {
                 continue;
             }
             let a = [v[1][0]-v[0][0], v[1][1]-v[0][1], v[1][2]-v[0][2]];
@@ -646,6 +652,66 @@ mod tests {
         assert_eq!(warps[0].dest_z, 200.0);
         assert_eq!(warps[0].radius, 10.0);
         assert_eq!(warps[0].nation, -1);
+    }
+
+    /// Regression test for the Ardream (`freezone_a.smd`) bot-navigation bug:
+    /// a collision face with vertices decoding to huge-but-finite floats
+    /// (~1e29, nowhere near any real map) rasterized as "blocked" across the
+    /// whole grid because the old degenerate-face filter only checked
+    /// `is_finite()`. Build a minimal synthetic SMD with one such face over
+    /// otherwise flat, unblocked terrain and confirm it no longer blocks the
+    /// whole grid once its coordinates exceed the sanity bound.
+    #[test]
+    fn test_garbage_coordinate_collision_face_does_not_block_whole_grid() {
+        let size: i32 = 5;
+        let unit: f32 = 4.0;
+        let map_width = (size - 1) as f32 * unit;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&size.to_le_bytes());
+        data.extend_from_slice(&unit.to_le_bytes());
+        for _ in 0..(size * size) {
+            data.extend_from_slice(&0.0f32.to_le_bytes()); // flat terrain
+        }
+        data.extend_from_slice(&map_width.to_le_bytes());
+        data.extend_from_slice(&map_width.to_le_bytes());
+
+        // One garbage face: vertices span from deeply negative to deeply
+        // positive on both X and Z, which is exactly what makes the old
+        // bounding-box rasterization loop cover the entire grid (the min
+        // bound clamps up to 0, the max bound clamps down to size-2).
+        data.extend_from_slice(&1i32.to_le_bytes());
+        let verts: [[f32; 3]; 3] = [
+            [-200_000.0, 0.0, -200_000.0],
+            [200_000.0, 100.0, 0.0],
+            [0.0, 50.0, 200_000.0],
+        ];
+        for vertex in &verts {
+            for coordinate in vertex {
+                data.extend_from_slice(&coordinate.to_le_bytes());
+            }
+        }
+
+        // Cell grid: (map_width/16).ceil() per axis; all cells empty.
+        let cells = ((map_width / 16.0).ceil() as u32).max(1);
+        for _ in 0..(cells * cells) {
+            data.extend_from_slice(&0u32.to_le_bytes()); // exists = 0
+        }
+
+        data.extend_from_slice(&0i32.to_le_bytes()); // object_event_count = 0
+        for _ in 0..(size * size) {
+            data.extend_from_slice(&1i16.to_le_bytes()); // event grid, all "walkable"
+        }
+        // No regene events / warps — EOF is treated as zero of each.
+
+        let mut cursor = io::Cursor::new(&data);
+        let smd = SmdFile::parse(&mut cursor).expect("parse synthetic SMD");
+
+        let blocked = smd.bot_blocked.iter().filter(|&&b| b).count();
+        assert!(
+            blocked < smd.bot_blocked.len(),
+            "a single garbage-coordinate collision face should not block the entire grid"
+        );
     }
 
     /// Integration test: parse a real SMD file (moradon_0826.smd).

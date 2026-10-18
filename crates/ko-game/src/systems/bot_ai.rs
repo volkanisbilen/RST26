@@ -2008,8 +2008,9 @@ fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
                 );
             } else if distance <= BOT_SEARCH_RANGE {
                 // Out of attack range but within search range — move toward target.
+                let (spaced_x, spaced_z) = apply_party_spacing(world, bot, target_x, target_z);
                 let Some((new_x, new_y, new_z)) =
-                    bot_path_step_toward(world, bot, target_x, target_y, target_z)
+                    bot_path_step_toward(world, bot, spaced_x, target_y, spaced_z)
                 else {
                     world.update_bot(bot_id, |b| {
                         b.target_id = -1;
@@ -2067,6 +2068,72 @@ fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
     }
 }
 
+/// Minimum distance party bots try to keep from each other while moving as
+/// a group, in world units. Below this, `apply_party_spacing` nudges the
+/// mover's target away from the nearest too-close party-mate.
+const BOT_PARTY_SPACING_MIN: f32 = 7.0;
+/// How far the nudge pushes the target away from that party-mate.
+const BOT_PARTY_SPACING_PUSH: f32 = 6.0;
+
+/// Nudge a movement target away from the nearest too-close party-mate so a
+/// party of bots fans out while moving instead of clumping into a single
+/// file ("tren gibi" per the GM report). Only scans the bot's own party
+/// roster (at most `MAX_PARTY_USERS`, currently 8) — not a zone-wide
+/// broad-phase scan — so this stays O(party size) per call.
+///
+/// The caller keeps using the true, un-nudged target for arrival/attack-range
+/// checks; only the point handed to the pathing step is offset, so route and
+/// combat-range logic are unaffected.
+fn apply_party_spacing(world: &WorldState, bot: &BotInstance, target_x: f32, target_z: f32) -> (f32, f32) {
+    let Some(party_id) = world.get_party_id(bot.id as SessionId) else {
+        return (target_x, target_z);
+    };
+    let Some(party) = world.get_party(party_id) else {
+        return (target_x, target_z);
+    };
+
+    let mut nearest_sq = BOT_PARTY_SPACING_MIN * BOT_PARTY_SPACING_MIN;
+    let mut push: Option<(f32, f32)> = None;
+    for sid in party.active_members() {
+        if sid as u32 == bot.id {
+            continue;
+        }
+        let other = if (sid as u32) < crate::world::BOT_ID_BASE {
+            world
+                .get_position(sid)
+                .filter(|p| p.zone_id == bot.zone_id)
+                .map(|p| (p.x, p.z))
+        } else {
+            world
+                .get_bot(sid as u32)
+                .filter(|b| b.zone_id == bot.zone_id)
+                .map(|b| (b.x, b.z))
+        };
+        let Some((ox, oz)) = other else { continue };
+        let dx = bot.x - ox;
+        let dz = bot.z - oz;
+        let dist_sq = dx * dx + dz * dz;
+        if dist_sq < nearest_sq {
+            nearest_sq = dist_sq;
+            let dist = dist_sq.sqrt();
+            push = Some(if dist > 0.01 {
+                (dx / dist, dz / dist)
+            } else {
+                // Exactly overlapping — any direction breaks the tie.
+                (1.0, 0.0)
+            });
+        }
+    }
+
+    match push {
+        Some((nx, nz)) => (
+            target_x + nx * BOT_PARTY_SPACING_PUSH,
+            target_z + nz * BOT_PARTY_SPACING_PUSH,
+        ),
+        None => (target_x, target_z),
+    }
+}
+
 fn move_toward_party_anchor(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     let Some(party_id) = world.get_party_id(bot.id as SessionId) else {
         return false;
@@ -2088,8 +2155,9 @@ fn move_toward_party_anchor(world: &WorldState, bot: &BotInstance, now_ms: u64) 
     if dx * dx + dz * dz <= 15.0 * 15.0 {
         return false;
     }
+    let (spaced_x, spaced_z) = apply_party_spacing(world, bot, anchor.x, anchor.z);
     let Some((new_x, new_y, new_z)) =
-        bot_path_step_toward(world, bot, anchor.x, anchor.y, anchor.z)
+        bot_path_step_toward(world, bot, spaced_x, anchor.y, spaced_z)
     else {
         return false;
     };
@@ -2123,20 +2191,22 @@ fn tick_waypoint_patrol(world: &WorldState, bot: &BotInstance, now_ms: u64) -> b
         return false;
     }
 
-    // Look up the current waypoint coordinates.
-    let get_waypoint = |state| {
-        if bot.zone_id == ZONE_RONARK_LAND {
-            bot_waypoints::get_bowl_waypoint(route, state, bot.nation)
-        } else {
-            bot_waypoints::get_waypoint(bot.zone_id, route, state, bot.nation)
+    // Look up the current waypoint coordinates. Ronark Land Base (73) has no
+    // surveyed route table of its own (see `random_route`); its spawn pocket
+    // turned out NOT to be connected to Ronark Land's bowl on
+    // `freezone_c.smd`, so it gets its own local orbit instead of reusing
+    // the bowl (see `get_ronark_base_orbit_waypoint`).
+    let get_waypoint = |state| match bot.zone_id {
+        ZONE_RONARK_LAND => bot_waypoints::get_bowl_waypoint(route, state, bot.nation),
+        ZONE_RONARK_LAND_BASE => {
+            bot_waypoints::get_ronark_base_orbit_waypoint(route, state, bot.nation)
         }
+        _ => bot_waypoints::get_waypoint(bot.zone_id, route, state, bot.nation),
     };
-    let route_max = || {
-        if bot.zone_id == ZONE_RONARK_LAND {
-            bot_waypoints::bowl_waypoint_count()
-        } else {
-            bot_waypoints::route_max_waypoints(bot.zone_id, route, bot.nation)
-        }
+    let route_max = || match bot.zone_id {
+        ZONE_RONARK_LAND => bot_waypoints::bowl_waypoint_count(),
+        ZONE_RONARK_LAND_BASE => bot_waypoints::ronark_base_orbit_point_count(),
+        _ => bot_waypoints::route_max_waypoints(bot.zone_id, route, bot.nation),
     };
 
     let (mut wp_x, mut wp_z) = match get_waypoint(state) {
@@ -2207,8 +2277,10 @@ fn tick_waypoint_patrol(world: &WorldState, bot: &BotInstance, now_ms: u64) -> b
         return true;
     }
 
-    // Move toward the waypoint.
-    let Some((new_x, new_y, new_z)) = bot_path_step_toward(world, bot, wp_x, bot.y, wp_z) else {
+    // Move toward the waypoint. Arrival/route-advance above already used the
+    // true waypoint, so a party-spacing nudge here only affects the step.
+    let (spaced_x, spaced_z) = apply_party_spacing(world, bot, wp_x, wp_z);
+    let Some((new_x, new_y, new_z)) = bot_path_step_toward(world, bot, spaced_x, bot.y, spaced_z) else {
         // Skip this waypoint and advance to next.
         advance_unreachable_bot_waypoint(world, bot, state, route_max(), now_ms);
         return true;
@@ -3459,6 +3531,13 @@ fn is_bot_position_valid(world: &WorldState, zone_id: u16, x: f32, z: f32) -> bo
 /// Validate the full short movement segment, not only its destination. This
 /// prevents bots cutting across blocked SMD tiles and appearing on cliffs or
 /// behind map objects that players cannot cross.
+///
+/// Walks every grid cell the segment crosses (`pathfind::bot_segment_walkable`)
+/// instead of sampling the line at a fixed world-unit interval. Fixed-interval
+/// sampling could step over a thin diagonal wall slice that fell entirely
+/// between two samples, letting a bot clip a corner no real player could —
+/// the admin-reported "wallhack" in Ronark Land. Cell walking cannot miss a
+/// cell the segment actually passes through.
 fn is_bot_move_valid(
     world: &WorldState,
     zone_id: u16,
@@ -3470,17 +3549,13 @@ fn is_bot_move_valid(
     if ![from_x, from_z, to_x, to_z].iter().all(|v| v.is_finite()) {
         return false;
     }
-    let distance = ((to_x - from_x).powi(2) + (to_z - from_z).powi(2)).sqrt();
-    let samples = (distance / 1.5).ceil().max(4.0) as usize;
-    (0..=samples).all(|sample| {
-        let t = sample as f32 / samples as f32;
-        is_bot_position_valid(
-            world,
-            zone_id,
-            from_x + (to_x - from_x) * t,
-            from_z + (to_z - from_z) * t,
-        )
-    })
+    let Some(zone) = world.get_zone(zone_id) else {
+        return false;
+    };
+    let Some(map) = zone.map_data.as_ref() else {
+        return false;
+    };
+    crate::systems::pathfind::bot_segment_walkable(map, from_x, from_z, to_x, to_z)
 }
 
 /// Move toward a target using the SMD's actual walkability grid. Short clear
@@ -5272,12 +5347,16 @@ fn build_bot_gear_catalog(world: &WorldState, world_key: usize, item_count: usiz
         excluded: bool,
         has_unique: bool,
     }
+    // Specific items confirmed to have a broken/oversized visual model in the
+    // client -- excluded outright rather than guessed at by a general rule.
+    const BOT_GEAR_DENYLIST: [i32; 1] = [136810000];
+
     let mut families: HashMap<i32, Acc> = HashMap::new();
     for item in rows {
         // Ten-digit item numbers are the later premium weapon series and
         // untradeable rows are event/quest rewards (Candy Cane etc.); neither
         // is ordinary field gear.
-        if item.num >= 1_000_000_000 {
+        if item.num >= 1_000_000_000 || BOT_GEAR_DENYLIST.contains(&item.num) {
             continue;
         }
         let acc = families.entry(item.num / 1000).or_default();
@@ -5405,11 +5484,16 @@ fn bot_gear_grade_cap(level: u8) -> i16 {
 /// Choose an unremarkable family for the slot: candidates are ranked by
 /// AC/damage and the pick lands in the lower half (15% of the range for new
 /// characters, up to the median at max level), never best-in-slot.
+///
+/// `force_max_grade`: skip the level-capped grade pick and take the
+/// family's highest grade up to +7 instead -- for hand-held items (weapon,
+/// shield), which the live game always shows upgraded and glowing.
 fn pick_bot_gear<'a>(
     catalog: &'a BotGearCatalog,
     class: u16,
     level: u8,
     rng: &mut impl Rng,
+    force_max_grade: bool,
     accept: impl Fn(&GearFamily) -> bool,
 ) -> Option<(&'a GearFamily, (u32, i16, u8))> {
     let level_i = level as i32;
@@ -5437,21 +5521,30 @@ fn pick_bot_gear<'a>(
     let idx = (centre + rng.gen_range(-2..=2)).clamp(0, last as i64) as usize;
     let family = candidates[idx];
 
-    let cap = bot_gear_grade_cap(level);
-    let near_cap: Vec<&(i16, u32, i16)> = family
-        .variants
-        .iter()
-        .filter(|(grade, _, _)| *grade <= cap && *grade >= cap - 2)
-        .collect();
-    let variant = if near_cap.is_empty() {
+    let variant = if force_max_grade {
         family
             .variants
             .iter()
-            .filter(|(grade, _, _)| *grade <= cap)
+            .filter(|(grade, _, _)| *grade <= 7)
             .next_back()
             .or_else(|| family.variants.first())?
     } else {
-        near_cap[rng.gen_range(0..near_cap.len())]
+        let cap = bot_gear_grade_cap(level);
+        let near_cap: Vec<&(i16, u32, i16)> = family
+            .variants
+            .iter()
+            .filter(|(grade, _, _)| *grade <= cap && *grade >= cap - 2)
+            .collect();
+        if near_cap.is_empty() {
+            family
+                .variants
+                .iter()
+                .filter(|(grade, _, _)| *grade <= cap)
+                .next_back()
+                .or_else(|| family.variants.first())?
+        } else {
+            near_cap[rng.gen_range(0..near_cap.len())]
+        }
     };
     Some((family, (variant.1, variant.2, 0)))
 }
@@ -5488,7 +5581,7 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
         let Some(item_slot) = *item_slot else {
             continue;
         };
-        if let Some((_, picked)) = pick_bot_gear(&catalog, class, level, &mut rng, |family| {
+        if let Some((_, picked)) = pick_bot_gear(&catalog, class, level, &mut rng, false, |family| {
             family.slot == item_slot && armor_kinds.contains(&family.kind)
         }) {
             equipment[vis_idx] = picked;
@@ -5503,7 +5596,7 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
             order.swap(i, rng.gen_range(0..=i));
         }
         order.into_iter().find_map(|kind| {
-            pick_bot_gear(&catalog, class, level, rng, |family| {
+            pick_bot_gear(&catalog, class, level, rng, true, |family| {
                 family.kind == kind && slot_ok(family.slot) && !family.left_hand_only
             })
             .map(|(family, picked)| (family.slot, family.kind, picked))
@@ -5578,7 +5671,7 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
             if let Some(off) = off_hand {
                 equipment[VISUAL_LEFTHAND_IDX] = off;
             } else if wants_shield {
-                if let Some((_, shield)) = pick_bot_gear(&catalog, class, level, &mut rng, |family| {
+                if let Some((_, shield)) = pick_bot_gear(&catalog, class, level, &mut rng, true, |family| {
                     family.kind == crate::inventory_constants::WEAPON_KIND_SHIELD
                         && family.slot == GEAR_ITEM_SLOT_1H_LEFT
                 }) {
@@ -8094,6 +8187,49 @@ mod tests {
         }
     }
 
+    /// Regression test for the GM report that killed Ronark Land Base (73)
+    /// PK bots never come back: `spread_pk_spawn` must find a walkable ring
+    /// tile near zone 73's own spawn points on zone 73's own map, not just
+    /// on Ronark Land's. This exercises the exact function `bot_regene`
+    /// calls for dead PK bots.
+    #[test]
+    fn test_ronark_land_base_pk_bots_can_respawn() {
+        use crate::zone::{MapData, ZoneInfo};
+        let world = WorldState::new();
+        let smd_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_c.smd");
+        let map_data =
+            MapData::new(ko_protocol::smd::SmdFile::load(&smd_path).expect("load Ronark Land Base SMD"));
+        world.set_zone_with_map(
+            ZONE_RONARK_LAND_BASE,
+            ZoneInfo {
+                smd_name: String::new(),
+                zone_name: "RonarkLandBase".to_string(),
+                zone_type: crate::zone::ZoneAbilityType::PvP,
+                min_level: 0,
+                max_level: 83,
+                init_x: 0.0,
+                init_z: 0.0,
+                init_y: 0.0,
+                abilities: crate::zone::ZoneAbilities::default(),
+                status: 1,
+            },
+            map_data,
+        );
+
+        for nation in [NATION_KARUS, NATION_ELMORAD] {
+            for ordinal in [0usize, 5, 20] {
+                let respawn = spread_pk_spawn(&world, ZONE_RONARK_LAND_BASE, nation, ordinal);
+                assert!(
+                    respawn.is_some(),
+                    "zone 73 nation {nation} ordinal {ordinal} should find a walkable respawn tile"
+                );
+                let (x, z) = respawn.unwrap();
+                assert!(x.is_finite() && z.is_finite() && x >= 0.0 && z >= 0.0);
+            }
+        }
+    }
+
     #[test]
     fn test_generated_gear_uses_class_armor_kind() {
         let world = WorldState::new();
@@ -10329,6 +10465,33 @@ mod tests {
         );
     }
 
+    /// Ronark Land Base (zone 73) has no route table of its own — before the
+    /// fix, `tick_waypoint_patrol` fell through to
+    /// `bot_waypoints::get_waypoint(73, ...)`, which always returns `None`
+    /// for zone 73, so the bot never actually moved. It now uses its own
+    /// local orbit around the nation spawn (not Ronark Land's bowl, which
+    /// turned out not to be reachable from zone 73's spawn pockets).
+    #[test]
+    fn test_waypoint_patrol_ronark_land_base_uses_local_orbit() {
+        let world = WorldState::new();
+
+        let (x, z) = bot_waypoints::get_ronark_base_orbit_waypoint(1, 1, 1).unwrap();
+        let mut bot = make_combat_bot(BOT_ID_BASE, "BaseOrbitBot", 1, 106, 73, x, z);
+        bot.move_route = 1;
+        bot.move_state = 1;
+        world.insert_bot(bot.clone());
+
+        let now_ms = tick_ms();
+        let moved = tick_waypoint_patrol(&world, &bot, now_ms);
+        assert!(moved);
+
+        let updated = world.get_bot(BOT_ID_BASE).unwrap();
+        assert_eq!(
+            updated.move_state, 2,
+            "zone 73 should advance along its own local patrol orbit"
+        );
+    }
+
     #[test]
     fn test_bot_regene_assigns_new_route() {
         let world = WorldState::new();
@@ -10450,6 +10613,105 @@ mod tests {
         create_zone_with_event_grid(&world, 71, 3, vec![1, 1, 1, 0, 1, 1, 1, 1, 1]);
         assert!(!is_bot_position_valid(&world, 71, 4.5, 0.5));
         assert!(is_bot_position_valid(&world, 71, 0.5, 0.5));
+    }
+
+    /// Regression test for the Ronark Land "wallhack" report: the old
+    /// `is_bot_move_valid` sampled the straight line at a fixed world-unit
+    /// interval instead of walking every grid cell it crosses, so it could
+    /// miss a thin diagonal wall slice between two samples. (0,0) and (1,1)
+    /// are open here, but both orthogonal cells touching their shared corner
+    /// are blocked — cutting straight across that corner must be rejected.
+    #[test]
+    fn test_is_bot_move_valid_rejects_diagonal_corner_cut() {
+        let world = WorldState::new();
+        let mut grid = vec![1i16; 9];
+        grid[3] = 0; // grid cell (1, 0) blocked (x-major indexing: x*3+z)
+        grid[1] = 0; // grid cell (0, 1) blocked
+        create_zone_with_event_grid(&world, 71, 3, grid);
+        assert!(
+            !is_bot_move_valid(&world, 71, 1.0, 1.0, 5.0, 5.0),
+            "cutting through a blocked diagonal corner must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_is_bot_move_valid_allows_open_segment() {
+        let world = WorldState::new();
+        create_zone_with_map_data(&world, 71, 5);
+        assert!(is_bot_move_valid(&world, 71, 1.0, 1.0, 15.0, 15.0));
+    }
+
+    #[test]
+    fn test_is_bot_move_valid_no_zone_data() {
+        let world = WorldState::new();
+        assert!(!is_bot_move_valid(&world, 71, 1.0, 1.0, 15.0, 15.0));
+    }
+
+    // ── Party Spacing Tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_apply_party_spacing_pushes_away_from_close_party_mate() {
+        let world = WorldState::new();
+        let bot_a = make_combat_bot(BOT_ID_BASE, "SpaceA", 1, 106, 71, 500.0, 500.0);
+        // 2 units away — well inside BOT_PARTY_SPACING_MIN.
+        let bot_b = make_combat_bot(BOT_ID_BASE + 1, "SpaceB", 1, 106, 71, 502.0, 500.0);
+        world.insert_bot(bot_a.clone());
+        world.insert_bot(bot_b.clone());
+        let party_id = world.create_party(bot_a.id as SessionId).unwrap();
+        assert!(world.add_party_member(party_id, bot_b.id as SessionId));
+
+        let (tx, tz) = apply_party_spacing(&world, &bot_a, 600.0, 500.0);
+        // bot_b sits in the +x direction from bot_a, so the nudge nudges the
+        // target toward -x relative to the raw (600, 500) target.
+        assert!(
+            tx < 600.0,
+            "target should be nudged away from the close party-mate, got {tx}"
+        );
+        assert_eq!(tz, 500.0);
+    }
+
+    #[test]
+    fn test_apply_party_spacing_no_change_when_mate_far_enough() {
+        let world = WorldState::new();
+        let bot_a = make_combat_bot(BOT_ID_BASE, "FarA", 1, 106, 71, 500.0, 500.0);
+        let bot_b = make_combat_bot(BOT_ID_BASE + 1, "FarB", 1, 106, 71, 530.0, 500.0);
+        world.insert_bot(bot_a.clone());
+        world.insert_bot(bot_b.clone());
+        let party_id = world.create_party(bot_a.id as SessionId).unwrap();
+        assert!(world.add_party_member(party_id, bot_b.id as SessionId));
+
+        assert_eq!(
+            apply_party_spacing(&world, &bot_a, 600.0, 500.0),
+            (600.0, 500.0)
+        );
+    }
+
+    #[test]
+    fn test_apply_party_spacing_no_party_unaffected() {
+        let world = WorldState::new();
+        let bot_a = make_combat_bot(BOT_ID_BASE, "SoloA", 1, 106, 71, 500.0, 500.0);
+        world.insert_bot(bot_a.clone());
+        assert_eq!(
+            apply_party_spacing(&world, &bot_a, 600.0, 500.0),
+            (600.0, 500.0)
+        );
+    }
+
+    #[test]
+    fn test_apply_party_spacing_ignores_mate_in_different_zone() {
+        let world = WorldState::new();
+        let bot_a = make_combat_bot(BOT_ID_BASE, "ZoneA", 1, 106, 71, 500.0, 500.0);
+        // Same coordinates, but a different zone — must not be treated as close.
+        let bot_b = make_combat_bot(BOT_ID_BASE + 1, "ZoneB", 1, 106, 72, 500.0, 500.0);
+        world.insert_bot(bot_a.clone());
+        world.insert_bot(bot_b.clone());
+        let party_id = world.create_party(bot_a.id as SessionId).unwrap();
+        assert!(world.add_party_member(party_id, bot_b.id as SessionId));
+
+        assert_eq!(
+            apply_party_spacing(&world, &bot_a, 600.0, 500.0),
+            (600.0, 500.0)
+        );
     }
 
     #[test]
