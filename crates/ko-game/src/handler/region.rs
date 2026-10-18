@@ -615,6 +615,7 @@ pub fn region_user_in_out_packets(world: &crate::world::WorldState, sid: Session
         .filter(|bot| {
             (bot.region_x as i32 - pos.region_x as i32).unsigned_abs() <= 1
                 && (bot.region_z as i32 - pos.region_z as i32).unsigned_abs() <= 1
+                && world.event_bots.visible_in_room(bot.id, my_event_room)
         })
         .collect();
 
@@ -967,6 +968,7 @@ pub fn relocate_user_within_zone(
         .filter(|bot| {
             (bot.region_x as i32 - new_pos.region_x as i32).unsigned_abs() <= 1
                 && (bot.region_z as i32 - new_pos.region_z as i32).unsigned_abs() <= 1
+                && world.event_bots.visible_in_room(bot.id, event_room)
         })
         .collect();
     let mut start = Packet::new(Opcode::WizRegionChange as u8);

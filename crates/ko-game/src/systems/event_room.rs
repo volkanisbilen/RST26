@@ -1774,6 +1774,11 @@ pub fn temple_event_room_close(world: &WorldState, event_type: TempleEventType, 
 
             world.despawn_room_npcs(event_zone, *room_id as u16);
 
+            // filler bots of this room leave with the humans
+            if let Some(kind) = crate::systems::event_bots::EventBotKind::from_temple(event_type) {
+                crate::systems::event_bots::cleanup_room(world, kind, *room_id as u16);
+            }
+
             tracing::info!(
                 "Event {:?} room {} — finish countdown expired, kicked {} users",
                 event_type,

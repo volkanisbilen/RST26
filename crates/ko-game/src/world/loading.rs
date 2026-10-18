@@ -153,6 +153,11 @@ impl WorldState {
             tracing::warn!(error = %e, "bot_loadout_override tables not found or error; GM PK bots use fully automatic gear/stats/skills until a migration adds them");
         }
 
+        // ─── Event bot configuration (admin panel, default: all OFF) ────────────
+        if let Err(e) = crate::systems::event_bots::reload_config(pool, self).await {
+            tracing::warn!(error = %e, "event_bot_config table not found or error; event bots stay disabled until a migration adds it");
+        }
+
         // ─── User Rankings (LoadUserRankings) ──────────────────────────────────
         self.reload_user_rankings(pool).await;
 

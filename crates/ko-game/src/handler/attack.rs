@@ -1666,6 +1666,12 @@ async fn handle_npc_attack(
             return;
         }
 
+        // Event bots: only the enemies of the bot's own event room may hit it, and only while
+        // the event allows combat.
+        if crate::systems::event_bots::deny_player_attack(&world, attacker_sid, npc_id) {
+            return;
+        }
+
         // Distance check — bot position (attacker_pos passed from parent)
         if attacker_pos.zone_id != bot.zone_id {
             return;

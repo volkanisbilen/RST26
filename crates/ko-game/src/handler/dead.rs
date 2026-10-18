@@ -620,15 +620,6 @@ pub fn calculate_party_gold_shares(
 /// - total >= 5  → 300
 /// - else         → 130
 pub fn track_bdw_player_kill(world: &WorldState, killer_sid: SessionId, _dead_sid: SessionId) {
-    use crate::systems::event_room;
-
-    let is_bdw_active = world
-        .event_room_manager
-        .read_temple_event(|s| s.is_bdw_active());
-    if !is_bdw_active {
-        return;
-    }
-
     let killer_nation = match world.get_character_info(killer_sid) {
         Some(ch) => ch.nation,
         None => return,
@@ -638,6 +629,23 @@ pub fn track_bdw_player_kill(world: &WorldState, killer_sid: SessionId, _dead_si
         Some(n) => n,
         None => return,
     };
+
+    track_bdw_kill_by_name(world, &killer_name, killer_nation);
+}
+
+/// Name-based core of [`track_bdw_player_kill`]. The killer only has to be a
+/// registered BDW room member, which lets event bots (no `ClientSession`) score.
+pub fn track_bdw_kill_by_name(world: &WorldState, killer_name: &str, killer_nation: u8) {
+    use crate::systems::event_room;
+
+    let is_bdw_active = world
+        .event_room_manager
+        .read_temple_event(|s| s.is_bdw_active());
+    if !is_bdw_active {
+        return;
+    }
+
+    let killer_name = killer_name.to_string();
 
     let (room_id, _) = match world
         .event_room_manager
@@ -1378,13 +1386,6 @@ pub fn track_juraid_pvp_kill(world: &WorldState, killer_sid: SessionId) {
 ///   - Killer: `m_ChaosExpansionKillCount++`
 /// These feed into rank updates and the final EXP formula at event finish.
 pub fn track_chaos_pvp_kill(world: &WorldState, killer_sid: SessionId, dead_sid: SessionId) {
-    let is_chaos_active = world
-        .event_room_manager
-        .read_temple_event(|s| s.is_chaos_active());
-    if !is_chaos_active {
-        return;
-    }
-
     let killer_name = match world.get_session_name(killer_sid) {
         Some(n) => n,
         None => return,
@@ -1393,6 +1394,20 @@ pub fn track_chaos_pvp_kill(world: &WorldState, killer_sid: SessionId, dead_sid:
         Some(n) => n,
         None => return,
     };
+    track_chaos_kill_by_name(world, &killer_name, &dead_name);
+}
+
+/// Name-based core of [`track_chaos_pvp_kill`] (event bots have no `ClientSession`).
+pub fn track_chaos_kill_by_name(world: &WorldState, killer_name: &str, dead_name: &str) {
+    let is_chaos_active = world
+        .event_room_manager
+        .read_temple_event(|s| s.is_chaos_active());
+    if !is_chaos_active {
+        return;
+    }
+
+    let killer_name = killer_name.to_string();
+    let dead_name = dead_name.to_string();
 
     // Find the room both players are in
     let (room_id, _) = match world

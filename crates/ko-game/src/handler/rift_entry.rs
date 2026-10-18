@@ -259,7 +259,7 @@ fn start(world: &WorldState) {
     for list in by_nation {
         for group in split_groups(list) {
             let difficulty = DdDifficulty::from_party_size(group.len() as u16).unwrap_or(DdDifficulty::Easy);
-            let Some(_room_id) = dd::open_room(world, &group, difficulty) else {
+            let Some(room_id) = dd::open_room(world, &group, difficulty) else {
                 for &sid in &group {
                     notice(world, sid, "Full Moon Rift: no free room. Your voucher was not used.");
                 }
@@ -268,6 +268,14 @@ fn start(world: &WorldState) {
             if group.len() >= 2 {
                 form_party(world, &group);
             }
+            // admin-configured support bots (default OFF): the difficulty above still follows
+            // the number of real players only
+            let group_nation = group
+                .first()
+                .and_then(|&s| world.get_character_info(s))
+                .map(|c| c.nation)
+                .unwrap_or(1);
+            dd::add_support_bots(world, room_id, group.len(), group_nation);
             for &sid in &group {
                 if REQUIRE_VOUCHER && !is_gm(world, sid) {
                     world.rob_item(sid, dd::DUNGEON_DEFENCE_RIFT_ITEM, 1);

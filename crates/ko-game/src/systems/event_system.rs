@@ -161,6 +161,8 @@ fn spawn_juraid_room_npcs(world: &WorldState) {
 pub fn start_event_system_task(
     world: std::sync::Arc<crate::world::WorldState>,
 ) -> tokio::task::JoinHandle<()> {
+    // Event bots (Chaos / BDW fillers) run on their own 250 ms driver; idle without bots.
+    crate::systems::event_bots::start_driver_task(world.clone());
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(EVENT_TICK_INTERVAL_SECS));
@@ -284,6 +286,10 @@ pub fn start_event_system_task(
                             broadcast_juraid_active_notice(&world, *assigned);
                         }
 
+                        // Admin-configured filler bots join the rooms before the humans arrive
+                        // (no-op unless enabled for this event and humans are present).
+                        crate::systems::event_bots::fill_temple_rooms(&world, et);
+
                         // Teleport users + send timer overlay packets
                         event_room::teleport_users_to_event(&world, et);
 
@@ -306,6 +312,18 @@ pub fn start_event_system_task(
                     //   - Clear event session data
                     //
                     // Session IDs are pre-collected before rooms are destroyed.
+                    //
+                    // Event bots (Chaos/BDW fillers) have no session: take them out of the kick
+                    // list and remove them with the event.
+                    let real_sids: Vec<SessionId> = user_sids
+                        .iter()
+                        .copied()
+                        .filter(|sid| !crate::systems::event_bots::is_event_bot_sid(&world, *sid))
+                        .collect();
+                    let user_sids = &real_sids;
+                    if let Some(kind) = crate::systems::event_bots::EventBotKind::from_temple(*et) {
+                        crate::systems::event_bots::cleanup_kind(&world, kind);
+                    }
                     if *et == TempleEventType::BorderDefenceWar {
                         for sid in user_sids.iter() {
                             world.remove_buff(

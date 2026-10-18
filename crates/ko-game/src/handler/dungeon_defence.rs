@@ -738,15 +738,28 @@ const BOT_REACH: f32 = 12.0;
 
 /// `+eventbotfill <count>` inside a rift: bots join the GM's room and hold the Outer Tower.
 pub fn gm_spawn_bots(world: &crate::world::WorldState, gm_sid: u16, count: usize, class: u16) -> String {
+    let _ = class;
     let room_id = world.get_event_room(gm_sid);
-    let Some(room) = world
+    let nation = world.get_character_info(gm_sid).map(|c| c.nation).unwrap_or(1);
+    match add_bots_to_room(world, room_id, count.clamp(1, 30), nation, &|| 83) {
+        Some((n, total)) => format!("{n} bot(s) joined the rift ({total} in total)."),
+        None => "You must be inside a Full Moon Rift room.".to_string(),
+    }
+}
+
+/// Put `count` bots into a started rift room (they hold the Outer Tower). Returns
+/// `(added, total bots in the room)`, or `None` when the room is not running.
+pub fn add_bots_to_room(
+    world: &crate::world::WorldState,
+    room_id: u16,
+    count: usize,
+    nation: u8,
+    level_of: &dyn Fn() -> u8,
+) -> Option<(usize, usize)> {
+    let room = world
         .dd_rooms()
         .iter()
-        .find(|r| r.room_id.load(Ordering::Relaxed) == room_id && r.is_started.load(Ordering::Relaxed))
-    else {
-        return "You must be inside a Full Moon Rift room.".to_string();
-    };
-    let nation = world.get_character_info(gm_sid).map(|c| c.nation).unwrap_or(1);
+        .find(|r| r.room_id.load(Ordering::Relaxed) == room_id && r.is_started.load(Ordering::Relaxed))?;
     let (ox, oz) = GUARDIAN_NPCS
         .iter()
         .find(|g| g.0 == OUTER_TOWER)
@@ -754,7 +767,7 @@ pub fn gm_spawn_bots(world: &crate::world::WorldState, gm_sid: u16, count: usize
         .unwrap_or((196.0, 54.0));
     let mut rng = rand::thread_rng();
     let mut n = 0;
-    for i in 0..count.clamp(1, 30) {
+    for i in 0..count {
         let id = crate::systems::bot_ai::spawn_gm_bot(
             world,
             crate::systems::bot_ai::SpawnGmBotParams {
@@ -762,19 +775,47 @@ pub fn gm_spawn_bots(world: &crate::world::WorldState, gm_sid: u16, count: usize
                 x: ox - 4.0 + rng.gen_range(-3.0..3.0),
                 y: 0.0,
                 z: oz + rng.gen_range(-4.0..4.0),
-                class: (i % 4) as u16 + 1 + 0 * class,
-                level: 83,
+                class: (i % 4) as u16 + 1,
+                level: level_of(),
                 nation,
                 ai_state: crate::world::BotAiState::Afk,
             },
         );
+        // only the room's players see (and are listed) these bots
+        world.event_bots.register_aux_bot(id, room_id);
         room.bots.write().push(id);
         n += 1;
     }
-    format!("{n} bot(s) joined the rift ({} in total).", room.bots.read().len())
+    Some((n, room.bots.read().len()))
+}
+
+/// Admin-configured helper bots for a freshly opened rift room: they soften the monsters but
+/// never land the killing blow, so every drop and reward stays with the players.
+/// Returns how many bots joined (0 when the feature is off).
+pub fn add_support_bots(world: &crate::world::WorldState, room_id: u16, humans: usize, nation: u8) -> usize {
+    use crate::systems::event_bots::{auxiliary_bot_count, auxiliary_bot_level, EventBotKind};
+    let count = auxiliary_bot_count(world, EventBotKind::Rift, humans);
+    if count == 0 {
+        return 0;
+    }
+    world.event_bots.mark_rift_support_room(room_id);
+    let level = || auxiliary_bot_level(world, EventBotKind::Rift);
+    add_bots_to_room(world, room_id, count, nation, &level)
+        .map(|(n, _)| n)
+        .unwrap_or(0)
+}
+
+/// HP a support bot leaves a monster at: 10 % of its maximum.
+fn support_floor_hp(world: &crate::world::WorldState, nid: u32) -> i32 {
+    world
+        .get_npc_instance(nid)
+        .and_then(|n| world.get_npc_template(n.proto_id, n.is_monster))
+        .map(|t| (t.max_hp as i32 / 10).max(1))
+        .unwrap_or(1)
 }
 
 fn bots_defend(world: &crate::world::WorldState, room: &DdRoomInfo, room_id: u16) {
+    let support_only = world.event_bots.rift_room_is_support(room_id);
     let bots: Vec<u32> = room.bots.read().clone();
     for id in bots {
         let Some(bot) = world.get_bot(id) else { continue };
@@ -793,8 +834,19 @@ fn bots_defend(world: &crate::world::WorldState, room: &DdRoomInfo, room_id: u16
         else {
             continue;
         };
+        let current = world.get_npc_hp(target.nid).unwrap_or(0);
+        if support_only {
+            // support bots leave the finishing blow (and its loot) to the players
+            let floor = support_floor_hp(world, target.nid);
+            if current <= floor {
+                continue;
+            }
+            crate::systems::bot_ai::event_bot_swing(world, id, target.nid);
+            world.update_npc_hp(target.nid, (current - BOT_DPS).max(floor));
+            continue;
+        }
         crate::systems::bot_ai::event_bot_swing(world, id, target.nid);
-        let hp = world.get_npc_hp(target.nid).unwrap_or(0) - BOT_DPS;
+        let hp = current - BOT_DPS;
         if hp > 0 {
             world.update_npc_hp(target.nid, hp);
         } else {
@@ -806,6 +858,7 @@ fn bots_defend(world: &crate::world::WorldState, room: &DdRoomInfo, room_id: u16
 
 /// Remove the room's bots (room closed).
 pub fn despawn_bots(world: &crate::world::WorldState, room_id: u16) {
+    world.event_bots.clear_rift_room(room_id);
     for room in world.dd_rooms() {
         if room.room_id.load(Ordering::Relaxed) == room_id {
             for id in room.bots.write().drain(..) {
