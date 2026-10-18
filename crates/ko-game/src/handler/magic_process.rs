@@ -7139,6 +7139,11 @@ async fn apply_skill_damage_to_npc(
             return;
         }
 
+        // Field bots (normal-map hunters) are protected exactly like in the melee path.
+        if !crate::systems::field_bots::player_can_hurt(world, caster_sid, &bot) {
+            return;
+        }
+
         let damage = gm_fixed_skill_damage(world, caster_sid, instance.skill_id, damage);
 
         // Apply damage — clamp to [0, max_hp]

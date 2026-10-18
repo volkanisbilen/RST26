@@ -570,6 +570,14 @@ impl WorldState {
         });
         true
     }
+    /// Read an NPC's AI state without cloning it (the state holds path vectors).
+    pub(crate) fn with_npc_ai<R>(&self, nid: NpcId, f: impl FnOnce(&NpcAiState) -> R) -> Option<R> {
+        self.npc_ai.get(&nid).map(|a| f(&a))
+    }
+    /// Has any player damaged this NPC since it last respawned?
+    pub(crate) fn npc_has_damage_record(&self, nid: NpcId) -> bool {
+        self.npc_damage.get(&nid).is_some_and(|m| !m.is_empty())
+    }
     /// Get a snapshot of an NPC's AI state.
     pub fn get_npc_ai(&self, nid: NpcId) -> Option<NpcAiState> {
         self.npc_ai.get(&nid).map(|v| v.clone())
@@ -1650,7 +1658,19 @@ impl WorldState {
     /// Allocate a new unique BotId.
     ///
     pub fn alloc_bot_id(&self) -> BotId {
-        self.next_bot_id.fetch_add(1, Ordering::Relaxed)
+        // Runtime bots live in a fixed id band. Wrap inside it and skip ids that are still in
+        // use, so a long-running server that keeps (re)spawning bots never leaves the band.
+        use crate::world::{BOT_ID_BASE, BOT_ID_SPAN};
+        for _ in 0..BOT_ID_SPAN {
+            let n = self.next_bot_id.fetch_add(1, Ordering::Relaxed);
+            let id = BOT_ID_BASE + n.wrapping_sub(BOT_ID_BASE) % BOT_ID_SPAN;
+            if !self.bots.contains_key(&id) {
+                return id;
+            }
+        }
+        // Every slot is taken (callers cap their spawns far below this).
+        let n = self.next_bot_id.fetch_add(1, Ordering::Relaxed);
+        BOT_ID_BASE + n.wrapping_sub(BOT_ID_BASE) % BOT_ID_SPAN
     }
 
     /// Insert (or replace) a runtime bot instance.

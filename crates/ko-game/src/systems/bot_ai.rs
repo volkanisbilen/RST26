@@ -631,7 +631,7 @@ fn detect_rogue_weapon_kind(bot: &BotInstance, world: Option<&WorldState>) -> i3
 ///   `x2` for cast-time skills); a player's client will not start the cast
 ///   beyond the table range, so a player never actually fires from there.
 /// An unlimited result (0) falls back to the bot's target search radius.
-fn bot_attack_range_for_skill(
+pub(crate) fn bot_attack_range_for_skill(
     world: &WorldState,
     bot: &BotInstance,
     skill_id: u32,
@@ -732,7 +732,7 @@ fn note_bot_hard_cc(world: &WorldState, skill_id: u32, target_sid: SessionId, no
 /// Normal class skill selection, except that a hard-CC skill is never thrown
 /// at a target that is already frozen/stunned (by anyone): the selection is
 /// re-rolled, and if the pool keeps producing CC the basic attack is used.
-fn select_bot_attack_skill(
+pub(crate) fn select_bot_attack_skill(
     world: &WorldState,
     bot: &BotInstance,
     target_sid: SessionId,
@@ -970,6 +970,9 @@ pub fn tick_bots(world: &WorldState) {
                     tick_fighting(world, &bot, now_ms);
                 }
             }
+            // Field bots are driven by `systems::field_bots::tick` (own scheduler, own budget);
+            // only the generic regen / self-heal above applies here.
+            BotAiState::Field => {}
             BotAiState::Move => {
                 // Move AI: walk to destination, then go idle.
                 // For now, advance tick time. Move targets are set externally.
@@ -1805,7 +1808,7 @@ fn tick_rogue_support(world: &WorldState, bot: &BotInstance, targets: &[SupportT
 /// per call and gated by each skill's own cast/recast time. Returns whether
 /// a cast fired this tick -- the caller must not also move the bot when it
 /// did (see tick_priest_support's doc comment).
-fn tick_bot_support(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
+pub(crate) fn tick_bot_support(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     if !(bot.is_priest() || bot.is_rogue()) || now_ms < bot.skill_cooldown[1] {
         return false;
     }
@@ -2939,7 +2942,7 @@ fn bot_perform_attack(
 /// - `caster_id` — bot's runtime ID
 /// - `target_id` — target entity ID
 /// - `data` — 7-element data array (position, damage, etc.)
-fn build_bot_magic_packet(
+pub(crate) fn build_bot_magic_packet(
     magic_opcode: u8,
     skill_id: u32,
     caster_id: u32,
@@ -3626,7 +3629,7 @@ fn flee_random_direction(bot: &BotInstance) -> (f32, f32) {
 /// - `1` — start of new movement (target changed, new run begins)
 /// - `3` — continuing movement (mid-run)
 /// - `0` — movement finished (arrived at destination)
-fn broadcast_bot_move_ex(
+pub(crate) fn broadcast_bot_move_ex(
     world: &WorldState,
     bot: &BotInstance,
     new_x: f32,
@@ -3726,7 +3729,7 @@ fn is_bot_move_valid(
 /// Every returned position has been checked against the navigation mask along
 /// the whole segment from the bot's current position, never just at the
 /// destination.
-fn bot_path_step_toward(
+pub(crate) fn bot_path_step_toward(
     world: &WorldState,
     bot: &BotInstance,
     target_x: f32,
@@ -4258,6 +4261,14 @@ pub fn bot_on_death(world: &WorldState, bot_id: BotId, now_ms: u64) {
     dead_pkt.write_u32(bot_id);
     broadcast_to_bot_region(world, zone_id, rx, rz, &dead_pkt);
 
+    // Field bots (normal-map hunters) pay nobody for their death: no NP, gold, rival/anger
+    // bookkeeping, tournament points or kill notices -- whoever or whatever killed them, in any
+    // zone. They simply respawn at their hunting ground.
+    if prev_ai_state == BotAiState::Field {
+        debug!(bot_id, name = %bot.name, zone_id, "field bot died, no rewards paid");
+        return;
+    }
+
     // ── Rivalry & anger gauge (PK zones only) ────────────────────────
     let mut rival_bonus_np: i32 = 0;
     let mut remove_rival_from_killer = false;
@@ -4566,6 +4577,8 @@ fn bot_regene(world: &WorldState, bot_id: BotId, now_ms: u64) {
             nation,
             bot_id.saturating_sub(crate::world::BOT_ID_BASE) as usize,
         )
+    } else if original_state == BotAiState::Field {
+        crate::systems::field_bots::respawn_point(world, &bot)
     } else {
         None
     };
@@ -5401,7 +5414,7 @@ fn gm_bot_stats(class: u16, level: u8) -> (u8, u8, u8, u8, u8) {
     }
 }
 
-fn bot_class_group(class: u16) -> u8 {
+pub(crate) fn bot_class_group(class: u16) -> u8 {
     match class % 100 {
         1 | 5 | 6 => 1,
         2 | 7 | 8 => 2,

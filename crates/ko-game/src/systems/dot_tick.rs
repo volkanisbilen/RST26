@@ -258,6 +258,12 @@ fn process_dot_tick(world: &WorldState) -> Vec<(u32, u16)> {
                 continue;
             }
 
+            // A damage-over-time from someone who may not hurt a field bot is dropped.
+            if total_damage < 0 && !crate::systems::field_bots::player_can_hurt(world, caster_sid, &bot) {
+                world.clear_npc_dots(npc_id);
+                continue;
+            }
+
             if !is_event_attackable
                 && total_damage < 0
                 && event_room::is_in_temple_event_zone(bot.zone_id)

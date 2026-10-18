@@ -1666,6 +1666,13 @@ async fn handle_npc_attack(
             return;
         }
 
+        // Field bots (normal-map hunters) cannot be hurt by same-nation players or where the
+        // zone forbids cross-nation PvP; killing one never pays anything (see bot_on_death).
+        if !crate::systems::field_bots::player_can_hurt(&world, attacker_sid, &bot) {
+            broadcast_attack_result(&world, attacker_sid, b_type, ATTACK_FAIL, npc_id, unknown);
+            return;
+        }
+
         // Distance check — bot position (attacker_pos passed from parent)
         if attacker_pos.zone_id != bot.zone_id {
             return;

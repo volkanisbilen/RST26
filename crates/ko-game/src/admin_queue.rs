@@ -169,6 +169,20 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 other => Err(format!("unknown bot action {other}")),
             }
         }
+        "field_bot_reload" => crate::systems::field_bots::reload_config(world, pool)
+            .await
+            .map(|n| format!("{n} field bot zone row(s) loaded"))
+            .map_err(|e| e.to_string()),
+        "field_bot" => {
+            let zone = args.get("zone").and_then(|v| v.as_u64()).map(|z| z as u16);
+            match s("action").as_str() {
+                "clear" => {
+                    let removed = crate::systems::field_bots::clear(world, zone);
+                    Ok(format!("Removed {removed} field bot(s); enabled zones refill within seconds"))
+                }
+                other => Err(format!("unknown field_bot action {other}")),
+            }
+        }
         "bot_loadout_reload" => crate::systems::bot_ai::reload_bot_loadout_overrides(pool)
             .await
             .map(|n| format!("{n} bot loadout override bracket(s) loaded"))

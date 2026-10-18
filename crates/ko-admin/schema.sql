@@ -190,3 +190,34 @@ CREATE TABLE IF NOT EXISTS bot_loadout_override_item (
     CONSTRAINT bot_loadout_override_item_bracket_chk CHECK (level_bracket IN (59, 69, 83)),
     CONSTRAINT bot_loadout_override_item_slot_chk CHECK (slot IN (1, 4, 5, 6, 8, 10, 12, 13))
 )
+-- ;;
+-- Field bots (normal-map hunters, "Saha Botlari" page); see
+-- migrations/20261018100000_field_bots.sql for the full documentation. Everything starts disabled.
+CREATE TABLE IF NOT EXISTS field_bot_zone (
+    zone_id         SMALLINT    PRIMARY KEY,
+    enabled         BOOLEAN     NOT NULL DEFAULT FALSE,
+    karus_count     SMALLINT    NOT NULL DEFAULT 0,
+    elmorad_count   SMALLINT    NOT NULL DEFAULT 0,
+    level_min       SMALLINT    NOT NULL DEFAULT 1,
+    level_max       SMALLINT    NOT NULL DEFAULT 83,
+    mix_warrior     SMALLINT    NOT NULL DEFAULT 30,
+    mix_rogue       SMALLINT    NOT NULL DEFAULT 20,
+    mix_mage        SMALLINT    NOT NULL DEFAULT 25,
+    mix_priest      SMALLINT    NOT NULL DEFAULT 25,
+    mix_kurian      SMALLINT    NOT NULL DEFAULT 0,
+    live_karus      SMALLINT    NOT NULL DEFAULT 0,
+    live_elmorad    SMALLINT    NOT NULL DEFAULT 0,
+    live_updated_at TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT field_bot_zone_zone_chk   CHECK (zone_id IN (1, 2, 11, 12, 21)),
+    CONSTRAINT field_bot_zone_count_chk  CHECK (karus_count BETWEEN 0 AND 40 AND elmorad_count BETWEEN 0 AND 40),
+    CONSTRAINT field_bot_zone_level_chk  CHECK (level_min BETWEEN 1 AND 83 AND level_max BETWEEN 1 AND 83 AND level_min <= level_max),
+    CONSTRAINT field_bot_zone_mix_chk    CHECK (mix_warrior BETWEEN 0 AND 100 AND mix_rogue BETWEEN 0 AND 100
+                                               AND mix_mage BETWEEN 0 AND 100 AND mix_priest BETWEEN 0 AND 100
+                                               AND mix_kurian BETWEEN 0 AND 100)
+)
+-- ;;
+INSERT INTO field_bot_zone (zone_id, enabled, karus_count, elmorad_count, level_min, level_max)
+VALUES (21, FALSE, 6, 6, 8, 45), (1, FALSE, 10, 0, 35, 60), (2, FALSE, 0, 10, 35, 60),
+       (11, FALSE, 8, 0, 66, 80), (12, FALSE, 0, 8, 66, 80)
+ON CONFLICT (zone_id) DO NOTHING

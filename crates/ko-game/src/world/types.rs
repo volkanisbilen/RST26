@@ -3215,6 +3215,9 @@ pub type BotId = u32;
 /// target ID in the signed 16-bit fields used by the bot AI.
 pub const BOT_ID_BASE: u32 = 20_000;
 
+/// Number of ids in the runtime-bot band (`BOT_ID_BASE..BOT_ID_BASE + BOT_ID_SPAN`).
+pub const BOT_ID_SPAN: u32 = 5_000;
+
 /// Bot AI state — mirrors `CBot::m_BotState` values (BotHandler.h).
 /// C++ defines (User.h lines 71-85):
 /// `BOT_AFK=0, BOT_MINING=1, BOT_FISHING=2, BOT_FARMER=3, BOT_FARMERS=4,
@@ -3243,6 +3246,9 @@ pub enum BotAiState {
     Pk = 7,
     /// AFK bot: stands in place, no active AI.
     Afk = 8,
+    /// Field bot: hunts monsters in a normal (non-PK) map, driven by
+    /// `systems::field_bots` instead of the PK combat loop.
+    Field = 9,
 }
 
 /// User-presence state of a bot — mirrors `USER_STANDING` / `USER_DEAD`.
