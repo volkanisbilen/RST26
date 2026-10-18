@@ -1658,11 +1658,22 @@ impl WorldState {
             let type4 = match self.get_magic_type4(*skill_id as i32) {
                 Some(t4) => t4,
                 None => {
-                    tracing::debug!(
-                        "[sid={}] recast_saved_magic: no type4 data for skill_id={}",
-                        sid,
-                        skill_id,
-                    );
+                    // InsertSavedMagic is called unconditionally for both Type4
+                    // buffs and Type6 transformations (see the Type6 cast handler
+                    // in magic_process.rs), so a saved entry with no Type4 row is
+                    // a transformation (e.g. a TS scroll) — restore it with its
+                    // remaining duration instead of silently dropping it.
+                    if filter_buff_type.is_none()
+                        && self.recast_saved_transformation(sid, *skill_id, *remaining_secs)
+                    {
+                        recast_count += 1;
+                    } else {
+                        tracing::debug!(
+                            "[sid={}] recast_saved_magic: no type4/type6 data for skill_id={}",
+                            sid,
+                            skill_id,
+                        );
+                    }
                     continue;
                 }
             };
@@ -1797,6 +1808,88 @@ impl WorldState {
         }
 
         recast_count
+    }
+
+    /// Restore a Type6 transformation from a saved-magic entry (see the
+    /// `None` branch in `recast_saved_magic_filtered`). Mirrors the broadcast
+    /// the original Type6 cast handler sends (magic_process.rs) so the client
+    /// rebuilds the transformed model after e.g. respawning from death.
+    fn recast_saved_transformation(
+        &self,
+        sid: SessionId,
+        skill_id: u32,
+        remaining_secs: u16,
+    ) -> bool {
+        let type6 = match self.get_magic_type6(skill_id as i32) {
+            Some(t6) => t6,
+            None => return false,
+        };
+        let transformation_type =
+            match crate::handler::magic_process::transformation_type_from_user_skill_use(
+                type6.user_skill_use,
+            ) {
+                Some(value) => value,
+                None => return false,
+            };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        self.set_transformation(
+            sid,
+            transformation_type,
+            type6.transform_id as u16,
+            skill_id,
+            now_ms,
+            remaining_secs as u64 * 1000,
+        );
+
+        let mut effecting_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+        effecting_pkt.write_u8(3); // MAGIC_EFFECTING
+        effecting_pkt.write_u32(skill_id);
+        effecting_pkt.write_u32(sid as u32);
+        effecting_pkt.write_u32(sid as u32);
+        for value in [0u32, 1, 0, remaining_secs as u32, 0, 0, 0] {
+            effecting_pkt.write_u32(value);
+        }
+
+        let mut state_pkt = Packet::new(Opcode::WizStateChange as u8);
+        state_pkt.write_u32(sid as u32);
+        state_pkt.write_u8(crate::state_change_constants::STATE_CHANGE_TRANSFORMATION);
+        state_pkt.write_u32(skill_id);
+
+        if let Some((pos, sender_event_room)) =
+            self.with_session(sid, |h| (h.position, h.event_room))
+        {
+            self.broadcast_to_3x3(
+                pos.zone_id,
+                pos.region_x,
+                pos.region_z,
+                Arc::new(effecting_pkt),
+                None,
+                sender_event_room,
+            );
+            self.broadcast_to_3x3(
+                pos.zone_id,
+                pos.region_x,
+                pos.region_z,
+                Arc::new(state_pkt),
+                None,
+                sender_event_room,
+            );
+        }
+
+        tracing::info!(
+            "[sid={}] recast_saved_magic: restored transformation skill_id={} type={} remaining={}s",
+            sid,
+            skill_id,
+            transformation_type,
+            remaining_secs,
+        );
+
+        true
     }
 }
 
@@ -2222,6 +2315,39 @@ mod recast_saved_magic_tests {
         }
     }
 
+    /// Create a test MagicType6Row (transformation) with a given user_skill_use
+    /// (1=monster, 3/4/7=NPC, 0/5/6=siege — see transformation_type_from_user_skill_use).
+    fn make_type6(i_num: i32, user_skill_use: i32, transform_id: i32, duration: i32) -> MagicType6Row {
+        MagicType6Row {
+            i_num,
+            name: None,
+            description: None,
+            size: 100,
+            transform_id,
+            duration,
+            max_hp: 1000,
+            max_mp: 100,
+            speed: 0,
+            attack_speed: 0,
+            total_hit: 0,
+            total_ac: 0,
+            total_hit_rate: 0,
+            total_evasion_rate: 0,
+            total_fire_r: 0,
+            total_cold_r: 0,
+            total_lightning_r: 0,
+            total_magic_r: 0,
+            total_disease_r: 0,
+            total_poison_r: 0,
+            class: 0,
+            user_skill_use,
+            need_item: 0,
+            skill_success_rate: 100,
+            monster_friendly: 0,
+            nation: 0,
+        }
+    }
+
     /// Create a test MagicType4Row with only max_hp modifier.
     fn make_type4_hp_only(i_num: i32, buff_type: i32, max_hp: i32) -> MagicType4Row {
         MagicType4Row {
@@ -2399,6 +2525,35 @@ mod recast_saved_magic_tests {
         let count = world.recast_saved_magic(1);
         assert_eq!(count, 0);
         assert_eq!(world.get_active_buffs(1).len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_recast_restores_transformation() {
+        let (world, _rx) = setup_world();
+        world.insert_magic_type6(make_type6(500300, 1, 777, 600));
+        world.load_saved_magic(1, &[(500300, 400)]);
+
+        let count = world.recast_saved_magic(1);
+        assert_eq!(count, 1);
+        assert!(world.is_transformed(1));
+        let (transform_id, skill_id, duration_ms) = world
+            .with_session(1, |h| (h.transform_id, h.transform_skill_id, h.transformation_duration))
+            .unwrap();
+        assert_eq!(transform_id, 777);
+        assert_eq!(skill_id, 500300);
+        assert_eq!(duration_ms, 400 * 1000);
+    }
+
+    #[tokio::test]
+    async fn test_recast_transformation_unknown_user_skill_use_is_skipped() {
+        let (world, _rx) = setup_world();
+        // user_skill_use=99 doesn't map to any transformation type.
+        world.insert_magic_type6(make_type6(500301, 99, 777, 600));
+        world.load_saved_magic(1, &[(500301, 400)]);
+
+        let count = world.recast_saved_magic(1);
+        assert_eq!(count, 0);
+        assert!(!world.is_transformed(1));
     }
 
     #[tokio::test]

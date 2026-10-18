@@ -143,6 +143,15 @@ pub fn broadcast_death(world: &WorldState, dead_sid: SessionId) {
         world.send_to_session_owned(dead_sid, cancel_pkt);
     }
 
+    // Restore persistent scroll buffs (AC/Attack/HP-MP/etc, skill_id > 500000)
+    // the same way a zone change does — clear_all_buffs above wiped every
+    // buff including these, but it deliberately doesn't touch saved_magic_map
+    // ("without removing saved magic", same as zone_change.rs), so whatever's
+    // still in there just needs to be reapplied with its remaining duration.
+    // Without this, dying wasted the rest of a premium scroll's duration even
+    // though surviving a zone change already didn't.
+    world.recast_saved_magic(dead_sid);
+
     // Armour slots (HEAD, BREAST, LEG, GLOVE, FOOT) lose rand(2..=5) durability.
     world.item_wore_out(dead_sid, super::durability::WORE_TYPE_DEFENCE, 0);
 
