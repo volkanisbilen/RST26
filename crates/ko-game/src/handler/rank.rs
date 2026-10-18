@@ -52,6 +52,16 @@ use crate::world::{
     PkZoneRanking, RANK_TYPE_CHAOS_DUNGEON, RANK_TYPE_PK_ZONE, RANK_TYPE_ZONE_BORDER_DEFENSE_WAR,
 };
 
+/// PK rank window (type 1 / type 5) is only valid in Ronark Land, Ronark Land
+/// Base, Ardream and the war zones.
+pub(crate) fn pk_rank_zone_allowed(zone_id: u16, is_war_zone: bool) -> bool {
+    use crate::world::{ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
+    is_war_zone
+        || zone_id == ZONE_RONARK_LAND
+        || zone_id == ZONE_RONARK_LAND_BASE
+        || zone_id == ZONE_ARDREAM
+}
+
 /// Handle incoming WIZ_RANK (0x80) packet.
 pub async fn handle(session: &mut ClientSession, packet: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
@@ -71,14 +81,40 @@ pub async fn handle(session: &mut ClientSession, packet: Packet) -> anyhow::Resu
         None => return Ok(()),
     };
 
+    // Zone gating of the rank window (the 2625 client asks with type 1 or 5 on
+    // ALT in every zone and shows whatever window the reply frames):
+    //  - Chaos Dungeon: always answer with the Chaos ladder (type 3 reply),
+    //  - Ronark Land / Base / Ardream (and war zones): PK ranking,
+    //  - everywhere else: no reply, so no PK window opens.
+    let zone_id = {
+        let sid = session.session_id();
+        world.with_session(sid, |h| h.position.zone_id).unwrap_or(0)
+    };
+    if zone_id == crate::world::ZONE_CHAOS_DUNGEON
+        && matches!(
+            rank_type,
+            RANK_TYPE_PK_ZONE | RANK_TYPE_CHAOS_DUNGEON | RANK_TYPE_LADDER
+        )
+    {
+        return handle_chaos_dungeon(session).await;
+    }
+    let is_war_zone = world.get_zone(zone_id).is_some_and(|z| z.is_war_zone());
+    if matches!(rank_type, RANK_TYPE_PK_ZONE | RANK_TYPE_LADDER)
+        && !pk_rank_zone_allowed(zone_id, is_war_zone)
+    {
+        debug!(
+            "[{}] WIZ_RANK type {} ignored outside PK zones (zone {})",
+            session.addr(),
+            rank_type,
+            zone_id
+        );
+        return Ok(());
+    }
+
     match rank_type {
         RANK_TYPE_PK_ZONE => {
             // C++ checks isInSpecialEventZone() || isInWarZone() and routes to
             // HandleRankingSpecialEvent which uses zindan_rankings instead.
-            let sid = session.session_id();
-            let zone_id = world.with_session(sid, |h| h.position.zone_id).unwrap_or(0);
-            let is_war_zone = world.get_zone(zone_id).is_some_and(|z| z.is_war_zone());
-
             if is_war_zone {
                 handle_special_event_zone(session).await
             } else {
@@ -694,6 +730,28 @@ async fn handle_bdw(session: &mut ClientSession) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The Chaos window lists at most 19 rows (`if (sCount > 18) break;`).
+pub(crate) const CHAOS_RANK_MAX_ROWS: usize = 19;
+
+/// Build the Chaos Dungeon ranking reply (C++ `HandleRankingChaosDungeon`):
+/// `[u8 3][u8 count]{[string name][u16 kills][u16 deaths]}*[i32 exp][i32 premium_exp][u32 1]`.
+/// `rows` must already be sorted; the exp values are clamped like the C++ (0..=8M / 0..=10M).
+pub(crate) fn build_chaos_rank_packet(rows: &[(String, u32, u32)], exp: i64, premium_exp: i64) -> Packet {
+    let mut result = Packet::new(Opcode::WizRank as u8);
+    result.write_u8(RANK_TYPE_CHAOS_DUNGEON);
+    let n = rows.len().min(CHAOS_RANK_MAX_ROWS);
+    result.write_u8(n as u8);
+    for (name, kills, deaths) in rows.iter().take(n) {
+        result.write_string(name);
+        result.write_u16((*kills).min(u16::MAX as u32) as u16);
+        result.write_u16((*deaths).min(u16::MAX as u32) as u16);
+    }
+    result.write_i32(exp.clamp(0, 8_000_000) as i32);
+    result.write_i32(premium_exp.clamp(0, 10_000_000) as i32);
+    result.write_u32(1);
+    result
+}
+
 /// Handle Chaos Dungeon ranking request (RANK_TYPE_CHAOS_DUNGEON = 3).
 /// Reads real ranking data from the EventRoom. All users in the same room are
 /// sorted by kills descending (deaths ascending as tiebreaker) and up to 19
@@ -782,38 +840,20 @@ async fn handle_chaos_dungeon(session: &mut ClientSession) -> anyhow::Result<()>
     // Sort by kills descending, then deaths ascending as tiebreaker
     entries.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.3.cmp(&b.3)));
 
-    let mut result = Packet::new(Opcode::WizRank as u8);
-    result.write_u8(RANK_TYPE_CHAOS_DUNGEON);
-
-    let count_offset = result.wpos();
-    result.write_u8(0); // placeholder
-
-    let mut count: u8 = 0;
-    for (name, entry_sid, kills, deaths) in &entries {
-        if count > 18 {
-            break;
-        }
-
-        // Verify user is still in-game
-        if world
-            .with_session(*entry_sid, |h| h.character.is_some())
-            .unwrap_or(false)
-        {
-            result.write_string(name);
-            result.write_u16(*kills as u16);
-            result.write_u16(*deaths as u16);
-            count += 1;
-        }
-    }
-
-    // Backpatch count
-    result.data[count_offset] = count;
-
     // Requester's own EXP preview (display-only)
     let (gained_exp, premium_gained_exp) = chaos_user_exp(requester_level, my_kills, my_deaths);
-    result.write_i32(gained_exp as i32);
-    result.write_i32(premium_gained_exp as i32);
-    result.write_u32(1); // trailing constant
+    let rows: Vec<(String, u32, u32)> = entries
+        .iter()
+        .filter(|(_, entry_sid, _, _)| {
+            // Verify user is still in-game
+            world
+                .with_session(*entry_sid, |h| h.character.is_some())
+                .unwrap_or(false)
+        })
+        .map(|(name, _, kills, deaths)| (name.clone(), *kills, *deaths))
+        .collect();
+    let count = rows.len().min(CHAOS_RANK_MAX_ROWS) as u8;
+    let result = build_chaos_rank_packet(&rows, gained_exp, premium_gained_exp);
 
     session.send_packet(&result).await?;
 
@@ -914,6 +954,43 @@ mod tests {
         // Data: [2] + [0,0] + [0,0] + 8 + 8 = 1+2+2+8+8 = 21
         assert_eq!(pkt.data.len(), 21);
         assert_eq!(pkt.data[0], RANK_TYPE_ZONE_BORDER_DEFENSE_WAR);
+    }
+
+    #[test]
+    fn test_chaos_rank_packet_layout() {
+        let rows = vec![("Ann".to_string(), 7u32, 2u32), ("Bob".to_string(), 3, 5)];
+        let pkt = build_chaos_rank_packet(&rows, 123_456, 246_912);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(pkt.opcode, Opcode::WizRank as u8);
+        assert_eq!(r.read_u8(), Some(RANK_TYPE_CHAOS_DUNGEON));
+        assert_eq!(r.read_u8(), Some(2));
+        assert_eq!(r.read_string().as_deref(), Some("Ann"));
+        assert_eq!((r.read_u16(), r.read_u16()), (Some(7), Some(2)));
+        assert_eq!(r.read_string().as_deref(), Some("Bob"));
+        assert_eq!((r.read_u16(), r.read_u16()), (Some(3), Some(5)));
+        assert_eq!(r.read_u32().map(|v| v as i32), Some(123_456));
+        assert_eq!(r.read_u32().map(|v| v as i32), Some(246_912));
+        assert_eq!(r.read_u32(), Some(1));
+    }
+
+    #[test]
+    fn test_chaos_rank_packet_caps_rows_and_exp() {
+        let rows: Vec<(String, u32, u32)> = (0..30).map(|i| (format!("P{i}"), i, 0)).collect();
+        let pkt = build_chaos_rank_packet(&rows, 99_000_000, -5);
+        assert_eq!(pkt.data[1], 19);
+        let tail = &pkt.data[pkt.data.len() - 12..];
+        assert_eq!(i32::from_le_bytes(tail[0..4].try_into().unwrap()), 8_000_000);
+        assert_eq!(i32::from_le_bytes(tail[4..8].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn test_pk_rank_zone_gating() {
+        assert!(pk_rank_zone_allowed(71, false));
+        assert!(pk_rank_zone_allowed(72, false));
+        assert!(pk_rank_zone_allowed(73, false));
+        assert!(pk_rank_zone_allowed(61, true));
+        assert!(!pk_rank_zone_allowed(21, false)); // Moradon
+        assert!(!pk_rank_zone_allowed(85, false)); // Chaos -> own ladder
     }
 
     #[test]

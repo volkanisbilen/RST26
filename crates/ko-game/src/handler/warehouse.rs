@@ -362,6 +362,13 @@ async fn handle_warehouse_input(
         return Ok(());
     }
 
+    // Chaos Dungeon skill items never leave the event
+    if crate::systems::chaos_arena::is_chaos_skill_item(item_id) {
+        let err = build_warehouse_result(WAREHOUSE_INPUT, 0);
+        session.send_packet(&err).await?;
+        return Ok(());
+    }
+
     // No-trade items cannot be stored
     if (ITEM_NO_TRADE_MIN..=ITEM_NO_TRADE_MAX).contains(&item_id) {
         let err = build_warehouse_result(WAREHOUSE_INPUT, 0);

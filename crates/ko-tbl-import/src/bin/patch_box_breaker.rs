@@ -14,7 +14,7 @@
 use anyhow::{bail, Context, Result};
 use ko_tbl_import::{
     box_breaker_texts as texts, decrypt,
-    parser::{self, CellValue, TblTable},
+    raw_tbl::{put_str, RawTbl, COL_STRING, COL_U32},
 };
 use std::{env, fs, path::Path};
 
@@ -22,27 +22,59 @@ const LUA: &str = include_str!("../../../../Quests/31514_BoxBreaker.lua");
 const NPC_PROTO: u32 = 31_514;
 const NPC_NAME: &str = "[Box Breaker]";
 
-fn load(path: &Path) -> Result<(TblTable, bool)> {
+/// Loads a client table byte-preserving and proves the round trip: the untouched table must
+/// re-encode to exactly the bytes of the source file.
+fn load(path: &Path) -> Result<(RawTbl, bool)> {
     let raw = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let (plain, new_structure) = decrypt::decrypt_tbl(&raw)?;
-    Ok((parser::parse_tbl(&plain, new_structure)?, new_structure))
+    let table = RawTbl::parse(&plain, new_structure)?;
+    if table.to_bytes() != plain {
+        bail!("{}: raw plaintext round trip differs", path.display());
+    }
+    let again = decrypt::encrypt_tbl(&table.to_bytes());
+    if again != raw {
+        let first = again.iter().zip(raw.iter()).position(|(a, b)| a != b);
+        bail!(
+            "{}: re-encrypting the untouched table does not reproduce the source bytes (src {} / rebuilt {} bytes, first diff {:?})",
+            path.display(),
+            raw.len(),
+            again.len(),
+            first
+        );
+    }
+    println!(
+        "{}: byte-exact round trip OK ({} bytes, {} rows)",
+        path.display(),
+        raw.len(),
+        table.rows.len()
+    );
+    Ok((table, new_structure))
 }
 
-fn save(path: &Path, table: &TblTable, new_structure: bool) -> Result<()> {
-    let plain = parser::serialize_tbl(table, new_structure);
-    fs::write(path, decrypt::encrypt_tbl(&plain))
-        .with_context(|| format!("write {}", path.display()))
+fn save(path: &Path, table: &RawTbl, new_structure: bool) -> Result<()> {
+    let plain = table.to_bytes();
+    let enc = decrypt::encrypt_tbl(&plain);
+    fs::write(path, &enc).with_context(|| format!("write {}", path.display()))?;
+    // read the written file back: decrypts to the same plaintext and re-parses to the same rows
+    let (back, ns) = decrypt::decrypt_tbl(&enc)?;
+    if back != plain || ns != new_structure || RawTbl::parse(&back, ns)?.rows != table.rows {
+        bail!("{}: written file does not read back identically", path.display());
+    }
+    Ok(())
 }
 
 fn rename_npc(source: &Path, output: &Path) -> Result<()> {
     let (mut table, new_structure) = load(source)?;
-    if table.columns.len() != 7 {
+    if table.types.len() != 7 || table.types[0] != COL_U32 || table.types[1] != COL_STRING {
         bail!("unexpected NPC table schema in {}", source.display());
     }
     let mut hit = 0;
-    for row in table.rows.iter_mut() {
-        if matches!(row.first(), Some(CellValue::U32(id)) if *id == NPC_PROTO) {
-            row[1] = CellValue::Str(NPC_NAME.to_string());
+    for i in 0..table.rows.len() {
+        if table.id(&table.rows[i]) == Some(NPC_PROTO) {
+            let range = table.cell(&table.rows[i], 1)?;
+            let mut name = Vec::new();
+            put_str(&mut name, NPC_NAME);
+            table.rows[i].splice(range, name);
             hit += 1;
         }
     }

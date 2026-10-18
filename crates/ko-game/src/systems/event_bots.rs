@@ -12,7 +12,8 @@
 //! | Border Defence War | partial | fill both nations, fight the enemy nation; altar flag stays a human objective |
 //! | Ultima's Dungeon | full | extra raiders (existing `ultima.rs` bot driver), count towards the minimum player count |
 //! | Full Moon Rift | partial | support bots that soften monsters but never land the killing blow |
-//! | Juraid / Forgotten Temple / Manes | not supported | see the design doc |
+//! | Juraid Mountain | partial | follow a party's player or walk the nation's lane clearing every stage (`event_bots_juraid.rs`); never take chests |
+//! | Forgotten Temple / Manes | not supported | see the design doc |
 //!
 //! ## Rules every bot follows
 //! * Bots never get rewards. Reward loops are session based and skip bot ids; Chaos ranks are
@@ -105,10 +106,8 @@ impl EventBotKind {
     pub fn support(self) -> Support {
         match self {
             EventBotKind::Chaos | EventBotKind::Ultima | EventBotKind::Bdw => Support::Full,
-            EventBotKind::Rift => Support::Partial,
-            EventBotKind::Juraid | EventBotKind::ForgottenTemple | EventBotKind::Manes => {
-                Support::Unsupported
-            }
+            EventBotKind::Rift | EventBotKind::Juraid => Support::Partial,
+            EventBotKind::ForgottenTemple | EventBotKind::Manes => Support::Unsupported,
         }
     }
 
@@ -129,6 +128,7 @@ impl EventBotKind {
         match self {
             EventBotKind::Bdw => Some(TempleEventType::BorderDefenceWar),
             EventBotKind::Chaos => Some(TempleEventType::ChaosDungeon),
+            EventBotKind::Juraid => Some(TempleEventType::JuraidMountain),
             _ => None,
         }
     }
@@ -142,6 +142,7 @@ impl EventBotKind {
         match event_type {
             TempleEventType::BorderDefenceWar => Some(EventBotKind::Bdw),
             TempleEventType::ChaosDungeon => Some(EventBotKind::Chaos),
+            TempleEventType::JuraidMountain => Some(EventBotKind::Juraid),
             _ => None,
         }
     }
@@ -227,6 +228,9 @@ pub fn plan_room_fill(kind: EventBotKind, cfg: &EventBotConfig, humans: [usize; 
     if kind.is_ffa() {
         return [bots_needed(cfg, total, kind.team_capacity()), 0];
     }
+    if kind == EventBotKind::Juraid {
+        return crate::systems::event_bots_juraid::plan_fill(cfg, humans);
+    }
     let mut plan = [
         bots_needed(cfg, humans[0], kind.team_capacity()),
         bots_needed(cfg, humans[1], kind.team_capacity()),
@@ -246,7 +250,7 @@ pub fn plan_room_fill(kind: EventBotKind, cfg: &EventBotConfig, humans: [usize; 
 // ── Registry ─────────────────────────────────────────────────────────────
 
 /// Bot movement per driver tick: `speed 45 * 250 ms / 10_000` (bot_ai `movement_step`).
-const STEP_PER_TICK: f32 = 1.125;
+pub(crate) const STEP_PER_TICK: f32 = 1.125;
 const DRIVER_TICK_MS: u64 = 250;
 const RESPAWN_MS: u64 = 8_000;
 const RESCAN_MS: u64 = 1_500;
@@ -255,13 +259,13 @@ const MELEE_RANGE: f32 = 5.5;
 const RANGED_RANGE: f32 = 16.0;
 const MELEE_COOLDOWN_MS: u64 = 2_000;
 const RANGED_COOLDOWN_MS: u64 = 3_000;
-const MISS_PERCENT: u32 = 12;
+pub(crate) const MISS_PERCENT: u32 = 12;
 /// Backstop: the bot-AI expiry removes a bot that somehow escaped every cleanup.
 const BOT_BACKSTOP_MINUTES: u32 = 150;
 const MOVE_SPEED_FIELD: i16 = 45;
 
 #[derive(Debug, Clone, Default)]
-struct PathState {
+pub(crate) struct PathState {
     goal: (f32, f32),
     waypoints: Vec<(f32, f32)>,
     index: usize,
@@ -277,10 +281,10 @@ pub struct BotEntry {
     pub name: String,
     target: Option<u32>,
     next_scan_ms: u64,
-    next_attack_ms: u64,
+    pub(crate) next_attack_ms: u64,
     /// 0 = alive.
     respawn_at_ms: u64,
-    path: Option<PathState>,
+    pub(crate) path: Option<PathState>,
 }
 
 impl BotEntry {
@@ -310,6 +314,8 @@ pub struct EventBotRegistry {
     /// bot id -> event room, so the bots are only broadcast to / listed for that room.
     aux_rooms: Mutex<HashMap<BotId, u16>>,
     last_sweep_ms: AtomicU64,
+    /// Juraid Mountain lane/stage bookkeeping (`event_bots_juraid.rs`).
+    pub(crate) juraid: crate::systems::event_bots_juraid::JuraidRt,
 }
 
 impl EventBotRegistry {
@@ -337,7 +343,7 @@ impl EventBotRegistry {
         self.bots.lock().get(&id).cloned()
     }
 
-    fn update(&self, id: BotId, f: impl FnOnce(&mut BotEntry)) {
+    pub(crate) fn update(&self, id: BotId, f: impl FnOnce(&mut BotEntry)) {
         if let Some(e) = self.bots.lock().get_mut(&id) {
             f(e);
         }
@@ -464,6 +470,14 @@ pub async fn reload_config(pool: &ko_db::DbPool, world: &WorldState) -> anyhow::
 /// Where a bot of `nation` appears in `zone_id`: the zone's start position (same rule humans use
 /// when an event teleports them in), snapped to a walkable cell when the map is loaded.
 fn spawn_point(world: &WorldState, zone_id: u16, nation: u8, rng: &mut impl Rng) -> Option<(f32, f32)> {
+    // Juraid: each nation starts at its own end of the mountain (fixed by the event design).
+    if let Some((jx, jz)) = crate::systems::event_bots_juraid::spawn_override(zone_id, nation) {
+        let (x, z) = (jx + rng.gen_range(-3..=3) as f32, jz + rng.gen_range(-3..=3) as f32);
+        if let Some(map) = world.get_zone(zone_id).as_ref().and_then(|z| z.map_data.as_ref()) {
+            return crate::systems::pathfind::nearest_bot_point(map, x, z, 8);
+        }
+        return Some((x, z));
+    }
     let mut base: Option<(f32, f32)> = None;
     let (mut range_x, mut range_z) = (0i16, 0i16);
     if let Some(sp) = world.get_start_position(zone_id) {
@@ -590,6 +604,9 @@ pub fn fill_temple_rooms(world: &WorldState, event_type: TempleEventType) -> usi
         } else {
             plan_room_fill(kind, &cfg, [humans[0], humans[1]])
         };
+        if kind == EventBotKind::Juraid {
+            world.event_bots.juraid.reset_room(room_id as u16);
+        }
         let class_offset = rng.gen_range(0..4usize);
         for (team_idx, count) in plan.iter().copied().enumerate() {
             for i in 0..count {
@@ -747,6 +764,15 @@ pub fn sweep(world: &WorldState) -> usize {
     for id in stale {
         despawn_event_bot(world, id);
     }
+    {
+        let rooms: Vec<u16> = world
+            .event_bots
+            .ids_of(EventBotKind::Juraid)
+            .into_iter()
+            .filter_map(|i| world.event_bots.get(i).map(|e| e.room))
+            .collect();
+        world.event_bots.juraid.housekeeping(&rooms);
+    }
     if n > 0 {
         debug!(removed = n, "event bot sweep removed stale bots");
     }
@@ -755,11 +781,11 @@ pub fn sweep(world: &WorldState) -> usize {
 
 // ── Packets ──────────────────────────────────────────────────────────────
 
-fn room_broadcast(world: &WorldState, zone_id: u16, rx: u16, rz: u16, room: u16, pkt: Packet) {
+pub(crate) fn room_broadcast(world: &WorldState, zone_id: u16, rx: u16, rz: u16, room: u16, pkt: Packet) {
     world.broadcast_to_region_sync(zone_id, rx, rz, Arc::new(pkt), None, room);
 }
 
-fn move_packet(bot: &BotInstance, x: f32, y: f32, z: f32, echo: u8) -> Packet {
+pub(crate) fn move_packet(bot: &BotInstance, x: f32, y: f32, z: f32, echo: u8) -> Packet {
     let mut pkt = Packet::new(Opcode::WizMove as u8);
     pkt.write_u32(bot.id);
     pkt.write_u16((x * 10.0) as u16);
@@ -956,6 +982,11 @@ fn tick_bot(world: &WorldState, id: BotId, now_ms: u64, fighting: bool) {
     if !fighting || !room_open(world, &entry) {
         return;
     }
+    if entry.kind == EventBotKind::Juraid {
+        // PvE lane runner / party follower; never fights players
+        crate::systems::event_bots_juraid::tick_bot(world, &entry, &bot, now_ms);
+        return;
+    }
 
     // BDW: altar objective / party following (returns true when it drove the bot this tick)
     if entry.kind == EventBotKind::Bdw && bdw_ai::drive(world, &entry, &bot, now_ms) {
@@ -996,7 +1027,7 @@ fn engage(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Targe
     walk_toward(world, entry, bot, target, now_ms);
 }
 
-fn attack_range(bot: &BotInstance) -> f32 {
+pub(crate) fn attack_range(bot: &BotInstance) -> f32 {
     if bot.is_mage() || bot.is_priest() {
         RANGED_RANGE
     } else {
@@ -1004,7 +1035,7 @@ fn attack_range(bot: &BotInstance) -> f32 {
     }
 }
 
-fn attack_cooldown(bot: &BotInstance) -> u64 {
+pub(crate) fn attack_cooldown(bot: &BotInstance) -> u64 {
     if bot.is_mage() || bot.is_priest() {
         RANGED_COOLDOWN_MS
     } else {
@@ -1163,7 +1194,7 @@ fn walk_toward_step(world: &WorldState, entry: &BotEntry, bot: &BotInstance, tar
 
 /// Next position of a walk from the bot toward `goal`. Uses the map's walkability grid with A*
 /// detours when the map is loaded, plain straight steps otherwise (tests / maps without SMD).
-fn step_toward(
+pub(crate) fn step_toward(
     world: &WorldState,
     bot: &BotInstance,
     goal: (f32, f32),
@@ -1471,7 +1502,7 @@ mod tests {
 
     #[test]
     fn unsupported_events_never_get_bots() {
-        for kind in [EventBotKind::Juraid, EventBotKind::ForgottenTemple, EventBotKind::Manes] {
+        for kind in [EventBotKind::ForgottenTemple, EventBotKind::Manes] {
             let cfg = EventBotConfig { enabled: true, ..Default::default() }.sanitized(kind);
             assert!(!cfg.enabled, "{kind:?} must stay disabled");
             assert_eq!(plan_room_fill(kind, &cfg, [2, 2]), [0, 0]);

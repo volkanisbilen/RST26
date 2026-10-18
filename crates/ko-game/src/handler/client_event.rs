@@ -415,6 +415,22 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
     // Akara must be opened only by a real NPC interaction (right-click), never
     // by WIZ_TARGET_HP: that packet is also emitted by ordinary left-click
     // target selection.
+    // Chaos Dungeon objects (C++ CUser::ClientEvent, NPCHandler.cpp)
+    if proto_id == crate::systems::chaos_arena::SAW_BLADE_PROTO {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        crate::systems::chaos_arena::handle_saw_touch(&world, sid, now_ms);
+        return Ok(());
+    }
+    if proto_id == crate::systems::chaos_arena::CHAOS_CUBE_PROTO {
+        use rand::Rng;
+        let roll = rand::thread_rng().gen_range(1..=4u32);
+        crate::systems::chaos_arena::handle_cube_click(&world, sid, npc_nid, roll);
+        return Ok(());
+    }
+
     if proto_id == 31774 {
         super::native_events::try_open_akara_menu_from_target(session, npc_nid).await?;
         return Ok(());

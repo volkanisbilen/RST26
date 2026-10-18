@@ -1131,6 +1131,13 @@ impl WorldState {
             }
             None => (new_max_hp, new_max_mp),
         };
+        // Chaos Dungeon: everybody fights with the same fixed max HP (C++ `m_MaxHp = 10000 / 10`
+        // when iFlag == 0 in ZONE_CHAOS_DUNGEON). Without this every item / buff recalculation
+        // put the real (much larger) formula value back and the client showed it.
+        let new_max_hp = self
+            .get_position(sid)
+            .and_then(|p| crate::systems::chaos::max_hp_override_for_zone(p.zone_id))
+            .unwrap_or(new_max_hp);
 
         // ── Phase 3: Apply results (brief write lock) ───────────────
         let mut max_hp_changed: Option<i32> = None;

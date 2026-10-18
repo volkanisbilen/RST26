@@ -54,6 +54,7 @@ const TARGETS: &[(&str, &str, &str)] = &[
     ("send_messages", "reload", "send_messages"),
     ("item_exchange", "reload", "item_exchange"),
     ("rankings", "reload", "rankings"),
+    ("npc_spawn", "reload", "npc_spawn"),
     ("all", "reload", "all"),
     ("field_bots", "field_bot_reload", ""),
     ("bot_loadout", "bot_loadout_reload", ""),

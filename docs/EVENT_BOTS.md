@@ -16,11 +16,11 @@ Code: `crates/ko-game/src/systems/event_bots.rs` (new module), table `event_bot_
 | Border Defence War (zone 84) | **full** | Fill the free slots (an empty nation mirrors the other side's human count), walk to the central Altar of Manes and fight over it, carry it (slowed) to their base and deliver, fight enemies and the enemy carrier, join the party of a real player of their nation. Kills and deliveries score like players; bots never get a reward (their `EventUser`s are `prize_given = true`). Code: `systems/event_bots/bdw_ai.rs`. |
 | Ultima's Dungeon (zone 55) | **full** | Extra raiders in the first room (existing `ultima.rs` bot driver). They count towards the 4-player minimum, so one human can start a raid. |
 | Full Moon Rift (zone 89) | **partial** | Support bots hold the Outer Tower and take monsters down to 10 % HP, but never land the killing blow, so every drop/reward stays with the players. |
-| Juraid Mountain (zone 87) | not supported | See "Why not" below. |
+| Juraid Mountain (zone 87) | **partial** | Follow a real player's party, or walk their nation's lane stage by stage and kill the monsters; mirror fill when a nation has no player. Never take chests (see "Juraid bots"). |
 | Forgotten Temple (zone 55) | not supported | No registration step, rewards go to whoever stands in the zone. |
 | Manes Survival (zones 57-60) | not supported | Individual survival ranking with Manes Orb prizes; bots would only distort the ranking. |
 
-The three unsupported events appear in the panel (so the owner sees why) but cannot be enabled;
+The two unsupported events appear in the panel (so the owner sees why) but cannot be enabled;
 the game server also forces them off.
 
 ## Rules that hold for every bot
@@ -115,15 +115,51 @@ death of an event bot (bot_on_death hook) -> handle_bot_death(): WIZ_DEAD to the
   `ultima.rs` / `rift_entry.rs` / `dungeon_defence.rs` (helper counts), `admin_queue.rs`,
   `world/loading.rs`, `world/mod.rs`.
 
-## Why not Juraid / Forgotten Temple / Manes (yet)
+## Juraid bots (`systems/event_bots_juraid.rs`)
 
-* **Juraid** is a PvE race: lane monsters open bridges, then the Deva bird/monuments decide the
-  winner. Driving it needs bots to kill room-instanced event NPCs through the full NPC death path
-  (child spawns, bridge counters, loot), gate/bridge awareness on the SMD, and a rule so the bot
-  nation cannot take the Deva away from the humans. None of that can be verified without a live
-  Juraid run, so it is left out rather than half-working. The framework is ready for it: add an
-  `EventBotKind::Juraid` behaviour that calls a name-based variant of
-  `track_juraid_monster_kill` (the same refactor `dead.rs` got for BDW/Chaos).
+Gated by the same config row (`juraid`). Bots are ordinary event bots (`EventBotKind::Juraid`,
+room members flagged `prize_given`), so spawn, sweep, cleanup and the "no humans, no bots" rule are
+shared with the other events.
+
+```
+El Morad  spawn (224,272) -> (224,558) -> (224,848) -> (511,848) -> Deva room (508,513)
+Karus     spawn (799,748) -> (799,459) -> (799,171) -> (511,172) -> Deva room (508,513)
+```
+
+* **Mirror fill.** A nation without any real player gets as many bots as the other nation has real
+  players (max 8). A nation with players is topped up by the usual config (`bots_per_team`,
+  `fill_only_when_short`). Example: 3 Karus players, 0 El Morad, `bots_per_team = 4` -> 1 Karus
+  bot + 3 El Morad bots.
+* **Follow.** While a real player of the bot's nation is alive in the room the bot joins his party
+  (a lone player gets a party created around him, max 8 members) and stays within ~6 m, attacking
+  stage monsters within 40 m of him.
+* **Lane runner.** With no living real player of its nation the bot walks the chain by itself.
+  A stage is cleared when no alive main/child monster (summon types 2/3) is within 60 m of the
+  waypoint; only then does the nation's team move to the next waypoint (several stages can pass at
+  once when humans cleared them). The last leg ends at the Deva Bird. The tracker only arms after
+  the room's monsters were seen once, so the first ticks (bots spawn just before the monsters) do
+  not count as "cleared". Per-nation stage state lives in `JuraidRt` (registry), rebuilt per room.
+* **Movement** reuses the event-bot walker (A* over the zone's SMD walkability, the 40-degree /
+  clearance `bot_blocked` rules via `pathfind`), bots respawn at their nation spawn after 8 s.
+* **Killing.** Bots never attack players or monuments (the lanes are PvE; humans may still hit
+  enemy bots in the Deva room). A bot swing deals class damage x 8; the killing blow calls
+  `dead::track_juraid_monster_kill_by_name` (the name based core that the player path now also
+  uses): child monsters, per-nation main/sub counters, bridge opening and Deva finish work as for
+  players. Then the monster is removed with `kill_npc` - no loot roll, no exp, no NP.
+* **Chests / rewards.** The only chest is the Deva Bird drop, rolled in the player death path.
+  Bot kills never roll loot. As long as any real player belongs to the room, bots stop attacking
+  the Deva at 10 % HP, so the killing blow and the chest always go to a real player; in a room
+  with no real player left they may finish it. Party loot routing (`get_item_routing_user`) skips
+  bot ids explicitly (bots have no session anyway), reward loops skip them (`prize_given`).
+* **Cost.** One monster/player scan per room per second (not per bot), bot decisions use the
+  cached snapshot; party check every 2 s per bot.
+
+Not verified against a live Juraid run: damage balance (x8 multiplier), lane geometry on the SMD
+(bots use the same walkability rules as the other event bots) and the bridge objects (bots do not
+wait for a bridge to open, they only wait for the stage to be cleared).
+
+## Why not Forgotten Temple / Manes (yet)
+
 * **Forgotten Temple** has no registration/room assignment to hook, and its rewards go to everyone
   alive in the zone. **Manes** ranks individuals for Orb prizes.
 
@@ -147,11 +183,14 @@ death of an event bot (bot_on_death hook) -> handle_bot_death(): WIZ_DEAD to the
 * Two rooms open at once (e.g. 17+ Chaos players): players of room 1 never see room 2's bots.
 * Ultima: with the config on, a solo level-80 GM/player can start a raid (bots join room 1).
 * Rift: a solo group sees 3 support bots; monsters stop at ~10 % HP until you finish them.
+* Juraid: enable, join as El Morad alone: Karus gets one mirror bot that walks (799,748) -> (799,459) ... clearing
+  each stage; your own bots (if `bots_per_team` > 1) join your party and follow you. Bots never loot the Deva
+  chest; they leave the Deva at ~10 % HP while you are in the room.
 * Turn everything off: no bot appears in any event.
 
 ## Limitations
 
-* Juraid, Forgotten Temple and Manes are not bot-driven (see above).
+* Forgotten Temple and Manes are not bot-driven (see above).
 * BDW altar: bot carriers have no client session, so the carrier slow-down/effect is simulated by the
   driver (shorter steps + a MAGIC_EFFECTING broadcast); players get the real buff.
 * Bots fight with a simplified model (no skill rotation, no buffs, no potions; mages/priests only

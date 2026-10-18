@@ -87,10 +87,10 @@ const EVENTS: &[Def] = &[
     Def {
         key: "juraid",
         name: "Juraid Mountain",
-        support: "unsupported",
+        support: "partial",
         capacity: 8,
-        team_label: "ulus",
-        note: "Henüz desteklenmiyor: köprü/canavar/Deva ilerlemesi güvenilir şekilde botlarla sürülemiyor (docs/EVENT_BOTS.md).",
+        team_label: "ulus (oda başına)",
+        note: "Botlar partideki gerçek oyuncuyu takip eder; ulusta oyuncu yoksa kendi koridorunu (noktalar -> Deva odası) aşama aşama temizler. Karşı ulusta oyuncu yoksa o ulus, gerçek oyuncu sayısı kadar botla (ayna) doldurulur. Botlar yalnızca oda canavarlarına vurur, kasa/ödül/exp/NP almaz; Deva'nın son vuruşu oyunculara bırakılır.",
     },
     Def {
         key: "ft",

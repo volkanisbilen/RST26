@@ -98,6 +98,8 @@ pub struct WorldState {
     npc_templates: DashMap<(u16, bool), Arc<NpcTemplate>>,
     /// Runtime NPC instances keyed by NpcId.
     npc_instances: DashMap<NpcId, Arc<NpcInstance>>,
+    /// npc_spawn row id -> (row signature, live NPC ids) so a live reload can diff the table.
+    npc_spawn_live: DashMap<i32, (u64, Vec<NpcId>)>,
     /// Atomic counter for assigning unique NPC runtime IDs (starts at NPC_BAND).
     next_npc_id: AtomicU32,
     /// Class coefficient table keyed by s_class (101-115 Karus, 201-215 El Morad).
@@ -959,6 +961,7 @@ impl WorldState {
             next_session_id: AtomicU16::new(1), // Start at 1 (0 = invalid)
             npc_templates: DashMap::new(),
             npc_instances: DashMap::new(),
+            npc_spawn_live: DashMap::new(),
             next_npc_id: AtomicU32::new(NPC_BAND),
             coefficients: DashMap::new(),
             magic_table: DashMap::new(),
@@ -1208,6 +1211,7 @@ impl WorldState {
             next_session_id: AtomicU16::new(1),
             npc_templates: DashMap::new(),
             npc_instances: DashMap::new(),
+            npc_spawn_live: DashMap::new(),
             next_npc_id: AtomicU32::new(NPC_BAND),
             coefficients: DashMap::new(),
             magic_table: DashMap::new(),
@@ -1809,3 +1813,8 @@ impl WorldState {
 
 #[cfg(test)]
 mod mod_tests;
+
+/// Signature of an npc_spawn row (see `spawn_circle::spawn_signature`).
+pub(crate) fn npc_spawn_signature(r: &ko_db::models::NpcSpawnRow) -> u64 {
+    crate::spawn_circle::spawn_signature(r)
+}
