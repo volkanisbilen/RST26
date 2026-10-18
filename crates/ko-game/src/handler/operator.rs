@@ -4904,53 +4904,17 @@ fn handle_genie_toggle(session: &mut ClientSession, args: &[&str]) -> anyhow::Re
             send_help(session, "Error: Target has no genie time remaining");
             return Ok(());
         }
-        world.update_session(target_sid, |h| {
-            h.genie_active = true;
-        });
-
-        let hours = super::genie::get_genie_hours_pub(remaining);
-
-        // Send activation packet to target
-        let mut resp = Packet::new(Opcode::WizGenie as u8);
-        resp.write_u8(1); // GENIE_STATUS_ACTIVE
-        resp.write_u8(4); // GenieStartHandle
-        resp.write_u16(1);
-        resp.write_u16(hours);
-        world.send_to_session_owned(target_sid, resp);
-
-        let mut start_pkt = Packet::new(Opcode::WizGenie as u8);
-        start_pkt.write_u8(1); // GENIE_INFO_REQUEST
-        start_pkt.write_u8(4); // GENIE_START_HANDLE
-        start_pkt.write_u16(1);
-        start_pkt.write_u16(hours);
-        world.send_to_session_owned(target_sid, start_pkt);
+        // Same activation as the player-driven start: one start reply to the
+        // target, marker + appearance refresh to its region.
+        super::genie::activate_genie(&world, target_sid, remaining);
 
         send_help(session, "Genie started for target.");
     } else {
-        // GenieStop
-        let was_active = world
-            .with_session(target_sid, |h| h.genie_active)
-            .unwrap_or(false);
-        if !was_active {
+        // GenieStop — stop reply to the target, marker + appearance refresh to its region.
+        if !super::genie::deactivate_genie(&world, target_sid) {
             send_help(session, "Error: Genie is not active for target");
             return Ok(());
         }
-
-        world.update_session(target_sid, |h| {
-            h.genie_active = false;
-        });
-
-        let abs2 = world
-            .with_session(target_sid, |h| h.genie_time_abs)
-            .unwrap_or(0);
-        let hours = super::genie::get_genie_hours_pub(super::genie::genie_remaining_from_abs(abs2));
-
-        let mut resp = Packet::new(Opcode::WizGenie as u8);
-        resp.write_u8(1); // GENIE_INFO_REQUEST
-        resp.write_u8(5); // GENIE_STOP_HANDLE
-        resp.write_u16(1);
-        resp.write_u16(hours);
-        world.send_to_session_owned(target_sid, resp);
 
         send_help(session, "Genie stopped for target.");
     }
@@ -4992,11 +4956,19 @@ fn handle_give_genie_time(session: &mut ClientSession, args: &[&str]) -> anyhow:
 
     // C++ calculates: UNIXTIME + (KC * HOUR) + existing remaining time
     // Absolute timestamp: if expired, start from now; if active, extend deadline.
-    let duration_secs = hours * 3600;
-    let now = super::genie::now_secs();
-    world.update_session(target_sid, |h| {
-        h.genie_time_abs = h.genie_time_abs.max(now) + duration_secs;
-    });
+    // Capped (see GENIE_MAX_HOURS) so a typo cannot wrap the u16 hour field or
+    // the i32 database column.
+    if super::genie::grant_genie_hours(&world, target_sid, hours).is_none() {
+        send_help(
+            session,
+            &format!(
+                "Error: genie time cannot exceed {} hours",
+                super::genie::GENIE_MAX_HOURS
+            ),
+        );
+        return Ok(());
+    }
+    super::genie::persist_genie_time(&world, target_sid, "GM givegenietime");
 
     // Send genie update packet to target
     // C++ sends: WIZ_GENIE << u8(GenieUseSpiringPotion) << u8(GenieUseSpiringPotion) << GetGenieTime()

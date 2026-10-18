@@ -106,6 +106,14 @@ fn opcode_rate_limit(opcode: Option<Opcode>) -> u32 {
         // existing 100 pps global and 300 pps critical guards still protect
         // the session from packet floods.
         Some(Opcode::WizMagicProcess) => 40,
+        // WIZ_GENIE multiplexes the genie bot's own move / rotate / attack /
+        // magic packets (`[02][move|rotate|attack|magic]...`), so one counter has
+        // to cover what those opcodes are allowed separately: 20 + 10 + 40.  At
+        // the generic 30 an archer genie's multi-arrow burst (13+ magic packets
+        // per shot, more with the 3-5 combo) plus its walking tripped the
+        // per-opcode violation counter, three of which mean a 5 minute ban.
+        // The 100 pps global soft limit still caps the whole session.
+        Some(Opcode::WizGenie) => 70,
         _ => 30,
     }
 }
@@ -197,7 +205,7 @@ impl SessionRateState {
 /// - **Session global (soft)**: 100 packets/second — excess packets are silently dropped
 /// - **Session global (critical)**: 300 packets/second — session is disconnected
 /// - **Per-opcode**: WIZ_CHAT=5/s, WIZ_MOVE=20/s, WIZ_ATTACK=10/s,
-///   WIZ_MAGIC_PROCESS=40/s, other=30/s
+///   WIZ_MAGIC_PROCESS=40/s, WIZ_GENIE=70/s (it wraps those three), other=30/s
 /// - **Violations**: 3 strikes = 5 minute temporary ban
 pub struct RateLimiter {
     /// Per-session rate state.
@@ -884,6 +892,29 @@ mod tests {
         assert_eq!(opcode_rate_limit(Some(Opcode::WizMagicProcess)), 40);
         assert_eq!(opcode_rate_limit(Some(Opcode::WizDead)), 30); // "other"
         assert_eq!(opcode_rate_limit(None), 30);
+    }
+
+    /// WIZ_GENIE carries the bot's move + attack + magic packets, so its budget is their sum.
+    #[test]
+    fn test_genie_rate_limit_covers_wrapped_packets() {
+        assert_eq!(
+            opcode_rate_limit(Some(Opcode::WizGenie)),
+            opcode_rate_limit(Some(Opcode::WizMove))
+                + opcode_rate_limit(Some(Opcode::WizAttack))
+                + opcode_rate_limit(Some(Opcode::WizMagicProcess))
+        );
+
+        // A 5-arrow burst through the genie (cast + 5 x fly/hit pairs, doubled by
+        // the 3-5 combo) and the walking around it stays inside the limit without
+        // a single violation.
+        let limiter = RateLimiter::new();
+        limiter.register_session(1);
+        for _ in 0..60 {
+            assert!(limiter
+                .check_rate_limit(1, Opcode::WizGenie as u8, false)
+                .is_ok());
+        }
+        assert_eq!(limiter.violation_count(1), 0);
     }
 
     #[test]

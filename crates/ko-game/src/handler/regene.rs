@@ -77,6 +77,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         None => return Ok(()),
     };
 
+    // A character that died with the genie running comes back without it. The
+    // client stops its bot on death, but if that stop never reached the server
+    // the "in genie" flag would stay on (marker over the head, warehouse / trade
+    // / shop locked) until the player toggles the genie twice.
+    crate::handler::genie::deactivate_genie(&world, sid);
+
     // Type 2: Resurrection stone respawn
     // Requires level > 5 and 3 * level resurrection stones (item 379006000)
     if regene_type == 2 {
