@@ -2421,6 +2421,7 @@ async fn bifrost_piece_exchange_opts(
     let npc = reader.read_u32().unwrap_or(0);
     let piece = reader.read_u32().unwrap_or(0);
     let pos = reader.read_i8().unwrap_or(-1);
+    warn!("[{}] chaotic start: npc={npc} item={piece} pos={pos}", session.addr());
     let opts = CHAOTIC_OPTS
         .get(&sid)
         .map(|o| *o)
@@ -2480,6 +2481,12 @@ async fn bifrost_piece_req(session: &mut ClientSession) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Failure packet with a warn-level breadcrumb of which gate rejected the request.
+async fn bifrost_send_fail_at(session: &mut ClientSession, error_code: u8, line: u32) -> anyhow::Result<()> {
+    warn!("[{}] chaotic exchange rejected at item_upgrade.rs:{line}", session.addr());
+    bifrost_send_fail(session, error_code).await
+}
+
 /// Send Bifrost exchange failure packet.
 async fn bifrost_send_fail(session: &mut ClientSession, error_code: u8) -> anyhow::Result<()> {
     let mut pkt = Packet::new(Opcode::WizItemUpgrade as u8);
@@ -2525,7 +2532,7 @@ async fn bifrost_piece_exchange(
     if chaotic_coins > 0 {
         let gold = world.get_character_info(sid).map(|ch| ch.gold).unwrap_or(0);
         if gold < chaotic_coins as u32 {
-            return bifrost_send_fail(session, error_code).await;
+            return bifrost_send_fail_at(session, error_code, line!()).await;
         }
     }
 
@@ -2537,7 +2544,7 @@ async fn bifrost_piece_exchange(
         })
         .unwrap_or(false);
     if !cooldown_ok {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Weight check
@@ -2547,7 +2554,7 @@ async fn bifrost_piece_exchange(
         })
         .unwrap_or((0, 0));
     if item_weight >= max_weight {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Set cooldown
@@ -2558,7 +2565,7 @@ async fn bifrost_piece_exchange(
     // NPC range check
     let npc_id = npc_id_raw;
     if !world.is_in_npc_range(sid, npc_id) {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Busy-state checks
@@ -2569,7 +2576,7 @@ async fn bifrost_piece_exchange(
         || world.is_fishing(sid)
         || world.is_player_dead(sid)
     {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Zone check — must be in Moradon
@@ -2578,14 +2585,14 @@ async fn bifrost_piece_exchange(
         zone_id,
         ZONE_MORADON | ZONE_MORADON2 | ZONE_MORADON3 | ZONE_MORADON4 | ZONE_MORADON5
     ) {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // NPC type check — must be CHAOTIC_GENERATOR or CHAOTIC_GENERATOR2
     if let Some(npc_inst) = world.get_npc_instance(npc_id) {
         if let Some(tmpl) = world.get_npc_template(npc_inst.proto_id, false) {
             if tmpl.npc_type != NPC_CHAOTIC_GENERATOR && tmpl.npc_type != NPC_CHAOTIC_GENERATOR2 {
-                return bifrost_send_fail(session, error_code).await;
+                return bifrost_send_fail_at(session, error_code, line!()).await;
             }
         }
     }
@@ -2593,38 +2600,38 @@ async fn bifrost_piece_exchange(
     // Validate origin item (piece) — must exist in item table, be countable, Effect2 == 251
     let piece_table = match world.get_item(piece_item_id) {
         Some(t) => t,
-        None => return bifrost_send_fail(session, error_code).await,
+        None => return bifrost_send_fail_at(session, error_code, line!()).await,
     };
     if piece_table.countable.unwrap_or(0) == 0 || piece_table.effect2.unwrap_or(0) != 251 {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Validate inventory slot — item must match, count > 0, not rented/sealed/duplicate
     if src_pos < 0 || src_pos as usize >= HAVE_MAX {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
     let actual_slot = SLOT_MAX + src_pos as usize;
     let inv_item = match world.get_inventory_slot(sid, actual_slot) {
         Some(s) => s,
-        None => return bifrost_send_fail(session, error_code).await,
+        None => return bifrost_send_fail_at(session, error_code, line!()).await,
     };
     if inv_item.item_id != piece_item_id
         || inv_item.count == 0
         || inv_item.flag & (ITEM_FLAG_RENTED | ITEM_FLAG_SEALED | ITEM_FLAG_DUPLICATE) != 0
     {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Check free inventory slots — need at least 1
     let free_slots = world.count_free_slots(sid);
     if free_slots < 1 {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Load matching bifrost exchanges — random_flag IN (1,2,3) with matching origin item
     let exchanges = world.get_bifrost_exchanges(piece_item_id);
     if exchanges.is_empty() {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // BifrostCheckExchange per-entry validation
@@ -2637,7 +2644,7 @@ async fn bifrost_piece_exchange(
         }
         // Validate reward item exists
         if world.get_item(reward_id).is_none() {
-            return bifrost_send_fail(session, error_code).await;
+            return bifrost_send_fail_at(session, error_code, line!()).await;
         }
     }
 
@@ -2671,7 +2678,7 @@ async fn bifrost_piece_exchange(
     }
 
     if rand_array.is_empty() {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Random selection
@@ -2681,13 +2688,13 @@ async fn bifrost_piece_exchange(
     // Validate reward item
     let reward_table = match world.get_item(reward_item_id) {
         Some(t) => t,
-        None => return bifrost_send_fail(session, error_code).await,
+        None => return bifrost_send_fail_at(session, error_code, line!()).await,
     };
 
     // Weight check for reward item
     let reward_weight = reward_table.weight.unwrap_or(0) as u32;
     if reward_weight + item_weight >= max_weight {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Verify that the reward can fit before consuming the piece. The final
@@ -2695,7 +2702,7 @@ async fn bifrost_piece_exchange(
     // the source stack is removed, that newly-empty slot may become the first
     // valid destination for the reward.
     if world.find_slot_for_item(sid, reward_item_id, 1).is_none() {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Remove exactly one piece from the client-selected source slot. Capture
@@ -2721,7 +2728,7 @@ async fn bifrost_piece_exchange(
         true
     });
     if !consumed {
-        return bifrost_send_fail(session, error_code).await;
+        return bifrost_send_fail_at(session, error_code, line!()).await;
     }
 
     // Resolve the actual reward slot after consuming the source item. This
@@ -2732,7 +2739,7 @@ async fn bifrost_piece_exchange(
             // The pre-check succeeded and session packets are processed
             // serially, so this is defensive rollback for unexpected state.
             let _ = world.give_item(sid, piece_item_id, 1);
-            return bifrost_send_fail(session, error_code).await;
+            return bifrost_send_fail_at(session, error_code, line!()).await;
         }
     };
 
