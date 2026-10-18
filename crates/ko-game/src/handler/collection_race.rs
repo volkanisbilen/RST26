@@ -64,7 +64,7 @@ use crate::handler::chat::{build_chat_packet, ChatType};
 use crate::handler::level::exp_change;
 use crate::session::ClientSession;
 use crate::systems::loyalty::send_loyalty_change;
-use crate::world::{WorldState, ITEM_GOLD};
+use crate::world::{WorldState, ITEM_GOLD, ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
 use crate::zone::SessionId;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -647,6 +647,37 @@ pub async fn send_on_game_entry(
 // ─────────────────────────────────────────────────────────────────────────────
 // NPC Kill Handling
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Credit a real (non-bot) opposing-nation player kill toward Collection Race,
+/// using the same PK-zone sentinel a PK bot kill uses (`CR_PK_BOT_KILL_PROTO_ID`'s
+/// doc comment always described this as covering "real player or PK bot" —
+/// only the bot half was ever wired up). Call this from every PvP kill
+/// resolution site (melee, skill damage) alongside the existing
+/// `set_who_killed_me`/`pvp_loyalty_on_death` calls.
+pub async fn credit_pk_zone_player_kill(
+    world: &WorldState,
+    killer_sid: SessionId,
+    victim_sid: SessionId,
+    zone_id: u16,
+) {
+    if !matches!(
+        zone_id,
+        ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
+    ) {
+        return;
+    }
+    let same_nation = world
+        .get_character_info(killer_sid)
+        .zip(world.get_character_info(victim_sid))
+        .is_some_and(|(killer, victim)| killer.nation == victim.nation);
+    if same_nation {
+        return;
+    }
+    let cr = world.collection_race_event().clone();
+    if let Err(e) = handle_kill(world, killer_sid, CR_PK_BOT_KILL_PROTO_ID, &cr).await {
+        warn!("CR handle_kill error (PK zone player kill): {}", e);
+    }
+}
 
 /// Process a monster kill by a player for the active Collection Race event.
 /// Called from `handle_npc_death` for the killer when an NPC dies.

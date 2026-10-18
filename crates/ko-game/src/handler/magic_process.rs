@@ -6817,6 +6817,15 @@ async fn apply_skill_damage(
         // ── PvP loyalty (NP) change ─────────────────────────────────
         dead::pvp_loyalty_on_death(world, caster_sid, target_sid);
 
+        // ── Collection Race (PK zone player kill) ────────────────────
+        super::collection_race::credit_pk_zone_player_kill(
+            world,
+            caster_sid,
+            target_sid,
+            victim_zone,
+        )
+        .await;
+
         // ── Rivalry / Anger Gauge (magic kill path) ─────────────────
         {
             let now_secs = std::time::SystemTime::now()
@@ -7100,6 +7109,10 @@ async fn apply_skill_damage_to_npc(
                 {
                     tracing::warn!("CR handle_kill error (PK bot skill kill): {}", e);
                 }
+
+                // Same party-NP hook as the melee bot-death path in attack.rs
+                // — skill kills on bots were missing it entirely too.
+                crate::systems::loyalty::pvp_loyalty_on_bot_kill(world, caster_sid, bot.nation);
             }
         }
 

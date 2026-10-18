@@ -941,7 +941,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         if target_sid == sid {
             return Ok(());
         }
-        handle_player_attack(&world, sid, &pos, target_sid, b_type, unknown);
+        handle_player_attack(&world, sid, &pos, target_sid, b_type, unknown).await;
     } else {
         // NPC/Monster target
         handle_npc_attack(world.clone(), sid, pos, tid, b_type, unknown).await;
@@ -954,7 +954,7 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 /// Validates target state, computes damage using the real C++ formula,
 /// applies HP change, triggers death if HP reaches 0, and broadcasts
 /// the result.
-fn handle_player_attack(
+async fn handle_player_attack(
     world: &WorldState,
     attacker_sid: SessionId,
     attacker_pos: &Position,
@@ -1543,6 +1543,15 @@ fn handle_player_attack(
         // ── PvP gold change ─────────────────────────────────────────────
         dead::gold_change_on_death(world, attacker_sid, target_sid);
 
+        // ── Collection Race (PK zone player kill) ───────────────────────
+        super::collection_race::credit_pk_zone_player_kill(
+            world,
+            attacker_sid,
+            target_sid,
+            attacker_pos.zone_id,
+        )
+        .await;
+
         // ── PvP death notice ────────────────────────────────────────────
         // Broadcast kill notice to zone so all players see "[X] killed [Y]".
         dead::send_death_notice(world, attacker_sid, target_sid);
@@ -1820,6 +1829,15 @@ async fn handle_npc_attack(
                 {
                     tracing::warn!("CR handle_kill error (PK bot kill): {}", e);
                 }
+
+                // Same reasoning: bots never reach the regular PvP-death path
+                // where pvp_loyalty_on_death normally hooks in, so party NP
+                // for an opposing-nation bot kill needs its own call too.
+                crate::systems::loyalty::pvp_loyalty_on_bot_kill(
+                    &world,
+                    attacker_sid,
+                    bot.nation,
+                );
             }
 
             ATTACK_TARGET_DEAD

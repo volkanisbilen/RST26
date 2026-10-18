@@ -4988,21 +4988,93 @@ fn gm_class_to_real_class(gm_class: u16, nation: u8) -> u16 {
         2 => base + 2, // Rogue (alternative GM shorthand)
         3 => base + 3, // Mage (alternative)
         4 => base + 4, // Priest (alternative)
+        13 => base + 13, // Kurian (Karus) / Porutu (ElMorad), 5th job
         _ => base + 1, // Default to warrior
+    }
+}
+
+/// KO-style player nicknames for GM-spawned PK bots, so they read as players
+/// instead of "Bot20001". ~2000 entries, so collisions are rare even under a
+/// full-capacity spawn; `pick_bot_name` still handles the pool-exhausted case.
+static BOT_NAME_POOL: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    include_str!("../../assets/bot_nicknames.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+});
+
+/// Pick a name for a new GM-spawned bot, avoiding a collision with any
+/// currently active bot's name. Falls back to a numbered suffix only once
+/// the pool is exhausted (e.g. a full-capacity "+pkbots all" spawn).
+fn pick_bot_name(world: &WorldState, rng: &mut impl Rng) -> String {
+    let in_use: std::collections::HashSet<String> =
+        world.bots.iter().map(|e| e.value().name.clone()).collect();
+
+    let pool = &*BOT_NAME_POOL;
+    let start = rng.gen_range(0..pool.len());
+    for offset in 0..pool.len() {
+        let name = pool[(start + offset) % pool.len()];
+        if !in_use.contains(name) {
+            return name.to_string();
+        }
+    }
+    // Pool exhausted (very large spawn) -- suffix until unique.
+    let base = pool[start];
+    let mut n = 2u32;
+    loop {
+        let candidate = format!("{base}{n}");
+        if !in_use.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
     }
 }
 
 /// Generate random base stats for a GM-spawned bot based on class.
 /// Warriors get high STR/STA, rogues get high DEX, mages get high INT.
-fn gm_bot_stats(class: u16) -> (u8, u8, u8, u8, u8) {
+/// Allocate a GM-spawned bot's 5 stats, scaling with level.
+///
+/// The per-class numbers below are PROPORTIONS (STR/STA/DEX/INT/CHA), not
+/// absolute values — a fixed flat allocation (e.g. a warrior always getting
+/// STA=80) left high-level bots critically undersized (a level 83 bot had
+/// barely 1000 HP). The proportions are instead split across the same total
+/// stat-point budget a real character would have accrued by that level —
+/// `300 + 3*(level-1) + 2*max(0, level-60)`, matching level.rs's
+/// `stat_total_expected` formula for free-point grants on level-up.
+///
+/// Ratios are calibrated directly against a reference stat planner's bare
+/// level-83 builds, confirmed exactly (each sums to 592, the level-83
+/// budget): Warrior STR=255/STA=177/DEX=60/INT=50/CHA=50 -> 5182 HP; Rogue
+/// STR=60/STA=177/DEX=255/INT=50/CHA=50 -> 3353 HP; Priest
+/// STR=50/STA=244/DEX=60/INT=188/CHA=50 -> 4614 HP (STA even outranks INT —
+/// a priest leans tankier than a mage); Mage STR=50/STA=100/DEX=70/INT=117/
+/// CHA=255 -> 1558 HP/4312 MP (CHA, not INT, is the mage's top priority —
+/// confirmed intentional, not a fluke); Kurian/Porutu identical to
+/// Warrior's split.
+fn gm_bot_stats(class: u16, level: u8) -> (u8, u8, u8, u8, u8) {
     let base_class = class % 100;
-    match base_class {
-        1 | 5 | 6 => (100, 80, 60, 40, 30), // Warrior: STR/STA/DEX/INT/CHA
-        2 | 7 | 8 => (60, 60, 100, 40, 30), // Rogue: DEX-focused
-        3 | 9 | 10 => (40, 50, 60, 120, 30), // Mage: INT-focused
-        4 | 11 | 12 => (50, 60, 60, 100, 30), // Priest: INT-focused with STA
-        _ => (80, 70, 70, 60, 30),          // Default balanced
-    }
+    let weights: [f64; 5] = match base_class {
+        1 | 5 | 6 => [255.0, 177.0, 60.0, 50.0, 50.0], // Warrior: STR/STA/DEX/INT/CHA
+        2 | 7 | 8 => [60.0, 177.0, 255.0, 50.0, 50.0], // Rogue: DEX-focused
+        3 | 9 | 10 => [50.0, 100.0, 70.0, 117.0, 255.0], // Mage: CHA(MP)-focused
+        4 | 11 | 12 => [50.0, 244.0, 60.0, 188.0, 50.0], // Priest: STA even above INT
+        13..=15 => [255.0, 177.0, 60.0, 50.0, 50.0], // Kurian/Porutu: same split as Warrior
+        _ => [100.0, 177.0, 100.0, 100.0, 50.0],      // Default balanced
+    };
+    let total_weight: f64 = weights.iter().sum();
+
+    let level_f = (level.max(1)) as f64;
+    let total_points = 300.0 + 3.0 * (level_f - 1.0) + 2.0 * (level_f - 60.0).max(0.0);
+
+    let stat = |w: f64| ((w / total_weight) * total_points).round().clamp(1.0, 255.0) as u8;
+    (
+        stat(weights[0]),
+        stat(weights[1]),
+        stat(weights[2]),
+        stat(weights[3]),
+        stat(weights[4]),
+    )
 }
 
 fn bot_class_group(class: u16) -> u8 {
@@ -5516,6 +5588,21 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
         }
     }
 
+    // Branding: every bot wears the same fixed cosplay set (server identity +
+    // the clan's signature pieces), copied from a real reference character
+    // rather than picked from the catalog -- these are cosmetic-only slots,
+    // not stat gear, so there's nothing to randomize per class/level.
+    // equip_visual indices 8-16 are the 9 cosplay slots (see
+    // BOT_VISUAL_SLOT_ORDER below): CWING, CHELMET, CLEFT, CRIGHT, CTOP,
+    // CTATTOO, CFAIRY, CEMBLEM, CTALISMAN.
+    equipment[8] = (810510903, 7200, 0); // CWING: Alencia Wings
+    equipment[9] = (508065592, 7200, 0); // CHELMET: Transparent Minerva Armor: Helmet
+    equipment[10] = (514573474, 7200, 0); // CLEFT: Pathos' Glove
+    equipment[11] = (505573465, 7200, 0); // CRIGHT: Pathos' Glove
+    equipment[12] = (508066592, 7200, 0); // CTOP: Transparent Minerva Armor
+    equipment[13] = (810930952, 1, 0); // CTATTOO: Solar Tattoo
+    equipment[15] = (931677910, 7200, 0); // CEMBLEM: [JstKO EMBLEM]
+
     equipment
 }
 
@@ -5604,7 +5691,7 @@ pub fn spawn_gm_bot(world: &WorldState, params: SpawnGmBotParams) -> BotId {
     } = params;
 
     let real_class = promote_bot_class_for_level(gm_class_to_real_class(gm_class, nation), level);
-    let (str_stat, sta_stat, dex_stat, int_stat, cha_stat) = gm_bot_stats(real_class);
+    let (str_stat, sta_stat, dex_stat, int_stat, cha_stat) = gm_bot_stats(real_class, level);
 
     let id = world.alloc_bot_id();
     let rx = calc_region(x);
@@ -5612,8 +5699,7 @@ pub fn spawn_gm_bot(world: &WorldState, params: SpawnGmBotParams) -> BotId {
     let now_unix = unix_now();
     let now_ms = tick_ms();
 
-    // Generate a name like "Bot10001" using the allocated ID.
-    let name = format!("Bot{}", id);
+    let name = pick_bot_name(world, &mut rand::thread_rng());
 
     let race = bot_race_for_class(real_class, nation, &mut rand::thread_rng());
 
@@ -7982,24 +8068,38 @@ mod tests {
 
     #[test]
     fn test_gm_bot_stats_by_class() {
-        // Warrior (class % 100 = 1): STR=100
-        let (str_s, _sta_s, dex_s, _int_s, _cha_s) = gm_bot_stats(101);
-        assert_eq!(str_s, 100, "warrior should have highest STR");
-        assert!(str_s > dex_s, "warrior STR > DEX");
+        // At level 83 the total stat-point budget (level.rs's
+        // stat_total_expected formula) is 300 + 3*82 + 2*23 = 592, which
+        // every class's weight vector sums to exactly -- so these values are
+        // also directly the calibrated reference-planner numbers themselves
+        // (Warrior STR=255/STA=177/DEX=60/INT=50/CHA=50 -> 5182 HP; Rogue
+        // STR=60/STA=177/DEX=255/INT=50/CHA=50 -> 3353 HP, both confirmed
+        // against a bare level-83 build).
+        let (str_s, sta_s, dex_s, int_s, cha_s) = gm_bot_stats(101, 83);
+        assert_eq!((str_s, sta_s, dex_s, int_s, cha_s), (255, 177, 60, 50, 50), "warrior stat split at level 83");
 
-        // Rogue (class % 100 = 2): DEX=100
-        let (str_s, _sta_s, dex_s, _int_s, _cha_s) = gm_bot_stats(102);
-        assert_eq!(dex_s, 100, "rogue should have highest DEX");
-        assert!(dex_s > str_s, "rogue DEX > STR");
+        let (str_s, sta_s, dex_s, int_s, cha_s) = gm_bot_stats(102, 83);
+        assert_eq!((str_s, sta_s, dex_s, int_s, cha_s), (60, 177, 255, 50, 50), "rogue stat split at level 83");
 
-        // Mage (class % 100 = 3): INT=120
-        let (_str_s, _sta_s, _dex_s, int_s, _cha_s) = gm_bot_stats(103);
-        assert_eq!(int_s, 120, "mage should have highest INT");
+        let (str_s, sta_s, dex_s, int_s, cha_s) = gm_bot_stats(103, 83);
+        assert_eq!((str_s, sta_s, dex_s, int_s, cha_s), (50, 100, 70, 117, 255), "mage stat split at level 83");
 
-        // Priest (class % 100 = 4): INT=100
-        let (_str_s, sta_s, _dex_s, int_s, _cha_s) = gm_bot_stats(104);
-        assert_eq!(int_s, 100, "priest should have high INT");
-        assert_eq!(sta_s, 60, "priest should have moderate STA");
+        let (str_s, sta_s, dex_s, int_s, cha_s) = gm_bot_stats(104, 83);
+        assert_eq!((str_s, sta_s, dex_s, int_s, cha_s), (50, 244, 60, 188, 50), "priest stat split at level 83");
+
+        let (str_s, sta_s, dex_s, int_s, cha_s) = gm_bot_stats(113, 83);
+        assert_eq!((str_s, sta_s, dex_s, int_s, cha_s), (255, 177, 60, 50, 50), "kurian stat split at level 83 (same as warrior)");
+    }
+
+    #[test]
+    fn test_gm_bot_stats_scale_with_level() {
+        // The same class's stats must grow with level -- this is the bug fix
+        // itself: a flat per-class allocation left a level 83 bot with
+        // barely more HP than a level 1 one.
+        let (str_lo, sta_lo, _, _, _) = gm_bot_stats(101, 10);
+        let (str_hi, sta_hi, _, _, _) = gm_bot_stats(101, 83);
+        assert!(str_hi > str_lo, "level 83 warrior STR must exceed level 10");
+        assert!(sta_hi > sta_lo, "level 83 warrior STA must exceed level 10");
     }
 
     #[test]

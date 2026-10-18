@@ -281,6 +281,7 @@ pub async fn process_chat_command(
         "afkbotspawn" => handle_bot_spawn(session, &args, crate::world::BotAiState::Afk)?,
         "pkbotspawn" => handle_bot_spawn(session, &args, crate::world::BotAiState::Pk)?,
         "pkbots" => handle_pk_bots(session, &args)?,
+        "botitems" => handle_bot_items(session, &args)?,
         "dbbots" => handle_database_bots(session, &args)?,
         "botkill" | "allbotkill" => handle_bot_kill(session, &args, &command)?,
         "funclass_open" => handle_funclass_open(session, &args)?,
@@ -2545,7 +2546,7 @@ fn handle_bot_spawn(
     if args.len() < 2 {
         send_help(
             session,
-            "Usage: +botspawn Class Level [Nation] [Count]  (Class: 1=war,2=rog,3=mage,4=priest)",
+            "Usage: +botspawn Class Level [Nation] [Count]  (Class: 1=war,2=rog,3=mage,4=priest,13=kurian/porutu)",
         );
         return Ok(());
     }
@@ -2558,7 +2559,7 @@ fn handle_bot_spawn(
         Err(_) => {
             send_help(
                 session,
-                "Error: Invalid class (1=war,2=rog,3=mage,4=priest)",
+                "Error: Invalid class (1=war,2=rog,3=mage,4=priest,13=kurian/porutu)",
             );
             return Ok(());
         }
@@ -2769,10 +2770,14 @@ fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
         return Ok(());
     };
 
+    // Warrior, Rogue, Mage, Priest, Kurian/Porutu (5th job) -- see
+    // bot_ai::gm_class_to_real_class for how each shorthand resolves.
+    const GM_CLASSES: [u16; 5] = [1, 2, 3, 4, 13];
+
     let mut spawned = 0usize;
     for nation in [1u8, 2u8] {
         for index in 0..count_per_nation {
-            let class = (index % 4 + 1) as u16;
+            let class = GM_CLASSES[index % GM_CLASSES.len()];
             let (x, z) = bot_ai::get_bot_respawn_position(zone_id, nation);
             if !zone.is_valid_position(x, z) {
                 warn!(zone_id, nation, x, z, "GM PK bot start position is invalid");
@@ -2812,6 +2817,65 @@ fn handle_pk_bots(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<
         level,
     );
 
+    Ok(())
+}
+
+/// +botitems [NameSubstring]
+/// Dumps each matching bot's 8 equipped visual slots (item id + name) so a GM
+/// can diagnose a bad-looking model (e.g. a weapon with no matching visual)
+/// without a DB console. With no filter, every active bot is logged to the
+/// server log only (chat would be unreadable at bot-wave scale); with a
+/// filter, matches are also echoed directly into GM chat.
+fn handle_bot_items(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    const EQUIP_SLOT_NAMES: [&str; 8] = [
+        "BREAST", "LEG", "HEAD", "GLOVE", "FOOT", "SHOULDER", "RIGHTHAND", "LEFTHAND",
+    ];
+
+    let world = session.world().clone();
+    let filter = args.first().map(|s| s.to_ascii_lowercase());
+
+    let mut matched = 0usize;
+    for entry in world.bots.iter() {
+        let bot = entry.value();
+        if let Some(f) = &filter {
+            if !bot.name.to_ascii_lowercase().contains(f.as_str()) {
+                continue;
+            }
+        }
+        matched += 1;
+
+        let mut line = format!(
+            "{} (id={} lvl={} class={} zone={}):",
+            bot.name, bot.id, bot.level, bot.class, bot.zone_id
+        );
+        for (slot_name, &(item_id, _durability, _flag)) in
+            EQUIP_SLOT_NAMES.iter().zip(bot.equip_visual.iter())
+        {
+            if item_id == 0 {
+                continue;
+            }
+            let item_name = world
+                .get_item(item_id)
+                .and_then(|it| it.str_name)
+                .unwrap_or_else(|| "?".to_string());
+            line.push_str(&format!(" {slot_name}={item_id}[{item_name}]"));
+        }
+        info!("[botitems] {}", line);
+        if filter.is_some() {
+            send_help(session, &line);
+        }
+    }
+
+    if matched == 0 {
+        send_help(session, "No matching bots found.");
+    } else if filter.is_none() {
+        send_help(
+            session,
+            &format!(
+                "Logged equipment for {matched} bot(s) to the server log (journalctl -u ko-server | grep botitems). Use +botitems <NameSubstring> to see it in chat instead."
+            ),
+        );
+    }
     Ok(())
 }
 
