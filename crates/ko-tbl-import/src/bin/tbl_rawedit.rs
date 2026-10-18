@@ -10,6 +10,7 @@
 //!   show <file> <col> <value>...        print rows whose integer column equals a value
 //!   orphans <Item_Org> <Skill_Magic_Main>  list items whose effect1 magic (c24) has no Main row
 //!   kratos <Data dir> <out dir>         build the Kratos skill-bar fix (Item_Org_us, Skill_Magic_Main_us, Skill_Magic_4)
+//!   skillfix <Data dir> <out dir>       skill audit: correct Skill_Magic_Main_us/tk rows (Kurian passive class codes, Rise MP)
 //!   piece <Data dir> <out dir> <rewards.txt>  build the Chaotic Generator boxes fix (piece_Exchange_us)
 
 use anyhow::{bail, Context, Result};
@@ -238,9 +239,48 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Some("skillfix") => skillfix(Path::new(&a[2]), Path::new(&a[3]))?,
         Some("piece") => piece(Path::new(&a[2]), Path::new(&a[3]), Path::new(&a[4]))?,
         Some("kratos") => kratos(Path::new(&a[2]), Path::new(&a[3]), a.get(4).map(String::as_str).unwrap_or("us"))?,
         _ => bail!("usage: tbl_rawedit roundtrip|show|orphans|kratos|piece ..."),
+    }
+    Ok(())
+}
+
+/// Skill audit fix for the client skill tables (Skill_Magic_Main_us/tk).
+///  * Kurian/Porutu passives that carry another class's `sSkill` code (Main c16 = class*10 + tree), which
+///    parks them in the wrong class tree of the client skill window;
+///  * Berserker "Rise" (105710): MP cost 0 (c17) although the three sibling rows cost 50 MP.
+/// Byte-exact otherwise: every row/column that is not listed is written back unchanged.
+fn skillfix(src: &Path, out: &Path) -> Result<()> {
+    // (magic id, Main column, expected current value, corrected value)
+    const FIXES: [(i128, usize, i128, i128); 8] = [
+        (115805, 16, 1068, 1158), // Boldness (Kurian master) sat in the Guardian tree
+        (115815, 16, 1068, 1158), // Axid Break (Kurian master)
+        (115745, 16, 1147, 1157), // Spirit Strengthening (master copy of the novice passive)
+        (115770, 16, 1147, 1157), // Contract Of Soul (master)
+        (214745, 16, 1147, 2147), // Spirit Strengthening (Porutu novice) carried the Karus code
+        (215745, 16, 1147, 2157), // Spirit Strengthening (Porutu master)
+        (215770, 16, 1147, 2157), // Contract Of Soul (Porutu master)
+        (105710, 17, 0, 50),      // Rise (Karus Berserker): 50 MP like 106710/205710/206710
+    ];
+    fs::create_dir_all(out)?;
+    for lang in ["us", "tk"] {
+        let (mut main, _, _) = load(&src.join(format!("Skill_Magic_Main_{lang}.tbl")))?;
+        for (id, col, from, to) in FIXES {
+            let i = find_row(&main, id).with_context(|| format!("magic {id} missing in {lang}"))?;
+            let cur = get_int(&main.rows[i][col]);
+            if cur == to {
+                println!("{lang} {id}: c{col} already {to}");
+                continue;
+            }
+            if cur != from {
+                bail!("{lang} {id}: c{col} is {cur}, expected {from}");
+            }
+            set_int(&mut main.rows[i][col], to)?;
+            println!("{lang} {id}: c{col} {from} -> {to}");
+        }
+        save(&main, &out.join(format!("Skill_Magic_Main_{lang}.tbl")))?;
     }
     Ok(())
 }

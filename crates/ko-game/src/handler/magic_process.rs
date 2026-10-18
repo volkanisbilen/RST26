@@ -668,6 +668,31 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
+    // ── Learned-skill requirement (C++ UserCanCast: sSkillLevel check) ─────
+    // A class skill needs the character level (tree 0) or the skill points
+    // invested in its tree (5..=8). The client only offers learned skills, so
+    // this stops forged casts of skills the character never unlocked.
+    if matches!(
+        b_opcode,
+        MAGIC_CASTING | MAGIC_FLYING | MAGIC_EFFECTING
+    ) && caster.authority != 0
+        && !is_unlocked_manes_magic
+        && !matches!(
+            caster_pos.zone_id,
+            ZONE_CHAOS_DUNGEON | ZONE_DUNGEON_DEFENCE | ZONE_KNIGHT_ROYALE
+        )
+        && !skill_requirement_met(
+            skill.skill.unwrap_or(0),
+            skill.skill_level.unwrap_or(0),
+            caster.level,
+            &caster.skill_points,
+        )
+    {
+        let fail_pkt = instance.build_fail_packet();
+        world.send_to_session_owned(sid, fail_pkt);
+        return Ok(());
+    }
+
     // ── Target resolution and validation ─────────────────────────────
     // These apply to ALL magic opcodes (CASTING, FLYING, EFFECTING, etc.).
     //
@@ -6304,6 +6329,26 @@ fn check_skill_class(iclass: i16, player_class: u16) -> bool {
         // Master kurian/porutu: KURIANMASTER(115) / PORUTUMASTER(215)
         115 | 215 => class_type == 15,
         // Common skills (iclass=100/190/200/290/etc.) — no class restriction
+        _ => true,
+    }
+}
+
+/// Learned-skill requirement of a class skill.
+///
+/// `sSkill = class * 10 + tree`. Only the regular class codes (101..=115 / 201..=215) are gated:
+/// tree 0 needs `level >= sSkillLevel`; trees 5..=8 need `skill_points[tree] >= sSkillLevel`.
+/// Everything else (event/item/monster skills, tree 9 helpers, extended-id rows) is not gated.
+fn skill_requirement_met(s_skill: i16, required: i16, level: u8, skill_points: &[u8; 10]) -> bool {
+    if s_skill <= 0 || required <= 0 {
+        return true;
+    }
+    let class = s_skill / 10;
+    if !(101..=115).contains(&class) && !(201..=215).contains(&class) {
+        return true;
+    }
+    match s_skill % 10 {
+        0 => level as i16 >= required,
+        tree @ 5..=8 => skill_points[tree as usize] as i16 >= required,
         _ => true,
     }
 }
@@ -12158,6 +12203,42 @@ mod tests {
         let npc_type: u8 = NPC_PARTNER_TYPE;
         let group: u8 = 1; // Karus nation
         assert!(!(npc_type == NPC_PARTNER_TYPE && group == 0));
+    }
+
+    // ── Learned-skill requirement tests ────────────────────────────
+
+    #[test]
+    fn test_skill_requirement_base_tree_needs_level() {
+        let pts = [0u8; 10];
+        // Berserker "Piercing"-style base skill: sSkill 1050, level 9.
+        assert!(!super::skill_requirement_met(1050, 9, 8, &pts));
+        assert!(super::skill_requirement_met(1050, 9, 9, &pts));
+        assert!(super::skill_requirement_met(2050, 50, 83, &pts));
+    }
+
+    #[test]
+    fn test_skill_requirement_tree_needs_points() {
+        let mut pts = [0u8; 10];
+        // Sword Dancing (105560): sSkill 1055, 60 points in tree 5.
+        assert!(!super::skill_requirement_met(1055, 60, 83, &pts));
+        pts[6] = 83; // points in another tree do not count
+        assert!(!super::skill_requirement_met(1055, 60, 83, &pts));
+        pts[5] = 60;
+        assert!(super::skill_requirement_met(1055, 60, 83, &pts));
+        // Master tree 8 (Instantly Magic, 15 points).
+        assert!(!super::skill_requirement_met(1108, 15, 83, &pts));
+        pts[8] = 15;
+        assert!(super::skill_requirement_met(1108, 15, 83, &pts));
+    }
+
+    #[test]
+    fn test_skill_requirement_ignores_non_class_skills() {
+        let pts = [0u8; 10];
+        assert!(super::skill_requirement_met(0, 50, 1, &pts)); // item / monster skill
+        assert!(super::skill_requirement_met(3500, 1, 1, &pts)); // class code 350
+        assert!(super::skill_requirement_met(4106, 1, 1, &pts)); // tree-code skills
+        assert!(super::skill_requirement_met(1059, 1, 1, &pts)); // tree 9 helpers
+        assert!(super::skill_requirement_met(1050, 0, 1, &pts)); // no requirement
     }
 
     // ── CheckSkillClass tests ──────────────────────────────────────
