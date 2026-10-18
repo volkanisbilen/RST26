@@ -15,6 +15,7 @@ mod patch;
 mod patch_tcp;
 mod pus;
 mod rewards;
+mod server_mgmt;
 mod legacy;
 mod sheet;
 mod world;
@@ -94,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
 
     let bind = std::env::var("ADMIN_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let app = App { pool, icon_dir, patch_dir };
-    let router: Router = legacy::routes().merge(extra::routes()).merge(world::routes()).merge(beginner::routes()).merge(sheet::routes()).merge(events::routes()).merge(pus::routes()).merge(rewards::routes()).merge(patch::routes()).merge(chaotic::routes()).merge(bot_loadout::routes()).merge(field_bots::routes()).merge(info_panel::routes()).with_state(app);
+    let router: Router = legacy::routes().merge(extra::routes()).merge(world::routes()).merge(beginner::routes()).merge(sheet::routes()).merge(events::routes()).merge(pus::routes()).merge(rewards::routes()).merge(patch::routes()).merge(chaotic::routes()).merge(bot_loadout::routes()).merge(field_bots::routes()).merge(info_panel::routes()).merge(server_mgmt::routes()).with_state(app);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     info!(address = %bind, "ko-admin listening");
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await?;
