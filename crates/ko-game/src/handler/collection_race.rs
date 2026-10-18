@@ -621,10 +621,8 @@ pub async fn send_on_game_entry(
                 None
             } else {
                 let my_kills = user_entry.kill_counts;
-                let user_status = user_entry.user_status;
                 let remaining = ev.event_end_time.saturating_sub(now);
-                let mut pkt =
-                    build_refresh_packet(&ev, my_kills, user_status, remaining, nation);
+                let mut pkt = build_refresh_packet(&ev, my_kills, 0, remaining, nation);
                 append_meta(&mut pkt, &world, &ev);
                 Some(pkt)
             }
@@ -679,16 +677,126 @@ pub async fn credit_pk_zone_player_kill(
     }
 }
 
-/// Process a monster kill by a player for the active Collection Race event.
-/// Called from `handle_npc_death` for the killer when an NPC dies.
-/// This function:
-/// 1. Checks the CR is active and the killer is in level range.
-/// 2. Increments the appropriate kill counter if the proto_id matches.
-/// 3. Checks if the player has completed all required kills.
-/// 4. If finished, awards rewards and sends counter broadcast.
-/// 5. If event user_limit reached, ends the event.
-/// Returns a packet to send to the killer (kill-progress update).
+/// Max distance (game units, per axis-plane) between the killer and a party
+/// member for the member to share the Collection Race kill credit.
+const CR_PARTY_SHARE_RANGE: f32 = 100.0;
+
+/// Outcome of counting one kill for one player (pure state transition).
+#[derive(Debug, Clone, PartialEq)]
+struct CrKillOutcome {
+    kill_counts: [u16; CR_SLOTS],
+    /// The player completed a round with this kill.
+    finished: bool,
+    /// The player is done for good (single-finish event): close their UI.
+    close_for_player: bool,
+}
+
+/// Count `proto_id` for player `name` in the event. Progress lives only in
+/// `ev.user_list` (reset together with the event). Repeat events
+/// (`event_list_status != 0`) restart the player's progress after each
+/// completion with the SAME target, until the event ends; `user_status`
+/// counts completed rounds. Returns `None` when the kill does not count.
+fn apply_kill(ev: &mut CollectionRaceEvent, name: &str, proto_id: u16) -> Option<CrKillOutcome> {
+    let req = ev.kill_counts_req;
+    let proto_ids = ev.proto_ids;
+    let repeat = ev.event_list_status != 0;
+    let entry = ev.user_list.entry(name.to_string()).or_default();
+    if entry.is_finish {
+        return None;
+    }
+    let mut matched = false;
+    for i in 0..CR_SLOTS {
+        if proto_ids[i] == 0 || proto_ids[i] != proto_id || req[i] == 0 {
+            continue;
+        }
+        if entry.kill_counts[i] < req[i] {
+            entry.kill_counts[i] += 1;
+            matched = true;
+        }
+    }
+    if !matched {
+        return None;
+    }
+    let kill_counts = entry.kill_counts;
+    let all_done = (0..CR_SLOTS).all(|i| req[i] == 0 || kill_counts[i] >= req[i]);
+    if !all_done {
+        return Some(CrKillOutcome {
+            kill_counts,
+            finished: false,
+            close_for_player: false,
+        });
+    }
+    entry.user_status = entry.user_status.saturating_add(1);
+    let close_for_player = !repeat;
+    if close_for_player {
+        entry.is_finish = true;
+    } else {
+        entry.kill_counts = [0; CR_SLOTS];
+    }
+    ev.total_count = ev.total_count.saturating_add(1);
+    Some(CrKillOutcome {
+        kill_counts,
+        finished: true,
+        close_for_player,
+    })
+}
+
+/// Players who get credit for a kill by `killer`: the killer plus every party
+/// member that is alive, in the same zone and within `CR_PARTY_SHARE_RANGE`.
+/// `members` = (sid, alive, Some((zone, x, z))). The killer is never duplicated.
+fn share_recipients(
+    killer: SessionId,
+    killer_pos: Option<(u16, f32, f32)>,
+    members: &[(SessionId, bool, Option<(u16, f32, f32)>)],
+) -> Vec<SessionId> {
+    let mut out = vec![killer];
+    let Some((kz, kx, kzz)) = killer_pos else {
+        return out;
+    };
+    for &(sid, alive, pos) in members {
+        if sid == killer || out.contains(&sid) || !alive {
+            continue;
+        }
+        if let Some((z, x, zz)) = pos {
+            let d = ((x - kx).powi(2) + (zz - kzz).powi(2)).sqrt();
+            if z == kz && d <= CR_PARTY_SHARE_RANGE {
+                out.push(sid);
+            }
+        }
+    }
+    out
+}
+
+/// Process a monster / PK-zone kill for the Collection Race. The kill counts
+/// for the killer and for every eligible party member (see `share_recipients`).
 pub async fn handle_kill(
+    world: &WorldState,
+    killer_sid: SessionId,
+    proto_id: u16,
+    cr: &SharedCollectionRaceEvent,
+) -> anyhow::Result<()> {
+    if !cr.read().is_active {
+        return Ok(());
+    }
+    let pos_of = |sid: SessionId| world.get_position(sid).map(|p| (p.zone_id, p.x, p.z));
+    let mut members = Vec::new();
+    if let Some(party) = world
+        .get_party_id(killer_sid)
+        .and_then(|pid| world.get_party(pid))
+    {
+        for m in party.members.iter().filter_map(|&m| m) {
+            let alive = world.get_character_info(m).is_some_and(|c| c.hp > 0);
+            members.push((m, alive, pos_of(m)));
+        }
+    }
+    for sid in share_recipients(killer_sid, pos_of(killer_sid), &members) {
+        handle_kill_single(world, sid, proto_id, cr).await?;
+    }
+    Ok(())
+}
+
+/// Count one kill for a single player (no party logic).
+async fn handle_kill_single(
     world: &WorldState,
     killer_sid: SessionId,
     proto_id: u16,
@@ -698,205 +806,44 @@ pub async fn handle_kill(
         Some(c) => c,
         None => return Ok(()),
     };
-
     let char_name = char_info.name.to_uppercase();
     let level = char_info.level;
 
-    // ── 1. Check event active + level range ─────────────────────────────
-    let (is_active, min_level, max_level) = {
-        let ev = cr.read();
-        (ev.is_active, ev.min_level, ev.max_level)
-    };
-
-    if !is_active {
-        return Ok(());
-    }
-    if level < min_level || level > max_level {
-        return Ok(());
-    }
-
-    // Check already finished
-    let already_finished = world
-        .with_session(killer_sid, |h| h.cr_check_finish)
-        .unwrap_or(true);
-    if already_finished {
-        return Ok(());
-    }
-
-    // ── 2. Process kill ──────────────────────────────────────────────────
-    // We need write access to update kill counts and check finish.
-    // All logic runs under the write lock to avoid partial-state issues.
-    enum KillResult {
-        /// Just incremented a counter — send kill-progress update.
-        Progress { kill_counts: [u16; CR_SLOTS] },
-        /// Player completed all required kills.
-        Finished {
-            kill_counts: [u16; CR_SLOTS],
-            should_close_for_player: bool,
-            event_ended: bool,
-            new_total: u16,
-            rank_bug: u32,
-            user_limit: u16,
-            reward_ids: [u32; CR_REWARD_SLOTS],
-            reward_counts: [u32; CR_REWARD_SLOTS],
-            reward_times: [u32; CR_REWARD_SLOTS],
-            reward_rates: [u8; CR_REWARD_SLOTS],
-        },
-    }
-
-    let kill_result: KillResult = {
+    let (outcome, rewards, new_total, rank_bug, user_limit) = {
         let mut ev = cr.write();
-
-        // Copy immutable fields BEFORE taking the user_entry mutable borrow.
-        // This avoids the Rust borrow-conflict between ev.user_list (mutable)
-        // and ev.proto_ids / ev.kill_counts_req (immutable fields of the same struct).
-        let proto_ids_snap = ev.proto_ids;
-        let kill_counts_req_snap = ev.kill_counts_req;
-        let list_status = ev.event_list_status;
-        let reward_item_ids = ev.reward_item_ids;
-        let reward_item_counts = ev.reward_item_counts;
-        let reward_item_times = ev.reward_item_times;
-        let reward_item_rates = ev.reward_item_rates;
-
-        // Ensure user is registered
-        let user_entry = ev.user_list.entry(char_name.clone()).or_default();
-        if user_entry.is_finish {
-            // Already finished (e.g. repeated-mode and closed)
-            drop(ev);
+        if !ev.is_active || level < ev.min_level || level > ev.max_level {
             return Ok(());
         }
-
-        // Get current session kill counts (from session state)
-        let mut session_kills = world
-            .with_session(killer_sid, |h| h.cr_kill_counts)
-            .unwrap_or([0u16; CR_SLOTS]);
-
-        let user_status = user_entry.user_status;
-        let mut matched = false;
-
-        // Find matching slot and increment
-        for i in 0..CR_SLOTS {
-            if proto_ids_snap[i] == 0 {
-                continue;
-            }
-            if proto_ids_snap[i] != proto_id {
-                continue;
-            }
-            // Compute required (adjusted for repeat status)
-            let mut required = kill_counts_req_snap[i];
-            if user_status > 0 {
-                required = (required as f32 * 2.5) as u16;
-            }
-            if required == 0 {
-                continue;
-            }
-            if session_kills[i] < required {
-                session_kills[i] += 1;
-                user_entry.kill_counts[i] = session_kills[i];
-                matched = true;
-            }
-        }
-
-        // Update session kill counts
-        world.update_session(killer_sid, |h| {
-            h.cr_kill_counts = session_kills;
-        });
-
-        if !matched {
-            drop(ev);
-            return Ok(()); // no matching slot or already at cap
-        }
-
-        // Check if player has completed all slots
-        let mut all_done = true;
-        for i in 0..CR_SLOTS {
-            let mut required = kill_counts_req_snap[i];
-            if user_status > 0 {
-                required = (required as f32 * 2.5) as u16;
-            }
-            if required == 0 {
-                continue; // unused slot
-            }
-            if session_kills[i] < required {
-                all_done = false;
-                break;
-            }
-        }
-
-        if !all_done {
-            KillResult::Progress {
-                kill_counts: session_kills,
-            }
-        } else {
-            // Player finished! Determine close behaviour
-            let should_save_finish = match list_status {
-                0 => true, // single-finish: always close for player
-                1 => {
-                    // repeat ×2.5: close after 2nd completion
-                    user_entry.user_status += 1;
-                    user_entry.user_status > 1
-                }
-                _ => false, // status==2: never close for player (infinite repeat)
-            };
-
-            if should_save_finish {
-                user_entry.is_finish = true;
-                world.update_session(killer_sid, |h| {
-                    h.cr_check_finish = true;
-                });
-            }
-
-            let should_close_for_player = should_save_finish && list_status != 2;
-
-            // If repeat mode and not closing, reset kill counts for next round
-            if !should_close_for_player {
-                for i in 0..CR_SLOTS {
-                    user_entry.kill_counts[i] = 0;
-                }
-                world.update_session(killer_sid, |h| {
-                    h.cr_kill_counts = [0u16; CR_SLOTS];
-                });
-            }
-
-            ev.total_count += 1;
-            let new_total = ev.total_count;
-            let rank_bug = ev.rank_bug;
-            let user_limit = ev.user_limit;
-            let event_ended = new_total >= user_limit;
-
-            KillResult::Finished {
-                kill_counts: session_kills,
-                should_close_for_player,
-                event_ended,
-                new_total,
-                rank_bug,
-                user_limit,
-                reward_ids: reward_item_ids,
-                reward_counts: reward_item_counts,
-                reward_times: reward_item_times,
-                reward_rates: reward_item_rates,
-            }
-        }
+        let Some(outcome) = apply_kill(&mut ev, &char_name, proto_id) else {
+            return Ok(());
+        };
+        (
+            outcome,
+            (
+                ev.reward_item_ids,
+                ev.reward_item_counts,
+                ev.reward_item_times,
+                ev.reward_item_rates,
+            ),
+            ev.total_count,
+            ev.rank_bug,
+            ev.user_limit,
+        )
     }; // lock released
+    let (reward_ids, reward_counts, reward_times, reward_rates) = rewards;
+    let event_ended = outcome.finished && new_total >= user_limit;
 
-    match kill_result {
-        KillResult::Progress { kill_counts } => {
-            // Send kill-progress update to killer
-            let pkt = build_kill_update_packet(proto_id, kill_counts);
-            world.send_to_session_owned(killer_sid, pkt);
-        }
-        KillResult::Finished {
-            kill_counts,
-            should_close_for_player,
-            event_ended,
-            new_total,
-            rank_bug,
-            user_limit,
-            reward_ids,
-            reward_counts,
-            reward_times,
-            reward_rates,
-        } => {
+    if !outcome.finished {
+        world.send_to_session_owned(
+            killer_sid,
+            build_kill_update_packet(proto_id, outcome.kill_counts),
+        );
+        return Ok(());
+    }
+    let kill_counts = outcome.kill_counts;
+    let should_close_for_player = outcome.close_for_player;
+    {
+        {
             // 1. Send kill-progress update (sub=0x02) to killer
             let kill_pkt = build_kill_update_packet(proto_id, kill_counts);
             world.send_to_session_owned(killer_sid, kill_pkt);
@@ -912,6 +859,12 @@ pub async fn handle_kill(
                     "[Collection Race] You have completed the event! Rewards incoming.",
                 );
                 world.send_to_session_owned(killer_sid, chat_pkt);
+            } else {
+                // Repeat event: the next round starts from zero.
+                world.send_to_session_owned(
+                    killer_sid,
+                    build_kill_update_packet(proto_id, [0u16; CR_SLOTS]),
+                );
             }
 
             // 3. Broadcast counter update to all eligible players (sub=0x03)
@@ -1363,6 +1316,79 @@ mod tests {
             rank_bug: 2,
             user_list: HashMap::new(),
         }
+    }
+
+    fn repeat_event(status: u8) -> CollectionRaceEvent {
+        let mut ev = CollectionRaceEvent::default();
+        ev.is_active = true;
+        ev.event_list_status = status;
+        ev.proto_ids = [100, 0, 0];
+        ev.kill_counts_req = [50, 0, 0];
+        ev.user_limit = 5000;
+        ev
+    }
+
+    #[test]
+    fn test_repeat_event_pays_every_round_with_same_target() {
+        let mut ev = repeat_event(1);
+        for round in 1..=3u16 {
+            for k in 1..=50u16 {
+                let o = apply_kill(&mut ev, "A", 100).expect("counts");
+                assert_eq!(o.finished, k == 50, "round {round} kill {k}");
+                assert!(!o.close_for_player);
+            }
+            assert_eq!(ev.total_count, round);
+            assert_eq!(ev.user_list["A"].kill_counts, [0; CR_SLOTS]);
+            assert!(!ev.user_list["A"].is_finish);
+        }
+    }
+
+    #[test]
+    fn test_single_finish_event_closes_after_first_round() {
+        let mut ev = repeat_event(0);
+        let mut last = None;
+        for _ in 0..50 {
+            last = apply_kill(&mut ev, "A", 100);
+        }
+        let o = last.unwrap();
+        assert!(o.finished && o.close_for_player);
+        assert!(apply_kill(&mut ev, "A", 100).is_none());
+    }
+
+    #[test]
+    fn test_unrelated_proto_does_not_count() {
+        let mut ev = repeat_event(1);
+        assert!(apply_kill(&mut ev, "A", 999).is_none());
+    }
+
+    #[test]
+    fn test_share_recipients_party_zone_range_no_double() {
+        let near = Some((71u16, 105.0, 100.0));
+        let far = Some((71u16, 900.0, 100.0));
+        let other_zone = Some((21u16, 100.0, 100.0));
+        let members = [
+            (1, true, Some((71u16, 100.0, 100.0))), // killer himself
+            (2, true, near),
+            (3, true, far),
+            (4, true, other_zone),
+            (5, false, near), // dead
+            (2, true, near),  // duplicate entry
+        ];
+        let r = share_recipients(1, Some((71, 100.0, 100.0)), &members);
+        assert_eq!(r, vec![1, 2]);
+        assert_eq!(share_recipients(1, None, &members), vec![1]);
+        assert_eq!(share_recipients(1, Some((71, 0.0, 0.0)), &[]), vec![1]);
+    }
+
+    #[test]
+    fn test_pk_sentinel_counts_for_party_members() {
+        let mut ev = repeat_event(1);
+        ev.proto_ids = [CR_PK_BOT_KILL_PROTO_ID, 0, 0];
+        for sid in share_recipients(1, Some((71, 0.0, 0.0)), &[(2, true, Some((71, 1.0, 1.0)))]) {
+            apply_kill(&mut ev, &format!("P{sid}"), CR_PK_BOT_KILL_PROTO_ID).unwrap();
+        }
+        assert_eq!(ev.user_list["P1"].kill_counts[0], 1);
+        assert_eq!(ev.user_list["P2"].kill_counts[0], 1);
     }
 
     #[test]
