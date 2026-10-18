@@ -828,6 +828,102 @@ mod tests {
         }
     }
 
+    // ── Zone 72/73 PK bot spawn tiles ───────────────────────────────────
+    //
+    // `spawn_pk_bot_wave` places bots at `get_bot_respawn_position` (nation
+    // base + a random 0..=5 offset on each axis) without projecting onto the
+    // bot nav grid. On the real maps part of that 6x6 box is blocked: 8/36 for
+    // Ardream Karus and 18/36 for Ronark Land Base Elmorad. A bot that starts
+    // on a blocked cell can never move (`find_bot_path` rejects a blocked start
+    // and `is_bot_move_valid` rejects the first step), so it cycles through all
+    // its waypoints, "completes" the route and re-rolls it forever, in place.
+
+    fn load_pk_map(file: &str) -> MapData {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map").join(file);
+        MapData::new(SmdFile::load(&p).expect("load SMD"))
+    }
+
+    /// Every possible raw spawn tile must project (as `spread_pk_spawn` does)
+    /// onto a walkable tile that can path to the nation's patrol area.
+    #[test]
+    fn pk_wave_spawn_offsets_project_to_connected_walkable_tiles() {
+        use crate::systems::pathfind::nearest_bot_point;
+        for (zone, file) in [(ZONE_ARDREAM, "freezone_a.smd"), (ZONE_RONARK_LAND_BASE, "freezone_c.smd")] {
+            let map = load_pk_map(file);
+            for nation in [NATION_KARUS, NATION_ELMORAD] {
+                let (bx, bz) = match (zone, nation) {
+                    (ZONE_ARDREAM, NATION_KARUS) => (851, 136),
+                    (ZONE_ARDREAM, _) => (190, 897),
+                    (_, NATION_KARUS) => (515, 104),
+                    _ => (513, 916),
+                };
+                // First patrol goal of route 1 that is itself reachable from the
+                // nation's base tile.
+                let (base_x, base_z) = nearest_bot_point(&map, bx as f32, bz as f32, 8).unwrap();
+                let goal = (1..=14u8)
+                    .filter_map(|st| {
+                        if zone == ZONE_ARDREAM {
+                            get_waypoint(zone, 1, st, nation)
+                        } else {
+                            get_ronark_base_orbit_waypoint(1, st, nation)
+                        }
+                    })
+                    .filter_map(|(x, z)| nearest_bot_point(&map, x, z, 8))
+                    .find(|&(gx, gz)| find_bot_path(&map, base_x, base_z, gx, gz).found)
+                    .expect("nation base must reach some patrol waypoint");
+                let mut seen = std::collections::HashSet::new();
+                for ox in 0..=5 {
+                    for oz in 0..=5 {
+                        let (x, z) = ((bx + ox) as f32, (bz + oz) as f32);
+                        let (sx, sz) = nearest_bot_point(&map, x, z, 8)
+                            .unwrap_or_else(|| panic!("zone {zone} nation {nation}: no walkable tile near ({x},{z})"));
+                        assert!(map.is_bot_movable(sx, sz));
+                        if seen.insert((sx as i32, sz as i32)) {
+                            assert!(
+                                find_bot_path(&map, sx, sz, goal.0, goal.1).found,
+                                "zone {zone} nation {nation}: projected spawn ({sx},{sz}) from ({x},{z}) is cut off from patrol area"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Documents the actual bug: `spawn_pk_bot_wave` must not leave bots on
+    /// blocked tiles. Fails until the wave spawn snaps with `nearest_bot_point`
+    /// (see `spread_pk_spawn`), so it is ignored by default.
+    #[test]
+    fn pk_wave_bots_never_spawn_on_blocked_tiles() {
+        use crate::world::WorldState;
+        for (zone, file) in [(ZONE_ARDREAM, "freezone_a.smd"), (ZONE_RONARK_LAND_BASE, "freezone_c.smd")] {
+            let world = WorldState::new();
+            let info = crate::zone::ZoneInfo {
+                smd_name: String::new(),
+                zone_name: "Sim".into(),
+                zone_type: crate::zone::ZoneAbilityType::Neutral,
+                min_level: 0,
+                max_level: 83,
+                init_x: 0.0,
+                init_z: 0.0,
+                init_y: 0.0,
+                abilities: crate::zone::ZoneAbilities::default(),
+                status: 1,
+            };
+            world.set_zone_with_map(zone, info, load_pk_map(file));
+            // 100 per nation: ~certain to hit every 6x6 offset cell class.
+            crate::systems::bot_ai::spawn_pk_bot_wave(&world, zone, Some(100), Some(59)).unwrap();
+            let map = load_pk_map(file);
+            let blocked: Vec<_> = world
+                .bots
+                .iter()
+                .filter(|e| !map.is_bot_movable(e.value().x, e.value().z))
+                .map(|e| (e.value().nation, e.value().x, e.value().z))
+                .collect();
+            assert!(blocked.is_empty(), "zone {zone}: {} bots spawned on blocked tiles, e.g. {:?}", blocked.len(), blocked.first());
+        }
+    }
+
     #[test]
     fn test_get_ronark_base_orbit_waypoint_rotates_with_route() {
         let p1 = get_ronark_base_orbit_waypoint(1, 1, NATION_KARUS).unwrap();

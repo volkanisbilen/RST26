@@ -6272,11 +6272,17 @@ pub fn spawn_pk_bot_wave(
     for nation in [1u8, 2u8] {
         for index in 0..count_per_nation {
             let class = GM_CLASSES[index % GM_CLASSES.len()];
-            let (x, z) = get_bot_respawn_position(zone_id, nation);
-            if !zone.is_valid_position(x, z) {
-                tracing::warn!(zone_id, nation, x, z, "GM PK bot start position is invalid");
+            let (raw_x, raw_z) = get_bot_respawn_position(zone_id, nation);
+            // The random offset around the nation base can land on a blocked
+            // cell; a bot that starts there can never path out and freezes.
+            let Some((x, z)) = zone
+                .map_data
+                .as_ref()
+                .and_then(|map| crate::systems::pathfind::nearest_bot_point(map, raw_x, raw_z, 8))
+            else {
+                tracing::warn!(zone_id, nation, raw_x, raw_z, "GM PK bot start position has no walkable tile nearby");
                 continue;
-            }
+            };
 
             spawn_gm_bot(
                 world,
