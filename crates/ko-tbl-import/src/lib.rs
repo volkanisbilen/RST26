@@ -5,3 +5,4 @@
 pub mod box_breaker_texts;
 pub mod decrypt;
 pub mod parser;
+pub mod raw_tbl;
