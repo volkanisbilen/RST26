@@ -595,7 +595,8 @@ pub struct Threat {
     pub ally_low_ratio: f32,
 }
 
-/// Pure threat assessment from the bot's vitals and its surroundings.
+/// Pure threat assessment from the bot's vitals and its surroundings
+/// (nation based: everybody of another nation is an enemy).
 pub fn assess(
     hp: i16,
     max_hp: i16,
@@ -607,25 +608,32 @@ pub fn assess(
     near: &[Unit],
     under_attack: bool,
 ) -> Threat {
+    let enemies: Vec<Unit> = near.iter().filter(|u| u.nation != nation).copied().collect();
+    let allies: Vec<Unit> = near.iter().filter(|u| u.nation == nation).copied().collect();
+    assess_units(hp, max_hp, mp, max_mp, x, z, &enemies, &allies, under_attack)
+}
+
+/// Threat assessment over explicit enemy / ally lists (the Chaos free-for-all
+/// counts only party mates as allies, so nation equality is not the rule there).
+pub fn assess_units(
+    hp: i16,
+    max_hp: i16,
+    mp: i16,
+    max_mp: i16,
+    x: f32,
+    z: f32,
+    enemies: &[Unit],
+    allies: &[Unit],
+    under_attack: bool,
+) -> Threat {
     let ratio = |v: i16, m: i16| if m <= 0 { 1.0 } else { (v.max(0) as f32 / m as f32).min(1.0) };
-    let mut enemies = 0;
-    let mut allies = 1;
-    let mut nearest_enemy = f32::MAX;
-    let mut ally_low_ratio = 1.0f32;
-    for u in near {
-        if u.nation == nation {
-            allies += 1;
-            ally_low_ratio = ally_low_ratio.min(u.hp_ratio());
-        } else {
-            enemies += 1;
-            nearest_enemy = nearest_enemy.min(u.dist(x, z));
-        }
-    }
+    let nearest_enemy = enemies.iter().map(|e| e.dist(x, z)).fold(f32::MAX, f32::min);
+    let ally_low_ratio = allies.iter().map(|a| a.hp_ratio()).fold(1.0f32, f32::min);
     Threat {
         hp_ratio: ratio(hp, max_hp),
         mp_ratio: ratio(mp, max_mp),
-        enemies,
-        allies,
+        enemies: enemies.len(),
+        allies: allies.len() + 1,
         under_attack,
         nearest_enemy,
         ally_low_ratio,
@@ -736,6 +744,23 @@ pub fn pick_target(
     cfg: &BrainConfig,
     mistake_roll: u32,
 ) -> Option<Unit> {
+    pick_target_with(me_id, me_x, me_z, enemies, all_near, current, cfg, mistake_roll, &|_| 0.0)
+}
+
+/// [`pick_target`] with an objective bonus per candidate (e.g. the enemy altar
+/// carrier in BDW, somebody hitting a party mate).
+#[allow(clippy::too_many_arguments)]
+pub fn pick_target_with(
+    me_id: u32,
+    me_x: f32,
+    me_z: f32,
+    enemies: &[Unit],
+    all_near: &[Unit],
+    current: Option<u32>,
+    cfg: &BrainConfig,
+    mistake_roll: u32,
+    bonus: &dyn Fn(&Unit) -> f32,
+) -> Option<Unit> {
     if enemies.is_empty() {
         return None;
     }
@@ -746,7 +771,7 @@ pub fn pick_target(
                 .iter()
                 .filter(|o| o.id != e.id && o.nation == e.nation && o.dist(e.x, e.z) <= 12.0)
                 .count();
-            (score_target(me_id, e, allies, current, e.dist(me_x, me_z)), *e)
+            (score_target(me_id, e, allies, current, e.dist(me_x, me_z)) + bonus(e), *e)
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -1152,30 +1177,54 @@ pub enum Drive {
     FightNearest,
     /// Walk to this point.
     Goal(f32, f32),
+    /// Walk to this point at a fraction of the normal step (the BDW altar carrier).
+    GoalScaled(f32, f32, f32),
 }
 
 /// Event-specific objective layer. PK zones, Chaos, BDW and Juraid implement
-/// it; the brain asks the objective only when no fight is on.
+/// it; the brain asks the objective only when no fight is on. `ev` is the event
+/// bot registry entry (`None` for PK bots).
 pub trait Objective: Send + Sync {
     fn name(&self) -> &'static str;
-    fn drive(&self, world: &WorldState, bot: &BotInstance, st: &mut BrainState, now_ms: u64) -> Drive;
+    fn drive(
+        &self,
+        world: &WorldState,
+        bot: &BotInstance,
+        st: &mut BrainState,
+        ev: Option<&EventEntry>,
+        now_ms: u64,
+    ) -> Drive;
+    /// Extra target score for `u` (objective priorities such as the enemy carrier).
+    fn target_bonus(&self, _world: &WorldState, _bot: &BotInstance, _ev: Option<&EventEntry>, _u: &Unit) -> f32 {
+        0.0
+    }
+    /// Does the bot fight players at all? (Juraid lanes are PvE.)
+    fn fights_players(&self) -> bool {
+        true
+    }
+    /// Dynamic obstacles `(x, z, radius)` for the bot's path queries this tick.
+    fn dyn_blocks(&self, _world: &WorldState, _bot: &BotInstance, _ev: Option<&EventEntry>) -> Vec<(f32, f32, f32)> {
+        Vec::new()
+    }
 }
+
+/// Event bot registry entry (re-exported for the objectives).
+pub type EventEntry = crate::systems::event_bots::BotEntry;
 
 /// PK zones: hotspots for the `Hotspot` role, surveyed patrol routes for `Patrol`.
 pub struct PkObjective;
-/// Chaos Dungeon: free for all, nothing but the nearest enemy.
+/// Chaos Dungeon: free for all; hunts across the arena when nobody is near.
 pub struct ChaosObjective;
-/// BDW: altar / carrier / escort. Driven by `event_bots::bdw_ai::drive`
-/// before the generic fight code runs, so the brain never sees it.
+/// BDW: altar / carrier / intercept / roam (`event_bots::bdw_objective`).
 pub struct BdwObjective;
-/// Juraid: lane / stage chain. Driven by `event_bots_juraid::tick_bot`.
+/// Juraid: lane chain, stage clearing, Deva (`event_bots_juraid::objective`).
 pub struct JuraidObjective;
 
 impl Objective for PkObjective {
     fn name(&self) -> &'static str {
         "pk"
     }
-    fn drive(&self, world: &WorldState, bot: &BotInstance, st: &mut BrainState, now_ms: u64) -> Drive {
+    fn drive(&self, world: &WorldState, bot: &BotInstance, st: &mut BrainState, _: Option<&EventEntry>, now_ms: u64) -> Drive {
         match st.role {
             Role::Patrol => {
                 if bot_ai::tick_waypoint_patrol(world, bot, now_ms) {
@@ -1189,12 +1238,70 @@ impl Objective for PkObjective {
     }
 }
 
+/// How long a roaming event bot keeps one roam point.
+const ROAM_MIN_MS: u64 = 15_000;
+const ROAM_MAX_MS: u64 = 40_000;
+
+/// Roam the arena: random reachable points over the whole map (the bounds
+/// come from the map), re-picked when reached or after a while. Keeps the bot
+/// hunting instead of waiting for an enemy to walk into its 32 m search range.
+pub fn roam_drive(world: &WorldState, bot: &BotInstance, st: &mut BrainState, now_ms: u64) -> Drive {
+    let mut rng = rand::thread_rng();
+    let reached = st.hotspot.is_some_and(|(hx, hz)| ((hx - bot.x).powi(2) + (hz - bot.z).powi(2)).sqrt() < 4.0);
+    if st.hotspot.is_none() || reached || now_ms >= st.hotspot_until_ms {
+        let Some(zone) = world.get_zone(bot.zone_id) else { return Drive::FightNearest };
+        let Some(map) = zone.map_data.as_ref() else { return Drive::FightNearest };
+        let w = map.map_width().max(32.0);
+        let mut picked = None;
+        for _ in 0..12 {
+            let rx = rng.gen_range(8.0..(w - 8.0));
+            let rz = rng.gen_range(8.0..(w - 8.0));
+            if let Some(p) = crate::systems::pathfind::nearest_bot_point(map, rx, rz, 4) {
+                picked = Some(p);
+                break;
+            }
+        }
+        let Some(p) = picked else { return Drive::FightNearest };
+        st.hotspot = Some(p);
+        st.hotspot_until_ms = now_ms + rng.gen_range(ROAM_MIN_MS..=ROAM_MAX_MS);
+    }
+    match st.hotspot {
+        Some((x, z)) => Drive::Goal(x, z),
+        None => Drive::FightNearest,
+    }
+}
+
+/// Drift around `(cx, cz)` within `radius` with the hotspot wander pauses.
+pub fn wander_around(bot: &BotInstance, st: &mut BrainState, cx: f32, cz: f32, radius: f32, now_ms: u64) -> Drive {
+    let mut rng = rand::thread_rng();
+    let d = ((cx - bot.x).powi(2) + (cz - bot.z).powi(2)).sqrt();
+    if d > radius {
+        st.wander_goal = None;
+        return Drive::Goal(cx, cz);
+    }
+    if st.wander_goal.is_none_or(|(gx, gz)| ((gx - bot.x).powi(2) + (gz - bot.z).powi(2)).sqrt() < 1.5)
+        || now_ms >= st.wander_at_ms
+    {
+        if now_ms < st.wander_at_ms && st.wander_goal.is_some() {
+            return Drive::Handled;
+        }
+        let a = rng.gen_range(0.0..std::f32::consts::TAU);
+        let r = rng.gen_range(2.0..radius.max(2.5));
+        st.wander_goal = Some((cx + a.cos() * r, cz + a.sin() * r));
+        st.wander_at_ms = now_ms + rng.gen_range(WANDER_MIN_MS..=WANDER_MAX_MS);
+    }
+    match st.wander_goal {
+        Some((gx, gz)) => Drive::Goal(gx, gz),
+        None => Drive::Handled,
+    }
+}
+
 impl Objective for ChaosObjective {
     fn name(&self) -> &'static str {
         "chaos"
     }
-    fn drive(&self, _: &WorldState, _: &BotInstance, _: &mut BrainState, _: u64) -> Drive {
-        Drive::FightNearest
+    fn drive(&self, world: &WorldState, bot: &BotInstance, st: &mut BrainState, _: Option<&EventEntry>, now_ms: u64) -> Drive {
+        roam_drive(world, bot, st, now_ms)
     }
 }
 
@@ -1202,8 +1309,17 @@ impl Objective for BdwObjective {
     fn name(&self) -> &'static str {
         "bdw"
     }
-    fn drive(&self, _: &WorldState, _: &BotInstance, _: &mut BrainState, _: u64) -> Drive {
-        Drive::Handled
+    fn drive(&self, world: &WorldState, bot: &BotInstance, st: &mut BrainState, ev: Option<&EventEntry>, now_ms: u64) -> Drive {
+        match ev {
+            Some(entry) => crate::systems::event_bots::bdw_objective(world, entry, bot, st, now_ms),
+            None => Drive::FightNearest,
+        }
+    }
+    fn target_bonus(&self, world: &WorldState, bot: &BotInstance, ev: Option<&EventEntry>, u: &Unit) -> f32 {
+        match ev {
+            Some(entry) => crate::systems::event_bots::bdw_target_bonus(world, entry, bot, u),
+            None => 0.0,
+        }
     }
 }
 
@@ -1211,8 +1327,20 @@ impl Objective for JuraidObjective {
     fn name(&self) -> &'static str {
         "juraid"
     }
-    fn drive(&self, _: &WorldState, _: &BotInstance, _: &mut BrainState, _: u64) -> Drive {
-        Drive::Handled
+    fn drive(&self, world: &WorldState, bot: &BotInstance, st: &mut BrainState, ev: Option<&EventEntry>, now_ms: u64) -> Drive {
+        match ev {
+            Some(entry) => crate::systems::event_bots_juraid::objective(world, entry, bot, st, now_ms),
+            None => Drive::Handled,
+        }
+    }
+    fn fights_players(&self) -> bool {
+        false
+    }
+    fn dyn_blocks(&self, world: &WorldState, _bot: &BotInstance, ev: Option<&EventEntry>) -> Vec<(f32, f32, f32)> {
+        match ev {
+            Some(entry) => crate::systems::event_bots_juraid::closed_bridge_blocks(world, entry),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -1369,12 +1497,46 @@ fn valid_bot_enemy(world: &WorldState, bot: &BotInstance, id: BotId) -> bool {
         .is_some_and(|o| o.is_alive() && o.nation != bot.nation && o.zone_id == bot.zone_id && o.is_in_pk_zone())
 }
 
-/// One pathed step toward `(gx, gz)`; broadcasts and commits the move.
-fn step_to(world: &WorldState, bot: &BotInstance, gx: f32, gz: f32, echo: u8, now_ms: u64) -> bool {
-    let Some((nx, ny, nz)) = bot_ai::bot_path_step_toward(world, bot, gx, bot.y, gz) else {
+/// Event-room rules: same room, hostile by event kind (Chaos is free for all),
+/// no GMs, no blinking players. The fighting phase is checked by the driver.
+fn valid_event_enemy(world: &WorldState, entry: &EventEntry, bot: &BotInstance, u: &Unit) -> bool {
+    use crate::systems::event_bots;
+    if u.is_bot {
+        return event_bots::resolve_target(world, entry, bot, u.id).is_some();
+    }
+    let sid = u.id as SessionId;
+    match (world.get_character_info(sid), world.get_position(sid)) {
+        (Some(ch), Some(pos)) => event_bots::human_attackable(world, entry, sid, &ch, pos.zone_id, bot.zone_id),
+        _ => false,
+    }
+}
+
+/// One pathed step toward `(gx, gz)`; broadcasts and commits the move. `scale`
+/// shortens the step (1.0 = normal). Event bots broadcast to their room only.
+fn step_to_ex(
+    world: &WorldState,
+    bot: &BotInstance,
+    ev: Option<&EventEntry>,
+    gx: f32,
+    gz: f32,
+    echo: u8,
+    now_ms: u64,
+    scale: f32,
+) -> bool {
+    let Some((mut nx, ny, mut nz)) = bot_ai::bot_path_step_toward(world, bot, gx, bot.y, gz)
+        .or_else(|| ev.and_then(|_| crate::systems::event_bots::no_map_step(world, bot, gx, gz)))
+    else {
         return false;
     };
-    bot_ai::broadcast_bot_move_ex(world, bot, nx, ny, nz, echo);
+    if scale < 1.0 {
+        // Shorter step along the same validated segment.
+        nx = bot.x + (nx - bot.x) * scale.max(0.05);
+        nz = bot.z + (nz - bot.z) * scale.max(0.05);
+    }
+    match ev {
+        Some(entry) => crate::systems::event_bots::brain_move(world, entry, bot, nx, ny, nz, echo),
+        None => bot_ai::broadcast_bot_move_ex(world, bot, nx, ny, nz, echo),
+    }
     world.update_bot(bot.id, |b| {
         b.x = nx;
         b.y = ny;
@@ -1391,21 +1553,25 @@ fn mark_tick(world: &WorldState, bot: &BotInstance, now_ms: u64) {
     world.update_bot(bot.id, |b| b.last_tick_ms = now_ms);
 }
 
-/// Positions of the bot's party mates in its zone (players and bots).
-fn party_mates(world: &WorldState, bot: &BotInstance) -> (Vec<(f32, f32)>, Option<(f32, f32)>, bool) {
+/// Positions of the bot's party mates in its zone (players and bots), the
+/// leader's position, whether a real player is among them, and the mates' ids
+/// (the Chaos ally rule).
+fn party_mates_ex(world: &WorldState, bot: &BotInstance) -> (Vec<(f32, f32)>, Option<(f32, f32)>, bool, Vec<u32>) {
     let Some(pid) = world.get_party_id(bot.id as SessionId) else {
-        return (Vec::new(), None, false);
+        return (Vec::new(), None, false, Vec::new());
     };
     let Some(party) = world.get_party(pid) else {
-        return (Vec::new(), None, false);
+        return (Vec::new(), None, false, Vec::new());
     };
     let mut mates = Vec::new();
+    let mut ids = Vec::new();
     let mut leader = None;
     let mut has_human = false;
     for sid in party.active_members() {
         if sid as u32 == bot.id {
             continue;
         }
+        ids.push(sid as u32);
         let pos = if (sid as u32) < BOT_ID_BASE {
             world
                 .get_position(sid)
@@ -1426,27 +1592,30 @@ fn party_mates(world: &WorldState, bot: &BotInstance) -> (Vec<(f32, f32)>, Optio
         }
         mates.push(p);
     }
-    (mates, leader, has_human)
+    (mates, leader, has_human, ids)
 }
 
 /// Where to run when retreating: the centroid of the nearest friendly group
 /// (allies within 60 m, excluding those standing among the enemies), else a
 /// point 30 m away from the enemies' centroid.
 pub fn retreat_point(me: (f32, f32), nation: u8, near: &[Unit]) -> (f32, f32) {
-    let enemies: Vec<&Unit> = near.iter().filter(|u| u.nation != nation).collect();
+    let enemies: Vec<Unit> = near.iter().filter(|u| u.nation != nation).copied().collect();
+    let allies: Vec<Unit> = near.iter().filter(|u| u.nation == nation).copied().collect();
+    retreat_point_units(me, &enemies, &allies)
+}
+
+/// [`retreat_point`] over explicit enemy / ally lists.
+pub fn retreat_point_units(me: (f32, f32), enemies: &[Unit], allies: &[Unit]) -> (f32, f32) {
     let (ecx, ecz) = if enemies.is_empty() {
         me
     } else {
         let n = enemies.len() as f32;
         (enemies.iter().map(|e| e.x).sum::<f32>() / n, enemies.iter().map(|e| e.z).sum::<f32>() / n)
     };
-    let allies: Vec<&Unit> = near
-        .iter()
-        .filter(|u| u.nation == nation && u.dist(ecx, ecz) > 12.0)
-        .collect();
-    if allies.len() >= 2 {
-        let n = allies.len() as f32;
-        return (allies.iter().map(|a| a.x).sum::<f32>() / n, allies.iter().map(|a| a.z).sum::<f32>() / n);
+    let safe: Vec<&Unit> = allies.iter().filter(|u| u.dist(ecx, ecz) > 12.0).collect();
+    if safe.len() >= 2 {
+        let n = safe.len() as f32;
+        return (safe.iter().map(|a| a.x).sum::<f32>() / n, safe.iter().map(|a| a.z).sum::<f32>() / n);
     }
     let dx = me.0 - ecx;
     let dz = me.1 - ecz;
@@ -1465,8 +1634,26 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     if !cfg.enabled || bot.ai_state != BotAiState::Pk || !bot.is_alive() {
         return false;
     }
+    tick_core(world, bot, None, now_ms)
+}
+
+/// Brain tick for an event bot (BDW / Chaos / Juraid). The event driver has
+/// already checked that the bot is alive, the room is open and combat is on.
+/// Always drives the bot (the event objective replaces the legacy loop).
+pub fn tick_event(world: &WorldState, entry: &EventEntry, bot: &BotInstance, now_ms: u64) {
+    if !bot.is_alive() {
+        return;
+    }
+    tick_core(world, bot, Some(entry), now_ms);
+}
+
+/// The shared decision tick. `ev` selects the event rules (targets, allies,
+/// movement broadcasts, attack mechanics) and the objective.
+fn tick_core(world: &WorldState, bot: &BotInstance, ev: Option<&EventEntry>, now_ms: u64) -> bool {
+    let cfg = config();
     let mut st = state_of(bot.id, now_ms);
     let mut rng = rand::thread_rng();
+    let objective = objective_for(world, bot);
 
     // Memory of being hit.
     if bot.hp < st.last_hp && st.last_hp != i16::MAX {
@@ -1482,30 +1669,50 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     let snap = snapshot(world, bot.zone_id, now_ms);
     let near = snap.near(bot.x, bot.z, bot_ai::BOT_SEARCH_RANGE, bot.id);
     let now_unix = unix_now();
-    let enemies: Vec<Unit> = near
+    let (mates, leader, has_human, mate_ids) = party_mates_ex(world, bot);
+    let ffa = ev.is_some_and(|e| e.kind.is_ffa());
+    let enemies: Vec<Unit> = if !objective.fights_players() {
+        Vec::new()
+    } else {
+        near.iter()
+            .filter(|u| match ev {
+                Some(entry) => valid_event_enemy(world, entry, bot, u),
+                None => {
+                    u.nation != bot.nation
+                        && if u.is_bot {
+                            valid_bot_enemy(world, bot, u.id)
+                        } else {
+                            valid_player_enemy(world, bot, u.id as SessionId, now_unix)
+                        }
+                }
+            })
+            .filter(|u| !bot_ai::target_is_parked_unreachable(bot.id, u.id as i16, now_ms))
+            .copied()
+            .collect()
+    };
+    let is_ally = |u: &Unit| if ffa { mate_ids.contains(&u.id) } else { u.nation == bot.nation };
+    let threat_enemies: Vec<Unit> = enemies.iter().filter(|u| u.dist(bot.x, bot.z) <= THREAT_RADIUS).copied().collect();
+    let threat_allies: Vec<Unit> = near
         .iter()
-        .filter(|u| u.nation != bot.nation)
-        .filter(|u| {
-            if u.is_bot {
-                valid_bot_enemy(world, bot, u.id)
-            } else {
-                valid_player_enemy(world, bot, u.id as SessionId, now_unix)
-            }
-        })
-        .filter(|u| !bot_ai::target_is_parked_unreachable(bot.id, u.id as i16, now_ms))
-        .copied()
-        .collect();
-    let threat_units: Vec<Unit> = near
-        .iter()
-        .filter(|u| u.dist(bot.x, bot.z) <= THREAT_RADIUS)
-        .filter(|u| u.nation == bot.nation || enemies.iter().any(|e| e.id == u.id))
+        .filter(|u| u.dist(bot.x, bot.z) <= THREAT_RADIUS && is_ally(u))
         .copied()
         .collect();
     let under_attack = now_ms.saturating_sub(st.last_attacked_ms) <= ATTACKED_MEMORY_MS;
-    let threat = assess(bot.hp, bot.max_hp, bot.mp, bot.max_mp, bot.nation, bot.x, bot.z, &threat_units, under_attack);
+    let threat = assess_units(
+        bot.hp,
+        bot.max_hp,
+        bot.mp,
+        bot.max_mp,
+        bot.x,
+        bot.z,
+        &threat_enemies,
+        &threat_allies,
+        under_attack,
+    );
 
     // Consumables (never block movement).
-    use_consumable(world, bot, &mut st, &cfg, threat.enemies, now_ms);
+    let enemies_near_for_scrolls = if objective.fights_players() { threat.enemies } else { usize::from(under_attack) };
+    use_consumable(world, bot, &mut st, &cfg, enemies_near_for_scrolls, now_ms);
     let bot = &world.get_bot(bot.id).unwrap_or_else(|| bot.clone());
 
     // A cast in progress pins the bot.
@@ -1515,12 +1722,20 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
         return true;
     }
 
-    // Target selection (sticky; mistakes).
+    // Target selection (sticky; mistakes; objective bonus).
     let current = st.target.filter(|id| enemies.iter().any(|e| e.id == *id));
     let target = if current.is_some() && now_ms < st.target_until_ms {
         current.and_then(|id| enemies.iter().find(|e| e.id == id).copied())
     } else {
-        let picked = pick_target(bot.id, bot.x, bot.z, &enemies, &near, current, &cfg, rng.gen_range(0..100));
+        let bonus = |u: &Unit| {
+            let mut b = objective.target_bonus(world, bot, ev, u);
+            // Assist the party: whoever hits a mate is worth more.
+            if u.targeting.is_some_and(|t| mate_ids.contains(&t)) {
+                b += 15.0;
+            }
+            b
+        };
+        let picked = pick_target_with(bot.id, bot.x, bot.z, &enemies, &near, current, &cfg, rng.gen_range(0..100), &bonus);
         if let Some(t) = picked {
             if st.target != Some(t.id) {
                 st.reaction_until_ms = now_ms + reaction_delay(&cfg, &mut rng);
@@ -1533,8 +1748,10 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
         picked
     };
 
-    let (mates, leader, has_human) = party_mates(world, bot);
-    let party_far = leader.is_some_and(|(lx, lz)| ((lx - bot.x).powi(2) + (lz - bot.z).powi(2)).sqrt() > BOT_PARTY_COHESION);
+    // Event bots act on their own: a party with a real player is assisted,
+    // never followed (no Regroup toward the leader).
+    let party_far = ev.is_none()
+        && leader.is_some_and(|(lx, lz)| ((lx - bot.x).powi(2) + (lz - bot.z).powi(2)).sqrt() > BOT_PARTY_COHESION);
     let role = ClassRole::of(bot);
     let mode = decide(&threat, &cfg, role, target.is_some(), party_far, rng.gen_range(0..100), st.mode);
     if mode != st.mode {
@@ -1542,12 +1759,15 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     }
     st.mode = mode;
 
+    // Per-bot dynamic obstacles (closed Juraid bridges) for every path query of this tick.
+    let _dyn_guard = crate::zone::DynBlockGuard::install(objective.dyn_blocks(world, bot, ev));
+
     let handled = match mode {
         Mode::Retreat => {
-            let (gx, gz) = retreat_point((bot.x, bot.z), bot.nation, &near);
+            let (gx, gz) = retreat_point_units((bot.x, bot.z), &threat_enemies, &threat_allies);
             st.target = None;
             world.update_bot(bot.id, |b| b.target_id = -1);
-            if !step_to(world, bot, gx, gz, 1, now_ms) {
+            if !step_to_ex(world, bot, ev, gx, gz, 1, now_ms, 1.0) {
                 mark_tick(world, bot, now_ms);
             }
             true
@@ -1559,7 +1779,7 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
             world.update_bot(bot.id, |b| b.target_id = -1);
             if let Some((lx, lz)) = leader.filter(|_| party_far) {
                 let (gx, gz) = spread_from_mates((bot.x, bot.z), (lx, lz), &mates, st.spacing);
-                step_to(world, bot, gx, gz, 3, now_ms);
+                step_to_ex(world, bot, ev, gx, gz, 3, now_ms, 1.0);
             } else {
                 mark_tick(world, bot, now_ms);
             }
@@ -1572,25 +1792,25 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
             let dz = bot.z - t.z;
             let d = (dx * dx + dz * dz).sqrt().max(0.01);
             let goal = (bot.x + dx / d * RANGED_KEEP_MIN, bot.z + dz / d * RANGED_KEEP_MIN);
-            if !step_to(world, bot, goal.0, goal.1, 3, now_ms) {
+            if !step_to_ex(world, bot, ev, goal.0, goal.1, 3, now_ms, 1.0) {
                 // Cornered: stand and fight.
-                engage(world, bot, &mut st, t, &cfg, &mates, now_ms);
+                engage(world, bot, ev, &mut st, t, &cfg, &mates, now_ms);
             }
             true
         }
         Mode::Engage => {
             let Some(t) = target else { unreachable!("Engage needs a target") };
-            engage(world, bot, &mut st, t, &cfg, &mates, now_ms);
+            engage(world, bot, ev, &mut st, t, &cfg, &mates, now_ms);
             true
         }
         Mode::Regroup => {
             world.update_bot(bot.id, |b| b.target_id = -1);
-            if has_human && bot_ai::move_toward_party_anchor(world, bot, now_ms) {
+            if has_human && ev.is_none() && bot_ai::move_toward_party_anchor(world, bot, now_ms) {
                 true
             } else if let Some((lx, lz)) = leader {
                 let goal = formation_point(role, (bot.x, bot.z), (lx, lz), st.spacing, st.formation_angle, 8.0 + st.spacing);
                 let goal = spread_from_mates((bot.x, bot.z), goal, &mates, st.spacing);
-                if !step_to(world, bot, goal.0, goal.1, 3, now_ms) {
+                if !step_to_ex(world, bot, ev, goal.0, goal.1, 3, now_ms, 1.0) {
                     mark_tick(world, bot, now_ms);
                 }
                 true
@@ -1603,15 +1823,30 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
                 b.target_id = -1;
                 b.target_changed = false;
             });
-            if has_human && bot_ai::move_toward_party_anchor(world, bot, now_ms) {
+            if has_human && ev.is_none() && bot_ai::move_toward_party_anchor(world, bot, now_ms) {
                 true
             } else {
-                match objective_for(world, bot).drive(world, bot, &mut st, now_ms) {
-                    Drive::Handled => true,
-                    Drive::FightNearest => false,
-                    Drive::Goal(gx, gz) => {
+                match objective.drive(world, bot, &mut st, ev, now_ms) {
+                    Drive::Handled => {
+                        mark_tick(world, bot, now_ms);
+                        true
+                    }
+                    Drive::FightNearest => {
+                        if ev.is_some() {
+                            mark_tick(world, bot, now_ms);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    drive @ (Drive::Goal(..) | Drive::GoalScaled(..)) => {
+                        let (gx, gz, scale) = match drive {
+                            Drive::GoalScaled(x, z, s) => (x, z, s),
+                            Drive::Goal(x, z) => (x, z, 1.0),
+                            _ => unreachable!(),
+                        };
                         let (gx, gz) = spread_from_mates((bot.x, bot.z), (gx, gz), &mates, st.spacing);
-                        if !step_to(world, bot, gx, gz, 3, now_ms) {
+                        if !step_to_ex(world, bot, ev, gx, gz, 3, now_ms, scale) {
                             // unreachable spot: pick another one next tick
                             st.hotspot = None;
                             st.wander_goal = None;
@@ -1631,10 +1866,13 @@ pub fn tick_pk(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
 }
 
 /// Fight `t`: pick the skill, respect its range, the reaction delay, mana and
-/// the cast-time lock; otherwise walk to the class formation point.
+/// the cast-time lock; otherwise walk to the class formation point. Event bots
+/// use the event attack mechanics (room-aware packets, event kill credit).
+#[allow(clippy::too_many_arguments)]
 fn engage(
     world: &WorldState,
     bot: &BotInstance,
+    ev: Option<&EventEntry>,
     st: &mut BrainState,
     t: Unit,
     cfg: &BrainConfig,
@@ -1642,13 +1880,18 @@ fn engage(
     now_ms: u64,
 ) {
     let target_sid = t.id as SessionId;
-    let mut skill_id = bot_ai::select_bot_attack_skill(world, bot, target_sid, now_ms);
-    // Mana management: a dry caster falls back to the free basic attack.
-    let mp_cost = world.get_magic(skill_id as i32).and_then(|m| m.msp).unwrap_or(0);
-    if mp_cost > 0 && bot.mp < mp_cost {
-        skill_id = if bot.nation == NATION_KARUS { 101_001 } else { 201_001 };
-    }
-    let range = bot_ai::bot_attack_range_for_skill(world, bot, skill_id, target_sid);
+    let (skill_id, range) = match ev {
+        Some(_) => (0u32, crate::systems::event_bots::attack_range(bot)),
+        None => {
+            let mut skill_id = bot_ai::select_bot_attack_skill(world, bot, target_sid, now_ms);
+            // Mana management: a dry caster falls back to the free basic attack.
+            let mp_cost = world.get_magic(skill_id as i32).and_then(|m| m.msp).unwrap_or(0);
+            if mp_cost > 0 && bot.mp < mp_cost {
+                skill_id = if bot.nation == NATION_KARUS { 101_001 } else { 201_001 };
+            }
+            (skill_id, bot_ai::bot_attack_range_for_skill(world, bot, skill_id, target_sid))
+        }
+    };
     let dist = t.dist(bot.x, bot.z);
     let role = ClassRole::of(bot);
     if dist <= range {
@@ -1658,6 +1901,11 @@ fn engage(
                 b.target_id = target_sid as i16;
                 b.last_tick_ms = now_ms;
             });
+            return;
+        }
+        if let Some(entry) = ev {
+            crate::systems::event_bots::brain_attack(world, entry, bot, t.id, t.x, t.z, now_ms);
+            world.update_bot(bot.id, |b| b.target_id = target_sid as i16);
             return;
         }
         let ty = if t.is_bot {
@@ -1693,7 +1941,7 @@ fn engage(
     let goal = formation_point(role, (bot.x, bot.z), (t.x, t.z), st.spacing, st.formation_angle, range);
     let goal = spread_from_mates((bot.x, bot.z), goal, mates, st.spacing);
     let echo = if bot.target_id != target_sid as i16 { 1 } else { 3 };
-    if step_to(world, bot, goal.0, goal.1, echo, now_ms) {
+    if step_to_ex(world, bot, ev, goal.0, goal.1, echo, now_ms, 1.0) {
         world.update_bot(bot.id, |b| {
             b.target_id = target_sid as i16;
             b.target_changed = false;

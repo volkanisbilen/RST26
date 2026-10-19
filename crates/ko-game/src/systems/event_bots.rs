@@ -260,7 +260,6 @@ pub fn plan_nation_fill(cfg: &EventBotConfig, humans: [usize; 2], capacity: usiz
 pub(crate) const STEP_PER_TICK: f32 = 1.125;
 const DRIVER_TICK_MS: u64 = 250;
 const RESPAWN_MS: u64 = 8_000;
-const RESCAN_MS: u64 = 1_500;
 const SWEEP_MS: u64 = 3_000;
 const MELEE_RANGE: f32 = 5.5;
 const RANGED_RANGE: f32 = 16.0;
@@ -271,13 +270,6 @@ pub(crate) const MISS_PERCENT: u32 = 12;
 const BOT_BACKSTOP_MINUTES: u32 = 150;
 const MOVE_SPEED_FIELD: i16 = 45;
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PathState {
-    goal: (f32, f32),
-    waypoints: Vec<(f32, f32)>,
-    index: usize,
-}
-
 /// Runtime bookkeeping of one registered event bot.
 #[derive(Debug, Clone)]
 pub struct BotEntry {
@@ -286,12 +278,9 @@ pub struct BotEntry {
     pub room: u16,
     pub nation: u8,
     pub name: String,
-    target: Option<u32>,
-    next_scan_ms: u64,
     pub(crate) next_attack_ms: u64,
     /// 0 = alive.
     respawn_at_ms: u64,
-    pub(crate) path: Option<PathState>,
 }
 
 impl BotEntry {
@@ -301,11 +290,8 @@ impl BotEntry {
             room,
             nation,
             name,
-            target: None,
-            next_scan_ms: 0,
             next_attack_ms: 0,
             respawn_at_ms: 0,
-            path: None,
         }
     }
 }
@@ -823,20 +809,52 @@ pub fn deny_player_attack(world: &WorldState, attacker: SessionId, bot_id: BotId
     let Some(entry) = world.event_bots.get(bot_id) else {
         return false;
     };
-    if world.get_event_room(attacker) != entry.room {
-        return true;
-    }
-    if !fighting_phase(world) {
-        return true;
-    }
-    if !entry.kind.is_ffa() {
-        let nation = world.get_character_info(attacker).map(|c| c.nation).unwrap_or(0);
-        if nation == entry.nation {
-            return true;
+    let reason = if world.get_event_room(attacker) != entry.room {
+        Some("other room")
+    } else if !fighting_phase(world) {
+        Some("combat not open")
+    } else if !entry.kind.is_ffa()
+        && world.get_character_info(attacker).map(|c| c.nation).unwrap_or(0) == entry.nation
+    {
+        Some("same nation")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        // Diagnosable in the release log (warn level): the owner's live test "enemy bots cannot be
+        // attacked" leaves no trace otherwise. At most one line per attacker per 5 s.
+        let now = bot_ai::tick_ms();
+        let mut log = DENY_LOG.get_or_init(|| Mutex::new(HashMap::new())).lock();
+        if log.len() > 512 {
+            log.clear();
         }
+        let due = log.get(&attacker).is_none_or(|t| now.saturating_sub(*t) >= 5_000);
+        if due {
+            log.insert(attacker, now);
+            let (atk_room, atk_nation) = (
+                world.get_event_room(attacker),
+                world.get_character_info(attacker).map(|c| c.nation).unwrap_or(0),
+            );
+            warn!(
+                attacker,
+                bot_id,
+                reason,
+                kind = entry.kind.key(),
+                bot_room = entry.room,
+                bot_nation = entry.nation,
+                atk_room,
+                atk_nation,
+                phase = ?crate::systems::event_system::current_phase(&world.event_room_manager),
+                attackable = world.event_room_manager.read_temple_event(|s| s.is_attackable),
+                "event bot attack denied"
+            );
+        }
+        return true;
     }
     false
 }
+
+static DENY_LOG: std::sync::OnceLock<Mutex<HashMap<SessionId, u64>>> = std::sync::OnceLock::new();
 
 /// The temple event is past sign-up and combat is currently open.
 fn fighting_phase(world: &WorldState) -> bool {
@@ -874,11 +892,8 @@ pub fn handle_bot_death(world: &WorldState, bot_id: BotId, now_ms: u64) -> bool 
     if entry.kind == EventBotKind::Bdw {
         bdw_ai::on_bot_death(world, &entry, bot_id);
     }
-    world.event_bots.update(bot_id, |e| {
-        e.respawn_at_ms = now_ms.saturating_add(RESPAWN_MS);
-        e.target = None;
-        e.path = None;
-    });
+    world.event_bots.update(bot_id, |e| e.respawn_at_ms = now_ms.saturating_add(RESPAWN_MS));
+    crate::systems::bot_brain::forget(bot_id);
     let mut dead = Packet::new(Opcode::WizDead as u8);
     dead.write_u32(bot_id);
     room_broadcast(world, bot.zone_id, bot.region_x, bot.region_z, entry.room, dead);
@@ -947,11 +962,12 @@ pub fn start_driver_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()> 
     })
 }
 
+/// A unit the bot fights: id (session band for players, bot id for bots) and position.
 #[derive(Debug, Clone, Copy)]
-struct Target {
-    id: u32,
-    x: f32,
-    z: f32,
+pub(crate) struct Target {
+    pub id: u32,
+    pub x: f32,
+    pub z: f32,
 }
 
 /// One driver pass over all registered event bots.
@@ -968,6 +984,9 @@ pub fn tick(world: &WorldState, now_ms: u64) {
     }
 }
 
+/// One bot: respawn bookkeeping, then the shared bot brain with the event objective
+/// (`bot_brain::tick_event`: threat, targeting, kite / retreat / heal, formation,
+/// consumables; BDW altar / Chaos hunt / Juraid lane as the objective layer).
 fn tick_bot(world: &WorldState, id: BotId, now_ms: u64, fighting: bool) {
     let reg = &world.event_bots;
     let Some(entry) = reg.get(id) else { return };
@@ -989,53 +1008,11 @@ fn tick_bot(world: &WorldState, id: BotId, now_ms: u64, fighting: bool) {
     if !fighting || !room_open(world, &entry) {
         return;
     }
-    // Virtual potions / scrolls (shared bot brain; never blocks movement).
-    crate::systems::bot_brain::tick_consumables_for(world, &bot, now_ms);
-    let bot = world.get_bot(id).unwrap_or(bot);
+    // Juraid bots join the party of a real player of their nation (assist, never follow).
     if entry.kind == EventBotKind::Juraid {
-        // PvE lane runner / party follower; never fights players
-        crate::systems::event_bots_juraid::tick_bot(world, &entry, &bot, now_ms);
-        return;
+        crate::systems::event_bots_juraid::party_tick(world, &entry, &bot, now_ms);
     }
-
-    // BDW: altar objective / party following (returns true when it drove the bot this tick)
-    if entry.kind == EventBotKind::Bdw && bdw_ai::drive(world, &entry, &bot, now_ms) {
-        return;
-    }
-
-    // keep the current target while it stays valid, rescan now and then
-    let mut target = entry.target.and_then(|t| resolve_target(world, &entry, &bot, t));
-    if target.is_none() || now_ms >= entry.next_scan_ms {
-        let best = find_target(world, &entry, &bot);
-        let changed = best.map(|t| t.id) != entry.target;
-        target = best;
-        reg.update(id, |e| {
-            e.next_scan_ms = now_ms + RESCAN_MS;
-            if changed {
-                e.target = best.map(|t| t.id);
-                e.path = None;
-            }
-        });
-    }
-    let Some(target) = target else { return };
-    engage(world, &entry, &bot, target, now_ms);
-}
-
-/// Attack `target` when in range (respecting the cooldown), walk toward it otherwise.
-fn engage(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, now_ms: u64) {
-    let range = attack_range(bot);
-    let dx = target.x - bot.x;
-    let dz = target.z - bot.z;
-    let dist = (dx * dx + dz * dz).sqrt();
-    if dist <= range {
-        // Human-like reaction delay before the first hit on a new target (bot brain).
-        if now_ms >= entry.next_attack_ms && crate::systems::bot_brain::reaction_ready(bot.id, target.id, now_ms) {
-            world.event_bots.update(bot.id, |e| e.next_attack_ms = now_ms + attack_cooldown(bot));
-            attack(world, entry, bot, target, now_ms);
-        }
-        return;
-    }
-    walk_toward(world, entry, bot, target, now_ms);
+    crate::systems::bot_brain::tick_event(world, &entry, &bot, now_ms);
 }
 
 pub(crate) fn attack_range(bot: &BotInstance) -> f32 {
@@ -1071,12 +1048,12 @@ fn room_open(world: &WorldState, entry: &BotEntry) -> bool {
         .is_some_and(|r| !r.finish_packet_sent && !r.finished)
 }
 
-fn hostile(kind: EventBotKind, a: u8, b: u8) -> bool {
+pub(crate) fn hostile(kind: EventBotKind, a: u8, b: u8) -> bool {
     kind.is_ffa() || a != b
 }
 
 /// Is `id` still a valid enemy of `entry`'s bot? Returns its current position when it is.
-fn resolve_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance, id: u32) -> Option<Target> {
+pub(crate) fn resolve_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance, id: u32) -> Option<Target> {
     if id >= BOT_ID_BASE {
         let other_entry = world.event_bots.get(id)?;
         if other_entry.room != entry.room || other_entry.kind != entry.kind {
@@ -1097,7 +1074,7 @@ fn resolve_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance, id: u
     Some(Target { id, x: pos.x, z: pos.z })
 }
 
-fn human_attackable(
+pub(crate) fn human_attackable(
     world: &WorldState,
     entry: &BotEntry,
     sid: SessionId,
@@ -1122,8 +1099,9 @@ fn human_attackable(
 }
 
 /// Best enemy of the bot inside its room (humans and enemy bots), scored like
-/// a player would (`bot_brain::target_score_basic`: hurt / priest / close first).
-fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Option<Target> {
+/// a player would (`bot_brain::target_score_basic`). Diagnostics / tests; the
+/// live decision is the brain's `pick_target`.
+pub(crate) fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Option<Target> {
     let mut best: Option<(f32, Target)> = None;
     let mut consider = |t: Target, hp: i16, max_hp: i16, class: u16| {
         let d = ((t.x - bot.x).powi(2) + (t.z - bot.z).powi(2)).sqrt();
@@ -1152,123 +1130,73 @@ fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Optio
     best.map(|(_, t)| t)
 }
 
-/// One walking step toward the target, broadcast to the bot's room.
-fn walk_toward(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, _now_ms: u64) {
-    walk_toward_step(world, entry, bot, target, STEP_PER_TICK);
+// ── Movement / attack hooks used by the brain ───────────────────────────
+
+/// Straight step for zones without map data (unit tests, maps without an SMD).
+/// Never used when a map is loaded: there the common A* stepping decides.
+pub(crate) fn no_map_step(world: &WorldState, bot: &BotInstance, gx: f32, gz: f32) -> Option<(f32, f32, f32)> {
+    if world.get_zone(bot.zone_id).is_some_and(|z| z.map_data.is_some()) {
+        return None;
+    }
+    let dx = gx - bot.x;
+    let dz = gz - bot.z;
+    let dist = (dx * dx + dz * dz).sqrt();
+    if !dist.is_finite() || dist < 0.001 {
+        return None;
+    }
+    let t = (STEP_PER_TICK / dist).min(1.0);
+    Some((bot.x + dx * t, bot.y, bot.z + dz * t))
 }
 
-/// [`walk_toward`] with an explicit step length (the BDW altar carrier is slowed down).
-fn walk_toward_step(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, step: f32) {
-    let mut path = entry.path.clone();
-    let Some((nx, ny, nz)) = step_toward(world, bot, (target.x, target.z), step, &mut path) else {
-        // unreachable: forget the target so the next scan can pick another one
-        world.event_bots.update(bot.id, |e| {
-            e.target = None;
-            e.path = None;
-            e.next_scan_ms = 0;
-        });
-        return;
-    };
-    let echo = if bot.target_id == target.id as i16 { 3 } else { 1 };
-    room_broadcast(
-        world,
-        bot.zone_id,
-        bot.region_x,
-        bot.region_z,
-        entry.room,
-        move_packet(bot, nx, ny, nz, echo),
-    );
+/// Broadcast one committed step of an event bot to its room only: WIZ_MOVE, plus the
+/// INOUT pair when the step crosses a region (WIZ_MOVE alone does not make an unknown
+/// bot appear). The caller writes the new position into the bot afterwards.
+pub(crate) fn brain_move(world: &WorldState, entry: &BotEntry, bot: &BotInstance, nx: f32, ny: f32, nz: f32, echo: u8) {
+    room_broadcast(world, bot.zone_id, bot.region_x, bot.region_z, entry.room, move_packet(bot, nx, ny, nz, echo));
     let (rx, rz) = (calc_region(nx), calc_region(nz));
-    let crossed = rx != bot.region_x || rz != bot.region_z;
-    if crossed {
-        // players around the old region lose the bot, players around the new one get it
-        // (WIZ_MOVE alone does not make an unknown bot appear)
+    if rx != bot.region_x || rz != bot.region_z {
         let mut out = Packet::new(Opcode::WizUserInout as u8);
         out.write_u8(2);
         out.write_u8(0);
         out.write_u32(bot.id);
         room_broadcast(world, bot.zone_id, bot.region_x, bot.region_z, entry.room, out);
+        let mut moved = bot.clone();
+        moved.x = nx;
+        moved.y = ny;
+        moved.z = nz;
+        moved.region_x = rx;
+        moved.region_z = rz;
+        let pkt = bot_ai::build_bot_inout_packet(&moved, world, 1);
+        room_broadcast(world, bot.zone_id, rx, rz, entry.room, pkt);
     }
-    world.update_bot(bot.id, |b| {
-        b.x = nx;
-        b.y = ny;
-        b.z = nz;
-        b.region_x = rx;
-        b.region_z = rz;
-        b.target_id = target.id as i16;
-    });
-    if crossed {
-        if let Some(b) = world.get_bot(bot.id) {
-            let pkt = bot_ai::build_bot_inout_packet(&b, world, 1);
-            room_broadcast(world, b.zone_id, rx, rz, entry.room, pkt);
-        }
-    }
-    world.event_bots.update(bot.id, |e| e.path = path);
 }
 
-/// Next position of a walk from the bot toward `goal`. Uses the map's walkability grid with A*
-/// detours when the map is loaded, plain straight steps otherwise (tests / maps without SMD).
-pub(crate) fn step_toward(
+/// The brain decided to hit `target_id` (already in range, reaction delay over):
+/// apply the event attack mechanics with the class cooldown. Returns `true` when a
+/// swing happened.
+pub(crate) fn brain_attack(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target_id: u32, tx: f32, tz: f32, now_ms: u64) -> bool {
+    if now_ms < entry.next_attack_ms {
+        return false;
+    }
+    world.event_bots.update(bot.id, |e| e.next_attack_ms = now_ms + attack_cooldown(bot));
+    attack(world, entry, bot, Target { id: target_id, x: tx, z: tz }, now_ms);
+    true
+}
+
+/// BDW objective of the brain (altar / carrier / intercept / roam), see `bdw_ai`.
+pub(crate) fn bdw_objective(
     world: &WorldState,
+    entry: &BotEntry,
     bot: &BotInstance,
-    goal: (f32, f32),
-    step: f32,
-    path: &mut Option<PathState>,
-) -> Option<(f32, f32, f32)> {
-    let dx = goal.0 - bot.x;
-    let dz = goal.1 - bot.z;
-    let dist = (dx * dx + dz * dz).sqrt();
-    if !dist.is_finite() {
-        return None;
-    }
-    if dist < 0.001 {
-        return Some((bot.x, bot.y, bot.z));
-    }
-    let t = (step / dist).min(1.0);
-    let (sx, sz) = (bot.x + dx * t, bot.z + dz * t);
+    st: &mut crate::systems::bot_brain::BrainState,
+    now_ms: u64,
+) -> crate::systems::bot_brain::Drive {
+    bdw_ai::objective(world, entry, bot, st, now_ms)
+}
 
-    let zone = world.get_zone(bot.zone_id);
-    let Some(map) = zone.as_ref().and_then(|z| z.map_data.as_ref()) else {
-        return Some((sx, bot.y, sz));
-    };
-    let height = |x: f32, z: f32| map.terrain_height(x, z).unwrap_or(bot.y);
-
-    use crate::systems::pathfind::{bot_segment_walkable, find_bot_path, nearest_bot_point, step_move};
-    // same rule as bot_ai: the whole way to the goal and the next step must both be clear
-    if bot_segment_walkable(map, bot.x, bot.z, goal.0, goal.1)
-        && bot_segment_walkable(map, bot.x, bot.z, sx, sz)
-    {
-        *path = None;
-        return Some((sx, height(sx, sz), sz));
-    }
-    let (gx, gz) = nearest_bot_point(map, goal.0, goal.1, 8)?;
-    let unit = map.unit_dist().max(1.0);
-    let refresh = path.as_ref().is_none_or(|p| {
-        let (ddx, ddz) = (p.goal.0 - gx, p.goal.1 - gz);
-        ddx * ddx + ddz * ddz > 64.0
-            || p.index >= p.waypoints.len()
-            // no longer near the route (relocated / a step was refused): plan again
-            || p.waypoints.get(p.index).is_some_and(|&(wx, wz)| {
-                let (rx, rz) = (wx - bot.x, wz - bot.z);
-                rx * rx + rz * rz > (2.5 * unit + step).powi(2)
-            })
-    });
-    if refresh {
-        let result = find_bot_path(map, bot.x, bot.z, gx, gz);
-        if !result.found || result.waypoints.is_empty() {
-            *path = None;
-            return None;
-        }
-        *path = Some(PathState { goal: (gx, gz), waypoints: result.waypoints, index: 0 });
-    }
-    let p = path.as_mut()?;
-    let (nx, nz, idx) = step_move(bot.x, bot.z, &p.waypoints, p.index, step);
-    if !bot_segment_walkable(map, bot.x, bot.z, nx, nz) {
-        *path = None;
-        return None;
-    }
-    p.index = idx;
-    Some((nx, height(nx, nz), nz))
+/// BDW target priorities for the brain's scoring (the enemy altar carrier).
+pub(crate) fn bdw_target_bonus(world: &WorldState, entry: &BotEntry, bot: &BotInstance, u: &crate::systems::bot_brain::Unit) -> f32 {
+    bdw_ai::target_bonus(world, entry, bot, u)
 }
 
 /// Damage a bot of this class deals to a target with `ac` armour class.
@@ -1410,10 +1338,9 @@ fn respawn_bot(world: &WorldState, id: BotId, entry: &BotEntry) {
     });
     world.event_bots.update(id, |e| {
         e.respawn_at_ms = 0;
-        e.target = None;
-        e.path = None;
-        e.next_scan_ms = 0;
+        e.next_attack_ms = 0;
     });
+    crate::systems::bot_brain::on_bot_respawn(id, bot_ai::tick_ms());
     if let Some(b) = world.get_bot(id) {
         let pkt = bot_ai::build_bot_inout_packet(&b, world, 1);
         room_broadcast(world, b.zone_id, rx, rz, entry.room, pkt);
@@ -1594,23 +1521,104 @@ mod tests {
         assert_eq!(reg.event_room_of(20_002), 0);
     }
 
-    /// Regression: with the terrain mask alone the Karus spawn room of the BDW arena was a closed
-    /// 87 cell pocket, so bots never left it ("BDW bots do not move"). Event-grid navigation fixes it.
-    #[test]
-    fn bdw_real_map_has_a_bot_route_spawn_to_altar() {
-        use crate::systems::pathfind::{find_bot_path, nearest_bot_point};
+    // ── real map navigation (client nav mask + event grid, exactly as the server loads them) ──
+
+    /// Load a zone the way `load_zones` does: server SMD + `Map/nav/<zone>.nav` + the event
+    /// arena union. `None` when the files are not checked out (the tests then skip).
+    fn real_event_map(zone: u16, smd: &str) -> Option<crate::zone::MapData> {
+        use ko_protocol::nav::NavMask;
         use ko_protocol::smd::SmdFile;
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/In_dungeon04.smd");
-        if !path.exists() {
-            eprintln!("skipping: BDW map not found");
-            return;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map");
+        let smd_path = root.join(smd);
+        let nav_path = root.join("nav").join(format!("{zone}.nav"));
+        if !smd_path.exists() || !nav_path.exists() {
+            eprintln!("skipping: {} / {} not found", smd_path.display(), nav_path.display());
+            return None;
         }
-        let map = crate::zone::MapData::new(SmdFile::load(&path).expect("load SMD")).with_event_grid_navigation();
-        for (name, sx, sz) in [("karus", 51.0, 58.0), ("elmo", 201.0, 207.0)] {
-            let s = nearest_bot_point(&map, sx, sz, 8).expect("spawn walkable");
-            let g = nearest_bot_point(&map, 127.0, 131.0, 8).expect("altar walkable");
-            let r = find_bot_path(&map, s.0, s.1, g.0, g.1);
-            assert!(r.found, "{name} route to altar");
+        let map = crate::zone::MapData::new(SmdFile::load(&smd_path).expect("load SMD")).with_event_navigation(zone);
+        map.set_nav(Some(NavMask::load(&nav_path).expect("load nav")));
+        Some(map)
+    }
+
+    fn assert_route(map: &crate::zone::MapData, what: &str, from: (f32, f32), to: (f32, f32)) {
+        use crate::systems::pathfind::{find_bot_path, nearest_bot_point};
+        let s = nearest_bot_point(map, from.0, from.1, 8).unwrap_or_else(|| panic!("{what}: start {from:?} not walkable"));
+        let g = nearest_bot_point(map, to.0, to.1, 8).unwrap_or_else(|| panic!("{what}: goal {to:?} not walkable"));
+        let r = find_bot_path(map, s.0, s.1, g.0, g.1);
+        assert!(r.found, "{what}: no bot route {from:?} -> {to:?} (snapped {s:?} -> {g:?})");
+    }
+
+    /// BDW (84): both spawns reach the altar, the altar reaches both delivery zones. The client
+    /// mask alone leaves every spawn room a closed pocket (the doors are dynamic objects); the
+    /// union with the event grid is what the live server navigates on.
+    #[test]
+    fn bdw_real_map_has_bot_routes_spawn_altar_and_bases() {
+        let Some(map) = real_event_map(84, "In_dungeon04.smd") else { return };
+        let altar = (127.0, 131.0);
+        assert_route(&map, "karus spawn -> altar", (51.0, 58.0), altar);
+        assert_route(&map, "elmo spawn -> altar", (201.0, 207.0), altar);
+        assert_route(&map, "altar -> karus base", altar, bdw_ai::base_centre(1));
+        assert_route(&map, "altar -> elmo base", altar, bdw_ai::base_centre(2));
+        assert_route(&map, "karus spawn -> elmo base", (51.0, 58.0), bdw_ai::base_centre(2));
+    }
+
+    /// Chaos (85): the whole arena is one connected hunting ground from the start position.
+    #[test]
+    fn chaos_real_map_arena_is_connected_from_the_start_position() {
+        let Some(map) = real_event_map(85, "sky_war_2009.smd") else { return };
+        let start = (126.0, 130.0);
+        for corner in [(40.0, 40.0), (216.0, 40.0), (40.0, 216.0), (216.0, 216.0), (126.0, 60.0), (126.0, 200.0)] {
+            assert_route(&map, "chaos start -> arena point", start, corner);
+        }
+    }
+
+    /// Juraid (87): every lane leg (spawn -> stage 1 -> 2 -> 3 -> Deva room) is a bot route for
+    /// both nations, so the lane runners can clear the stages themselves.
+    #[test]
+    fn juraid_real_map_lanes_and_deva_room_are_reachable_from_both_spawns() {
+        use crate::systems::event_bots_juraid::{chain, ELMORAD_SPAWN, KARUS_SPAWN};
+        let Some(map) = real_event_map(87, "In_Dungeon05.smd") else { return };
+        for (nation, spawn) in [(1u8, KARUS_SPAWN), (2u8, ELMORAD_SPAWN)] {
+            let mut from = spawn;
+            for (i, wp) in chain(nation).iter().enumerate() {
+                assert_route(&map, &format!("nation {nation} leg {i}"), from, *wp);
+                from = *wp;
+            }
+        }
+    }
+
+    /// Diagnostic: `cargo test -p ko-game --lib -- dump_event_map_grids --ignored --nocapture`
+    /// prints the bot walkability of the Chaos and Juraid arenas as the server sees it.
+    #[test]
+    #[ignore]
+    fn dump_event_map_grids() {
+        for (zone, smd, step, marks) in [
+            (85u16, "sky_war_2009.smd", 1usize, vec![(126.0f32, 130.0f32, 'S')]),
+            (87, "In_Dungeon05.smd", 2, vec![(224.0, 272.0, 'K'), (799.0, 748.0, 'E'), (224.0, 558.0, '1'), (224.0, 848.0, '2'), (511.0, 848.0, '3'), (508.0, 513.0, 'D'), (799.0, 459.0, '1'), (799.0, 171.0, '2'), (511.0, 172.0, '3')]),
+        ] {
+            let Some(map) = real_event_map(zone, smd) else { continue };
+            let n = map.bot_grid_size();
+            let unit = map.unit_dist();
+            let ev = map.grid_size();
+            eprintln!("zone {zone}: bot grid {n} smd grid {ev} unit {unit} width {}", map.map_width());
+            let nz = map.bot_grid_size();
+            let mut z = nz - 1;
+            while z >= 0 {
+                let mut row = String::new();
+                let mut x = 0;
+                while x < nz {
+                    let mut c = if map.is_bot_movable_grid(x, z) { '.' } else { '#' };
+                    for (mx, mz, ch) in &marks {
+                        if (((*mx / unit) as i32) / step as i32) == x / step as i32 && (((*mz / unit) as i32) / step as i32) == z / step as i32 {
+                            c = *ch;
+                        }
+                    }
+                    row.push(c);
+                    x += step as i32;
+                }
+                eprintln!("{:5} {}", z as f32 * unit, row);
+                z -= step as i32;
+            }
         }
     }
 
@@ -1902,17 +1910,15 @@ mod tests {
         tick_bot(&world, bot_id, 10_000, true);
         let hp_after = world.get_character_info(1).unwrap().hp;
         assert!(hp_after <= hp_before);
-        // a bot far away walks instead of attacking
-        world.update_position(1, 85, bot.x + 80.0, 0.0, bot.z);
-        world.event_bots.update(bot_id, |e| {
-            e.target = None;
-            e.next_scan_ms = 0;
-        });
+        // a human 20 m away (inside the brain's search range) is walked to, not hit
+        world.update_position(1, 85, bot.x + 20.0, 0.0, bot.z);
+        crate::systems::bot_brain::forget(bot_id);
         let before = world.get_bot(bot_id).unwrap();
         tick_bot(&world, bot_id, 20_000, true);
         let after = world.get_bot(bot_id).unwrap();
         let moved = ((after.x - before.x).powi(2) + (after.z - before.z).powi(2)).sqrt();
         assert!(moved > 0.5 && moved <= STEP_PER_TICK + 0.01, "moved {moved}");
+        assert!(after.x > before.x, "walks toward the human");
     }
 
     #[test]
@@ -2013,6 +2019,66 @@ mod tests {
         let pos = world.get_position(1).unwrap();
         crate::handler::attack::handle_npc_attack(Arc::clone(&world), 1, pos, friend, 1, 0).await;
         assert_eq!(world.get_bot(friend).unwrap().hp, friend_bot.hp, "same-nation bot stays unhurt");
+    }
+
+    /// Chaos is free for all: a player hurts a bot of his OWN nation through the real R-attack
+    /// handler (the room / phase gate must not treat Chaos as nation versus nation).
+    #[tokio::test]
+    async fn chaos_players_hurt_same_nation_bots_through_the_attack_handler() {
+        let world = Arc::new(world_with_zone_start(85));
+        fill_chaos_with_one_human_and_bots(&world, 4);
+        phase_active(&world);
+        world.update_character_stats(1, |c| {
+            c.authority = 0;
+            c.class = 101;
+        });
+        world.insert_coefficient(ko_db::models::CoefficientRow {
+            s_class: 101,
+            short_sword: 0.001,
+            jamadar: 0.001,
+            sword: 0.002,
+            axe: 0.002,
+            club: 0.002,
+            spear: 0.002,
+            pole: 0.001,
+            staff: 0.001,
+            bow: 0.001,
+            hp: 1.0,
+            mp: 1.0,
+            sp: 1.0,
+            ac: 0.05,
+            hitrate: 0.001,
+            evasionrate: 0.001,
+        });
+        let ids = world.event_bots.ids();
+        let same = ids.iter().copied().find(|id| world.get_bot(*id).unwrap().nation == 1).expect("a nation-1 bot");
+        assert!(!deny_player_attack(&world, 1, same), "FFA: same nation is a valid target");
+        let bot = world.get_bot(same).unwrap();
+        world.update_position(1, 85, bot.x + 2.0, 0.0, bot.z);
+        let pos = world.get_position(1).unwrap();
+        crate::handler::attack::handle_npc_attack(Arc::clone(&world), 1, pos, same, 1, 0).await;
+        assert!(world.get_bot(same).unwrap().hp < bot.hp, "same-nation Chaos bot must take damage");
+    }
+
+    /// The deny gate reports the exact reason (room / phase / nation), so a live "cannot attack"
+    /// report is diagnosable from the warn log.
+    #[test]
+    fn deny_gate_distinguishes_room_phase_and_nation() {
+        let world = world_with_zone_start(84);
+        add_human(&world, 1, 1, 84, 1, "Human");
+        open_room_with_humans(&world, TempleEventType::BorderDefenceWar, &[(1, 1, "Human")]);
+        let mut cfg = on(EventBotKind::Bdw);
+        cfg.bots_per_team = 1;
+        world.event_bots.set_config(EventBotKind::Bdw, cfg);
+        fill_temple_rooms(&world, TempleEventType::BorderDefenceWar);
+        let enemy = world.event_bots.ids().into_iter().find(|id| world.get_bot(*id).unwrap().nation == 2).unwrap();
+        // registration phase: combat not open
+        assert!(deny_player_attack(&world, 1, enemy));
+        phase_active(&world);
+        assert!(!deny_player_attack(&world, 1, enemy));
+        // a player that never got his room (event_room 0) cannot hit anybody
+        world.update_session(1, |h| h.event_room = 0);
+        assert!(deny_player_attack(&world, 1, enemy));
     }
 
     #[test]
@@ -2121,11 +2187,13 @@ mod tests {
             b.z = 131.0;
         });
         let entry = world.event_bots.get(bot_id).unwrap();
+        let mut st = crate::systems::bot_brain::state_of(bot_id, 10_000);
+        st.role = crate::systems::bot_brain::Role::Hotspot; // an altar taker
         let mut now = 10_000u64;
         for _ in 0..40 {
             let bot = world.get_bot(bot_id).unwrap();
             let entry = world.event_bots.get(bot_id).unwrap();
-            assert!(bdw_ai::drive(&world, &entry, &bot, now));
+            assert_eq!(bdw_ai::objective(&world, &entry, &bot, &mut st, now), crate::systems::bot_brain::Drive::Handled);
             now += 2_000;
             if world.get_npc_hp(altar) == Some(0) {
                 break;
@@ -2146,7 +2214,7 @@ mod tests {
             b.z = hz;
         });
         let bot = world.get_bot(bot_id).unwrap();
-        assert!(bdw_ai::drive(&world, &entry, &bot, now));
+        assert_eq!(bdw_ai::objective(&world, &entry, &bot, &mut st, now), crate::systems::bot_brain::Drive::Handled);
         let room = world.event_room_manager.get_room(TempleEventType::BorderDefenceWar, 1).unwrap();
         assert!(room.karus_score >= 10, "delivery scored: {}", room.karus_score);
         assert!(crate::systems::bdw::find_flag_carrier(&room).is_none());

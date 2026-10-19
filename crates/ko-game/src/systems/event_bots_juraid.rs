@@ -12,10 +12,10 @@
 //! same sides, Karus bridge 1 at (224,671), El Morad bridge 1 at (800,349).)
 //!
 //! ## What the bots do
-//! * **Follow** - when a real player of the bot's nation is alive in the room the bot joins that
-//!   player's party and stays next to him, hitting the monsters around him.
-//! * **Lane runner** - when no real player of that nation is left the bots walk the lane
-//!   themselves. A stage is "cleared" when no stage monster (main or child) is alive within
+//! * **Party** - a bot joins the party of a real player of its nation (assist through the shared
+//!   bot brain), but it never follows the player: the lane is the objective.
+//! * **Lane runner** - the bots walk the lane themselves through the bot brain
+//!   (`bot_brain::tick_event` -> [`objective`]). A stage is "cleared" when no stage monster (main or child) is alive within
 //!   [`STAGE_RADIUS`] of its waypoint; only then does the team move on to the next waypoint. The
 //!   last leg ends in the Deva room.
 //! * **Mirror fill** - both teams end up the same size: each nation is topped up by the usual
@@ -41,8 +41,7 @@ use rand::Rng;
 
 use crate::systems::bot_ai;
 use crate::systems::event_bots::{
-    attack_cooldown, attack_range, is_event_bot_sid, room_broadcast, step_toward, move_packet,
-    BotEntry, EventBotConfig, EventBotKind, STEP_PER_TICK,
+    attack_cooldown, attack_range, is_event_bot_sid, BotEntry, EventBotConfig, EventBotKind,
 };
 use crate::systems::event_room::{TempleEventType, MAX_ROOM_USERS_PER_NATION};
 use crate::systems::juraid::{
@@ -50,8 +49,7 @@ use crate::systems::juraid::{
 };
 use crate::world::types::USER_DEAD;
 use crate::world::{BotId, BotInstance, WorldState};
-use crate::zone::{calc_region, SessionId};
-use ko_protocol::{Opcode, Packet};
+use crate::zone::SessionId;
 
 // ── Geometry ─────────────────────────────────────────────────────────────
 
@@ -68,10 +66,6 @@ pub const DEVA_STAGE: u8 = 3;
 pub const STAGE_RADIUS: f32 = 60.0;
 /// Monsters this close to the Deva room centre are part of the last fight.
 const DEVA_RADIUS: f32 = 45.0;
-/// A follower helps with monsters up to this far from the player it follows.
-const ASSIST_RADIUS: f32 = 40.0;
-/// A follower stays this close to its player.
-const FOLLOW_DISTANCE: f32 = 6.0;
 /// Start picking monsters (instead of just walking) this far before a stage waypoint.
 const ENGAGE_MARGIN: f32 = 30.0;
 /// Bot damage per swing = class damage x this (stands in for the skill rotation).
@@ -193,25 +187,9 @@ fn engage(pos: (f32, f32), range: f32, mob: Mob) -> Plan {
     }
 }
 
-/// Decide the action of one bot.
-/// * `follow`: position of the nearest living real player of the bot's nation, if any.
+/// Decide the action of one bot on its nation's lane.
 /// * `stage`: the nation team's current waypoint index.
-pub fn plan_action(pos: (f32, f32), range: f32, nation: u8, stage: u8, mobs: &[Mob], follow: Option<(f32, f32)>) -> Plan {
-    if let Some(leader) = follow {
-        let helped = nearest(
-            pos,
-            mobs.iter()
-                .filter(|m| (m.is_stage_mob() || m.is_deva()) && dist2((m.x, m.z), leader) <= ASSIST_RADIUS * ASSIST_RADIUS),
-        );
-        if let Some(m) = helped {
-            return engage(pos, range, m);
-        }
-        return if dist2(pos, leader) > FOLLOW_DISTANCE * FOLLOW_DISTANCE {
-            Plan::Walk(leader)
-        } else {
-            Plan::Idle
-        };
-    }
+pub fn plan_action(pos: (f32, f32), range: f32, nation: u8, stage: u8, mobs: &[Mob]) -> Plan {
     let stage = stage.min(DEVA_STAGE);
     let point = chain(nation)[stage as usize];
     if stage == DEVA_STAGE {
@@ -222,6 +200,7 @@ pub fn plan_action(pos: (f32, f32), range: f32, nation: u8, stage: u8, mobs: &[M
         );
         return match target {
             Some(m) => engage(pos, range, m),
+            None if dist2(pos, point) <= 36.0 => Plan::Idle,
             None => Plan::Walk(point),
         };
     }
@@ -237,7 +216,11 @@ pub fn plan_action(pos: (f32, f32), range: f32, nation: u8, stage: u8, mobs: &[M
             return engage(pos, range, m);
         }
     }
-    Plan::Walk(point)
+    if dist2(pos, point) <= 36.0 {
+        Plan::Idle
+    } else {
+        Plan::Walk(point)
+    }
 }
 
 /// Whether the bots may deliver the killing blow to `mob`. The Deva Bird (the chest holder) is
@@ -265,20 +248,6 @@ pub struct RoomView {
     pub humans: Vec<Human>,
     /// Real players that belong to the room (alive or not, not logged out).
     pub human_total: usize,
-}
-
-impl RoomView {
-    fn nearest_human(&self, nation: u8, pos: (f32, f32)) -> Option<Human> {
-        self.humans
-            .iter()
-            .filter(|h| h.nation == nation)
-            .min_by(|a, b| {
-                dist2(pos, (a.x, a.z))
-                    .partial_cmp(&dist2(pos, (b.x, b.z)))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .copied()
-    }
 }
 
 #[derive(Default)]
@@ -394,19 +363,56 @@ fn room_view(world: &WorldState, room: u16, now_ms: u64) -> Arc<RoomView> {
     view
 }
 
-// ── Driver ───────────────────────────────────────────────────────────────
+// ── Brain objective ──────────────────────────────────────────────────────
 
-/// One tick of one alive Juraid bot (called by `event_bots::tick_bot` once the room is fighting).
-pub fn tick_bot(world: &WorldState, entry: &BotEntry, bot: &BotInstance, now_ms: u64) {
+/// Radius (m) around a closed bridge gate NPC that bots treat as a wall.
+pub const BRIDGE_BLOCK_RADIUS: f32 = 7.0;
+
+/// Closed bridge gates of the bot's nation in its room, as dynamic obstacles
+/// `(x, z, radius)` for the brain's path queries: a bot never walks through a
+/// bridge the players cannot pass yet.
+pub fn closed_bridge_blocks(world: &WorldState, entry: &BotEntry) -> Vec<(f32, f32, f32)> {
+    let Some(state) = world.get_juraid_bridge_state(entry.room as u8) else {
+        return Vec::new();
+    };
+    let (open, npcs) = if entry.nation == 1 {
+        (&state.karus_bridges, &state.karus_bridge_npcs)
+    } else {
+        (&state.elmorad_bridges, &state.elmorad_bridge_npcs)
+    };
+    open.iter()
+        .zip(npcs.iter())
+        .filter(|(is_open, nid)| !**is_open && **nid != 0)
+        .filter_map(|(_, nid)| world.get_npc_instance(*nid).map(|n| (n.x, n.z, BRIDGE_BLOCK_RADIUS)))
+        .collect()
+}
+
+/// Party bookkeeping (every [`PARTY_CHECK_MS`]): join the party of a real player of the bot's
+/// nation. The bot assists that party through the brain but never follows the player.
+pub fn party_tick(world: &WorldState, entry: &BotEntry, bot: &BotInstance, now_ms: u64) {
     let rt = &world.event_bots.juraid;
-    let view = room_view(world, entry.room, now_ms);
     if rt.party_due(entry.room, bot.id, now_ms) {
+        let view = room_view(world, entry.room, now_ms);
         join_party(world, bot, entry.nation, &view);
     }
+}
+
+/// The Juraid objective of the brain: lane chain, stage clearing, Deva. Bots walk the lane
+/// themselves (the common pathing with the closed bridges as obstacles) and hit the stage
+/// monsters; the brain still handles HP (potions, heal-up), spacing and consumables.
+pub fn objective(
+    world: &WorldState,
+    entry: &BotEntry,
+    bot: &BotInstance,
+    st: &mut crate::systems::bot_brain::BrainState,
+    now_ms: u64,
+) -> crate::systems::bot_brain::Drive {
+    use crate::systems::bot_brain::Drive;
+    let rt = &world.event_bots.juraid;
+    let view = room_view(world, entry.room, now_ms);
     let pos = (bot.x, bot.z);
-    let follow = view.nearest_human(entry.nation, pos).map(|h| (h.x, h.z));
     let stage = rt.team_stage(entry.room, entry.nation);
-    match plan_action(pos, attack_range(bot), entry.nation, stage, &view.mobs, follow) {
+    match plan_action(pos, attack_range(bot), entry.nation, stage, &view.mobs) {
         Plan::Attack(mob) => {
             if now_ms >= entry.next_attack_ms {
                 world
@@ -414,9 +420,14 @@ pub fn tick_bot(world: &WorldState, entry: &BotEntry, bot: &BotInstance, now_ms:
                     .update(bot.id, |e| e.next_attack_ms = now_ms + attack_cooldown(bot));
                 attack_mob(world, entry, bot, mob, view.human_total);
             }
+            Drive::Handled
         }
-        Plan::Walk(goal) => walk(world, entry, bot, goal),
-        Plan::Idle => {}
+        Plan::Walk(goal) => Drive::Goal(goal.0, goal.1),
+        Plan::Idle => {
+            // at the waypoint with nothing to hit: drift a little instead of standing
+            let point = chain(entry.nation)[stage.min(DEVA_STAGE) as usize];
+            crate::systems::bot_brain::wander_around(bot, st, point.0, point.1, 6.0, now_ms)
+        }
     }
 }
 
@@ -467,41 +478,6 @@ fn kill_mob(world: &WorldState, entry: &BotEntry, mob: &Mob) {
     );
     world.clear_npc_damage(mob.nid);
     world.kill_npc(mob.nid);
-}
-
-/// One walking step toward `goal`, broadcast to the bot's room (same movement rules as the other
-/// event bots: A* on the SMD walkability mask).
-fn walk(world: &WorldState, entry: &BotEntry, bot: &BotInstance, goal: (f32, f32)) {
-    let mut path = entry.path.clone();
-    let Some((nx, ny, nz)) = step_toward(world, bot, goal, STEP_PER_TICK, &mut path) else {
-        world.event_bots.update(bot.id, |e| e.path = None);
-        return;
-    };
-    room_broadcast(world, bot.zone_id, bot.region_x, bot.region_z, entry.room, move_packet(bot, nx, ny, nz, 1));
-    let (rx, rz) = (calc_region(nx), calc_region(nz));
-    let crossed = rx != bot.region_x || rz != bot.region_z;
-    if crossed {
-        let mut out = Packet::new(Opcode::WizUserInout as u8);
-        out.write_u8(2);
-        out.write_u8(0);
-        out.write_u32(bot.id);
-        room_broadcast(world, bot.zone_id, bot.region_x, bot.region_z, entry.room, out);
-    }
-    world.update_bot(bot.id, |b| {
-        b.x = nx;
-        b.y = ny;
-        b.z = nz;
-        b.region_x = rx;
-        b.region_z = rz;
-        b.target_id = -1;
-    });
-    if crossed {
-        if let Some(b) = world.get_bot(bot.id) {
-            let pkt = bot_ai::build_bot_inout_packet(&b, world, 1);
-            room_broadcast(world, b.zone_id, rx, rz, entry.room, pkt);
-        }
-    }
-    world.event_bots.update(bot.id, |e| e.path = path);
 }
 
 // ── Party ────────────────────────────────────────────────────────────────
@@ -651,32 +627,31 @@ mod tests {
         let range = 5.5;
         let stage_mob = mob(1, SUMMON_JURAID_MAIN, (ch[0].0 + 3.0, ch[0].1));
         // far away: walk to the waypoint
-        assert_eq!(plan_action(KARUS_SPAWN, range, 1, 0, &[stage_mob], None), Plan::Walk(ch[0]));
+        assert_eq!(plan_action(KARUS_SPAWN, range, 1, 0, &[stage_mob]), Plan::Walk(ch[0]));
         // arrived next to the monster: hit it
         let at = (ch[0].0 + 1.0, ch[0].1);
-        assert_eq!(plan_action(at, range, 1, 0, &[stage_mob], None), Plan::Attack(stage_mob));
+        assert_eq!(plan_action(at, range, 1, 0, &[stage_mob]), Plan::Attack(stage_mob));
         // near the waypoint but the monster is out of reach: close the distance
         let pos = (ch[0].0 - 20.0, ch[0].1);
-        assert_eq!(plan_action(pos, range, 1, 0, &[stage_mob], None), Plan::Walk((stage_mob.x, stage_mob.z)));
+        assert_eq!(plan_action(pos, range, 1, 0, &[stage_mob]), Plan::Walk((stage_mob.x, stage_mob.z)));
         // cleared and advanced: head for the second waypoint
-        assert_eq!(plan_action(at, range, 1, 1, &[], None), Plan::Walk(ch[1]));
+        assert_eq!(plan_action(at, range, 1, 1, &[]), Plan::Walk(ch[1]));
         // the last leg ends at the Deva bird
         let deva = mob(9, SUMMON_JURAID_DEVA, DEVA_ROOM);
-        assert_eq!(plan_action(KARUS_CHAIN[2], range, 1, DEVA_STAGE, &[deva], None), Plan::Walk((DEVA_ROOM.0, DEVA_ROOM.1)));
-        assert_eq!(plan_action((DEVA_ROOM.0 + 2.0, DEVA_ROOM.1), range, 1, DEVA_STAGE, &[deva], None), Plan::Attack(deva));
+        assert_eq!(plan_action(KARUS_CHAIN[2], range, 1, DEVA_STAGE, &[deva]), Plan::Walk((DEVA_ROOM.0, DEVA_ROOM.1)));
+        assert_eq!(plan_action((DEVA_ROOM.0 + 2.0, DEVA_ROOM.1), range, 1, DEVA_STAGE, &[deva]), Plan::Attack(deva));
     }
 
     #[test]
-    fn followers_stay_with_their_player_and_help_nearby() {
-        let leader = (300.0, 600.0);
-        let near = mob(1, SUMMON_JURAID_CHILD, (leader.0 + 10.0, leader.1));
-        let far = mob(2, SUMMON_JURAID_MAIN, (leader.0 + 200.0, leader.1));
-        // monster beside the player: engage it
-        assert_eq!(plan_action((leader.0 + 9.0, leader.1), 5.5, 2, 0, &[near, far], Some(leader)), Plan::Attack(near));
-        // nothing near the player: follow him, not the far monster or the lane
-        assert_eq!(plan_action((100.0, 600.0), 5.5, 2, 0, &[far], Some(leader)), Plan::Walk(leader));
-        // arrived: stand still
-        assert_eq!(plan_action((leader.0 + 2.0, leader.1), 5.5, 2, 0, &[far], Some(leader)), Plan::Idle);
+    fn lane_runners_never_follow_a_player_and_idle_only_at_the_waypoint() {
+        let ch = chain(2);
+        // nothing left at the waypoint and standing on it: idle (the brain drifts around it)
+        assert_eq!(plan_action((ch[0].0 + 1.0, ch[0].1 + 1.0), 5.5, 2, 0, &[]), Plan::Idle);
+        // away from it: walk back onto the lane
+        assert_eq!(plan_action((ch[0].0 + 40.0, ch[0].1), 5.5, 2, 0, &[]), Plan::Walk(ch[0]));
+        // a monster 200 m off the lane is ignored
+        let far = mob(2, SUMMON_JURAID_MAIN, (ch[0].0 + 200.0, ch[0].1));
+        assert_eq!(plan_action((ch[0].0 + 40.0, ch[0].1), 5.5, 2, 0, &[far]), Plan::Walk(ch[0]));
     }
 
     #[test]
@@ -729,6 +704,7 @@ mod tests {
 
     use crate::systems::event_room::EventUser;
     use crate::world::{CharacterInfo, Position};
+    use crate::zone::calc_region;
 
     fn template(sid: u16, hp: u32) -> crate::npc::NpcTemplate {
         crate::npc::NpcTemplate {
