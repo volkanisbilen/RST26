@@ -269,3 +269,32 @@ CREATE TABLE IF NOT EXISTS event_bot_config (
 INSERT INTO event_bot_config (event_key) VALUES
     ('chaos'), ('bdw'), ('ultima'), ('rift'), ('juraid'), ('ft'), ('manes')
 ON CONFLICT (event_key) DO NOTHING
+-- ;;
+-- Bot brain knobs ("Bot Zekâsı" page); see migrations/20261019000001_bot_brain_config.sql.
+CREATE TABLE IF NOT EXISTS bot_brain_config (
+    id                      SMALLINT    PRIMARY KEY DEFAULT 1,
+    enabled                 BOOLEAN     NOT NULL DEFAULT TRUE,
+    patrol_percent          SMALLINT    NOT NULL DEFAULT 40,
+    reaction_min_ms         SMALLINT    NOT NULL DEFAULT 300,
+    reaction_max_ms         SMALLINT    NOT NULL DEFAULT 900,
+    target_mistake_percent  SMALLINT    NOT NULL DEFAULT 10,
+    kite_miss_percent       SMALLINT    NOT NULL DEFAULT 25,
+    hp_potions              SMALLINT    NOT NULL DEFAULT 30,
+    mp_potions              SMALLINT    NOT NULL DEFAULT 30,
+    ts_scrolls              SMALLINT    NOT NULL DEFAULT 2,
+    buff_scrolls            SMALLINT    NOT NULL DEFAULT 4,
+    potion_cooldown_ms      SMALLINT    NOT NULL DEFAULT 2400,
+    np_percent              SMALLINT    NOT NULL DEFAULT 33,
+    antifarm_secs           SMALLINT    NOT NULL DEFAULT 300,
+    spawn_grace_secs        SMALLINT    NOT NULL DEFAULT 20,
+    party_max_bots          SMALLINT    NOT NULL DEFAULT 6,
+    party_max_per_class     SMALLINT    NOT NULL DEFAULT 2,
+    retreat_hp_percent      SMALLINT    NOT NULL DEFAULT 35,
+    outnumbered_percent     SMALLINT    NOT NULL DEFAULT 200,
+    spacing_min             SMALLINT    NOT NULL DEFAULT 3,
+    spacing_max             SMALLINT    NOT NULL DEFAULT 8,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT bot_brain_config_single_chk CHECK (id = 1)
+)
+-- ;;
+INSERT INTO bot_brain_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING

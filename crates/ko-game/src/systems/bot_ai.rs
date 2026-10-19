@@ -53,7 +53,7 @@ const BOT_MINING_INTERVAL_MS: u64 = 120_000; // 2 minutes
 const BOT_MERCHANT_CHAT_INTERVAL_MS: u64 = 60_000; // 1 minute
 
 /// Search range for finding targets (game units).
-const BOT_SEARCH_RANGE: f32 = 32.0;
+pub(crate) const BOT_SEARCH_RANGE: f32 = 32.0;
 
 /// Attack range for melee attacks (game units).
 /// Default 7.0 matches C++ fallback when skill has no range defined.
@@ -74,10 +74,8 @@ const BOT_NO_TARGET_COOLDOWN_MS: u64 = 5_000;
 
 /// PK bots inspect the seeking-party board at this interval.
 const BOT_PARTY_AI_INTERVAL_MS: u64 = 10_000;
-/// Keep two open slots for real players and never put more than two bots of
-/// the same combat role in one PK group.
-const BOT_PARTY_MAX_BOTS: usize = 6;
-const BOT_PARTY_MAX_PER_ROLE: usize = 2;
+// Party composition (at most 6 bots, 2 per combat role by default) is an admin
+// knob of the bot brain: `bot_brain::config().party_max_bots / party_max_per_class`.
 
 struct CachedBotPath {
     zone_id: u16,
@@ -101,14 +99,14 @@ static BOT_UNREACHABLE_TARGETS: OnceLock<parking_lot::Mutex<HashMap<BotId, (i16,
 /// How long an unreachable target is ignored (ms).
 const BOT_UNREACHABLE_RETRY_MS: u64 = 4_000;
 
-fn park_unreachable_target(bot_id: BotId, target_id: i16, now_ms: u64) {
+pub(crate) fn park_unreachable_target(bot_id: BotId, target_id: i16, now_ms: u64) {
     BOT_UNREACHABLE_TARGETS
         .get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
         .lock()
         .insert(bot_id, (target_id, now_ms + BOT_UNREACHABLE_RETRY_MS));
 }
 
-fn target_is_parked_unreachable(bot_id: BotId, target_id: i16, now_ms: u64) -> bool {
+pub(crate) fn target_is_parked_unreachable(bot_id: BotId, target_id: i16, now_ms: u64) -> bool {
     BOT_UNREACHABLE_TARGETS
         .get()
         .and_then(|table| table.lock().get(&bot_id).copied())
@@ -1193,7 +1191,12 @@ fn party_can_accept_bot(
         .filter(|sid| *sid as u32 >= crate::world::BOT_ID_BASE)
         .count();
     let role = bot_class_group(candidate.class) as usize;
-    bots < BOT_PARTY_MAX_BOTS && party_bot_role_counts(world, party)[role] < BOT_PARTY_MAX_PER_ROLE
+    crate::systems::bot_brain::party_accepts(
+        &crate::systems::bot_brain::config(),
+        bots,
+        &party_bot_role_counts(world, party),
+        role,
+    )
 }
 
 fn choose_party_bot(
@@ -1213,9 +1216,11 @@ fn choose_party_bot(
                 && world.get_party_id(candidate.id as SessionId).is_none()
                 && party_can_accept_bot(world, party, candidate)
         })
+        // A priest first when the party has none, then the least represented
+        // role (`bot_brain::recruit_key`).
         .min_by_key(|candidate| {
             let role = bot_class_group(candidate.class) as usize;
-            (counts[role], candidate.id)
+            crate::systems::bot_brain::recruit_key(&counts, role, candidate.id)
         })
 }
 
@@ -1989,6 +1994,7 @@ fn get_bot_kill_np_for_nation(world: &WorldState, zone_id: u16, nation: u8) -> i
 fn process_bot_kill_reward(
     world: &WorldState,
     killer_sid: SessionId,
+    bot_id: BotId,
     bot_level: u8,
     rival_bonus_np: i32,
 ) {
@@ -1997,12 +2003,18 @@ fn process_bot_kill_reward(
         None => return,
     };
 
-    // Zone-specific NP reward
+    // Zone-specific NP reward, reduced to the bot share and gated by the
+    // anti-farm window / respawn grace of the bot brain (0 = nothing paid).
     let zone_id = world
         .get_position(killer_sid)
         .map(|p| p.zone_id)
         .unwrap_or(0);
-    let np_reward = get_bot_kill_np(zone_id) + rival_bonus_np;
+    let base_np = get_bot_kill_np(zone_id) + rival_bonus_np;
+    let np_reward = crate::systems::bot_brain::bot_kill_np(killer_sid, bot_id, base_np, tick_ms());
+    if np_reward == 0 && base_np > 0 {
+        debug!(killer_sid, bot_id, "bot kill paid nothing (anti-farm / fresh respawn)");
+        return;
+    }
 
     if np_reward > 0 {
         crate::systems::loyalty::send_loyalty_change(
@@ -2086,6 +2098,14 @@ fn process_bot_player_kill(world: &WorldState, bot: &BotInstance, victim_sid: Se
 /// If the bot's HP falls below 20%, it transitions to fleeing behaviour.
 fn tick_fighting(world: &WorldState, bot: &BotInstance, now_ms: u64) {
     let bot_id = bot.id;
+
+    // PK bots are driven by the decision layer (threat assessment, target
+    // scoring, kiting/retreat/heal-up, formation, hotspots). It yields back
+    // to this legacy loop only when disabled or when an objective asks for
+    // the plain fight-the-nearest behaviour.
+    if bot.ai_state == BotAiState::Pk && crate::systems::bot_brain::tick_pk(world, bot, now_ms) {
+        return;
+    }
 
     // Check if bot should flee (HP < 20% of max).
     if bot.hp > 0 && bot.max_hp > 0 {
@@ -2233,7 +2253,7 @@ const BOT_PARTY_SPACING_PUSH: f32 = 6.0;
 /// The caller keeps using the true, un-nudged target for arrival/attack-range
 /// checks; only the point handed to the pathing step is offset, so route and
 /// combat-range logic are unaffected.
-fn apply_party_spacing(world: &WorldState, bot: &BotInstance, target_x: f32, target_z: f32) -> (f32, f32) {
+pub(crate) fn apply_party_spacing(world: &WorldState, bot: &BotInstance, target_x: f32, target_z: f32) -> (f32, f32) {
     let Some(party_id) = world.get_party_id(bot.id as SessionId) else {
         return (target_x, target_z);
     };
@@ -2241,7 +2261,16 @@ fn apply_party_spacing(world: &WorldState, bot: &BotInstance, target_x: f32, tar
         return (target_x, target_z);
     };
 
-    let mut nearest_sq = BOT_PARTY_SPACING_MIN * BOT_PARTY_SPACING_MIN;
+    // Each member keeps its own, periodically reshuffled distance (3-8 m by
+    // default) instead of one fixed value, so the group never walks in a
+    // regular train.
+    let spacing = if crate::systems::bot_brain::config().enabled {
+        crate::systems::bot_brain::spacing_of(bot.id, tick_ms())
+    } else {
+        BOT_PARTY_SPACING_MIN
+    };
+    let push_len = spacing.max(BOT_PARTY_SPACING_PUSH * 0.5);
+    let mut nearest_sq = spacing * spacing;
     let mut push: Option<(f32, f32)> = None;
     for sid in party.active_members() {
         if sid as u32 == bot.id {
@@ -2277,8 +2306,8 @@ fn apply_party_spacing(world: &WorldState, bot: &BotInstance, target_x: f32, tar
     let Some((nx, nz)) = push else {
         return (target_x, target_z);
     };
-    let pushed_x = target_x + nx * BOT_PARTY_SPACING_PUSH;
-    let pushed_z = target_z + nz * BOT_PARTY_SPACING_PUSH;
+    let pushed_x = target_x + nx * push_len;
+    let pushed_z = target_z + nz * push_len;
 
     // The push is a raw offset with no idea what's on the other side of it --
     // on a clumped party near a wall it can land squarely on an unwalkable
@@ -2299,7 +2328,7 @@ fn apply_party_spacing(world: &WorldState, bot: &BotInstance, target_x: f32, tar
     }
 }
 
-fn move_toward_party_anchor(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
+pub(crate) fn move_toward_party_anchor(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     let Some(party_id) = world.get_party_id(bot.id as SessionId) else {
         return false;
     };
@@ -2347,7 +2376,7 @@ fn move_toward_party_anchor(world: &WorldState, bot: &BotInstance, now_ms: u64) 
 /// a new random route is picked and the bot continues from its current point.
 /// Returns `true` if a waypoint movement was performed, `false` if the bot
 /// has no active route (non-PK zone, or `move_route == 0`).
-fn tick_waypoint_patrol(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
+pub(crate) fn tick_waypoint_patrol(world: &WorldState, bot: &BotInstance, now_ms: u64) -> bool {
     let route = bot.move_route;
     let state = bot.move_state;
 
@@ -2708,7 +2737,7 @@ pub fn move_toward_target(
 /// | u32le | caster_id   |
 /// | u32le | target_id   |
 /// | u32le | data[0..7]  |  (7 x u32, position/damage/result info)
-fn bot_perform_attack(
+pub(crate) fn bot_perform_attack(
     world: &WorldState,
     bot: &BotInstance,
     skill_id: u32,
@@ -4120,6 +4149,7 @@ fn tick_merchant(world: &WorldState, bot: &BotInstance, now_ms: u64) {
 /// it to all players in the surrounding 3×3 region so they see the bot disappear.
 pub fn despawn_bot(world: &WorldState, id: BotId) {
     forget_bot_navigation_state(id);
+    crate::systems::bot_brain::forget(id);
     if let Ok(bot_sid) = SessionId::try_from(id) {
         world.cleanup_party_on_disconnect(bot_sid);
     }
@@ -4325,7 +4355,7 @@ pub fn bot_on_death(world: &WorldState, bot_id: BotId, now_ms: u64) {
     if killer_id >= 0 {
         let killer_sid = killer_id as SessionId;
         if (killer_sid as u32) < crate::world::BOT_ID_BASE {
-            process_bot_kill_reward(world, killer_sid, bot_level, rival_bonus_np);
+            process_bot_kill_reward(world, killer_sid, bot_id, bot_level, rival_bonus_np);
 
             // Death notice broadcast to zone.
             let killer_party_id = world
@@ -4357,7 +4387,8 @@ pub fn bot_on_death(world: &WorldState, bot_id: BotId, now_ms: u64) {
     }
 
     if is_pk_zone(zone_id) && killer_id >= 0 {
-        let np_loss = get_bot_kill_np(zone_id).max(0) as u32;
+        let brain_cfg = crate::systems::bot_brain::config();
+        let np_loss = crate::systems::bot_brain::scale_np(&brain_cfg, get_bot_kill_np(zone_id)).max(0) as u32;
         world.update_bot(bot_id, |victim| {
             victim.loyalty = victim.loyalty.saturating_sub(np_loss);
             victim.loyalty_monthly = victim.loyalty_monthly.saturating_sub(np_loss);
@@ -4370,9 +4401,12 @@ pub fn bot_on_death(world: &WorldState, bot_id: BotId, now_ms: u64) {
     // combination.
     if killer_id >= crate::world::BOT_ID_BASE as i32 {
         if let Some(killer_bot) = world.get_bot(killer_id as BotId) {
-            let np_gain = get_bot_kill_np_for_nation(world, zone_id, killer_bot.nation).max(0)
-                as u32
-                + rival_bonus_np.max(0) as u32;
+            let brain_cfg = crate::systems::bot_brain::config();
+            let np_gain = crate::systems::bot_brain::scale_np(
+                &brain_cfg,
+                get_bot_kill_np_for_nation(world, zone_id, killer_bot.nation) + rival_bonus_np,
+            )
+            .max(0) as u32;
             world.update_bot(killer_bot.id, |killer| {
                 killer.loyalty = killer.loyalty.saturating_add(np_gain).min(2_100_000_000);
                 killer.loyalty_monthly = killer
@@ -4613,6 +4647,9 @@ fn bot_regene(world: &WorldState, bot_id: BotId, now_ms: u64) {
         b.move_route = new_route;
         b.move_state = if new_route > 0 { 1 } else { 0 };
     });
+
+    // A new life: refill the virtual potion stock and start the kill grace.
+    crate::systems::bot_brain::on_bot_respawn(bot_id, now_ms);
 
     // Step 4: Broadcast INOUT_RESPAWN with full GetUserInfo so clients see the bot.
     // INOUT_RESPAWN = 3 in C++ (packets.h:53)
@@ -7982,6 +8019,12 @@ mod tests {
             b.max_hp = 5000;
         });
 
+        // Bot ids are reused across tests: drop any navigation/brain state a
+        // previous test left behind for them (parked targets, modes).
+        forget_bot_navigation_state(karus_id);
+        crate::systems::bot_brain::forget(karus_id);
+        crate::systems::bot_brain::forget(elmo_id);
+
         let bot_before = world.get_bot(karus_id).unwrap();
         let now_ms = tick_ms();
         tick_fighting(&world, &bot_before, now_ms);
@@ -8041,16 +8084,14 @@ mod tests {
         tick_fighting(&world, &bot, now_ms);
 
         let updated = world.get_bot(id).unwrap();
-        // After fleeing, bot should have moved from original position.
-        let dx = updated.x - 100.0;
-        let dz = updated.z - 100.0;
-        let dist = (dx * dx + dz * dz).sqrt();
-        assert!(
-            dist > 1.0,
-            "fleeing bot should have moved away, dist = {}",
-            dist
-        );
-        assert_eq!(updated.target_id, -1, "fleeing bot should clear its target");
+        // Bot brain: nobody is around, so the hurt bot heals up (virtual HP
+        // potion) instead of running in a random direction; with an enemy in
+        // sight it would Retreat toward friends (see bot_brain tests).
+        let st = crate::systems::bot_brain::state_of(id, now_ms);
+        assert_eq!(st.mode, crate::systems::bot_brain::Mode::HealUp);
+        assert!(updated.hp > 50, "a potion was drunk, hp = {}", updated.hp);
+        assert_eq!(updated.target_id, -1, "healing bot should clear its target");
+        crate::systems::bot_brain::forget(id);
     }
 
     #[test]
@@ -11292,7 +11333,10 @@ mod tests {
         world.insert_bot(same_role.clone());
         world.insert_bot(other_role.clone());
 
-        assert_eq!(party.member_count(), BOT_PARTY_MAX_BOTS);
+        assert_eq!(
+            party.member_count(),
+            crate::systems::bot_brain::config().party_max_bots as usize
+        );
         assert!(!party_can_accept_bot(&world, &party, &same_role));
         assert!(!party_can_accept_bot(&world, &party, &other_role));
     }

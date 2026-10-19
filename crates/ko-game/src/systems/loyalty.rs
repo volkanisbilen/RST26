@@ -620,6 +620,21 @@ pub fn pvp_loyalty_on_bot_kill(world: &WorldState, killer_id: SessionId, victim_
         return;
     }
 
+    // Bot kills pay a reduced share and nothing while the killer is farming
+    // the same bot / the bot just respawned (bot_brain verdict of the kill
+    // `bot_on_death` recorded a moment ago).
+    let brain_cfg = crate::systems::bot_brain::config();
+    if !crate::systems::bot_brain::kill_rewardable(killer_id, crate::systems::bot_ai::tick_ms()) {
+        return;
+    }
+    let share = |np: i32| -> i32 {
+        if brain_cfg.enabled {
+            crate::systems::bot_brain::scale_np(&brain_cfg, np)
+        } else {
+            np
+        }
+    };
+
     let rates = LoyaltyRates::default();
     let in_party = world.is_in_party(killer_id);
     if in_party {
@@ -628,7 +643,7 @@ pub fn pvp_loyalty_on_bot_kill(world: &WorldState, killer_id: SessionId, victim_
                 let members: Vec<SessionId> = party.members.iter().filter_map(|&m| m).collect();
                 let total_members = members.len() as u8;
                 if total_members > 0 {
-                    let source = get_loyalty_divide_source(killer_zone, total_members, &rates);
+                    let source = share(get_loyalty_divide_source(killer_zone, total_members, &rates) as i32);
                     if source != 0 {
                         for &member_id in &members {
                             let alive = world
@@ -649,8 +664,9 @@ pub fn pvp_loyalty_on_bot_kill(world: &WorldState, killer_id: SessionId, victim_
         return;
     }
     let (source, _target) = get_zone_loyalty_rates(killer_zone, &rates);
+    let source = share(source as i32);
     if source != 0 {
-        send_loyalty_change(world, killer_id, source as i32, true, false, false);
+        send_loyalty_change(world, killer_id, source, true, false, false);
     }
 }
 

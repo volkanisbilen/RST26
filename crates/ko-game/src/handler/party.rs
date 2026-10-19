@@ -395,8 +395,10 @@ async fn handle_party_create(
     let target_sid = match world.find_session_by_name(&target_name) {
         Some(tsid) => tsid,
         None => {
-            // A field bot (normal-map hunter) answers the invitation itself.
-            if crate::systems::field_bots::try_party_invite(&world, sid, &target_name, party_type) {
+            // A field bot (normal-map hunter) or a PK bot answers the invitation itself.
+            if crate::systems::field_bots::try_party_invite(&world, sid, &target_name, party_type)
+                || crate::systems::bot_brain::try_party_invite(&world, sid, &target_name, party_type)
+            {
                 return Ok(());
             }
             send_party_error(&world, sid, PARTY_ERR_GENERIC);
@@ -620,8 +622,10 @@ fn handle_party_invite(
     let target_sid = match world.find_session_by_name(&target_name) {
         Some(tsid) => tsid,
         None => {
-            // A field bot (normal-map hunter) answers the invitation itself.
-            if crate::systems::field_bots::try_party_invite(&world, sid, &target_name, party_type) {
+            // A field bot (normal-map hunter) or a PK bot answers the invitation itself.
+            if crate::systems::field_bots::try_party_invite(&world, sid, &target_name, party_type)
+                || crate::systems::bot_brain::try_party_invite(&world, sid, &target_name, party_type)
+            {
                 return Ok(());
             }
             send_party_error(&world, sid, PARTY_ERR_GENERIC);

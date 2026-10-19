@@ -196,6 +196,10 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
             .await
             .map(|n| format!("{n} bot loadout override bracket(s) loaded"))
             .map_err(|e| e.to_string()),
+        "bot_brain_reload" => crate::systems::bot_brain::reload_config(pool)
+            .await
+            .map(|n| format!("{n} bot brain config row(s) loaded"))
+            .map_err(|e| e.to_string()),
         "info_panel_reload" => crate::handler::info_panel::reload_and_sync(world, pool).await,
         "event_bots_reload" => crate::systems::event_bots::reload_config(pool, world)
             .await

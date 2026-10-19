@@ -982,6 +982,9 @@ fn tick_bot(world: &WorldState, id: BotId, now_ms: u64, fighting: bool) {
     if !fighting || !room_open(world, &entry) {
         return;
     }
+    // Virtual potions / scrolls (shared bot brain; never blocks movement).
+    crate::systems::bot_brain::tick_consumables_for(world, &bot, now_ms);
+    let bot = world.get_bot(id).unwrap_or(bot);
     if entry.kind == EventBotKind::Juraid {
         // PvE lane runner / party follower; never fights players
         crate::systems::event_bots_juraid::tick_bot(world, &entry, &bot, now_ms);
@@ -1018,7 +1021,8 @@ fn engage(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Targe
     let dz = target.z - bot.z;
     let dist = (dx * dx + dz * dz).sqrt();
     if dist <= range {
-        if now_ms >= entry.next_attack_ms {
+        // Human-like reaction delay before the first hit on a new target (bot brain).
+        if now_ms >= entry.next_attack_ms && crate::systems::bot_brain::reaction_ready(bot.id, target.id, now_ms) {
             world.event_bots.update(bot.id, |e| e.next_attack_ms = now_ms + attack_cooldown(bot));
             attack(world, entry, bot, target, now_ms);
         }
@@ -1110,13 +1114,15 @@ fn human_attackable(
     !world.is_player_blinking(sid, now_unix)
 }
 
-/// Nearest enemy of the bot inside its room (humans and enemy bots).
+/// Best enemy of the bot inside its room (humans and enemy bots), scored like
+/// a player would (`bot_brain::target_score_basic`: hurt / priest / close first).
 fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Option<Target> {
     let mut best: Option<(f32, Target)> = None;
-    let mut consider = |t: Target| {
-        let d = (t.x - bot.x).powi(2) + (t.z - bot.z).powi(2);
-        if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
-            best = Some((d, t));
+    let mut consider = |t: Target, hp: i16, max_hp: i16, class: u16| {
+        let d = ((t.x - bot.x).powi(2) + (t.z - bot.z).powi(2)).sqrt();
+        let score = crate::systems::bot_brain::target_score_basic(d, hp, max_hp, class);
+        if best.as_ref().is_none_or(|(bs, _)| score > *bs) {
+            best = Some((score, t));
         }
     };
     for sid in world.sessions_in_zone(bot.zone_id) {
@@ -1124,7 +1130,7 @@ fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Optio
             continue;
         };
         if human_attackable(world, entry, sid, &ch, pos.zone_id, bot.zone_id) {
-            consider(Target { id: sid as u32, x: pos.x, z: pos.z });
+            consider(Target { id: sid as u32, x: pos.x, z: pos.z }, ch.hp, ch.max_hp, ch.class);
         }
     }
     for other_id in world.event_bots.ids_of(entry.kind) {
@@ -1132,7 +1138,8 @@ fn find_target(world: &WorldState, entry: &BotEntry, bot: &BotInstance) -> Optio
             continue;
         }
         if let Some(t) = resolve_target(world, entry, bot, other_id) {
-            consider(t);
+            let (hp, max_hp, class) = world.get_bot(other_id).map(|b| (b.hp, b.max_hp, b.class)).unwrap_or((1, 1, 1));
+            consider(t, hp, max_hp, class);
         }
     }
     best.map(|(_, t)| t)

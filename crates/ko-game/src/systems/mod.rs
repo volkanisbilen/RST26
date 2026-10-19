@@ -6,6 +6,7 @@
 pub mod auto_harvest;
 pub mod bdw;
 pub mod bot_ai;
+pub mod bot_brain;
 pub mod bot_waypoints;
 pub mod buff_tick;
 pub mod chaos;
