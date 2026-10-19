@@ -1722,6 +1722,17 @@ fn tick_core(world: &WorldState, bot: &BotInstance, ev: Option<&EventEntry>, now
         return true;
     }
 
+    // Event support casting (priest heals/AC/HP buffs/cures, rogue Swift/Wolf) on party mates
+    // and same-nation room members, with the real MAGIC packets. A cast pins the bot this tick,
+    // like a player's cast-time movement lock (PK bots do the same in bot_ai::tick_bots).
+    if let Some(entry) = ev {
+        if bot_ai::tick_event_bot_support(world, bot, entry, now_ms) {
+            store_state(bot.id, st);
+            mark_tick(world, bot, now_ms);
+            return true;
+        }
+    }
+
     // Target selection (sticky; mistakes; objective bonus).
     let current = st.target.filter(|id| enemies.iter().any(|e| e.id == *id));
     let target = if current.is_some() && now_ms < st.target_until_ms {

@@ -618,13 +618,10 @@ fn determine_respawn_location(
         }
     }
 
-    // ── 4. Juraid Mountain — stage-specific respawn coords ───────────
-    //   3 stages × 2 nations = 6 coordinate sets with ±3 random offset.
-    //   isDevaStage:   K(511,738) E(511,281)
-    //   isBridgeStage2: K(336,848) E(695,171)
-    //   isBridgeStage1: K(224,671) E(800,349)
+    // ── 4. Juraid Mountain — start of the player's current stage ─────
+    //   (see juraid_stage_start; stage 0 falls through to the zone start position)
     if current_zone == ZONE_JURAID_MOUNTAIN {
-        if let Some((jx, jz)) = juraid_respawn_coords(char_info.nation, world) {
+        if let Some((jx, jz)) = juraid_respawn_coords(char_info, world) {
             return (current_zone, jx, jz);
         }
     }
@@ -665,56 +662,62 @@ fn determine_respawn_location(
     (21, 512.0, 341.0)
 }
 
-/// Determine Juraid Mountain respawn coordinates based on bridge stage.
-/// Stage determination from bridge state:
-/// - No bridges open → Deva stage (starting area)
-/// - Bridge 0 open, bridge 1 not → Bridge1 stage
-/// - Bridge 1 open → Bridge2 stage
-/// Coordinates are hardcoded per stage per nation with ±3 random offset.
-fn juraid_respawn_coords(nation: u8, world: &crate::world::WorldState) -> Option<(f32, f32)> {
+/// Juraid Mountain respawn: the start of the player's *current* stage.
+///
+/// The lane of a nation is cut by three bridge gates (live `monster_juraid_respawn_list`,
+/// `s_sid 8110`): Karus (224,645) -> (309,848) -> (512,767), El Morad (800,375) -> (715,172)
+/// -> (512,257). A player's stage is the number of consecutive gates his nation has opened
+/// in *his* room; he comes back just behind the last open gate (stage 0 = the nation's
+/// zone start), never beyond a gate that is still closed.
+///
+/// `(nation, stage)` -> `(x, z)`; stage 0 is `None` (use the zone's start_position).
+pub fn juraid_stage_start(nation: u8, stage: u8) -> Option<(f32, f32)> {
+    match (stage, nation) {
+        (0, _) => None,
+        // first gate open: the room between gate 1 and gate 2
+        (1, 1) => Some((224.0, 671.0)),
+        (1, _) => Some((800.0, 349.0)),
+        // second gate open: the room before the Deva gate
+        (2, 1) => Some((336.0, 848.0)),
+        (2, _) => Some((695.0, 171.0)),
+        // Deva gate open: in front of the Deva room
+        (_, 1) => Some((511.0, 738.0)),
+        (_, _) => Some((511.0, 281.0)),
+    }
+}
+
+/// Consecutively open gates of `nation` (a gate only counts when every gate before it is open).
+pub fn juraid_stage_of(bs: &crate::systems::juraid::JuraidBridgeState, nation: u8) -> u8 {
+    (0..crate::systems::juraid::NUM_BRIDGES)
+        .take_while(|&i| bs.is_bridge_open(i, nation))
+        .count() as u8
+}
+
+/// Determine Juraid Mountain respawn coordinates from the bridge state of the player's own
+/// event room (fallback: the first room with a bridge state, for a player without a room id).
+/// Stage 0 returns `None` so the caller falls through to the zone's nation start position.
+fn juraid_respawn_coords(
+    char_info: &crate::world::CharacterInfo,
+    world: &crate::world::WorldState,
+) -> Option<(f32, f32)> {
     use rand::Rng;
 
-    // Determine stage from bridge state.
-    // Try rooms 1..=10 to find any active bridge state.
-    // C++ requires isInValidRoom(0) — we require at least one room to have bridge state.
-    let mut found_room = false;
-    let mut stage = 0u8; // 0=deva, 1=bridge1, 2=bridge2
-    for room_id in 1..=10u8 {
-        if let Some(bs) = world.get_juraid_bridge_state(room_id) {
-            found_room = true;
-            if bs.karus_bridges[1] || bs.elmorad_bridges[1] {
-                stage = 2;
-            } else if bs.karus_bridges[0] || bs.elmorad_bridges[0] {
-                stage = 1;
-            }
-            break;
-        }
+    let own_room = world.get_event_room(char_info.session_id);
+    let bs = if own_room > 0 && own_room <= u8::MAX as u16 {
+        world.get_juraid_bridge_state(own_room as u8)
+    } else {
+        None
     }
+    .or_else(|| (1..=10u8).find_map(|room_id| world.get_juraid_bridge_state(room_id)))?;
 
-    // No active event room → fall through to default GetStartPosition path
-    if !found_room {
-        return None;
-    }
+    let stage = juraid_stage_of(&bs, char_info.nation);
+    let (x, z) = juraid_stage_start(char_info.nation, stage)?;
 
     let mut rng = rand::thread_rng();
     // C++ uses separate myrand(0,3) calls for X and Z
     let rx = rng.gen_range(0..=3) as f32;
     let rz = rng.gen_range(0..=3) as f32;
-
-    let (x, z) = match (stage, nation) {
-        // Deva stage (initial area — no bridges open)
-        (0, 1) => (511.0 + rx, 738.0 + rz),
-        (0, _) => (511.0 + rx, 281.0 + rz),
-        // Bridge1 stage (bridge[0] open)
-        (1, 1) => (224.0 + rx, 671.0 + rz),
-        (1, _) => (800.0 + rx, 349.0 + rz),
-        // Bridge2 stage (bridge[1] open)
-        (2, 1) => (336.0 + rx, 848.0 + rz),
-        (2, _) => (695.0 + rx, 171.0 + rz),
-        _ => (511.0 + rx, 738.0 + rz),
-    };
-
-    Some((x, z))
+    Some((x + rx, z + rz))
 }
 
 #[cfg(test)]
@@ -1419,64 +1422,127 @@ mod tests {
         assert_eq!(z, 272.0);
     }
 
-    #[test]
-    fn test_respawn_juraid_deva_stage_karus() {
+    /// Juraid test world: start positions of zone 87 (live `start_position` row) and a player of
+    /// `nation` in event room `room` with the given consecutive open bridges for his nation.
+    fn juraid_world(nation: u8, room: u8, open_gates: usize) -> (WorldState, CharacterInfo) {
         let world = WorldState::new();
-        // Bridge state exists but no bridges open → Deva stage
-        let bs = crate::systems::juraid::JuraidBridgeState::new();
-        world.set_juraid_bridge_state(1, bs);
-        let ch = make_char_info(1);
-        let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
-        assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
-        // Karus Deva: 511 + rand(0..=3), 738 + rand(0..=3)
-        assert!((511.0..=514.0).contains(&x), "juraid karus deva x={x}");
-        assert!((738.0..=741.0).contains(&z), "juraid karus deva z={z}");
-    }
-
-    #[test]
-    fn test_respawn_juraid_deva_stage_elmorad() {
-        let world = WorldState::new();
-        let bs = crate::systems::juraid::JuraidBridgeState::new();
-        world.set_juraid_bridge_state(1, bs);
-        let ch = make_char_info(2);
-        let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
-        assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
-        // Elmorad Deva: 511 + rand(0..=3), 281 + rand(0..=3)
-        assert!((511.0..=514.0).contains(&x), "juraid elmo deva x={x}");
-        assert!((281.0..=284.0).contains(&z), "juraid elmo deva z={z}");
-    }
-
-    #[test]
-    fn test_respawn_juraid_bridge1_stage() {
-        let world = WorldState::new();
-        // Set bridge[0] open for room 1 → Bridge1 stage
+        world.insert_start_position(ko_db::models::StartPositionRow {
+            zone_id: 87,
+            karus_x: 224,
+            karus_z: 272,
+            elmorad_x: 799,
+            elmorad_z: 749,
+            karus_gate_x: 0,
+            karus_gate_z: 0,
+            elmo_gate_x: 0,
+            elmo_gate_z: 0,
+            range_x: 0,
+            range_z: 0,
+        });
         let mut bs = crate::systems::juraid::JuraidBridgeState::new();
-        bs.karus_bridges[0] = true;
-        world.set_juraid_bridge_state(1, bs);
+        for i in 0..open_gates {
+            bs.open_bridge(i, nation);
+        }
+        world.set_juraid_bridge_state(room, bs);
+        let sid = 7;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(sid, tx);
+        let ch = CharacterInfo {
+            session_id: sid,
+            nation,
+            ..Default::default()
+        };
+        world.register_ingame(
+            sid,
+            ch.clone(),
+            crate::world::Position {
+                zone_id: 87,
+                ..Default::default()
+            },
+        );
+        world.update_session(sid, |h| h.event_room = room as u16);
+        (world, ch)
+    }
 
-        let ch = make_char_info(1);
-        let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
-        assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
-        // Karus Bridge1: 224 + rand(0..=3), 671 + rand(0..=3)
-        assert!((224.0..=227.0).contains(&x), "juraid bridge1 x={x}");
-        assert!((671.0..=674.0).contains(&z), "juraid bridge1 z={z}");
+    fn assert_near(x: f32, z: f32, (ex, ez): (f32, f32), what: &str) {
+        assert!((ex..=ex + 3.0).contains(&x), "{what}: x={x} expected {ex}..{}", ex + 3.0);
+        assert!((ez..=ez + 3.0).contains(&z), "{what}: z={z} expected {ez}..{}", ez + 3.0);
+    }
+
+    /// Death in the first room (no gate open yet) brings the player back to the nation's zone
+    /// start, not beyond the first bridge.
+    #[test]
+    fn test_respawn_juraid_stage0_both_nations_use_zone_start() {
+        for (nation, start) in [(1u8, (224.0, 272.0)), (2u8, (799.0, 749.0))] {
+            let (world, ch) = juraid_world(nation, 1, 0);
+            let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
+            assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
+            assert_eq!((x, z), start, "nation {nation} stage 0");
+        }
     }
 
     #[test]
-    fn test_respawn_juraid_bridge2_stage() {
-        let world = WorldState::new();
-        // Set bridge[0] and bridge[1] open for room 1 → Bridge2 stage
-        let mut bs = crate::systems::juraid::JuraidBridgeState::new();
-        bs.karus_bridges[0] = true;
-        bs.karus_bridges[1] = true;
-        world.set_juraid_bridge_state(1, bs);
+    fn test_respawn_juraid_stage1_both_nations() {
+        for (nation, start) in [(1u8, (224.0, 671.0)), (2u8, (800.0, 349.0))] {
+            let (world, ch) = juraid_world(nation, 1, 1);
+            let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
+            assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
+            assert_near(x, z, start, &format!("nation {nation} stage 1"));
+        }
+    }
 
-        let ch = make_char_info(2);
-        let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
-        assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
-        // Elmorad Bridge2: 695 + rand(0..=3), 171 + rand(0..=3)
-        assert!((695.0..=698.0).contains(&x), "juraid bridge2 x={x}");
-        assert!((171.0..=174.0).contains(&z), "juraid bridge2 z={z}");
+    #[test]
+    fn test_respawn_juraid_stage2_both_nations() {
+        for (nation, start) in [(1u8, (336.0, 848.0)), (2u8, (695.0, 171.0))] {
+            let (world, ch) = juraid_world(nation, 1, 2);
+            let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
+            assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
+            assert_near(x, z, start, &format!("nation {nation} stage 2"));
+        }
+    }
+
+    #[test]
+    fn test_respawn_juraid_stage3_deva_both_nations() {
+        for (nation, start) in [(1u8, (511.0, 738.0)), (2u8, (511.0, 281.0))] {
+            let (world, ch) = juraid_world(nation, 1, 3);
+            let (zone, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
+            assert_eq!(zone, ZONE_JURAID_MOUNTAIN);
+            assert_near(x, z, start, &format!("nation {nation} stage 3"));
+        }
+    }
+
+    /// The other nation's progress never moves a player forward.
+    #[test]
+    fn test_respawn_juraid_uses_own_nation_gates() {
+        let (world, ch) = juraid_world(1, 1, 0);
+        let mut bs = crate::systems::juraid::JuraidBridgeState::new();
+        bs.open_bridge(0, 2);
+        bs.open_bridge(1, 2);
+        world.set_juraid_bridge_state(1, bs);
+        let (_, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
+        assert_eq!((x, z), (224.0, 272.0), "El Morad gates must not advance a Karus player");
+    }
+
+    /// Another room's progress never moves a player forward.
+    #[test]
+    fn test_respawn_juraid_uses_own_room() {
+        let (world, ch) = juraid_world(2, 2, 0);
+        let mut bs = crate::systems::juraid::JuraidBridgeState::new();
+        bs.open_bridge(0, 2);
+        world.set_juraid_bridge_state(1, bs);
+        let (_, x, z) = determine_respawn_location(&ch, ZONE_JURAID_MOUNTAIN, &world);
+        assert_eq!((x, z), (799.0, 749.0), "room 1 gates must not advance a room 2 player");
+    }
+
+    /// A gate that opened out of order does not count (stage = consecutive open gates).
+    #[test]
+    fn test_juraid_stage_counts_consecutive_gates_only() {
+        let mut bs = crate::systems::juraid::JuraidBridgeState::new();
+        bs.open_bridge(1, 1);
+        assert_eq!(juraid_stage_of(&bs, 1), 0);
+        bs.open_bridge(0, 1);
+        assert_eq!(juraid_stage_of(&bs, 1), 2);
+        assert_eq!(juraid_stage_of(&bs, 2), 0);
     }
 
     #[test]

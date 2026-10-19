@@ -888,6 +888,7 @@ pub fn handle_bot_death(world: &WorldState, bot_id: BotId, now_ms: u64) -> bool 
         b.regene_at_ms = 0; // the bot AI must not "regene" it into a PK spawn
         b.last_attacker_id = -1;
     });
+    crate::systems::bot_buffs::clear(world, bot_id);
     world.clear_npc_dots(bot_id);
     if entry.kind == EventBotKind::Bdw {
         bdw_ai::on_bot_death(world, &entry, bot_id);
@@ -973,6 +974,7 @@ pub(crate) struct Target {
 /// One driver pass over all registered event bots.
 pub fn tick(world: &WorldState, now_ms: u64) {
     let reg = &world.event_bots;
+    crate::systems::bot_buffs::expire(world, now_ms);
     let last = reg.last_sweep_ms.load(Ordering::Relaxed);
     if now_ms.saturating_sub(last) >= SWEEP_MS {
         reg.last_sweep_ms.store(now_ms, Ordering::Relaxed);
@@ -2252,5 +2254,131 @@ mod tests {
         let erm = EventRoomManager::new();
         erm.create_rooms(TempleEventType::ChaosDungeon, 1);
         assert_eq!(erm.list_rooms(TempleEventType::ChaosDungeon).len(), 1);
+    }
+
+    // ── Support casting (heals / buffs on room mates) ─────────────────────
+
+    fn karus_heal_rows(world: &WorldState) {
+        world.insert_magic(ko_db::models::MagicRow {
+            magic_num: 112_545,
+            en_name: Some("Heal".into()),
+            kr_name: None,
+            description: None,
+            t_1: Some(0),
+            before_action: Some(0),
+            target_action: Some(0),
+            self_effect: Some(0),
+            flying_effect: Some(0),
+            target_effect: Some(0),
+            moral: Some(2),
+            skill_level: Some(45),
+            skill: Some(45),
+            msp: Some(0),
+            hp: Some(0),
+            s_sp: Some(0),
+            item_group: Some(0),
+            use_item: Some(0),
+            cast_time: Some(0),
+            recast_time: Some(0),
+            success_rate: Some(100),
+            type1: Some(3),
+            type2: Some(0),
+            range: Some(30),
+            etc: Some(0),
+            use_standing: Some(0),
+            skill_check: Some(0),
+            icelightrate: Some(0),
+        });
+        world.insert_magic_type3(ko_db::models::MagicType3Row {
+            i_num: 112_545,
+            direct_type: Some(1),
+            first_damage: Some(500),
+            time_damage: Some(0),
+            duration: Some(0),
+            attribute: Some(0),
+            radius: Some(0),
+            add_dmg_perc_to_user: None,
+            add_dmg_perc_to_npc: None,
+        });
+    }
+
+    fn karus_priest(world: &WorldState) -> BotId {
+        any_priest(world, Some(1))
+    }
+
+    /// Any bot of `nation` (any nation: `None`), turned into a priest (class slots depend on the
+    /// mirror fill, so the class is forced instead of searched).
+    fn any_priest(world: &WorldState, nation: Option<u8>) -> BotId {
+        let id = world
+            .event_bots
+            .ids()
+            .into_iter()
+            .find(|id| world.get_bot(*id).is_some_and(|b| nation.is_none_or(|n| b.nation == n)))
+            .expect("a bot of that nation");
+        world.update_bot(id, |b| b.class = if b.nation == 1 { 112 } else { 212 });
+        id
+    }
+
+    /// BDW: a priest bot heals a wounded real player of its nation and room (not its party)
+    /// through the PK bots' support rotation, with the real heal row.
+    #[test]
+    fn bdw_priest_bot_heals_wounded_same_nation_room_member() {
+        let world = world_with_zone_start(84);
+        karus_heal_rows(&world);
+        add_human(&world, 1, 1, 84, 1, "Human");
+        open_room_with_humans(&world, TempleEventType::BorderDefenceWar, &[(1, 1, "Human")]);
+        let mut cfg = on(EventBotKind::Bdw);
+        cfg.bots_per_team = 4;
+        world.event_bots.set_config(EventBotKind::Bdw, cfg);
+        fill_temple_rooms(&world, TempleEventType::BorderDefenceWar);
+        phase_active(&world);
+        let priest = karus_priest(&world);
+        let bot = world.get_bot(priest).unwrap();
+        world.update_position(1, 84, bot.x + 3.0, 0.0, bot.z);
+        world.update_character_stats(1, |c| c.hp = 1000);
+        let entry = world.event_bots.get(priest).unwrap();
+        assert!(
+            bot_ai::tick_event_bot_support(&world, &bot, &entry, 10_000),
+            "the priest must cast on the wounded room member"
+        );
+        assert_eq!(world.get_character_info(1).unwrap().hp, 1500);
+    }
+
+    /// The same wounded player listed in another room is nobody's business.
+    #[test]
+    fn bdw_priest_bot_ignores_other_rooms() {
+        let world = world_with_zone_start(84);
+        karus_heal_rows(&world);
+        add_human(&world, 1, 1, 84, 1, "Human");
+        open_room_with_humans(&world, TempleEventType::BorderDefenceWar, &[(1, 1, "Human")]);
+        let mut cfg = on(EventBotKind::Bdw);
+        cfg.bots_per_team = 4;
+        world.event_bots.set_config(EventBotKind::Bdw, cfg);
+        fill_temple_rooms(&world, TempleEventType::BorderDefenceWar);
+        phase_active(&world);
+        let priest = karus_priest(&world);
+        let bot = world.get_bot(priest).unwrap();
+        world.update_position(1, 84, bot.x + 3.0, 0.0, bot.z);
+        world.update_character_stats(1, |c| c.hp = 1000);
+        let mut entry = world.event_bots.get(priest).unwrap();
+        entry.room = 2; // the bot belongs to room 2, the human is listed in room 1
+        assert!(!bot_ai::tick_event_bot_support(&world, &bot, &entry, 10_000));
+        assert_eq!(world.get_character_info(1).unwrap().hp, 1000);
+    }
+
+    /// Chaos is free for all: a priest bot never heals anybody but itself.
+    #[test]
+    fn chaos_priest_bot_buffs_nobody_else() {
+        let world = world_with_zone_start(85);
+        karus_heal_rows(&world);
+        fill_chaos_with_one_human_and_bots(&world, 4);
+        phase_active(&world);
+        let priest = any_priest(&world, None);
+        let bot = world.get_bot(priest).unwrap();
+        world.update_position(1, 85, bot.x + 3.0, 0.0, bot.z);
+        world.update_character_stats(1, |c| c.hp = 1000);
+        let entry = world.event_bots.get(priest).unwrap();
+        assert!(!bot_ai::tick_event_bot_support(&world, &bot, &entry, 10_000));
+        assert_eq!(world.get_character_info(1).unwrap().hp, 1000);
     }
 }

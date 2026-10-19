@@ -108,6 +108,11 @@ impl WorldState {
     pub(crate) fn insert_magic(&self, row: MagicRow) {
         self.magic_table.insert(row.magic_num, row);
     }
+    /// Insert a magic type 3 (damage/heal) row. Used for tests.
+    #[cfg(test)]
+    pub(crate) fn insert_magic_type3(&self, row: MagicType3Row) {
+        self.magic_type3.insert(row.i_num, row);
+    }
     /// Insert a magic type 4 (buff/debuff) row. Used for tests.
     #[cfg(test)]
     pub(crate) fn insert_magic_type4(&self, row: MagicType4Row) {

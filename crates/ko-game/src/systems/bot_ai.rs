@@ -909,6 +909,7 @@ pub fn start_bot_ai_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()> 
 pub fn tick_bots(world: &WorldState) {
     let now_unix = unix_now();
     let now_ms = tick_ms();
+    crate::systems::bot_buffs::expire(world, now_ms);
 
     // Collect IDs of bots to despawn (expired duration).
     let expired: Vec<BotId> = world.collect_expired_bot_ids(now_unix);
@@ -1452,17 +1453,9 @@ const BOT_SUPPORT_IDLE_RESCAN_MS: u64 = 1_000;
 /// Per `(bot, skill)` earliest next cast (tick ms), from the skill's recast time.
 static BOT_SUPPORT_READY: OnceLock<parking_lot::Mutex<HashMap<(BotId, u32), u64>>> =
     OnceLock::new();
-/// Bots carry no `ActiveBuff` map, so buffs cast on bot party members are
-/// tracked here: `(target bot, buff_type)` -> expiry (tick ms).
-static BOT_TARGET_BUFF_UNTIL: OnceLock<parking_lot::Mutex<HashMap<(BotId, i32), u64>>> =
-    OnceLock::new();
 
 fn bot_support_ready_map() -> &'static parking_lot::Mutex<HashMap<(BotId, u32), u64>> {
     BOT_SUPPORT_READY.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
-}
-
-fn bot_target_buff_map() -> &'static parking_lot::Mutex<HashMap<(BotId, i32), u64>> {
-    BOT_TARGET_BUFF_UNTIL.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
 }
 
 fn nation_skill(bot: &BotInstance, base_skill: u32) -> u32 {
@@ -1537,6 +1530,74 @@ fn collect_support_targets(world: &WorldState, bot: &BotInstance) -> Vec<Support
         .collect()
 }
 
+/// Friends of an event bot (see `tick_event_bot_support`): party mates plus the living
+/// same-nation members of its own event room, de-duplicated; only the bot itself in a
+/// free-for-all event.
+fn collect_event_support_targets(
+    world: &WorldState,
+    bot: &BotInstance,
+    entry: &crate::systems::event_bots::BotEntry,
+) -> Vec<SupportTarget> {
+    let mut targets = collect_support_targets(world, bot);
+    if entry.kind.is_ffa() {
+        targets.retain(|t| t.sid as u32 == bot.id);
+        return targets;
+    }
+    let mut push = |t: SupportTarget| {
+        if !targets.iter().any(|existing| existing.sid == t.sid) {
+            targets.push(t);
+        }
+    };
+    // Real players of the bot's nation in its room.
+    if let Some(et) = entry.kind.temple_type() {
+        if let Some(room) = world.event_room_manager.get_room(et, entry.room as u8) {
+            let users = if bot.nation == 1 { &room.karus_users } else { &room.elmorad_users };
+            for u in users.values() {
+                if u.logged_out || u.session_id as u32 >= crate::world::BOT_ID_BASE {
+                    continue;
+                }
+                let (Some(ch), Some(pos)) = (world.get_character_info(u.session_id), world.get_position(u.session_id)) else {
+                    continue;
+                };
+                if pos.zone_id != bot.zone_id || world.is_player_dead(u.session_id) {
+                    continue;
+                }
+                push(SupportTarget {
+                    sid: u.session_id,
+                    is_bot: false,
+                    hp: ch.hp,
+                    max_hp: ch.max_hp,
+                    x: pos.x,
+                    z: pos.z,
+                });
+            }
+        }
+    }
+    // Event bots of the same kind, room and nation.
+    for other_id in world.event_bots.ids() {
+        if other_id == bot.id {
+            continue;
+        }
+        let Some(other_entry) = world.event_bots.get(other_id) else { continue };
+        if other_entry.kind != entry.kind || other_entry.room != entry.room || other_entry.nation != bot.nation {
+            continue;
+        }
+        let Some(other) = world.get_bot(other_id) else { continue };
+        if !other.is_alive() || other.zone_id != bot.zone_id {
+            continue;
+        }
+        push(SupportTarget {
+            sid: other_id as SessionId,
+            is_bot: true,
+            hp: other.hp,
+            max_hp: other.max_hp,
+            x: other.x,
+            z: other.z,
+        });
+    }
+    targets
+}
+
 fn support_skill_ready(bot: &BotInstance, skill_id: u32, now_ms: u64) -> bool {
     bot_support_ready_map()
         .lock()
@@ -1586,14 +1647,16 @@ fn broadcast_support_effect(world: &WorldState, bot: &BotInstance, skill_id: u32
         target as u32,
         [bot.x as i32, bot.y as i32, bot.z as i32, 0, 0, 0, 0],
     );
-    broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &cast_pkt);
+    // Event bots live in a room: their packets only reach that room (room 0 = open world).
+    let room = world.event_bots.get(bot.id).map(|e| e.room).unwrap_or(0);
+    world.broadcast_to_region_sync(bot.zone_id, bot.region_x, bot.region_z, Arc::new(cast_pkt), None, room);
     let effect_pkt = build_bot_magic_packet(MAGIC_EFFECTING, skill_id, bot.id, target as u32, data);
-    broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect_pkt);
+    world.broadcast_to_region_sync(bot.zone_id, bot.region_x, bot.region_z, Arc::new(effect_pkt), None, room);
 }
 
 /// Cast a friendly Type4 buff. Players go through the shared
-/// `apply_bot_type4_support` (real ActiveBuff + stat refresh); bot targets
-/// only get the visual plus local expiry tracking.
+/// `apply_bot_type4_support` (real ActiveBuff + stat refresh); bot targets get
+/// the visual plus `bot_buffs` bookkeeping (AC / max HP effect, expiry).
 fn cast_support_buff(
     world: &WorldState,
     bot: &BotInstance,
@@ -1615,25 +1678,15 @@ fn cast_support_buff(
         return crate::handler::magic_process::apply_bot_type4_support(world, bot.id, target.sid, skill_id);
     }
 
-    let key = (target.sid as BotId, buff_type);
-    if bot_target_buff_map()
-        .lock()
-        .get(&key)
-        .is_some_and(|until| *until > now_ms)
-    {
+    if crate::systems::bot_buffs::blocks(target.sid as BotId, buff_type, now_ms) {
         return false;
     }
     if !commit_support_cast(world, bot, skill_id, now_ms) {
         return false;
     }
-    let duration = type4.duration.unwrap_or(0).max(0);
-    {
-        let mut buffs = bot_target_buff_map().lock();
-        if buffs.len() > 4096 {
-            buffs.retain(|_, until| *until > now_ms);
-        }
-        buffs.insert(key, now_ms + duration as u64 * 1000);
-    }
+    let Some(duration) = crate::systems::bot_buffs::apply(world, target.sid as BotId, skill_id, &type4, now_ms) else {
+        return false;
+    };
     broadcast_support_effect(
         world,
         bot,
@@ -1737,7 +1790,13 @@ fn cast_enemy_curse(world: &WorldState, bot: &BotInstance, enemy_sid: SessionId,
 /// state machine); bots have no such phase to interrupt, so the tick that
 /// commits a cast must not also move the bot, or it visibly casts while
 /// walking.
-fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], now_ms: u64) -> bool {
+fn tick_priest_support(
+    world: &WorldState,
+    bot: &BotInstance,
+    targets: &[SupportTarget],
+    allow_curse: bool,
+    now_ms: u64,
+) -> bool {
     let in_range = |skill_id: u32, target: &SupportTarget| {
         in_skill_range(world, bot, skill_id, target.sid, target.x, target.z)
     };
@@ -1806,6 +1865,9 @@ fn tick_priest_support(world: &WorldState, bot: &BotInstance, targets: &[Support
         }
     }
 
+    if !allow_curse {
+        return false;
+    }
     let Some(curse) = restrict_skill_for_level(&PRIEST_CURSES, bot.level, &allow).map(|s| nation_skill(bot, s)) else {
         return false;
     };
@@ -1861,10 +1923,33 @@ pub(crate) fn tick_bot_support(world: &WorldState, bot: &BotInstance, now_ms: u6
         return false;
     }
     let targets = collect_support_targets(world, bot);
+    run_support(world, bot, &targets, true, now_ms)
+}
+
+/// Support casting of an **event** bot (BDW / Juraid / Chaos), same rotation as the PK
+/// bots but with the event's rules for who is a friend:
+/// * nation-versus-nation events: the bot's party mates plus every living same-nation member
+///   of its own event room (real players included), never another room;
+/// * free-for-all (Chaos): nobody is a friend, the bot only buffs itself;
+/// * no curses (the enemy search of the PK brain knows nothing about rooms).
+pub(crate) fn tick_event_bot_support(
+    world: &WorldState,
+    bot: &BotInstance,
+    entry: &crate::systems::event_bots::BotEntry,
+    now_ms: u64,
+) -> bool {
+    if !(bot.is_priest() || bot.is_rogue()) || now_ms < bot.skill_cooldown[1] {
+        return false;
+    }
+    let targets = collect_event_support_targets(world, bot, entry);
+    run_support(world, bot, &targets, false, now_ms)
+}
+
+fn run_support(world: &WorldState, bot: &BotInstance, targets: &[SupportTarget], allow_curse: bool, now_ms: u64) -> bool {
     let cast = if bot.is_priest() {
-        tick_priest_support(world, bot, &targets, now_ms)
+        tick_priest_support(world, bot, targets, allow_curse, now_ms)
     } else {
-        tick_rogue_support(world, bot, &targets, now_ms)
+        tick_rogue_support(world, bot, targets, now_ms)
     };
     // A cast moves the gate forward itself; with nothing to do, rescan once a
     // second instead of every AI tick (the curse step scans the whole zone).
@@ -4338,6 +4423,7 @@ pub fn bot_on_death(world: &WorldState, bot_id: BotId, now_ms: u64) {
         b.regene_at_ms = now_ms + BOT_REGENE_DELAY_MS;
         b.last_attacker_id = -1;
     });
+    crate::systems::bot_buffs::clear(world, bot_id);
     // Runtime bots share the NPC DOT registry. Do not let an expired poison
     // continue ticking after death/regeneration.
     world.clear_npc_dots(bot_id);
@@ -6291,14 +6377,17 @@ fn set_bot_ability_with_equipment(world: &WorldState, bot: &mut BotInstance, coe
 pub(crate) fn bot_defense_ac(world: &WorldState, bot: &BotInstance) -> i32 {
     let legacy = bot.sta_stat as i32 * 3 + bot.level as i32 * 2;
     let item_ac = bot_equipped_stats(world, &bot.equip_visual).item_ac as i32;
-    if item_ac <= 0 {
-        return legacy;
-    }
-    let coeff_ac = world
-        .get_coefficient(bot.class)
-        .map(|coeff| coeff.ac as f32)
-        .unwrap_or(1.0);
-    (coeff_ac * (bot.level as f32 + item_ac as f32)) as i32
+    let base = if item_ac <= 0 {
+        legacy
+    } else {
+        let coeff_ac = world
+            .get_coefficient(bot.class)
+            .map(|coeff| coeff.ac as f32)
+            .unwrap_or(1.0);
+        (coeff_ac * (bot.level as f32 + item_ac as f32)) as i32
+    };
+    // AC buffs on the bot (priest AC line, player-cast buffs): see systems::bot_buffs.
+    crate::systems::bot_buffs::ac_with_buffs(bot.id, base, tick_ms())
 }
 
 /// Spawn a bot from GM command parameters (no DB row required).

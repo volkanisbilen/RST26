@@ -755,7 +755,9 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         let redirect_to_self = moral == MORAL_SELF
             || (moral == MORAL_FRIEND_WITHME
                 && instance.target_id != -1
-                && (instance.target_id as u32) >= NPC_BAND);
+                && (instance.target_id as u32) >= NPC_BAND
+                // a runtime bot is a friendly target, not an NPC (see friendly_bot_target)
+                && world.get_bot(instance.target_id as u32).is_none());
         if redirect_to_self {
             instance.target_id = caster_id;
         }
@@ -2655,6 +2657,27 @@ fn collect_party_all_targets(
     if let Some(party) = party {
         let caster_pos = world.get_position(caster_sid);
         for &msid in party.members.iter().flatten() {
+            if (msid as u32) >= crate::world::BOT_ID_BASE {
+                // Runtime bot party mate: alive, same zone, in range.
+                let Some(bot) = world.get_bot(msid as u32) else { continue };
+                if !bot.is_alive() || skip(msid) {
+                    continue;
+                }
+                if radius > 0.0 {
+                    if let Some(cp) = &caster_pos {
+                        if cp.zone_id != bot.zone_id {
+                            continue;
+                        }
+                        let dx = cp.x - bot.x;
+                        let dz = cp.z - bot.z;
+                        if (dx * dx + dz * dz).sqrt() > radius {
+                            continue;
+                        }
+                    }
+                }
+                targets.push(msid);
+                continue;
+            }
             if world.is_player_dead(msid) || skip(msid) {
                 continue;
             }
@@ -3058,6 +3081,14 @@ async fn execute_type3(
             instance.data[1] = 1;
             instance.data[3] = heal_amount as i32;
             for &t_sid in &targets {
+                if (t_sid as u32) >= NPC_BAND {
+                    if let Some(bot) = world.get_bot(t_sid as u32).filter(|b| b.is_alive()) {
+                        if matches!(direct_type, 0 | 1) && heal_amount > 0 {
+                            heal_bot_target(world, caster_sid, &bot, instance, heal_amount);
+                        }
+                    }
+                    continue;
+                }
                 if !apply_type3_friendly_heal(
                     world,
                     caster_sid,
@@ -3085,6 +3116,22 @@ async fn execute_type3(
         }
 
         let target_id = instance.target_id;
+        // Heal on a runtime bot (party mate or same-nation room member).
+        if target_id >= 0 && (target_id as u32) >= NPC_BAND {
+            let party_bypass = moral == MORAL_PARTY || moral == MORAL_PARTY_ALL;
+            let Some(bot) = friendly_bot_target(world, caster_sid, target_id as u32, skill, party_bypass) else {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            };
+            if !matches!(direct_type, 0 | 1) || first_damage <= 0 {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+            let heal_amount = first_damage.unsigned_abs().min(i16::MAX as u32) as i16;
+            instance.data[1] = 1;
+            instance.data[3] = heal_amount as i32;
+            return heal_bot_target(world, caster_sid, &bot, instance, heal_amount);
+        }
         let target_sid = if target_id < 0 {
             caster_sid
         } else {
@@ -4611,42 +4658,8 @@ fn execute_type4(
             let duration = type4_data.duration.unwrap_or(0).max(0) as u16;
             let radius = type4_data.radius.unwrap_or(0) as f32;
 
-            // Collect party member targets
-            let mut targets: Vec<SessionId> = Vec::with_capacity(8);
-            let caster_party_id = world
-                .get_character_info(caster_sid)
-                .and_then(|c| c.party_id);
-            if let Some(pid) = caster_party_id {
-                if let Some(party) = world.get_party(pid) {
-                    let caster_pos = world.get_position(caster_sid);
-                    for &msid in party.members.iter().flatten() {
-                        // Skip dead members
-                        if world.is_player_dead(msid) {
-                            continue;
-                        }
-                        // Range check (skip for caster)
-                        if msid != caster_sid && radius > 0.0 {
-                            if let (Some(ref cp), Some(tp)) =
-                                (&caster_pos, world.get_position(msid))
-                            {
-                                if cp.zone_id != tp.zone_id {
-                                    continue;
-                                }
-                                let dx = cp.x - tp.x;
-                                let dz = cp.z - tp.z;
-                                if (dx * dx + dz * dz).sqrt() > radius {
-                                    continue;
-                                }
-                            }
-                        }
-                        targets.push(msid);
-                    }
-                }
-            }
-            // C++ fallback: if no party members found, buff caster
-            if targets.is_empty() {
-                targets.push(caster_sid);
-            }
+            // Party members in range (bots included; falls back to the caster without a party).
+            let targets = collect_party_all_targets(world, caster_sid, radius, |_| false);
 
             instance.data[1] = 1; // bResult = success
             instance.data[3] = duration as i32;
@@ -4654,6 +4667,12 @@ fn execute_type4(
 
             // with actual target_id (not -1) so client shows buff icon on each target.
             for &t_sid in &targets {
+                if (t_sid as u32) >= NPC_BAND {
+                    if let Some(bot) = world.get_bot(t_sid as u32).filter(|b| b.is_alive()) {
+                        buff_bot_target(world, caster_sid, &bot, instance, &type4_data);
+                    }
+                    continue;
+                }
                 let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
                 pkt.write_u8(MAGIC_EFFECTING);
                 pkt.write_u32(instance.skill_id);
@@ -4681,6 +4700,19 @@ fn execute_type4(
         }
 
         // ── Single-target friendly buff (MORAL_PARTY, MORAL_FRIEND_*, or targeted MORAL_PARTY_ALL) ──
+        // Buff on a runtime bot (party mate or same-nation room member).
+        if instance.target_id >= 0 && (instance.target_id as u32) >= NPC_BAND {
+            let party_bypass = moral == MORAL_PARTY || moral == MORAL_PARTY_ALL;
+            let Some(bot) = friendly_bot_target(world, caster_sid, instance.target_id as u32, skill, party_bypass) else {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            };
+            if !buff_bot_target(world, caster_sid, &bot, instance, &type4_data) {
+                send_skill_failed(world, caster_sid, instance);
+                return false;
+            }
+            return true;
+        }
         let target_sid = if instance.target_id < 0 {
             caster_sid
         } else {
@@ -5475,6 +5507,126 @@ pub(crate) fn apply_bot_type4_support(
             event_room,
         );
     }
+    true
+}
+
+// ── Runtime bots as friendly targets of player heals / buffs ─────────────
+//
+// Bots (ids >= BOT_ID_BASE, within the NPC band) are visible as user models and join player
+// parties, but they have no ClientSession: the friendly Type-3 / Type-4 paths above used to
+// look the target up as a character and fail. These helpers give them the same friendly
+// rules as players (same nation, same zone, range or party bypass, same event room, never in
+// a free-for-all event) and apply the heal / buff to the bot's own state.
+
+/// Resolve bot `bot_id` as a legitimate friendly target of `caster_sid`'s skill.
+fn friendly_bot_target(
+    world: &WorldState,
+    caster_sid: SessionId,
+    bot_id: u32,
+    skill: &MagicRow,
+    party_bypass: bool,
+) -> Option<crate::world::BotInstance> {
+    let bot = world.get_bot(bot_id)?;
+    if !bot.is_alive() {
+        return None;
+    }
+    let caster = world.get_character_info(caster_sid)?;
+    let caster_pos = world.get_position(caster_sid)?;
+    if caster.nation != bot.nation || caster_pos.zone_id != bot.zone_id {
+        return None;
+    }
+    // Event bots: only members of the caster's own room, and never in a free-for-all event.
+    if let Some(entry) = world.event_bots.get(bot_id) {
+        if entry.kind.is_ffa() || world.get_event_room(caster_sid) != entry.room {
+            return None;
+        }
+    }
+    let same_party = party_bypass
+        && caster.party_id.is_some()
+        && caster.party_id == world.get_party_id(bot_id as SessionId);
+    if !same_party {
+        let range = resolve_skill_range(world, caster_sid, skill, bot_id as SessionId);
+        if range > 0 {
+            let dx = caster_pos.x - bot.x;
+            let dz = caster_pos.z - bot.z;
+            if dx * dx + dz * dz > (range * range) as f32 {
+                return None;
+            }
+        }
+    }
+    Some(bot)
+}
+
+/// Heal a bot by `heal_amount` and show it: bot HP, party HP bar, MAGIC_EFFECTING to the
+/// caster's region and the target HP bar to the caster.
+fn heal_bot_target(
+    world: &WorldState,
+    caster_sid: SessionId,
+    bot: &crate::world::BotInstance,
+    instance: &MagicInstance,
+    heal_amount: i16,
+) -> bool {
+    let now_ms = crate::systems::bot_ai::tick_ms();
+    let new_hp = bot.hp.saturating_add(heal_amount).min(bot.max_hp);
+    world.update_bot(bot.id, |b| {
+        b.hp = new_hp;
+        b.last_hp_change_ms = now_ms;
+    });
+    crate::systems::bot_ai::broadcast_bot_party_hp(world, bot.id);
+
+    let mut data = instance.data;
+    data[1] = 1;
+    data[3] = heal_amount as i32;
+    let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+    pkt.write_u8(MAGIC_EFFECTING);
+    pkt.write_u32(instance.skill_id);
+    pkt.write_u32(instance.caster_id as u32);
+    pkt.write_u32(bot.id);
+    for d in &data {
+        pkt.write_u32(*d as u32);
+    }
+    broadcast_to_caster_region(world, caster_sid, &pkt);
+    world.send_to_session_owned(
+        caster_sid,
+        super::target_hp::build_target_hp_packet(
+            bot.id,
+            0,
+            bot.max_hp.max(0) as u32,
+            new_hp.max(0) as u32,
+            heal_amount as i32,
+            heal_amount as i32,
+        ),
+    );
+    true
+}
+
+/// Put a friendly Type-4 buff on a bot (`systems::bot_buffs` bookkeeping: AC / max HP
+/// effect and expiry) and broadcast MAGIC_EFFECTING so every client shows the buff icon.
+/// Returns false when the bot already carries a buff of that type.
+fn buff_bot_target(
+    world: &WorldState,
+    caster_sid: SessionId,
+    bot: &crate::world::BotInstance,
+    instance: &MagicInstance,
+    type4_data: &ko_db::models::MagicType4Row,
+) -> bool {
+    let now_ms = crate::systems::bot_ai::tick_ms();
+    let Some(duration) = crate::systems::bot_buffs::apply(world, bot.id, instance.skill_id, type4_data, now_ms) else {
+        return false;
+    };
+    let mut data = instance.data;
+    data[1] = 1;
+    data[3] = duration;
+    data[5] = type4_data.speed.unwrap_or(0);
+    let mut pkt = Packet::new(Opcode::WizMagicProcess as u8);
+    pkt.write_u8(MAGIC_EFFECTING);
+    pkt.write_u32(instance.skill_id);
+    pkt.write_u32(instance.caster_id as u32);
+    pkt.write_u32(bot.id);
+    for d in &data {
+        pkt.write_u32(*d as u32);
+    }
+    broadcast_to_caster_region(world, caster_sid, &pkt);
     true
 }
 
@@ -7585,12 +7737,12 @@ fn cure_type4_debuffs(world: &WorldState, target_sid: SessionId) -> Vec<i32> {
 }
 
 /// Zones/events where an in-place scroll revive is not allowed (they have their own respawn).
-fn scroll_revive_forbidden(world: &WorldState, sid: SessionId) -> bool {
+/// The allow-list lives in `dead::resurrection_scroll_zone_allowed`, shared with the WIZ_DEAD
+/// killer/exp fields that make the client open the scroll window.
+pub(crate) fn scroll_revive_forbidden(world: &WorldState, sid: SessionId) -> bool {
     let zone = world.get_position(sid).map(|p| p.zone_id).unwrap_or(0);
-    matches!(
-        zone,
-        ZONE_CHAOS_DUNGEON | ZONE_DUNGEON_DEFENCE | ZONE_KNIGHT_ROYALE
-    ) || world.manes_survival_manager.is_participant_playing(sid)
+    !dead::resurrection_scroll_zone_allowed(zone)
+        || world.manes_survival_manager.is_participant_playing(sid)
 }
 
 async fn execute_type5(
@@ -15102,5 +15254,173 @@ mod tests {
         let pct_r2: i32 = 70; // 100 - 30 = 70
         let result2 = ((base_r + add_r + resistance_bonus) * pct_r2 / 100).max(0) as u16;
         assert_eq!(result2, 70); // 100 * 70 / 100 = 70
+    }
+
+    // ── Player heals / buffs on runtime bots ─────────────────────────────
+
+    fn bot_target_world(caster_nation: u8, bot_nation: u8, zone: u16) -> (crate::world::WorldState, u32) {
+        use crate::world::{CharacterInfo, Position};
+        let world = crate::world::WorldState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(1, tx);
+        world.register_ingame(
+            1,
+            CharacterInfo {
+                session_id: 1,
+                name: "Healer".into(),
+                nation: caster_nation,
+                level: 70,
+                hp: 5000,
+                max_hp: 5000,
+                ..Default::default()
+            },
+            Position { zone_id: zone, x: 100.0, y: 0.0, z: 100.0, region_x: 3, region_z: 3 },
+        );
+        let bot = crate::systems::bot_ai::spawn_gm_bot(
+            &world,
+            crate::systems::bot_ai::SpawnGmBotParams {
+                zone_id: zone,
+                x: 102.0,
+                y: 0.0,
+                z: 100.0,
+                class: 1,
+                level: 70,
+                nation: bot_nation,
+                ai_state: crate::world::BotAiState::Pk,
+            },
+        );
+        world.update_bot(bot, |b| {
+            b.max_hp = 4000;
+            b.hp = 2000;
+        });
+        (world, bot)
+    }
+
+    fn heal_skill(world: &crate::world::WorldState, id: i32, moral: i16) -> ko_db::models::MagicRow {
+        let mut row = make_test_magic(id, moral);
+        row.type1 = Some(3);
+        row.range = Some(30);
+        world.insert_magic(row.clone());
+        world.insert_magic_type3(ko_db::models::MagicType3Row {
+            i_num: id,
+            direct_type: Some(1),
+            first_damage: Some(500),
+            time_damage: Some(0),
+            duration: Some(0),
+            attribute: Some(0),
+            radius: Some(0),
+            add_dmg_perc_to_user: None,
+            add_dmg_perc_to_npc: None,
+        });
+        row
+    }
+
+    fn ac_buff_skill(world: &crate::world::WorldState, id: i32, moral: i16) -> ko_db::models::MagicRow {
+        let mut row = make_test_magic(id, moral);
+        row.type1 = Some(4);
+        row.range = Some(30);
+        world.insert_magic(row.clone());
+        world.insert_magic_type4(ko_db::models::MagicType4Row {
+            i_num: id,
+            buff_type: Some(2),
+            radius: None,
+            duration: Some(600),
+            attack_speed: None,
+            speed: None,
+            ac: Some(50),
+            ac_pct: None,
+            attack: None,
+            magic_attack: None,
+            max_hp: None,
+            max_hp_pct: None,
+            max_mp: None,
+            max_mp_pct: None,
+            str: None,
+            sta: None,
+            dex: None,
+            intel: None,
+            cha: None,
+            fire_r: None,
+            cold_r: None,
+            lightning_r: None,
+            magic_r: None,
+            disease_r: None,
+            poison_r: None,
+            exp_pct: None,
+            special_amount: None,
+            hit_rate: None,
+            avoid_rate: None,
+        });
+        row
+    }
+
+    fn instance_on(skill_id: u32, target: i32) -> MagicInstance {
+        MagicInstance { opcode: MAGIC_EFFECTING, skill_id, caster_id: 1, target_id: target, data: [0; 7] }
+    }
+
+    #[tokio::test]
+    async fn player_heal_lands_on_a_same_nation_bot() {
+        let (world, bot) = bot_target_world(1, 1, 71);
+        let skill = heal_skill(&world, 112_545, MORAL_FRIEND_WITHME);
+        let mut inst = instance_on(112_545, bot as i32);
+        assert!(execute_type3(&world, 1, &mut inst, &skill).await, "heal must succeed");
+        assert_eq!(world.get_bot(bot).unwrap().hp, 2500);
+        assert_eq!(inst.data[3], 500, "MAGIC_EFFECTING carries the heal amount");
+    }
+
+    #[tokio::test]
+    async fn player_heal_on_enemy_nation_bot_is_refused() {
+        let (world, bot) = bot_target_world(1, 2, 71);
+        let skill = heal_skill(&world, 112_545, MORAL_FRIEND_WITHME);
+        let mut inst = instance_on(112_545, bot as i32);
+        assert!(!execute_type3(&world, 1, &mut inst, &skill).await);
+        assert_eq!(world.get_bot(bot).unwrap().hp, 2000);
+    }
+
+    #[tokio::test]
+    async fn party_heal_reaches_bot_party_mates() {
+        let (world, bot) = bot_target_world(1, 1, 72);
+        let party = world.create_party(1).unwrap();
+        assert!(world.add_party_member(party, bot as u16));
+        let skill = heal_skill(&world, 112_580, MORAL_PARTY_ALL);
+        let mut inst = instance_on(112_580, -1);
+        assert!(execute_type3(&world, 1, &mut inst, &skill).await);
+        assert_eq!(world.get_bot(bot).unwrap().hp, 2500, "bot party mate healed by the group heal");
+    }
+
+    #[test]
+    fn player_buff_lands_on_bot_once_per_type() {
+        let (world, bot) = bot_target_world(1, 1, 73);
+        let skill = ac_buff_skill(&world, 112_603, MORAL_FRIEND_WITHME);
+        let mut inst = instance_on(112_603, bot as i32);
+        assert!(execute_type4(&world, 1, &mut inst, &skill));
+        let now = crate::systems::bot_ai::tick_ms();
+        assert!(crate::systems::bot_buffs::active(bot, now).iter().any(|b| b.skill_id == 112_603));
+        assert_eq!(crate::systems::bot_buffs::ac_with_buffs(bot, 100, now), 150, "AC buff counts for the bot");
+        let mut again = instance_on(112_603, bot as i32);
+        assert!(!execute_type4(&world, 1, &mut again, &skill), "same buff type is refused");
+        crate::systems::bot_buffs::clear(&world, bot);
+    }
+
+    /// Event bots: only the caster's own room, never in a free-for-all event.
+    #[test]
+    fn friendly_bot_target_respects_event_rooms_and_ffa() {
+        use crate::systems::event_bots::{BotEntry, EventBotKind};
+        let (world, bot) = bot_target_world(1, 1, 84);
+        let skill = heal_skill(&world, 112_545, MORAL_FRIEND_WITHME);
+        world.update_session(1, |h| h.event_room = 1);
+        world.event_bots.insert(bot, BotEntry::new(EventBotKind::Bdw, 2, 1, "B".into()));
+        assert!(friendly_bot_target(&world, 1, bot, &skill, false).is_none(), "other room");
+        world.event_bots.insert(bot, BotEntry::new(EventBotKind::Bdw, 1, 1, "B".into()));
+        assert!(friendly_bot_target(&world, 1, bot, &skill, false).is_some(), "same room");
+        world.event_bots.insert(bot, BotEntry::new(EventBotKind::Chaos, 1, 1, "B".into()));
+        assert!(friendly_bot_target(&world, 1, bot, &skill, false).is_none(), "free for all");
+        world.event_bots.remove(bot);
+        // out of range without a party, fine with the party bypass
+        world.update_bot(bot, |b| b.x = 200.0);
+        assert!(friendly_bot_target(&world, 1, bot, &skill, false).is_none(), "out of range");
+        let party = world.create_party(1).unwrap();
+        assert!(world.add_party_member(party, bot as u16));
+        assert!(friendly_bot_target(&world, 1, bot, &skill, true).is_some(), "party bypass");
     }
 }

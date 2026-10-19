@@ -28,10 +28,14 @@ use crate::systems::bdw;
 use crate::systems::event_room::{self, TempleEventType};
 use crate::systems::juraid;
 use crate::world::types::{
-    ZONE_BATTLE6, ZONE_CAITHAROS_ARENA, ZONE_CHAOS_DUNGEON, ZONE_DELOS_CASTELLAN,
-    ZONE_DESPERATION_ABYSS, ZONE_DRAGON_CAVE, ZONE_DRAKI_TOWER, ZONE_DUNGEON_DEFENCE,
-    ZONE_FELANKOR_ARENA, ZONE_FORGOTTEN_TEMPLE, ZONE_HELL_ABYSS, ZONE_ISILOON_ARENA,
-    ZONE_SNOW_BATTLE, ZONE_UNDER_CASTLE,
+    ZONE_ARDREAM, ZONE_ARENA, ZONE_BATTLE6, ZONE_BIFROST, ZONE_BLOOD_DON_ARENA,
+    ZONE_BORDER_DEFENSE_WAR, ZONE_CAITHAROS_ARENA, ZONE_CHAOS_DUNGEON, ZONE_DELOS,
+    ZONE_DELOS_CASTELLAN, ZONE_DESPERATION_ABYSS, ZONE_DRAGON_CAVE, ZONE_DRAKI_TOWER,
+    ZONE_DUNGEON_DEFENCE, ZONE_FELANKOR_ARENA, ZONE_FORGOTTEN_TEMPLE, ZONE_GOBLIN_ARENA,
+    ZONE_HELL_ABYSS, ZONE_ISILOON_ARENA, ZONE_JURAID_MOUNTAIN, ZONE_KNIGHT_ROYALE,
+    ZONE_ORC_ARENA, ZONE_PARTY_VS_1, ZONE_PARTY_VS_4, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE,
+    ZONE_SNOW_BATTLE, ZONE_SPBATTLE_MAX, ZONE_SPBATTLE_MIN, ZONE_STONE1, ZONE_STONE2,
+    ZONE_STONE3, ZONE_UNDER_CASTLE,
 };
 use crate::world::WorldState;
 use crate::zone::SessionId;
@@ -71,6 +75,76 @@ pub fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result<()> {
 
 /// "No killer" marker of the WIZ_DEAD killer field (the client reads it as a signed id).
 pub const DEAD_NO_KILLER: u32 = 0xFFFF_FFFF;
+
+/// Killer-id threshold of the 2625 client's Resurrection Scroll window (`sub_D73BD0`):
+/// the window opens when `killer_id > 45000 || (exp_lost as u32) > 0`.
+pub const CLIENT_SCROLL_WINDOW_KILLER_MIN: i32 = 45_000;
+
+/// Zones where every death -- PvP included -- must offer the Resurrection Scroll window:
+/// the PK zones (Ronark Land, Ardream, Ronark Land Base), Border Defence War and Juraid.
+pub const SCROLL_WINDOW_FORCED_ZONES: [u16; 5] = [
+    ZONE_RONARK_LAND,
+    ZONE_ARDREAM,
+    ZONE_RONARK_LAND_BASE,
+    ZONE_BORDER_DEFENSE_WAR,
+    ZONE_JURAID_MOUNTAIN,
+];
+
+/// Server policy for Resurrection Scrolls (type-5 `RESURRECTION_SELF` items): they revive in
+/// place everywhere **except** in the events that own their own respawn / knock-out rules.
+/// Chaos, Forgotten Temple / Ultima, Manes Survival, Dungeon Defence (Full Moon Rift), Knight
+/// Royale, Under the Castle, Bifrost, the CSW zones (Delos + Castellan dungeon), Draki Tower,
+/// Snow War, the boss / party arenas, Monster Stone and the special battle zones refuse the
+/// scroll; PK zones, BDW and Juraid allow it (see [`SCROLL_WINDOW_FORCED_ZONES`]).
+pub fn resurrection_scroll_zone_allowed(zone: u16) -> bool {
+    !(matches!(
+        zone,
+        ZONE_CHAOS_DUNGEON
+            | ZONE_FORGOTTEN_TEMPLE
+            | ZONE_DUNGEON_DEFENCE
+            | ZONE_KNIGHT_ROYALE
+            | ZONE_UNDER_CASTLE
+            | ZONE_BIFROST
+            | ZONE_DELOS
+            | ZONE_DELOS_CASTELLAN
+            | ZONE_DRAKI_TOWER
+            | ZONE_SNOW_BATTLE
+            | ZONE_ARENA
+            | ZONE_ORC_ARENA
+            | ZONE_BLOOD_DON_ARENA
+            | ZONE_GOBLIN_ARENA
+            | ZONE_CAITHAROS_ARENA
+            | ZONE_ISILOON_ARENA
+            | ZONE_FELANKOR_ARENA
+            | ZONE_STONE1
+            | ZONE_STONE2
+            | ZONE_STONE3
+    ) || crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&zone)
+        || (ZONE_PARTY_VS_1..=ZONE_PARTY_VS_4).contains(&zone)
+        || (ZONE_SPBATTLE_MIN..=ZONE_SPBATTLE_MAX).contains(&zone))
+}
+
+/// Killer / exp fields of the WIZ_DEAD packet after the scroll zone policy.
+///
+/// * Forbidden zone: the fields that would open the client's scroll window are stripped
+///   (`-1` killer, no exp), so the window never shows where the server would refuse the cast.
+/// * [`SCROLL_WINDOW_FORCED_ZONES`]: a death the client would not offer the window for (a PvP
+///   kill: player killer id, no exp loss) gets the low exp dword nudged to 1 -- the smallest
+///   value that opens the window; the scroll's EXP recovery reads the session's `lost_exp`,
+///   which stays 0 for PvP deaths, so nothing is refunded.
+/// * Everywhere else the fields pass through unchanged.
+pub fn scroll_window_fields(zone: u16, killer_id: u32, exp_lost: u64) -> (u32, u64) {
+    if !resurrection_scroll_zone_allowed(zone) {
+        return (DEAD_NO_KILLER, 0);
+    }
+    if SCROLL_WINDOW_FORCED_ZONES.contains(&zone) {
+        let opens = (killer_id as i32) > CLIENT_SCROLL_WINDOW_KILLER_MIN || (exp_lost & 0xFFFF_FFFF) != 0;
+        if !opens {
+            return (killer_id, exp_lost | 1);
+        }
+    }
+    (killer_id, exp_lost)
+}
 
 /// Build the v2600+ WIZ_DEAD body: `[u32 dead id][i32 killer id][u64 exp lost]`.
 ///
@@ -259,7 +333,14 @@ pub fn broadcast_death_with_killer(world: &WorldState, dead_sid: SessionId, kill
     let pos = world.get_position(dead_sid);
 
     // Build death packet — v2600 sniff verified: 16 bytes body
-    // [u32 dead_unit_id] [i32 killer_id] [u64 exp_lost]  (see build_dead_packet)
+    // [u32 dead_unit_id] [i32 killer_id] [u64 exp_lost]  (see build_dead_packet). The killer /
+    // exp fields decide whether the client opens the Resurrection Scroll window; apply the
+    // zone policy (see scroll_window_fields) so the window matches where the server allows the
+    // scroll.
+    let (killer_id, exp_lost) = match &pos {
+        Some(p) => scroll_window_fields(p.zone_id, killer_id, exp_lost),
+        None => (killer_id, exp_lost),
+    };
     let pkt = build_dead_packet(dead_sid as u32, killer_id, exp_lost);
 
     // Broadcast to 3x3 region (including self)
@@ -2854,5 +2935,52 @@ mod tests {
         // Verify position updated to Moradon
         let pos = world.get_position(sid).unwrap();
         assert_eq!(pos.zone_id, 21); // ZONE_MORADON
+    }
+
+    // ── Resurrection scroll zone policy ──────────────────────────────────
+
+    #[test]
+    fn scroll_allowed_in_pk_zones_bdw_juraid_and_open_world() {
+        for zone in [71u16, 72, 73, 84, 87, 21, 1, 2, 11, 12, 75, 61] {
+            assert!(resurrection_scroll_zone_allowed(zone), "zone {zone} must allow the scroll");
+        }
+    }
+
+    #[test]
+    fn scroll_refused_in_other_events() {
+        for zone in [
+            85u16, 55, 57, 58, 59, 60, 89, 76, 86, 31, 30, 35, 95, 69, 48, 51, 52, 53, 54, 93, 94, 81, 82, 83,
+            96, 97, 98, 99, 105, 110, 115,
+        ] {
+            assert!(!resurrection_scroll_zone_allowed(zone), "zone {zone} must refuse the scroll");
+        }
+    }
+
+    /// PvP death in a PK zone / BDW / Juraid: player killer id (< 45000) and no exp loss would
+    /// keep the client's window shut; the low exp dword is nudged to 1.
+    #[test]
+    fn pvp_death_in_scroll_zones_opens_the_window() {
+        for zone in SCROLL_WINDOW_FORCED_ZONES {
+            assert_eq!(scroll_window_fields(zone, 12, 0), (12, 1), "zone {zone} player killer");
+            assert_eq!(scroll_window_fields(zone, DEAD_NO_KILLER, 0), (DEAD_NO_KILLER, 1), "zone {zone} bot/no killer");
+            // already opening: untouched
+            assert_eq!(scroll_window_fields(zone, 10_123, 5_000), (10_123, 5_000));
+            assert_eq!(scroll_window_fields(zone, 50_001, 0), (50_001, 0));
+        }
+    }
+
+    #[test]
+    fn deaths_in_forbidden_event_zones_never_open_the_window() {
+        for zone in [85u16, 55, 57, 89, 76, 86, 31, 30, 95] {
+            assert_eq!(scroll_window_fields(zone, 10_123, 5_000), (DEAD_NO_KILLER, 0), "zone {zone}");
+            assert_eq!(scroll_window_fields(zone, 50_001, 0), (DEAD_NO_KILLER, 0), "zone {zone}");
+        }
+    }
+
+    /// Ordinary zones keep the plain behaviour: PvE exp loss opens the window, PvP does not.
+    #[test]
+    fn open_world_death_fields_pass_through() {
+        assert_eq!(scroll_window_fields(21, 12, 0), (12, 0));
+        assert_eq!(scroll_window_fields(11, 10_200, 777), (10_200, 777));
     }
 }

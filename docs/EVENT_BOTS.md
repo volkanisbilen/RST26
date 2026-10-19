@@ -220,6 +220,15 @@ wait for a bridge to open, they only wait for the stage to be cleared).
   their own lane. Bots never loot the Deva chest; they leave the Deva at ~10 % HP while you are in the room.
 * Turn everything off: no bot appears in any event.
 
+* **Support casting.** Priest and rogue event bots run the PK bots' support rotation
+  (`bot_ai::tick_event_bot_support`: cures, single-target heals below 70 % HP, the AC and max-HP
+  buff lines, Swift / Strength of Wolf) on their party mates **and** every living same-nation
+  member of their own event room, real players included; never another room, never a curse.
+  Chaos (free for all) bots only buff themselves. Players see the real MAGIC_CASTING /
+  MAGIC_EFFECTING packets (buff icons), bots carry their buffs in `systems::bot_buffs` (AC and
+  max HP really apply). Real players can heal / group-heal / buff bots too (same nation, same
+  room, range or party bypass; `magic_process::friendly_bot_target`), in events and PK zones.
+
 ## Limitations
 
 * Forgotten Temple and Manes are not bot-driven (see above).

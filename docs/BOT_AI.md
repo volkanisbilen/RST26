@@ -35,6 +35,10 @@ Cost: snapshot `O(units)` per zone per tick, `O(nearby)` per bot. No `bots x bot
 | HP < threshold, nobody near | HealUp | potions (and priest self-heal via bot_ai), drift to the party; ends at 70 % HP -> back to the fight |
 | enemies >= 2 and `enemies*100 >= allies*outnumbered_percent` | Retreat | same as above |
 | target, ranged class, enemy within 6.5 m | Kite | back off to 8 m; `kite_miss_percent` chance to forget; cornered -> fight |
+
+Before target selection an event bot (BDW / Juraid; Chaos only on itself) runs the support rotation of
+the PK bots (`bot_ai::tick_event_bot_support`, see `docs/EVENT_BOTS.md`); a cast pins it for the tick
+like the PK bots' `tick_bot_support`. Buffs on bots live in `systems::bot_buffs` (AC / max HP apply, expiry).
 | target | Engage | see below |
 | party leader > 24 m away | Regroup | class formation point around the leader |
 | nothing | Objective | plug-in (below); always moving, never standing in the open |
