@@ -87,6 +87,10 @@ DUMP_QUERIES = {
     "quest_monster": "select * from quest_monster order by s_quest_num",
     "npc_template": "select s_sid, is_monster, str_name, s_pid, by_type, s_level from npc_template order by s_sid, is_monster",
     "npc_spawn": "select npc_id, zone_id, is_monster, count(*) as spawns from npc_spawn group by 1,2,3 order by 1,2",
+    # round 3 (client-vs-server checks, see tools/quest_client_sync.py)
+    "npc_spawn_full": "select id,zone_id,npc_id,is_monster,act_type,regen_type,dungeon_family,special_type,trap_number,left_x,top_z,num_npc,spawn_range,regen_time,direction,dot_cnt,room,gm_added from npc_spawn where is_monster=false order by id",
+    "monster_item": "select * from monster_item order by s_index",
+    "monster_tmpl": "select s_sid,is_monster,str_name,s_item,s_level from npc_template where is_monster=true order by s_sid",
 }
 
 
@@ -291,6 +295,9 @@ def main():
     ap.add_argument("--client-exchange", type=Path,
                     help="output of `tbl_dump docs/data/Item_Exchange.tbl 0 100000`; enables EXCHANGE_CLIENT_ITEMS "
                          "(reward items the client table lists but the server row lost)")
+    ap.add_argument("--client-dump", type=Path,
+                    help="directory with tbl_dump text dumps of the CLIENT tables (Quest_Helper.txt, Quest_Monster_Exchange.txt, "
+                         "Item_Exchange.txt, NpcMopMap_Info.txt): enables the client-vs-server checks CLIENT_*")
     ap.add_argument("--fail-on-error", action="store_true")
     ap.add_argument("--max-detail", type=int, default=400, help="max rows per table in the report")
     args = ap.parse_args()
@@ -493,6 +500,22 @@ def main():
                                 add("BUTTON_NO_HANDLER", "ERROR", name, c.line, h.events[0],
                                     f"SelectMsg button -> EVENT {e} has no handler in this script (dead button)")
 
+    # ---- client Item_Exchange (optional) ---------------------------------------
+    client_ex = {}
+    ce_path = args.client_exchange if (args.client_exchange and args.client_exchange.exists()) else (
+        args.client_dump / "Item_Exchange.txt" if args.client_dump else None)
+    if ce_path and ce_path.exists():
+        for line in ce_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("row="):
+                d_ = dict(x.strip().split("=", 1) for x in line.split("|")[1:])
+                client_ex[int(d_["c0"])] = d_
+    client_zero = {}
+    for i_, c_ in client_ex.items():
+        z_ = [k for k in range(5) if (int(c_[f"c{3 + 2 * k}"]) and not int(c_[f"c{4 + 2 * k}"]))
+              or (int(c_[f"c{13 + 2 * k}"]) and not int(c_[f"c{14 + 2 * k}"]))]
+        if z_:
+            client_zero[i_] = z_
+
     # ---- exchange rows used by the scripts --------------------------------------
     exch_findings: dict[int, list] = {}
     for ex_id, uses in sorted(used_exchanges.items()):
@@ -505,16 +528,10 @@ def main():
             for kind, detail in probs:
                 sev = "ERROR"
                 if kind == "zero_count":
-                    sev = "WARN"
+                    sev = "INFO" if ex_id in client_zero else "WARN"   # the client row has the same empty-count slot
                 add("EXCHANGE_" + kind.upper(), sev, fname, line, ev, f"`{fn}({ex_id})`: {detail}")
 
     # ---- reward items lost from the server rows ---------------------------------
-    client_ex = {}
-    if args.client_exchange and args.client_exchange.exists():
-        for line in args.client_exchange.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.startswith("row="):
-                d = dict(x.strip().split("=", 1) for x in line.split("|")[1:])
-                client_ex[int(d["c0"])] = d
     for ex_id, uses in sorted(used_exchanges.items()):
         r = data.exchange.get(ex_id)
         if r is None or exchange_shifted(r):
@@ -522,9 +539,11 @@ def main():
         outs = [(int(r[f"exchange_item_num{k}"]), int(r[f"exchange_item_count{k}"])) for k in range(1, 6)]
         has_exp_row = ex_id in data.exchange_exp
         has_origin = any(int(r[f"origin_item_num{k}"]) for k in range(1, 6))
+        hunt_only = any(int(r[f"origin_item_num{k}"]) == 900005000 for k in range(1, 6))
         if has_origin and not any(a and c for a, c in outs) and not has_exp_row                 and not any(int(r[f"origin_item_num{k}"]) == 900012000 for k in range(1, 6)):
             for (fname, line, ev, fn) in uses:
-                add("EXCHANGE_NO_OUTPUT", "ERROR", fname, line, ev,
+                # a Hunt (kill counter) turn-in with no reward is a gate (teleport / chain step); the client row is empty too
+                add("EXCHANGE_NO_OUTPUT", "INFO" if hunt_only else "ERROR", fname, line, ev,
                     f"`{fn}({ex_id})`: the row has no reward at all (all exchange_item columns empty) - "
                     f"the quest completes and pays nothing")
         c = client_ex.get(ex_id)
@@ -536,6 +555,47 @@ def main():
                 for (fname, line, ev, fn) in uses:
                     add("EXCHANGE_CLIENT_ITEMS", "WARN", fname, line, ev,
                         f"`{fn}({ex_id})`: client Item_Exchange lists reward item(s) {lost} that the server row does not give")
+
+    # ---- client vs server (round 3) ---------------------------------------------
+    if args.client_dump:
+        import types
+        import quest_client_sync
+        crep = quest_client_sync.run(types.SimpleNamespace(
+            client_dump=args.client_dump, data_dir=args.data_dir, quests=args.quests, sql=None, after=None, report=None))
+        for fn_, n_ in crep["A_helper_rows_added_by_file"].items():
+            add("CLIENT_HELPER_MISSING", "WARN", fn_, 0, None,
+                f"{n_} client Quest_Helper rows of `{fn_}` have no server row (quest menu / status rows the client expects)")
+        for q_, new_, old_ in crep["B_quest_monster_updated_list"]:
+            f_ = add("CLIENT_MONSTER_DIFF", "WARN", "(quest_monster)", 0, None,
+                     f"quest {q_}: server kill targets/counts {old_[:5]}.. differ from the client {new_[:5]}..")
+            f_.quests.add(q_)
+        if crep["A_quest_monster_added"]:
+            add("CLIENT_MONSTER_DIFF", "WARN", "(quest_monster)", 0, None,
+                f"{crep['A_quest_monster_added']} client Quest_Monster_Exchange rows have no quest_monster row")
+        if crep["B_helper_level_lowered_to_client"]:
+            add("CLIENT_HELPER_LEVEL", "WARN", "(quest_helper)", 0, None,
+                f"{crep['B_helper_level_lowered_to_client']} quest_helper rows demand a higher level than the client shows")
+        for e_ in crep["B_exchange_rows_replaced_by_client"]:
+            add("CLIENT_EXCHANGE_DIFF", "WARN", "(item_exchange)", 0, None,
+                f"exchange {e_}: placeholder row of a client-only quest, the client row is different")
+        for e_, m_ in crep["B_exchange_reward_items_appended"]:
+            add("CLIENT_EXCHANGE_DIFF", "WARN", "(item_exchange)", 0, None,
+                f"exchange {e_}: client lists reward item(s) {m_} the server row lacks")
+        kept = crep["B_exchange_differences_kept"]
+        if kept["count"]:
+            add("CLIENT_EXCHANGE_DIFF", "INFO", "(item_exchange)", 0, None,
+                f"{kept['count']} used exchange rows differ from the client on purpose (server design): {kept['by_reason']}")
+        for t_, slot_, it_, rate_, q_ in crep["F_quest_item_drops_list"]:
+            f_ = add("CLIENT_QUEST_ITEM_NO_DROP", "ERROR", "(monster_item)", 0, None,
+                     f"quest {q_}: item {it_} is required by the exchange but no kill-target monster drops it (drop table {t_})")
+            f_.quests.add(q_)
+        if crep["D_npc_spawn_added_from_client_placement"]:
+            add("CLIENT_NPC_PLACEMENT", "WARN", "(npc_spawn)", 0, None,
+                f"{len(crep['D_npc_spawn_added_from_client_placement'])} quest NPCs have no npc_spawn row but the client "
+                f"NpcMopMap_Info places them: {[x[1] for x in crep['D_npc_spawn_added_from_client_placement']]}")
+        add("CLIENT_NPC_UNSPAWNED", "INFO", "(npc_spawn)", 0, None,
+            f"{crep['D_unspawned_no_client_placement']} quest NPCs without npc_spawn row and without client placement data; "
+            f"{crep['D_unspawned_no_npc_template']} more are not in npc_template at all")
 
     # ---- quest_helper rows ------------------------------------------------------
     for r in data.helpers:

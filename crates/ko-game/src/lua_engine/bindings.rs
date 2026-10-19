@@ -2445,6 +2445,31 @@ fn give_exchange_item(w: &Arc<WorldState>, sid: SessionId, item_id: u32, count: 
     }
 }
 
+/// True for the exchange ids that are handled as gold / exp / loyalty / skill instead of a bag item.
+fn is_exchange_virtual_id(item_id: u32) -> bool {
+    matches!(
+        item_id,
+        ITEM_GOLD | ITEM_EXP | ITEM_COUNT | ITEM_LADDERPOINT | ITEM_SKILL
+    )
+}
+
+/// Lifetime in days of an exchange reward (`exchange_item_time1..5` of the output slot that holds
+/// `item_id`), 0 = permanent.
+fn exchange_item_days(exchange: &ko_db::models::ItemExchangeRow, item_id: u32) -> u32 {
+    let slots = [
+        (exchange.exchange_item_num1, exchange.exchange_item_time1),
+        (exchange.exchange_item_num2, exchange.exchange_item_time2),
+        (exchange.exchange_item_num3, exchange.exchange_item_time3),
+        (exchange.exchange_item_num4, exchange.exchange_item_time4),
+        (exchange.exchange_item_num5, exchange.exchange_item_time5),
+    ];
+    slots
+        .iter()
+        .find(|(num, _)| *num > 0 && *num as u32 == item_id)
+        .map(|(_, days)| (*days).max(0) as u32)
+        .unwrap_or(0)
+}
+
 /// Give an exchange item and return success/failure.
 /// Same as `give_exchange_item` but returns `bool` to indicate success.
 /// Used by quest exchange to detect and log failed item delivery.
@@ -2844,7 +2869,15 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
     // ── Give all items in exchange list ──
     for &(item_id, count) in &deliverable {
         tracing::info!(sid, item_id, count, "RunQuestExchange: give_exchange_item");
-        if !give_exchange_item_checked(&w, sid, item_id, count) {
+        // exchange_item_timeN = lifetime in days of the reward (C++ passes it to GiveItem);
+        // without it timed quest rewards (Moradon event quests, 30 day items) were permanent.
+        let days = exchange_item_days(&exchange, item_id);
+        let delivered = if days > 0 && !is_exchange_virtual_id(item_id) {
+            w.give_item_with_expiry(sid, item_id, count.min(u16::MAX as u32) as u16, days)
+        } else {
+            give_exchange_item_checked(&w, sid, item_id, count)
+        };
+        if !delivered {
             // The plan above said it fits, so this is not expected; keep going so
             // the remaining rewards are still paid instead of aborting half-way.
             tracing::error!(
@@ -9901,6 +9934,17 @@ mod tests {
             exchange_item_time4: 0,
             exchange_item_time5: 0,
         }
+    }
+
+    #[test]
+    fn test_exchange_item_days_reads_the_output_slot() {
+        let mut row = quest_exchange_row(1, &[], &[(389010000, 1), (389011000, 2)]);
+        row.exchange_item_time2 = 30;
+        assert_eq!(exchange_item_days(&row, 389010000), 0);
+        assert_eq!(exchange_item_days(&row, 389011000), 30);
+        assert_eq!(exchange_item_days(&row, 123), 0);
+        assert!(is_exchange_virtual_id(ITEM_EXP));
+        assert!(!is_exchange_virtual_id(389010000));
     }
 
     /// Fill every bag slot with a distinct non-stackable junk item and return

@@ -86,10 +86,12 @@ if (EVENT == 540) then
 end
 
 if (EVENT == 537) then
-	SaveEvent(UID, 4089);
-	RunQuestExchange(UID, 461)
-	PromoteUser(UID)
-	SelectMsg(UID, 2, savenum, 4093, NPC, 4064, 193);
+	-- reward first: with a full bag the exchange is refused and the quest must stay open (no promotion either)
+	if (RunQuestExchange(UID, 461)) then
+		SaveEvent(UID, 4089);
+		PromoteUser(UID)
+		SelectMsg(UID, 2, savenum, 4093, NPC, 4064, 193);
+	end
 end
 
 if (EVENT == 220) then

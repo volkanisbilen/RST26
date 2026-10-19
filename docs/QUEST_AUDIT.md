@@ -74,37 +74,105 @@ Owner checklist (in game): (1) El Morad Captain Falkwine "Monster Suppression Sq
 Cheina/Kape accessory quest with a class: the weapon/ring/earring/pendant/belt arrives together with the quest completing
 (keep 4-5 free bag slots). (3) Clarence level-71 weapon quest.
 
-<!-- AUTO:BEGIN -->
-(State AFTER the migration: generated from the live snapshot with the 960 shifted exchange rows realigned. Before: 227 ERROR, 17+1 shifted-row findings.)
+## Round 3: client tables are the ground truth (client-vs-server diff)
 
-Scripts scanned: **844** Lua files, **38360** calls, **11558** quest_helper rows, **1493** quests, **6937** item_exchange rows (1350 referenced from Lua), **489335** items.  
-Findings: **205 ERROR**, **6823 WARN**, 114 INFO.  
-Quests with at least one ERROR on a path they reach: **108** of 1493.
+Method: the CLIENT tables of `D:\ai\JstKO Client\Data` (Quest_Helper 11629 rows, Quest_Monster_Exchange 859, Item_Exchange 5358,
+Item_Exchange_exp 163, Quest_Talk/Menu, NpcMopMap_Info = client NPC placement) were dumped with `tbl_dump` and diffed against a
+read-only snapshot of the live DB (2026-10-20: quest_helper 11559, quest_monster 609, item_exchange 12021, npc_spawn, monster_item,
+npc_template). The comparison is `tools/quest_client_sync.py`; it also generates the migration and a simulated "after" snapshot,
+and `tools/quest_audit.py --client-dump DIR` runs the same comparison as audit findings (`CLIENT_*`).
+Note: `docs/data/*.tbl` is NOT the client in use (6 of the 8 quest tables differ from `JstKO Client/Data`); round 3 reads the real client.
+
+Re-run: `tbl_dump <Data>/Quest_Helper.tbl 0 1000000 > dump/Quest_Helper.txt` (same for Quest_Monster_Exchange, Item_Exchange,
+NpcMopMap_Info), `python tools/quest_audit.py --data-dir <csv> --dump`, then
+`python tools/quest_client_sync.py --client-dump dump --data-dir <csv> --sql out.sql --after <csv_after>`.
+
+Migration: `migrations/20261020100000_quest_client_sync.sql` (one transaction, idempotent: `ON CONFLICT DO NOTHING`, `NOT EXISTS`
+guards, every UPDATE re-checks the snapshot value, nothing is deleted; verified idempotent against the model by re-running the
+generator on the "after" snapshot: 0 changes).
+
+### Counts before -> after (per category)
+
+| Cat | What | Before | Change | Notes |
+|---|---|---|---|---|
+| a | `quest_helper` rows in the client but not on the server | 900 client-only rows | **777 added** | 206 `daily_quest_manager` rows (npc 0, server has its own daily quest system) skipped on purpose; 77 rows whose client index is used by other server rows (14109-14187: Moira/Kaira/Hamus/Krevent ...) are inserted at index 40000+ (no Lua `SaveEvent`s these ids). 45 NPC scripts: Aset 192, Mackin 145, Magmom 119, Rabbit 31, Hill/Rily 8 scripts x 10-26, Kesar/Julius 25+25, Akara, Bgirs, Krevent 10, Move 10 ... |
+| a | `SAVEEVENT_UNKNOWN` (Lua saves a quest state that has no helper row) | 203 (99 INFO + 104 WARN) | 99 (30 INFO + 69 WARN) | the rest has no helper row in the client either (thethyke prison scripts, Agata/Pablo/Dreak/Skaky old ids: dead branches) |
+| a | `quest_monster` rows missing | 265 (219 usable) | **219 added** | 46 more reference monster ids that are not in `npc_template` (player-kill quests use "monster" id 1/2 = opposing nation) |
+| a | `item_exchange` ids used by Lua/helper but absent | 34 | 34 | none of them exists in the client table either (0, 705/706, 6250-6254, 6751, 6897-6944 ...): nothing to derive |
+| b | `quest_monster` kill target / count differs | 30 | **26 updated** | e.g. quest 78 count 10 -> 3, 342 250 -> 120, 356 60/60/80 -> 40/40/40, 223/224/459/460 targets 9777+1692+11692, 289/290 targets; 4 left (unknown monster ids) |
+| b | `quest_helper.b_level` higher on the server than in the client | 19 | **19 lowered** | Menisia 98-104 (12 -> 7), Patric 3331-3346 (8/9 -> 6). The server demanded a level the client does not show. |
+| b | `quest_helper` other differences | n_exp 5397, nation 564, level 73, zone 34, npc_main 110, talk 3 | kept | server value is more permissive than the client (nation 3 = both vs client 2 on Agata 26-90, level 1 vs 60 on Rily 9780-9829, exp threshold 0 vs client value), or display-only (zone, npc_main). Not changed: tightening them would block quests that work today. |
+| b | `item_exchange` placeholder rows of client-only quests | 11 | **11 replaced by the client row** | 6851-6855, 6858-6861 (Hunt-gate/pet/rebirth quests; the server row demanded 10 x `810035000` and paid a random equipment pool: nobody could ever finish them), 16237/16238 (Dark Mithril 1 -> 2) |
+| b | `item_exchange` reward the client lists, server lacks | 30 (all) | **1 appended** (29 Menisia: Speed-Up Potion), 29 kept | kept = Moira random pools (+3 items vs client +1/+2, `16047_Moira.lua`), 944/945, 985-992, 1042/1043, 6242 (judged intentional in rounds 1-2), Kesar 182, server-added Noah bonus (42 rows pay MORE than the client: Forkwain 88/54, Patric 323, Hapa 108, guardsman 1142-1145 ...) |
+| b | `item_exchange` origin differs from client | 57 used rows | kept | the Lua script of those rows checks the SERVER item set (e.g. Dreak 39: `HowmuchItem(379098000)`, client row wants 379046000); changing the row would make the turn-in impossible |
+| c | `HELPER_EVENT_NO_HANDLER` | 39 | 42 | +3 = new client rows Moira 1695 (trigger 4000). Remaining: Hapa 14301 skill quests 491/514/515 and Marauders 69 (events 241, 554-565, 1555-1765), Krevent 29235 / Keite / Moira / Patric / Burlet dead server rows. They need the original dialog scripts (text ids) - not derivable from the tables. |
+| c | Lua order bug: `SaveEvent(complete)` before the reward | 2 | **2 fixed** | `14201_Skaky.lua` / `24201_Skaky.lua` EVENT 537 (class promotion): the quest completed and the player was promoted even when the reward was refused (full bag). Reward first, quest + promotion only if it was delivered. |
+| d | quest NPCs without any `npc_spawn` row | 406 (361 with template) | **14 spawned** -> 392 | placed where the client `NpcMopMap_Info` puts them (Della 14426 / Elrod 24426 zone 71, 29012-29014, 29025-29027, 29072/29073 zone 71, Kesar 32557 / Julius 32558, 19001/29001 zone 21). 347 have no client placement (25xxx/16xxx/13xxx help NPCs, Moradon vendors ...), 45 are not in `npc_template` (Rabbit 31770, Hill/Rily 3182x, Bgirs, Cube1-8, Move ...): cannot be created from the client NPC table (it has no stats). |
+| d | quest NPC spawned in another zone than `b_zone` | 48 | kept | `b_zone` is only a hint (guide); reported |
+| e | quest item required by an exchange, dropped by nobody | 21 slots (quests 802, 809, 812, 939, 940, 942) | **21 drop slots written** | migration `20260817000005` had installed 802/809/812 but a later drop re-import removed them (the live drop tables 303/353/600/650/602/652 do not contain them); bosses 4059/4060/4067 drop their 3 quest items at 100 %. Existing drops are never overwritten (free slots only). 941 (4 items) and 803/805 are chain items produced by another exchange. |
+| e | item ids in the client tables but absent from the server item table | 2 | **2 added** | 810921000 / 810924000 (tattoo vouchers used by `25177_iruta.lua`), cloned from the 30-day voucher 810926000 |
+| e | item ids absent from BOTH tables | 24 | 24 | 508230000-508233000 (8th cake), 810261000, 890227000, 931750000 (Magmom), 900355762, 9003xx/9004xx (Carlos, KIFA, Ran, Chung/Beak/Hyun/Joo): cannot be invented |
+
+### Engine change (delivery)
+
+* `RunQuestExchange` now honours `exchange_item_timeN` (lifetime in days of a reward, as the C++ `GiveItem` does). The 23 timed rows
+  (6876-6883 Moradon event quests, 30-day items) used to hand out permanent items. Unit test `test_exchange_item_days_reads_the_output_slot`.
+
+### Unresolved / needs a decision
+
+* **Player-kill quests** (Quest_Monster_Exchange target id 1/2 = "kill the other nation": Hill/Rily/Kesar/Julius, ~25 quests): the server only counts NPC kills
+  (`quest_monster_count_add` is called from the NPC death path), so these quests cannot reach state 3. Needs a hook in the player-kill path.
+* `HELPER_EVENT_NO_HANDLER` (42) and the Moira 1695 "Lucky Box" event 4000 need the original quest dialogs (text ids) to be scripted.
+* 45 quest NPCs without `npc_template`, 347 without any placement data (see above).
+* The 114 differing-on-purpose exchange rows (list in the generator report) - owner decides whether the client numbers should win.
+* `BUTTON_NO_HANDLER` 10 on `31737_Fullmoon.lua` is a false positive (table driven `SHOP[EVENT]`).
+
+### Owner checklist (in game, after applying the migration and restarting)
+
+1. **Menisia (Moradon)**: her quests (helper rows 98-104) are offered from level 7 (was 12); the exchange 29 reward now includes the Speed-Up Potion. Patric (13013) quests 3331-3346 from level 6 (was 8/9).
+2. **Karus Eslant / El Morad Eslant event NPCs - Magmom (31506)**: talk to him; the event menu quests (e.g. 1662-1668) now start and save state.
+3. **Aset / Mackin (rebirth, level 83)**: the Mackin quest chain steps (1718-1723) are now stored; the hunt-gate exchanges 6859/6858 no longer demand 10 x 810035000.
+4. **Move NPCs / Knight (16084)**: the 1703-1705 kill-gate quests complete without a bogus item cost.
+5. **Hill / Rily (Ronark Land)**: with Della 14426 / Elrod 24426 / Kesar / Julius now standing in Ronark Land (zone 71) talk to them and take a quest; rewards 16237/16238 give 2 Dark Mithril Fragments.
+6. **Boss item quests 939/940/942 (Forbidden Love line)**: kill the boss (4059/4060/4067) - the 3 quest items now drop and can be turned in.
+7. **Smilodon / Tarantula quests 809 / 812 and the mana remains quest 802**: the collection items drop again from the mobs.
+8. **Class promotion at Skaky (Moradon)**: with a full bag the promotion is refused (quest stays open); free a slot and try again.
+9. A 30-day timed quest reward (Moradon event quest 6876+): the item shows an expiry date.
+
+<!-- AUTO:BEGIN -->
+Scripts scanned: **845** Lua files, **38390** calls, **12336** quest_helper rows, **1644** quests, **12021** item_exchange rows (1350 referenced from Lua), **489357** items.  
+Findings: **210 ERROR**, **5930 WARN**, 204 INFO.  
+Quests with at least one ERROR on a path they reach: **111** of 1644.
 
 ### Findings by check
 
 | Check | Severity | Count |
 |---|---|---:|
 | `ITEM_MISSING` | ERROR | 59 |
-| `MONSTER_NOT_IN_TEMPLATE` | ERROR | 52 |
-| `HELPER_EVENT_NO_HANDLER` | ERROR | 39 |
+| `MONSTER_NOT_IN_TEMPLATE` | ERROR | 47 |
+| `HELPER_EVENT_NO_HANDLER` | ERROR | 42 |
 | `EXCHANGE_ORIGIN_ITEM` | ERROR | 26 |
-| `EXCHANGE_OUTPUT_ITEM` | ERROR | 19 |
+| `EXCHANGE_OUTPUT_ITEM` | ERROR | 24 |
 | `BUTTON_NO_HANDLER` | ERROR | 10 |
+| `EXCHANGE_NO_OUTPUT` | ERROR | 2 |
 | `MONSTER_QUEST_MISSING` | WARN | 3405 |
-| `HELPER_NPC_UNSPAWNED` | WARN | 2879 |
-| `EXCHANGE_ZERO_COUNT` | WARN | 154 |
-| `QUEST_ID_UNKNOWN` | WARN | 118 |
-| `SAVEEVENT_UNKNOWN` | WARN | 104 |
-| `HELPER_NPC_MISSING` | WARN | 93 |
+| `HELPER_NPC_UNSPAWNED` | WARN | 2020 |
+| `HELPER_NPC_MISSING` | WARN | 277 |
+| `QUEST_ID_UNKNOWN` | WARN | 71 |
+| `SAVEEVENT_UNKNOWN` | WARN | 69 |
 | `BAD_ITEM_ID` | WARN | 34 |
 | `HELPER_EXCHANGE_MISSING` | WARN | 29 |
+| `EXCHANGE_CLIENT_ITEMS` | WARN | 17 |
 | `EXCHANGE_MISSING` | WARN | 5 |
 | `ITEM_MISSING` | WARN | 2 |
-| `SAVEEVENT_UNKNOWN` | INFO | 99 |
+| `EXCHANGE_ZERO_COUNT` | WARN | 1 |
+| `EXCHANGE_ZERO_COUNT` | INFO | 153 |
+| `SAVEEVENT_UNKNOWN` | INFO | 30 |
 | `ITEM_MISSING` | INFO | 9 |
-| `EXCHANGE_OUTPUT_ITEM` | INFO | 5 |
+| `EXCHANGE_NO_OUTPUT` | INFO | 9 |
 | `EVENT_ORDER` | INFO | 1 |
+| `CLIENT_EXCHANGE_DIFF` | INFO | 1 |
+| `CLIENT_NPC_UNSPAWNED` | INFO | 1 |
 
 ### item_exchange rows that are misaligned (shifted one column): 0 total, 0 used by Lua
 
@@ -152,7 +220,15 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 | 1 | 1474 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_ORIGIN_ITEM` L115 `RunQuestExchange(6225)`: origin item 810261000 (x10) not in item table |
 | 1 | 1475 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_ORIGIN_ITEM` L127 `RunQuestExchange(6226)`: origin item 810261000 (x2015) not in item table |
 | 1 | 1476 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_OUTPUT_ITEM` L139 `RunQuestExchange(6227)`: reward item 810261000 (x30) not in item table |
+| 1 | 1506 | both | 19073 (`19073_Shojin.lua`) | `EXCHANGE_NO_OUTPUT` L101 `RunQuestExchange(6230)`: the row has no reward at all (all exchange_item columns empty) - the quest completes and pays nothing<br>`EXCHANGE_NO_OUTPUT` L128 `RunQuestExchange(6230)`: the row has no reward at all (all exchange_item columns empty) - the quest completes and pays nothing |
 | 1 | 1531 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_ORIGIN_ITEM` L127 `RunQuestExchange(6226)`: origin item 810261000 (x2015) not in item table |
+| 1 | 1666 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_OUTPUT_ITEM` L260 `RunQuestExchange(6825)`: reward item 890227000 (x1) not in item table |
+| 1 | 1667 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_OUTPUT_ITEM` L297 `RunQuestExchange(6826)`: reward item 890227000 (x1) not in item table |
+| 1 | 1668 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_OUTPUT_ITEM` L334 `RunQuestExchange(6827)`: reward item 931750000 (x1) not in item table |
+| 1 | 1669 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_OUTPUT_ITEM` L371 `RunQuestExchange(6828)`: reward item 931750000 (x1) not in item table |
+| 1 | 1670 | both | 31506 (`31506_Magmom.lua`) | `EXCHANGE_OUTPUT_ITEM` L408 `RunQuestExchange(6829)`: reward item 931750000 (x1) not in item table |
+| 1 | 1695 | both | 16047 (`16047_Moira.lua`) | `HELPER_EVENT_NO_HANDLER` L0 quest_helper 14237 (quest 1695, lvl 1) trigger EVENT 4000 has no handler in `16047_Moira.lua`<br>`HELPER_EVENT_NO_HANDLER` L0 quest_helper 14238 (quest 1695, lvl 1) trigger EVENT 4000 has no handler in `16047_Moira.lua`<br>`HELPER_EVENT_NO_HANDLER` L0 quest_helper 14239 (quest 1695, lvl 1) trigger EVENT 4000 has no handler in `16047_Moira.lua` |
+| 1 | 1702 | both | 32530 (`32530_Parpe.lua`) | `ITEM_MISSING` L124 `HowmuchItem` item id 914022851 is not in the item table<br>`ITEM_MISSING` L133 `HowmuchItem` item id 914022851 is not in the item table<br>`ITEM_MISSING` L137 `RobItem` item id 914022851 is not in the item table<br>`ITEM_MISSING` L145 `HowmuchItem` item id 914032852 is not in the item table |
 | 1 | 2601 | both | 29235 (`29235_Krevent.lua`) | `HELPER_EVENT_NO_HANDLER` L0 quest_helper 14159 (quest 2601, lvl 1) trigger EVENT 600 has no handler in `29235_Krevent.lua` |
 | 1 | 6893 | both | 29056 (`29056_Kaira.lua`) | `ITEM_MISSING` L563 `HowmuchItem` item id 800386000 is not in the item table |
 | 1 | 6924 | both | 29235 (`29235_Krevent.lua`) | `HELPER_EVENT_NO_HANDLER` L0 quest_helper 14160 (quest 6924, lvl 1) trigger EVENT 3004 has no handler in `29235_Krevent.lua` |
@@ -179,14 +255,11 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 | 51 | 224 | El Morad | 14431 (`14431_Bess.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 224 group 1: monster 11692 is not a monster in npc_template - kills never count |
 | 51 | 459 | Karus | 24431 (`24431_Hashan.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 459 group 1: monster 11692 is not a monster in npc_template - kills never count |
 | 51 | 460 | El Morad | 14431 (`14431_Bess.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 460 group 1: monster 11692 is not a monster in npc_template - kills never count |
-| 56 | 473 | Karus | 24431 (`24431_Hashan.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 473 group 1: monster 11693 is not a monster in npc_template - kills never count |
-| 56 | 474 | El Morad | 14431 (`14431_Bess.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 474 group 1: monster 11693 is not a monster in npc_template - kills never count |
 | 59 | 246 | Karus | 24425 (`24425_Jamed.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 246 group 1: monster 2 is not a monster in npc_template - kills never count |
 | 59 | 248 | El Morad | 14425 (`14425_Raek.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 248 group 1: monster 1 is not a monster in npc_template - kills never count |
 | 60 | 282 | Karus | 24426 (`24426_Eload.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 282 group 2: monster 2223 is not a monster in npc_template - kills never count |
 | 60 | 443 | Karus | 21510 (`21510_Hwargo.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 443 group 1: monster 1 is not a monster in npc_template - kills never count |
 | 60 | 514 | both | 14301 (`14301_Hapa.lua`) | `HELPER_EVENT_NO_HANDLER` L0 quest_helper 2406 (quest 491, lvl 50) trigger EVENT 241 has no handler in `14301_Hapa.lua`<br>`HELPER_EVENT_NO_HANDLER` L0 quest_helper 2603 (quest 514, lvl 60) trigger EVENT 1655 has no handler in `14301_Hapa.lua`<br>`HELPER_EVENT_NO_HANDLER` L0 quest_helper 2604 (quest 514, lvl 60) trigger EVENT 1665 has no handler in `14301_Hapa.lua`<br>`HELPER_EVENT_NO_HANDLER` L0 quest_helper 2605 (quest 514, lvl 60) trigger EVENT 241 has no handler in `14301_Hapa.lua` |
-| 61 | 292 | El Morad | 14432 (`14432_Cheina.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 292 group 1: monster 1551 is not a monster in npc_template - kills never count |
 | 61 | 302 | Karus | 24424 (`24424_beda.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 302 group 1: monster 18007 is not a monster in npc_template - kills never count |
 | 61 | 303 | both | 14424 (`14424_dela.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 303 group 1: monster 18007 is not a monster in npc_template - kills never count |
 | 61 | 1007 | Karus | 24424 (`24424_beda.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 1007 group 1: monster 18007 is not a monster in npc_template - kills never count |
@@ -196,8 +269,6 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 | 64 | 316 | both | 14424 (`14424_dela.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 316 group 1: monster 17017 is not a monster in npc_template - kills never count |
 | 64 | 1013 | Karus | 24424 (`24424_beda.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 1013 group 1: monster 17017 is not a monster in npc_template - kills never count |
 | 64 | 1014 | both | 14424 (`14424_dela.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 1014 group 1: monster 17017 is not a monster in npc_template - kills never count |
-| 67 | 591 | Karus | 32531 (`32531_Crujed.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 591 group 1: monster 2 is not a monster in npc_template - kills never count |
-| 67 | 592 | El Morad | 32532 (`32532_Creible.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 592 group 1: monster 1 is not a monster in npc_template - kills never count |
 | 70 | 340 | Karus | 24426 (`24426_Eload.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 340 group 1: monster 2 is not a monster in npc_template - kills never count |
 | 70 | 341 | El Morad | 14426 (`14426_Dela.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 341 group 1: monster 1 is not a monster in npc_template - kills never count |
 | 70 | 1286 | El Morad | 25006 (`25006_Uranus.lua`) | `MONSTER_NOT_IN_TEMPLATE` L0 quest 1286 group 1: monster 1 is not a monster in npc_template - kills never count |
@@ -246,16 +317,26 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 
 </details>
 
-<details><summary><code>16047_Moira.lua</code> - 2 error(s)</summary>
+<details><summary><code>16047_Moira.lua</code> - 5 error(s)</summary>
 
 - L0 `HELPER_EVENT_NO_HANDLER`: quest_helper 10839 (quest 1633, lvl 35) trigger EVENT 3000 has no handler in `16047_Moira.lua` (quests 1633)
 - L0 `HELPER_EVENT_NO_HANDLER`: quest_helper 14110 (quest 6873, lvl 35) trigger EVENT 3002 has no handler in `16047_Moira.lua` (quests 6873)
+- L0 `HELPER_EVENT_NO_HANDLER`: quest_helper 14237 (quest 1695, lvl 1) trigger EVENT 4000 has no handler in `16047_Moira.lua` (quests 1695)
+- L0 `HELPER_EVENT_NO_HANDLER`: quest_helper 14238 (quest 1695, lvl 1) trigger EVENT 4000 has no handler in `16047_Moira.lua` (quests 1695)
+- L0 `HELPER_EVENT_NO_HANDLER`: quest_helper 14239 (quest 1695, lvl 1) trigger EVENT 4000 has no handler in `16047_Moira.lua` (quests 1695)
 
 </details>
 
 <details><summary><code>19002_Burlet.lua</code> - 1 error(s)</summary>
 
 - L0 `HELPER_EVENT_NO_HANDLER`: quest_helper 533 (quest 95, lvl 18) trigger EVENT 190 has no handler in `19002_Burlet.lua` (quests 95)
+
+</details>
+
+<details><summary><code>19073_Shojin.lua</code> - 2 error(s)</summary>
+
+- L101 `EXCHANGE_NO_OUTPUT`: `RunQuestExchange(6230)`: the row has no reward at all (all exchange_item columns empty) - the quest completes and pays nothing (quests 1506)
+- L128 `EXCHANGE_NO_OUTPUT`: `RunQuestExchange(6230)`: the row has no reward at all (all exchange_item columns empty) - the quest completes and pays nothing (quests 1506)
 
 </details>
 
@@ -418,11 +499,16 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 
 </details>
 
-<details><summary><code>31506_Magmom.lua</code> - 3 error(s)</summary>
+<details><summary><code>31506_Magmom.lua</code> - 8 error(s)</summary>
 
 - L115 `EXCHANGE_ORIGIN_ITEM`: `RunQuestExchange(6225)`: origin item 810261000 (x10) not in item table (quests 1474)
 - L127 `EXCHANGE_ORIGIN_ITEM`: `RunQuestExchange(6226)`: origin item 810261000 (x2015) not in item table (quests 1475, 1531)
 - L139 `EXCHANGE_OUTPUT_ITEM`: `RunQuestExchange(6227)`: reward item 810261000 (x30) not in item table (quests 1476)
+- L260 `EXCHANGE_OUTPUT_ITEM`: `RunQuestExchange(6825)`: reward item 890227000 (x1) not in item table (quests 1666)
+- L297 `EXCHANGE_OUTPUT_ITEM`: `RunQuestExchange(6826)`: reward item 890227000 (x1) not in item table (quests 1667)
+- L334 `EXCHANGE_OUTPUT_ITEM`: `RunQuestExchange(6827)`: reward item 931750000 (x1) not in item table (quests 1668)
+- L371 `EXCHANGE_OUTPUT_ITEM`: `RunQuestExchange(6828)`: reward item 931750000 (x1) not in item table (quests 1669)
+- L408 `EXCHANGE_OUTPUT_ITEM`: `RunQuestExchange(6829)`: reward item 931750000 (x1) not in item table (quests 1670)
 
 </details>
 
@@ -443,56 +529,55 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 
 <details><summary><code>32530_Parpe.lua</code> - 39 error(s)</summary>
 
-- L124 `ITEM_MISSING`: `HowmuchItem` item id 914022851 is not in the item table (quests 0, 1383, 1384)
-- L133 `ITEM_MISSING`: `HowmuchItem` item id 914022851 is not in the item table (quests 0, 1383, 1384)
-- L137 `ITEM_MISSING`: `RobItem` item id 914022851 is not in the item table (quests 0, 1383, 1384)
-- L145 `ITEM_MISSING`: `HowmuchItem` item id 914032852 is not in the item table (quests 0, 1383, 1384)
-- L154 `ITEM_MISSING`: `HowmuchItem` item id 914032852 is not in the item table (quests 0, 1383, 1384)
-- L158 `ITEM_MISSING`: `RobItem` item id 914032852 is not in the item table (quests 0, 1383, 1384)
-- L170 `ITEM_MISSING`: `HowmuchItem` item id 399381883 is not in the item table (quests 0, 1383, 1384)
-- L179 `ITEM_MISSING`: `HowmuchItem` item id 399381883 is not in the item table (quests 0, 1383, 1384)
-- L183 `ITEM_MISSING`: `RobItem` item id 399381883 is not in the item table (quests 0, 1383, 1384)
-- L191 `ITEM_MISSING`: `HowmuchItem` item id 399481745 is not in the item table (quests 0, 1383, 1384)
-- L200 `ITEM_MISSING`: `HowmuchItem` item id 399481745 is not in the item table (quests 0, 1383, 1384)
-- L204 `ITEM_MISSING`: `RobItem` item id 399481745 is not in the item table (quests 0, 1383, 1384)
-- L212 `ITEM_MISSING`: `HowmuchItem` item id 399581746 is not in the item table (quests 0, 1383, 1384)
-- L221 `ITEM_MISSING`: `HowmuchItem` item id 399581746 is not in the item table (quests 0, 1383, 1384)
-- L225 `ITEM_MISSING`: `RobItem` item id 399581746 is not in the item table (quests 0, 1383, 1384)
-- L236 `ITEM_MISSING`: `HowmuchItem` item id 399294738 is not in the item table (quests 0, 1383, 1384)
-- L245 `ITEM_MISSING`: `HowmuchItem` item id 399294738 is not in the item table (quests 0, 1383, 1384)
-- L249 `ITEM_MISSING`: `RobItem` item id 399294738 is not in the item table (quests 0, 1383, 1384)
-- L259 `ITEM_MISSING`: `HowmuchItem` item id 399299739 is not in the item table (quests 0, 1383, 1384)
-- L268 `ITEM_MISSING`: `HowmuchItem` item id 399299739 is not in the item table (quests 0, 1383, 1384)
-- L272 `ITEM_MISSING`: `RobItem` item id 399299739 is not in the item table (quests 0, 1383, 1384)
-- L282 `ITEM_MISSING`: `HowmuchItem` item id 399297740 is not in the item table (quests 0, 1383, 1384)
-- L291 `ITEM_MISSING`: `HowmuchItem` item id 399297740 is not in the item table (quests 0, 1383, 1384)
-- L295 `ITEM_MISSING`: `RobItem` item id 399297740 is not in the item table (quests 0, 1383, 1384)
-- L310 `ITEM_MISSING`: `HowmuchItem` item id 504122000 is not in the item table (quests 0, 1383, 1384)
-- L319 `ITEM_MISSING`: `HowmuchItem` item id 504122000 is not in the item table (quests 0, 1383, 1384)
-- L327 `ITEM_MISSING`: `RobItem` item id 504122000 is not in the item table (quests 0, 1383, 1384)
-- L335 `ITEM_MISSING`: `HowmuchItem` item id 505122000 is not in the item table (quests 0, 1383, 1384)
-- L344 `ITEM_MISSING`: `HowmuchItem` item id 505122000 is not in the item table (quests 0, 1383, 1384)
-- L352 `ITEM_MISSING`: `RobItem` item id 505122000 is not in the item table (quests 0, 1383, 1384)
-- L360 `ITEM_MISSING`: `HowmuchItem` item id 506122000 is not in the item table (quests 0, 1383, 1384)
-- L369 `ITEM_MISSING`: `HowmuchItem` item id 506122000 is not in the item table (quests 0, 1383, 1384)
-- L377 `ITEM_MISSING`: `RobItem` item id 506122000 is not in the item table (quests 0, 1383, 1384)
-- L390 `ITEM_MISSING`: `HowmuchItem` item id 901387000 is not in the item table (quests 0, 1383, 1384)
-- L398 `ITEM_MISSING`: `RobItem` item id 901387000 is not in the item table (quests 0, 1383, 1384)
-- L405 `ITEM_MISSING`: `HowmuchItem` item id 902387000 is not in the item table (quests 0, 1383, 1384)
-- L413 `ITEM_MISSING`: `RobItem` item id 902387000 is not in the item table (quests 0, 1383, 1384)
-- L420 `ITEM_MISSING`: `HowmuchItem` item id 903387000 is not in the item table (quests 0, 1383, 1384)
-- L428 `ITEM_MISSING`: `RobItem` item id 903387000 is not in the item table (quests 0, 1383, 1384)
+- L124 `ITEM_MISSING`: `HowmuchItem` item id 914022851 is not in the item table (quests 0, 1383, 1384, 1702)
+- L133 `ITEM_MISSING`: `HowmuchItem` item id 914022851 is not in the item table (quests 0, 1383, 1384, 1702)
+- L137 `ITEM_MISSING`: `RobItem` item id 914022851 is not in the item table (quests 0, 1383, 1384, 1702)
+- L145 `ITEM_MISSING`: `HowmuchItem` item id 914032852 is not in the item table (quests 0, 1383, 1384, 1702)
+- L154 `ITEM_MISSING`: `HowmuchItem` item id 914032852 is not in the item table (quests 0, 1383, 1384, 1702)
+- L158 `ITEM_MISSING`: `RobItem` item id 914032852 is not in the item table (quests 0, 1383, 1384, 1702)
+- L170 `ITEM_MISSING`: `HowmuchItem` item id 399381883 is not in the item table (quests 0, 1383, 1384, 1702)
+- L179 `ITEM_MISSING`: `HowmuchItem` item id 399381883 is not in the item table (quests 0, 1383, 1384, 1702)
+- L183 `ITEM_MISSING`: `RobItem` item id 399381883 is not in the item table (quests 0, 1383, 1384, 1702)
+- L191 `ITEM_MISSING`: `HowmuchItem` item id 399481745 is not in the item table (quests 0, 1383, 1384, 1702)
+- L200 `ITEM_MISSING`: `HowmuchItem` item id 399481745 is not in the item table (quests 0, 1383, 1384, 1702)
+- L204 `ITEM_MISSING`: `RobItem` item id 399481745 is not in the item table (quests 0, 1383, 1384, 1702)
+- L212 `ITEM_MISSING`: `HowmuchItem` item id 399581746 is not in the item table (quests 0, 1383, 1384, 1702)
+- L221 `ITEM_MISSING`: `HowmuchItem` item id 399581746 is not in the item table (quests 0, 1383, 1384, 1702)
+- L225 `ITEM_MISSING`: `RobItem` item id 399581746 is not in the item table (quests 0, 1383, 1384, 1702)
+- L236 `ITEM_MISSING`: `HowmuchItem` item id 399294738 is not in the item table (quests 0, 1383, 1384, 1702)
+- L245 `ITEM_MISSING`: `HowmuchItem` item id 399294738 is not in the item table (quests 0, 1383, 1384, 1702)
+- L249 `ITEM_MISSING`: `RobItem` item id 399294738 is not in the item table (quests 0, 1383, 1384, 1702)
+- L259 `ITEM_MISSING`: `HowmuchItem` item id 399299739 is not in the item table (quests 0, 1383, 1384, 1702)
+- L268 `ITEM_MISSING`: `HowmuchItem` item id 399299739 is not in the item table (quests 0, 1383, 1384, 1702)
+- L272 `ITEM_MISSING`: `RobItem` item id 399299739 is not in the item table (quests 0, 1383, 1384, 1702)
+- L282 `ITEM_MISSING`: `HowmuchItem` item id 399297740 is not in the item table (quests 0, 1383, 1384, 1702)
+- L291 `ITEM_MISSING`: `HowmuchItem` item id 399297740 is not in the item table (quests 0, 1383, 1384, 1702)
+- L295 `ITEM_MISSING`: `RobItem` item id 399297740 is not in the item table (quests 0, 1383, 1384, 1702)
+- L310 `ITEM_MISSING`: `HowmuchItem` item id 504122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L319 `ITEM_MISSING`: `HowmuchItem` item id 504122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L327 `ITEM_MISSING`: `RobItem` item id 504122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L335 `ITEM_MISSING`: `HowmuchItem` item id 505122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L344 `ITEM_MISSING`: `HowmuchItem` item id 505122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L352 `ITEM_MISSING`: `RobItem` item id 505122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L360 `ITEM_MISSING`: `HowmuchItem` item id 506122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L369 `ITEM_MISSING`: `HowmuchItem` item id 506122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L377 `ITEM_MISSING`: `RobItem` item id 506122000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L390 `ITEM_MISSING`: `HowmuchItem` item id 901387000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L398 `ITEM_MISSING`: `RobItem` item id 901387000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L405 `ITEM_MISSING`: `HowmuchItem` item id 902387000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L413 `ITEM_MISSING`: `RobItem` item id 902387000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L420 `ITEM_MISSING`: `HowmuchItem` item id 903387000 is not in the item table (quests 0, 1383, 1384, 1702)
+- L428 `ITEM_MISSING`: `RobItem` item id 903387000 is not in the item table (quests 0, 1383, 1384, 1702)
 
 </details>
 
-<details><summary><code>quest_monster</code> - 52 error(s)</summary>
+<details><summary><code>quest_monster</code> - 47 error(s)</summary>
 
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 223 group 1: monster 11692 is not a monster in npc_template - kills never count (quests 223)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 224 group 1: monster 11692 is not a monster in npc_template - kills never count (quests 224)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 246 group 1: monster 2 is not a monster in npc_template - kills never count (quests 246)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 248 group 1: monster 1 is not a monster in npc_template - kills never count (quests 248)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 282 group 2: monster 2223 is not a monster in npc_template - kills never count (quests 282)
-- L0 `MONSTER_NOT_IN_TEMPLATE`: quest 292 group 1: monster 1551 is not a monster in npc_template - kills never count (quests 292)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 302 group 1: monster 18007 is not a monster in npc_template - kills never count (quests 302)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 303 group 1: monster 18007 is not a monster in npc_template - kills never count (quests 303)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 315 group 1: monster 17017 is not a monster in npc_template - kills never count (quests 315)
@@ -503,10 +588,6 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 443 group 1: monster 1 is not a monster in npc_template - kills never count (quests 443)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 459 group 1: monster 11692 is not a monster in npc_template - kills never count (quests 459)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 460 group 1: monster 11692 is not a monster in npc_template - kills never count (quests 460)
-- L0 `MONSTER_NOT_IN_TEMPLATE`: quest 473 group 1: monster 11693 is not a monster in npc_template - kills never count (quests 473)
-- L0 `MONSTER_NOT_IN_TEMPLATE`: quest 474 group 1: monster 11693 is not a monster in npc_template - kills never count (quests 474)
-- L0 `MONSTER_NOT_IN_TEMPLATE`: quest 591 group 1: monster 2 is not a monster in npc_template - kills never count (quests 591)
-- L0 `MONSTER_NOT_IN_TEMPLATE`: quest 592 group 1: monster 1 is not a monster in npc_template - kills never count (quests 592)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 1007 group 1: monster 18007 is not a monster in npc_template - kills never count (quests 1007)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 1008 group 1: monster 18007 is not a monster in npc_template - kills never count (quests 1008)
 - L0 `MONSTER_NOT_IN_TEMPLATE`: quest 1013 group 1: monster 17017 is not a monster in npc_template - kills never count (quests 1013)
@@ -542,8 +623,8 @@ Quests with at least one ERROR on a path they reach: **108** of 1493.
 
 </details>
 
-### Lua files no quest_helper row points to (79)
+### Lua files no quest_helper row points to (52)
 
-`14201_SkakySPELLI.lua`, `14202_ClarenceSPELLI.lua`, `14203_DreakSPELLI.lua`, `14204_MinervaSPELLI.lua`, `14410_Chef.lua`, `15424_dela.lua`, `15438_Beldan.lua`, `15439_Agata.lua`, `15725_thethyke_kill.lua`, `15895_thethyke_kill.lua`, `18030_Envoy.lua`, `18034_Aide.lua`, `1881_NTSJOB.lua`, `19073_Shozin.lua`, `19074_Shojin.lua`, `23500_ZindanWarExit.lua`, `23523_shield.lua`, `24201_SkakySPELLLI.lua`, `24202_ClarenceSPELLI.lua`, `24203_DreakSPELLI.lua`, `24204_MinervaSPELLI.lua`, `25075_2_Prison1.lua`, `25076_2_Prison2.lua`, `25077_2_Prison3.lua`, `25078_2_Prison4.lua`, `25079_2_Prison5.lua`, `25080_1_Prison1.lua`, `25081_1_Prison2.lua`, `25082_1_Prison3.lua`, `25083_1_Prison4.lua`, `25084_1_Prison5.lua`, `25282_thethyke_prison_kill.lua`, `25283_thethyke_prison_kill.lua`, `26005_Earth.lua`, `26276_Rily.lua`, `29447_Voyeur.lua`, `29448_Voyeur.lua`, `29449_Voyeur.lua`, `29450_Voyeur.lua`, `29451_Voyeur.lua`, `29452_Voyeur.lua`, `29453_Voyeur.lua`, `29454_Voyeur.lua`, `29455_Voyeur.lua`, `29456_Voyeur.lua`, `29457_Voyeur.lua`, `29458_Voyeur.lua`, `29459_Voyeur.lua`, `29460_Voyeur.lua`, `29461_Voyeur.lua`, `29462_Voyeur.lua`, `30001_Akara.lua`, `31720_(JAPKO) LvL Jump.lua`, `31770_Rabbit.lua`, `31771_Bgirs.lua`, `31773_Merchant.lua`, `31774_Akara.lua`, `31775_SnowMove.lua`, `31776_LMove.lua`, `31777_Fish.lua`, `31780_FishQuest.lua`, `31790_keeper.lua`, `31791_Cube1.lua`, `31792_Cube2.lua`, `31793_Cube3.lua`, `31794_Cube4.lua`, `31795_Cube5.lua`, `31796_Cube6.lua`, `31797_Cube7.lua`, `31798_Cube8.lua`, `31810_LunaMove.lua`, `31811_LunaMove.lua`, `31812_LunaMove.lua`, `31813_LunaMove.lua`, `31814_LunaMove.lua`, `31820_Hill.lua`, `31821_Rily.lua`, `31822_Hill.lua`, `31823_Rily.lua`
+`14201_SkakySPELLI.lua`, `14202_ClarenceSPELLI.lua`, `14203_DreakSPELLI.lua`, `14204_MinervaSPELLI.lua`, `14410_Chef.lua`, `15424_dela.lua`, `15438_Beldan.lua`, `15439_Agata.lua`, `15725_thethyke_kill.lua`, `15895_thethyke_kill.lua`, `18030_Envoy.lua`, `1881_NTSJOB.lua`, `19073_Shozin.lua`, `19074_Shojin.lua`, `23500_ZindanWarExit.lua`, `23523_shield.lua`, `24201_SkakySPELLLI.lua`, `24202_ClarenceSPELLI.lua`, `24203_DreakSPELLI.lua`, `24204_MinervaSPELLI.lua`, `25075_2_Prison1.lua`, `25076_2_Prison2.lua`, `25077_2_Prison3.lua`, `25078_2_Prison4.lua`, `25079_2_Prison5.lua`, `25080_1_Prison1.lua`, `25081_1_Prison2.lua`, `25082_1_Prison3.lua`, `25083_1_Prison4.lua`, `25084_1_Prison5.lua`, `25282_thethyke_prison_kill.lua`, `25283_thethyke_prison_kill.lua`, `26005_Earth.lua`, `26276_Rily.lua`, `29447_Voyeur.lua`, `29448_Voyeur.lua`, `29449_Voyeur.lua`, `29450_Voyeur.lua`, `29451_Voyeur.lua`, `29452_Voyeur.lua`, `29453_Voyeur.lua`, `29454_Voyeur.lua`, `29455_Voyeur.lua`, `29456_Voyeur.lua`, `29457_Voyeur.lua`, `29458_Voyeur.lua`, `29459_Voyeur.lua`, `29460_Voyeur.lua`, `29461_Voyeur.lua`, `29462_Voyeur.lua`, `30001_Akara.lua`, `31720_(JAPKO) LvL Jump.lua`
 
 <!-- AUTO:END -->
