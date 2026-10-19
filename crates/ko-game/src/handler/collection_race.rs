@@ -677,6 +677,53 @@ pub async fn credit_pk_zone_player_kill(
     }
 }
 
+/// Collection Race credit for the REAL players in a runtime bot's party when
+/// that bot made a PK-zone kill (enemy player or enemy bot). Bots have no
+/// `CharacterInfo`, so `handle_kill` keyed on the bot would credit nobody; this
+/// uses the bot's own position as the share origin and applies the usual
+/// alive / same-zone / `CR_PARTY_SHARE_RANGE` party rules.
+pub async fn credit_bot_party_kill(world: &WorldState, killer_bot: crate::world::BotId) {
+    let Some(bot) = world.get_bot(killer_bot) else {
+        return;
+    };
+    if !matches!(
+        bot.zone_id,
+        ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
+    ) {
+        return;
+    }
+    let cr = world.collection_race_event().clone();
+    if !cr.read().is_active {
+        return;
+    }
+    let bot_sid = killer_bot as SessionId;
+    let Some(party) = world
+        .get_party_id(bot_sid)
+        .and_then(|pid| world.get_party(pid))
+    else {
+        return;
+    };
+    let members: Vec<_> = party
+        .members
+        .iter()
+        .filter_map(|&m| m)
+        .filter(|&m| (m as u32) < crate::world::BOT_ID_BASE)
+        .map(|m| {
+            let alive = world.get_character_info(m).is_some_and(|c| c.hp > 0);
+            let pos = world.get_position(m).map(|p| (p.zone_id, p.x, p.z));
+            (m, alive, pos)
+        })
+        .collect();
+    for sid in share_recipients(bot_sid, Some((bot.zone_id, bot.x, bot.z)), &members) {
+        if sid == bot_sid {
+            continue;
+        }
+        if let Err(e) = handle_kill_single(world, sid, CR_PK_BOT_KILL_PROTO_ID, &cr).await {
+            warn!("CR handle_kill error (bot party PK kill): {}", e);
+        }
+    }
+}
+
 /// Max distance (game units, per axis-plane) between the killer and a party
 /// member for the member to share the Collection Race kill credit.
 const CR_PARTY_SHARE_RANGE: f32 = 100.0;

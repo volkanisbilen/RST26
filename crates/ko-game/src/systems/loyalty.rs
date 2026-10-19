@@ -670,6 +670,108 @@ pub fn pvp_loyalty_on_bot_kill(world: &WorldState, killer_id: SessionId, victim_
     }
 }
 
+/// Who a runtime bot just killed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BotKillVictim {
+    /// A real player session.
+    Player(SessionId),
+    /// Another runtime bot (its nation is passed because bots have no
+    /// `CharacterInfo`).
+    Bot { bot_id: crate::world::BotId, nation: u8 },
+}
+
+/// Party NP for a kill made by a runtime bot.
+///
+/// Real KO shares a party member's kill NP with the whole party, and a PK bot
+/// in a mixed party is such a member — but bots never pass through
+/// `pvp_loyalty_on_death` / `pvp_loyalty_on_bot_kill` (both start from the
+/// killer's `CharacterInfo`), so until now a player partied with PK bots got
+/// nothing for the bots' kills. This pays every REAL, alive party member in
+/// the bot's zone the same `get_loyalty_divide_source` share a player kill
+/// would. Bots in the party get nothing here (their in-memory NP is handled
+/// by `bot_ai`). A bot victim pays the bot-kill share instead — `np_percent`,
+/// anti-farm window and spawn grace via `bot_brain::bot_kill_np`, evaluated
+/// per receiving member. A player victim pays the full player-kill divide;
+/// the victim's own NP loss is applied by the caller as before.
+///
+/// Returns the members that received NP.
+pub fn pvp_loyalty_on_bot_party_kill(
+    world: &WorldState,
+    killer_bot: crate::world::BotId,
+    victim: BotKillVictim,
+    now_ms: u64,
+) -> Vec<SessionId> {
+    let Some(bot) = world.get_bot(killer_bot) else {
+        return Vec::new();
+    };
+    let Some(party) = world
+        .get_party_id(killer_bot as SessionId)
+        .and_then(|pid| world.get_party(pid))
+    else {
+        return Vec::new();
+    };
+    let members: Vec<SessionId> = party.members.iter().filter_map(|&m| m).collect();
+    let real_members: Vec<SessionId> = members
+        .iter()
+        .copied()
+        .filter(|&m| (m as u32) < crate::world::BOT_ID_BASE)
+        .collect();
+    if real_members.is_empty() {
+        return Vec::new();
+    }
+
+    let zone_id = bot.zone_id;
+    let zone_gives_loy = world
+        .get_zone(zone_id)
+        .and_then(|z| z.zone_info.as_ref().map(|zi| zi.abilities.give_loyalty))
+        .unwrap_or(false);
+    if !zone_gives_loy {
+        return Vec::new();
+    }
+
+    let (victim_nation, victim_has_np, victim_has_monthly) = match victim {
+        BotKillVictim::Player(sid) => match world.get_character_info(sid) {
+            Some(v) => (v.nation, v.loyalty > 0, v.loyalty_monthly > 0),
+            None => return Vec::new(),
+        },
+        BotKillVictim::Bot { nation, .. } => (nation, true, false),
+    };
+    if victim_nation == bot.nation || !victim_has_np {
+        return Vec::new();
+    }
+
+    let rates = LoyaltyRates::default();
+    let base = get_loyalty_divide_source(zone_id, members.len() as u8, &rates) as i32;
+    if base <= 0 {
+        return Vec::new();
+    }
+
+    let mut paid = Vec::new();
+    for &member_id in &real_members {
+        let alive = world
+            .get_character_info(member_id)
+            .is_some_and(|c| c.hp > 0);
+        let in_zone = world
+            .get_position(member_id)
+            .is_some_and(|p| p.zone_id == zone_id);
+        if !alive || !in_zone {
+            continue;
+        }
+        let amount = match victim {
+            BotKillVictim::Player(_) => base,
+            BotKillVictim::Bot { bot_id, .. } => {
+                crate::systems::bot_brain::bot_kill_np(member_id, bot_id, base, now_ms)
+            }
+        };
+        if amount <= 0 {
+            continue;
+        }
+        send_loyalty_change(world, member_id, amount, true, false, victim_has_monthly);
+        paid.push(member_id);
+    }
+    paid
+}
+
 /// Get zone-based loyalty rates for a solo kill.
 fn get_zone_loyalty_rates(zone_id: u16, rates: &LoyaltyRates) -> (i16, i16) {
     if zone_id == ZONE_ARDREAM {

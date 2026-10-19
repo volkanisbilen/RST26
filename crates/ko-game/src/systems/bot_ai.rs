@@ -841,6 +841,46 @@ pub fn tick_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Runtime bots whose PK-zone kill still owes Collection Race credit to the
+/// real players in their party. Kills are resolved on the sync AI tick while
+/// `collection_race::handle_kill_single` is async, so the tick queues them and
+/// the AI task drains the queue right after `tick_bots`.
+static PENDING_CR_BOT_PARTY_KILLS: OnceLock<parking_lot::Mutex<Vec<BotId>>> = OnceLock::new();
+
+fn queue_cr_bot_party_kill(world: &WorldState, bot_id: BotId, zone_id: u16) {
+    if !matches!(
+        zone_id,
+        ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE
+    ) {
+        return;
+    }
+    // Only worth queueing when a real player shares the party.
+    let has_real_member = world
+        .get_party_id(bot_id as SessionId)
+        .and_then(|pid| world.get_party(pid))
+        .is_some_and(|p| {
+            p.members
+                .iter()
+                .flatten()
+                .any(|&m| (m as u32) < crate::world::BOT_ID_BASE)
+        });
+    if !has_real_member {
+        return;
+    }
+    PENDING_CR_BOT_PARTY_KILLS
+        .get_or_init(Default::default)
+        .lock()
+        .push(bot_id);
+}
+
+/// Take every queued bot party kill (see `queue_cr_bot_party_kill`).
+pub fn drain_cr_bot_party_kills() -> Vec<BotId> {
+    PENDING_CR_BOT_PARTY_KILLS
+        .get()
+        .map(|q| std::mem::take(&mut *q.lock()))
+        .unwrap_or_default()
+}
+
 /// Start the bot AI background task.
 /// Spawns a tokio task that ticks all active bots every `BOT_AI_TICK_MS`.
 /// Call this once during server startup, after world tables are loaded.
@@ -856,6 +896,9 @@ pub fn start_bot_ai_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()> 
         loop {
             interval.tick().await;
             tick_bots(&world);
+            for bot_id in drain_cr_bot_party_kills() {
+                crate::handler::collection_race::credit_bot_party_kill(&world, bot_id).await;
+            }
         }
     })
 }
@@ -2091,6 +2134,15 @@ fn process_bot_player_kill(world: &WorldState, bot: &BotInstance, victim_sid: Se
         victim_pos.x.max(0.0) as u16,
         victim_pos.z.max(0.0) as u16,
     );
+
+    // Real players partied with this bot share the kill like any party kill.
+    crate::systems::loyalty::pvp_loyalty_on_bot_party_kill(
+        world,
+        bot.id,
+        crate::systems::loyalty::BotKillVictim::Player(victim_sid),
+        tick_ms(),
+    );
+    queue_cr_bot_party_kill(world, bot.id, bot.zone_id);
 }
 
 /// Combat AI tick for Farmer/Pk bots.
@@ -4428,6 +4480,19 @@ pub fn bot_on_death(world: &WorldState, bot_id: BotId, now_ms: u64) {
                 bot.x.max(0.0) as u16,
                 bot.z.max(0.0) as u16,
             );
+
+            // Real players partied with the killer bot get the party share of
+            // this bot kill (bot-kill NP rules: np_percent / anti-farm / grace).
+            crate::systems::loyalty::pvp_loyalty_on_bot_party_kill(
+                world,
+                killer_bot.id,
+                crate::systems::loyalty::BotKillVictim::Bot {
+                    bot_id,
+                    nation: bot.nation,
+                },
+                now_ms,
+            );
+            queue_cr_bot_party_kill(world, killer_bot.id, zone_id);
         }
     }
 
@@ -11480,6 +11545,201 @@ mod tests {
             "RIGHTHAND should persist after route reset"
         );
     }
+
+    // ── Party NP for kills made by a bot in a mixed (player + bot) party ──
+
+    fn np_party_zone(world: &WorldState, zone_id: u16) {
+        use crate::zone::{ZoneAbilities, ZoneAbilityType, ZoneInfo};
+        world.set_zone_info(
+            zone_id,
+            ZoneInfo {
+                smd_name: String::new(),
+                zone_name: "pk".into(),
+                zone_type: ZoneAbilityType::PvP,
+                min_level: 1,
+                max_level: 83,
+                init_x: 0.0,
+                init_z: 0.0,
+                init_y: 0.0,
+                status: 1,
+                abilities: ZoneAbilities {
+                    give_loyalty: true,
+                    ..Default::default()
+                },
+            },
+        );
+    }
+
+    fn np_party_player(world: &WorldState, sid: SessionId, nation: u8, zone_id: u16, hp: i16) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(sid, tx);
+        std::mem::forget(rx);
+        world.register_ingame(
+            sid,
+            CharacterInfo {
+                name: format!("P{sid}"),
+                nation,
+                hp,
+                max_hp: 1000,
+                level: 70,
+                loyalty: 500,
+                loyalty_monthly: 500,
+                ..CharacterInfo::default()
+            },
+            crate::world::Position {
+                zone_id,
+                x: 500.0,
+                y: 0.0,
+                z: 500.0,
+                region_x: 0,
+                region_z: 0,
+            },
+        );
+    }
+
+    /// Tests that inspect the global CR bot-party-kill queue run serialized.
+    static CR_QUEUE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    fn np_of(world: &WorldState, sid: SessionId) -> u32 {
+        world.get_character_info(sid).unwrap().loyalty
+    }
+
+    /// Party: killer bot (karus) + player 1 (in zone), player 2 (other zone),
+    /// player 3 (dead), bot mate. Victim: enemy player 4.
+    fn np_party_world(killer_bot: BotId) -> WorldState {
+        let world = WorldState::new();
+        np_party_zone(&world, ZONE_RONARK_LAND);
+        let mut bot = make_combat_bot(killer_bot, "KillerBot", 1, 106, ZONE_RONARK_LAND, 500.0, 500.0);
+        bot.hp = 1000;
+        world.insert_bot(bot);
+        let mut mate = make_combat_bot(killer_bot + 1, "MateBot", 1, 104, ZONE_RONARK_LAND, 505.0, 500.0);
+        mate.hp = 1000;
+        world.insert_bot(mate);
+        np_party_player(&world, 1, 1, ZONE_RONARK_LAND, 900);
+        np_party_player(&world, 2, 1, 21, 900);
+        np_party_player(&world, 3, 1, ZONE_RONARK_LAND, 0);
+        np_party_player(&world, 4, 2, ZONE_RONARK_LAND, 0);
+        let pid = world.create_party(1).unwrap();
+        assert!(world.add_party_member(pid, killer_bot as SessionId));
+        assert!(world.add_party_member(pid, (killer_bot + 1) as SessionId));
+        assert!(world.add_party_member(pid, 2));
+        assert!(world.add_party_member(pid, 3));
+        world
+    }
+
+    #[test]
+    fn test_bot_party_kill_of_player_pays_real_members_in_zone_only() {
+        use crate::systems::loyalty::{pvp_loyalty_on_bot_party_kill, BotKillVictim};
+        let killer_bot = BOT_ID_BASE + 3100;
+        let world = np_party_world(killer_bot);
+
+        let paid = pvp_loyalty_on_bot_party_kill(&world, killer_bot, BotKillVictim::Player(4), 1_000);
+
+        assert_eq!(paid, vec![1], "only the alive, in-zone real member is paid");
+        assert!(np_of(&world, 1) > 500, "in-zone party member gains NP");
+        assert_eq!(np_of(&world, 2), 500, "member in another zone gets nothing");
+        assert_eq!(np_of(&world, 3), 500, "dead member gets nothing");
+        assert_eq!(np_of(&world, 4), 500, "this helper never touches the victim (caller does)");
+        assert_eq!(world.get_bot(killer_bot).unwrap().loyalty, 0, "bots get no party NP");
+        assert_eq!(world.get_bot(killer_bot + 1).unwrap().loyalty, 0, "bots get no party NP");
+    }
+
+    #[test]
+    fn test_bot_party_kill_same_nation_or_no_real_member_pays_nothing() {
+        use crate::systems::loyalty::{pvp_loyalty_on_bot_party_kill, BotKillVictim};
+        let killer_bot = BOT_ID_BASE + 3200;
+        let world = np_party_world(killer_bot);
+        // Same-nation victim.
+        np_party_player(&world, 5, 1, ZONE_RONARK_LAND, 0);
+        assert!(pvp_loyalty_on_bot_party_kill(&world, killer_bot, BotKillVictim::Player(5), 1_000).is_empty());
+        assert_eq!(np_of(&world, 1), 500);
+
+        // Bot-only party.
+        let world2 = WorldState::new();
+        np_party_zone(&world2, ZONE_RONARK_LAND);
+        world2.insert_bot(make_combat_bot(killer_bot, "Solo", 1, 106, ZONE_RONARK_LAND, 500.0, 500.0));
+        world2.insert_bot(make_combat_bot(killer_bot + 1, "Solo2", 1, 106, ZONE_RONARK_LAND, 500.0, 500.0));
+        let pid = world2.create_party(killer_bot as SessionId).unwrap();
+        assert!(world2.add_party_member(pid, (killer_bot + 1) as SessionId));
+        np_party_player(&world2, 4, 2, ZONE_RONARK_LAND, 0);
+        assert!(pvp_loyalty_on_bot_party_kill(&world2, killer_bot, BotKillVictim::Player(4), 1_000).is_empty());
+    }
+
+    #[test]
+    fn test_bot_party_kill_of_bot_uses_bot_kill_rules() {
+        use crate::systems::bot_brain;
+        use crate::systems::loyalty::{pvp_loyalty_on_bot_party_kill, BotKillVictim};
+        let killer_bot = BOT_ID_BASE + 3300;
+        let victim_bot = BOT_ID_BASE + 3399;
+        let world = np_party_world(killer_bot);
+        bot_brain::set_config(bot_brain::BrainConfig {
+            enabled: true,
+            ..bot_brain::config()
+        });
+        let cfg = bot_brain::config();
+        let grace = cfg.spawn_grace_secs as u64 * 1000;
+        let victim = BotKillVictim::Bot { bot_id: victim_bot, nation: 2 };
+
+        // Fresh respawn: spawn grace, nothing paid.
+        bot_brain::on_bot_respawn(victim_bot, 1_000_000);
+        assert!(pvp_loyalty_on_bot_party_kill(&world, killer_bot, victim, 1_000_000 + grace / 2).is_empty());
+        assert_eq!(np_of(&world, 1), 500);
+
+        // After the grace: the reduced bot share, once.
+        let t = 1_000_000 + grace + 1_000;
+        assert_eq!(pvp_loyalty_on_bot_party_kill(&world, killer_bot, victim, t), vec![1]);
+        let gained = np_of(&world, 1) - 500;
+        assert!(gained > 0, "in-zone member gets the bot share");
+        assert!(gained < 64, "bot kills pay less than a full player kill ({gained})");
+        assert_eq!(np_of(&world, 2), 500, "other zone: nothing");
+
+        // Same bot again inside the anti-farm window: nothing.
+        assert!(pvp_loyalty_on_bot_party_kill(&world, killer_bot, victim, t + 1_000).is_empty());
+        assert_eq!(np_of(&world, 1) - 500, gained);
+        bot_brain::forget(victim_bot);
+    }
+
+    #[test]
+    fn test_process_bot_player_kill_shares_np_and_queues_cr() {
+        let _serial = CR_QUEUE_TEST_LOCK.lock();
+        let killer_bot = BOT_ID_BASE + 3400;
+        let world = np_party_world(killer_bot);
+        drain_cr_bot_party_kills();
+        let bot = world.get_bot(killer_bot).unwrap();
+
+        process_bot_player_kill(&world, &bot, 4);
+
+        assert!(np_of(&world, 1) > 500, "party member gets NP for the bot's player kill");
+        assert!(np_of(&world, 4) < 500, "victim still loses NP");
+        assert_eq!(np_of(&world, 2), 500);
+        assert!(drain_cr_bot_party_kills().contains(&killer_bot), "CR party credit queued");
+    }
+
+    #[test]
+    fn test_bot_on_death_killed_by_party_bot_shares_np() {
+        use crate::systems::bot_brain;
+        let _serial = CR_QUEUE_TEST_LOCK.lock();
+        let killer_bot = BOT_ID_BASE + 3500;
+        let victim_bot = BOT_ID_BASE + 3599;
+        let world = np_party_world(killer_bot);
+        bot_brain::set_config(bot_brain::BrainConfig {
+            enabled: true,
+            ..bot_brain::config()
+        });
+        let mut victim = make_combat_bot(victim_bot, "EnemyBot", 2, 106, ZONE_RONARK_LAND, 510.0, 500.0);
+        victim.hp = 1;
+        victim.last_attacker_id = killer_bot as i32;
+        world.insert_bot(victim);
+        drain_cr_bot_party_kills();
+
+        bot_on_death(&world, victim_bot, 5_000_000);
+
+        assert!(np_of(&world, 1) > 500, "party member gets NP when the bot kills an enemy bot");
+        assert_eq!(np_of(&world, 2), 500);
+        assert!(drain_cr_bot_party_kills().contains(&killer_bot));
+        bot_brain::forget(victim_bot);
+    }
+
 }
 
 
