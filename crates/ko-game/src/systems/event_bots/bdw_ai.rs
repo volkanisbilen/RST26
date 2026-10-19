@@ -1,40 +1,51 @@
-//! Border Defence War objective AI of the event bots (child of `event_bots`, so it shares the
-//! driver's private helpers).
+//! Border Defence War objective of the event bots (child of `event_bots`, so it shares the
+//! driver's private helpers). The bots are driven by the shared bot brain
+//! (`bot_brain::tick_event`: threat, targeting, kite / retreat / heal, formation, consumables);
+//! this module is the **objective layer** the brain asks when no fight is on, plus the BDW
+//! target priorities.
 //!
-//! * **Altar.** Bots walk to the central Altar of Manes of their room and hit it down. The bot
-//!   that lands the last hit carries the flag: it is slowed like a player carrier
-//!   (`FRAGMENT_SPEED_VALUE`), walks to its own base and delivers through the same function the
-//!   players use (`bdw_altar_delivery`), so score, win threshold and the respawn timer behave
-//!   exactly as for humans. The carrier state is the normal `has_altar_obtained` flag of the
-//!   room's `EventUser`.
+//! * **Altar.** Altar takers (`Role::Hotspot`) walk to the central Altar of Manes of their room
+//!   and hit it down. The bot that lands the last hit carries the flag: it is slowed like a
+//!   player carrier (`FRAGMENT_SPEED_VALUE`), walks to its own base and delivers through the
+//!   same function the players use (`bdw_altar_delivery`), so score, win threshold and the
+//!   respawn timer behave exactly as for humans. The carrier state is the normal
+//!   `has_altar_obtained` flag of the room's `EventUser`.
+//! * **Roamers** (`Role::Patrol`) sweep the arena between the altar and the enemy base,
+//!   intercepting whatever comes; they never stand still in the open.
+//! * **Enemy carrier.** Everybody converges on an enemy flag carrier (human or bot); within the
+//!   brain's search range the carrier gets a large target bonus.
+//! * **Ally carrier.** Escort: stay around him on the way home.
+//! * **Independence.** A bot in a real player's party assists the party (the brain favours
+//!   enemies that hit a party mate) but keeps acting on its own: no following.
 //! * **No rewards for bots.** Bot `EventUser`s are created with `prize_given = true`; the reward
-//!   collectors skip them, so a bot carrying or delivering the altar earns nothing for itself.
-//!   The nation's score still rises (that is what the fight is about) and real teammates profit
-//!   through the nation result only.
-//! * **Enemy carrier.** Every bot hunts an enemy flag carrier (human or bot).
-//! * **Party.** A bot that sits in a party led by a real player follows him (field-bot style)
-//!   and fights what comes near; it does not take the altar on its own, the leader decides.
-//! * Enemies closer than [`AGGRO_RANGE`] are fought first (the regular driver code runs).
+//!   collectors skip them.
 
 use super::*;
 use crate::systems::bdw;
+use crate::systems::bot_brain::{self, BrainState, Drive, Role, Unit};
 
-/// Enemies closer than this are fought before the objective.
-const AGGRO_RANGE: f32 = 22.0;
-/// A party bot starts walking back to its leader when farther than this.
-const FOLLOW_TRIGGER: f32 = 10.0;
-/// An escorting (party-less) bot stays within this distance of an allied carrier.
+/// An escorting bot stays within this distance of an allied carrier.
 const ESCORT_RANGE: f32 = 10.0;
 /// One bot hit takes this share of the altar's maximum HP.
 const ALTAR_HIT_PERCENT: i32 = 10;
 /// Bot hits on the altar come at this interval.
 const ALTAR_COOLDOWN_MS: u64 = 1_500;
-/// Fake target id for "walk to this point".
-const POINT: u32 = u32::MAX;
+/// Target bonus of the enemy altar carrier.
+const CARRIER_BONUS: f32 = 60.0;
+/// Radius of the drift around the (dead) altar while waiting for its respawn.
+const ALTAR_WAIT_RADIUS: f32 = 10.0;
+/// A roamer keeps one roam point for this long.
+const ROAM_MIN_MS: u64 = 12_000;
+const ROAM_MAX_MS: u64 = 30_000;
 
-/// Step length of a bot carrying the altar (the player slow-down factor of the Fragment of Manes).
+/// Step scale of a bot carrying the altar (the player slow-down factor of the Fragment of Manes).
+pub(super) fn carrier_scale() -> f32 {
+    bdw::FRAGMENT_SPEED_VALUE as f32 / 100.0
+}
+
+/// Step length of a carrying bot per tick (diagnostics / tests).
 pub(super) fn carrier_step() -> f32 {
-    STEP_PER_TICK * bdw::FRAGMENT_SPEED_VALUE as f32 / 100.0
+    STEP_PER_TICK * carrier_scale()
 }
 
 /// Centre of a nation's delivery zone.
@@ -59,116 +70,8 @@ pub(super) fn altar_of_room(world: &WorldState, room: u16) -> Option<(u32, f32, 
     Some((npc.nid, npc.x, npc.z, hp))
 }
 
-fn to(x: f32, z: f32) -> Target {
-    Target { id: POINT, x, z }
-}
-
 fn dist(bot: &BotInstance, x: f32, z: f32) -> f32 {
     ((x - bot.x).powi(2) + (z - bot.z).powi(2)).sqrt()
-}
-
-/// Real leader of the bot's party and his position (same zone), if there is one.
-fn human_leader(world: &WorldState, bot: &BotInstance) -> Option<(SessionId, f32, f32)> {
-    let pid = world.get_party_id(bot.id as SessionId)?;
-    let leader = world.get_party(pid)?.leader_sid()?;
-    if leader as u32 >= BOT_ID_BASE {
-        return None;
-    }
-    let pos = world.get_position(leader)?;
-    (pos.zone_id == bot.zone_id).then_some((leader, pos.x, pos.z))
-}
-
-/// One BDW decision. Returns `true` when the bot was driven this tick; `false` lets the regular
-/// fight-the-nearest-enemy code run.
-pub(super) fn drive(world: &WorldState, entry: &BotEntry, bot: &BotInstance, now_ms: u64) -> bool {
-    use crate::systems::event_room::TempleEventType;
-
-    let carrier = {
-        let Some(room) = world
-            .event_room_manager
-            .get_room(TempleEventType::BorderDefenceWar, entry.room as u8)
-        else {
-            return false;
-        };
-        bdw::find_flag_carrier(&room)
-    };
-
-    // 1. I carry the altar: home, slowly.
-    if carrier.as_ref().is_some_and(|(name, _, _)| *name == entry.name) {
-        if bdw::is_in_delivery_zone(entry.nation, bot.x, bot.z) {
-            crate::handler::move_handler::bdw_altar_delivery(
-                world,
-                bot.id as SessionId,
-                &entry.name,
-                entry.nation,
-                bot.x,
-                bot.z,
-            );
-            return true;
-        }
-        let (hx, hz) = base_centre(entry.nation);
-        walk_toward_step(world, entry, bot, to(hx, hz), carrier_step());
-        return true;
-    }
-
-    // 2. A close enemy is fought by the regular code.
-    let near = find_target(world, entry, bot);
-    if near.is_some_and(|t| dist(bot, t.x, t.z) <= AGGRO_RANGE) {
-        return false;
-    }
-
-    // 3. An enemy carries the altar: everybody hunts him.
-    if let Some((_, csid, cnation)) = &carrier {
-        if *cnation != entry.nation {
-            if let Some(t) = resolve_target(world, entry, bot, *csid as u32) {
-                engage(world, entry, bot, t, now_ms);
-                return true;
-            }
-        }
-    }
-
-    // 4. In a party of a real player: stay with the leader.
-    if let Some((_, lx, lz)) = human_leader(world, bot) {
-        // closer than FOLLOW_TRIGGER the bot idles (a fight breaks out through step 2)
-        if dist(bot, lx, lz) > FOLLOW_TRIGGER {
-            walk_toward(world, entry, bot, to(lx, lz), now_ms);
-        }
-        return true;
-    }
-
-    // 5. An ally carries: escort him.
-    if let Some((name, csid, cnation)) = &carrier {
-        if *cnation == entry.nation && *name != entry.name {
-            if let Some(pos) = pos_of(world, *csid as u32) {
-                if dist(bot, pos.0, pos.1) > ESCORT_RANGE {
-                    walk_toward(world, entry, bot, to(pos.0, pos.1), now_ms);
-                }
-                return true;
-            }
-        }
-    }
-
-    // 6. Nobody carries: take the altar.
-    let Some((altar_id, ax, az, hp)) = altar_of_room(world, entry.room) else {
-        return false;
-    };
-    let d = dist(bot, ax, az);
-    if hp <= 0 {
-        // waiting for the respawn: be there when it comes back
-        if d > MELEE_RANGE * 2.0 {
-            walk_toward(world, entry, bot, to(ax, az), now_ms);
-        }
-        return true;
-    }
-    if d > MELEE_RANGE {
-        walk_toward(world, entry, bot, to(ax, az), now_ms);
-        return true;
-    }
-    if now_ms >= entry.next_attack_ms {
-        world.event_bots.update(bot.id, |e| e.next_attack_ms = now_ms + ALTAR_COOLDOWN_MS);
-        hit_altar(world, entry, bot, altar_id);
-    }
-    true
 }
 
 fn pos_of(world: &WorldState, id: u32) -> Option<(f32, f32)> {
@@ -176,6 +79,149 @@ fn pos_of(world: &WorldState, id: u32) -> Option<(f32, f32)> {
         world.get_bot(id).map(|b| (b.x, b.z))
     } else {
         world.get_position(id as SessionId).map(|p| (p.x, p.z))
+    }
+}
+
+/// The room's flag carrier `(name, sid, nation)`.
+fn carrier(world: &WorldState, room: u16) -> Option<(String, u16, u8)> {
+    let room = world.event_room_manager.get_room(TempleEventType::BorderDefenceWar, room as u8)?;
+    bdw::find_flag_carrier(&room)
+}
+
+/// Target priority: the enemy altar carrier must die first.
+pub(super) fn target_bonus(world: &WorldState, entry: &BotEntry, _bot: &BotInstance, u: &Unit) -> f32 {
+    match carrier(world, entry.room) {
+        Some((_, csid, cnation)) if cnation != entry.nation && csid as u32 == u.id => CARRIER_BONUS,
+        _ => 0.0,
+    }
+}
+
+/// Pure choice of the objective point for a bot with no fight on, from the room situation.
+/// Returns what the brain should walk to, or `None` for "hit the altar now".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Goal {
+    /// Carry the flag home (slowed).
+    CarryHome(f32, f32),
+    /// Run at the enemy carrier.
+    Intercept(f32, f32),
+    /// Stay around the allied carrier.
+    Escort(f32, f32),
+    /// Walk to the altar / hit it.
+    Altar(f32, f32),
+    HitAltar,
+    /// Wait for the altar respawn around its spot.
+    AltarWait(f32, f32),
+    /// Sweep the arena (roamer role).
+    Roam,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn choose_goal(
+    me: &str,
+    nation: u8,
+    role: Role,
+    bot_pos: (f32, f32),
+    carrier: Option<(&str, u8, (f32, f32))>,
+    altar: Option<((f32, f32), i32)>,
+    melee_range: f32,
+) -> Goal {
+    if let Some((cname, cnation, cpos)) = carrier {
+        if cname == me {
+            return Goal::CarryHome(base_centre(nation).0, base_centre(nation).1);
+        }
+        if cnation != nation {
+            return Goal::Intercept(cpos.0, cpos.1);
+        }
+        return Goal::Escort(cpos.0, cpos.1);
+    }
+    let Some(((ax, az), hp)) = altar else { return Goal::Roam };
+    if hp <= 0 {
+        return if role == Role::Hotspot { Goal::AltarWait(ax, az) } else { Goal::Roam };
+    }
+    if role == Role::Patrol {
+        return Goal::Roam;
+    }
+    let d = ((ax - bot_pos.0).powi(2) + (az - bot_pos.1).powi(2)).sqrt();
+    if d > melee_range {
+        Goal::Altar(ax, az)
+    } else {
+        Goal::HitAltar
+    }
+}
+
+/// Roam point of a BDW roamer: somewhere on the line altar -> enemy base, spread sideways.
+fn roam_point(world: &WorldState, entry: &BotEntry, altar: Option<(f32, f32)>, rng: &mut impl Rng) -> Option<(f32, f32)> {
+    let (ax, az) = altar.unwrap_or((127.0, 131.0));
+    let (ex, ez) = base_centre(if entry.nation == 1 { 2 } else { 1 });
+    let t: f32 = rng.gen_range(0.0..0.8);
+    let (px, pz) = (ax + (ex - ax) * t, az + (ez - az) * t);
+    let (ox, oz) = (rng.gen_range(-18.0..18.0), rng.gen_range(-18.0..18.0));
+    let zone = world.get_zone(bdw::ZONE_BDW)?;
+    let map = zone.map_data.as_ref()?;
+    crate::systems::pathfind::nearest_bot_point(map, px + ox, pz + oz, 6)
+}
+
+/// The BDW objective step of the brain.
+pub(super) fn objective(world: &WorldState, entry: &BotEntry, bot: &BotInstance, st: &mut BrainState, now_ms: u64) -> Drive {
+    let carrier = carrier(world, entry.room).and_then(|(name, csid, cnation)| {
+        let pos = if name == entry.name { Some((bot.x, bot.z)) } else { pos_of(world, csid as u32) };
+        pos.map(|p| (name, cnation, p))
+    });
+    let altar = altar_of_room(world, entry.room);
+    let goal = choose_goal(
+        &entry.name,
+        entry.nation,
+        st.role,
+        (bot.x, bot.z),
+        carrier.as_ref().map(|(n, c, p)| (n.as_str(), *c, *p)),
+        altar.map(|(_, x, z, hp)| ((x, z), hp)),
+        MELEE_RANGE,
+    );
+    match goal {
+        Goal::CarryHome(hx, hz) => {
+            if bdw::is_in_delivery_zone(entry.nation, bot.x, bot.z) {
+                crate::handler::move_handler::bdw_altar_delivery(
+                    world,
+                    bot.id as SessionId,
+                    &entry.name,
+                    entry.nation,
+                    bot.x,
+                    bot.z,
+                );
+                return Drive::Handled;
+            }
+            Drive::GoalScaled(hx, hz, carrier_scale())
+        }
+        Goal::Intercept(x, z) => Drive::Goal(x, z),
+        Goal::Escort(x, z) => bot_brain::wander_around(bot, st, x, z, ESCORT_RANGE, now_ms),
+        Goal::Altar(x, z) => Drive::Goal(x, z),
+        Goal::AltarWait(x, z) => bot_brain::wander_around(bot, st, x, z, ALTAR_WAIT_RADIUS, now_ms),
+        Goal::HitAltar => {
+            if let Some((altar_id, _, _, _)) = altar {
+                if now_ms >= entry.next_attack_ms {
+                    world.event_bots.update(bot.id, |e| e.next_attack_ms = now_ms + ALTAR_COOLDOWN_MS);
+                    hit_altar(world, entry, bot, altar_id);
+                }
+            }
+            Drive::Handled
+        }
+        Goal::Roam => {
+            let mut rng = rand::thread_rng();
+            let reached = st.hotspot.is_some_and(|(hx, hz)| dist(bot, hx, hz) < 4.0);
+            if st.hotspot.is_none() || reached || now_ms >= st.hotspot_until_ms {
+                let Some(p) = roam_point(world, entry, altar.map(|(_, x, z, _)| (x, z)), &mut rng) else {
+                    // no map (tests): drift around the altar spot
+                    let (ax, az) = altar.map(|(_, x, z, _)| (x, z)).unwrap_or((bot.x, bot.z));
+                    return bot_brain::wander_around(bot, st, ax, az, 14.0, now_ms);
+                };
+                st.hotspot = Some(p);
+                st.hotspot_until_ms = now_ms + rng.gen_range(ROAM_MIN_MS..=ROAM_MAX_MS);
+            }
+            match st.hotspot {
+                Some((x, z)) => Drive::Goal(x, z),
+                None => Drive::Handled,
+            }
+        }
     }
 }
 
@@ -281,4 +327,47 @@ pub(super) fn fill_party(world: &WorldState, party_id: u16) -> usize {
         bot_ai::broadcast_bot_party_hp(world, id);
     }
     added
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALTAR: (f32, f32) = (127.0, 131.0);
+
+    #[test]
+    fn the_carrier_walks_home_and_everybody_else_reacts_to_the_carrier() {
+        // I carry: home (slowed by the brain through GoalScaled)
+        let g = choose_goal("Me", 1, Role::Hotspot, (100.0, 100.0), Some(("Me", 1, (100.0, 100.0))), Some((ALTAR, 0)), 5.5);
+        assert_eq!(g, Goal::CarryHome(base_centre(1).0, base_centre(1).1));
+        // an enemy carries: intercept, whatever my role
+        for role in [Role::Hotspot, Role::Patrol] {
+            let g = choose_goal("Me", 1, role, (100.0, 100.0), Some(("Enemy", 2, (60.0, 70.0))), Some((ALTAR, 0)), 5.5);
+            assert_eq!(g, Goal::Intercept(60.0, 70.0));
+        }
+        // a mate carries: escort
+        let g = choose_goal("Me", 1, Role::Patrol, (100.0, 100.0), Some(("Mate", 1, (60.0, 70.0))), Some((ALTAR, 0)), 5.5);
+        assert_eq!(g, Goal::Escort(60.0, 70.0));
+    }
+
+    #[test]
+    fn altar_takers_go_for_the_altar_and_roamers_sweep_the_arena() {
+        let g = choose_goal("Me", 1, Role::Hotspot, (60.0, 60.0), None, Some((ALTAR, 500)), 5.5);
+        assert_eq!(g, Goal::Altar(ALTAR.0, ALTAR.1));
+        let g = choose_goal("Me", 1, Role::Hotspot, (ALTAR.0 + 2.0, ALTAR.1), None, Some((ALTAR, 500)), 5.5);
+        assert_eq!(g, Goal::HitAltar);
+        let g = choose_goal("Me", 1, Role::Patrol, (60.0, 60.0), None, Some((ALTAR, 500)), 5.5);
+        assert_eq!(g, Goal::Roam, "roamers are not glued to the altar");
+        // dead altar: takers wait at the spot, roamers keep hunting
+        assert_eq!(choose_goal("Me", 1, Role::Hotspot, (60.0, 60.0), None, Some((ALTAR, 0)), 5.5), Goal::AltarWait(ALTAR.0, ALTAR.1));
+        assert_eq!(choose_goal("Me", 1, Role::Patrol, (60.0, 60.0), None, Some((ALTAR, 0)), 5.5), Goal::Roam);
+        // no altar at all: roam
+        assert_eq!(choose_goal("Me", 2, Role::Hotspot, (60.0, 60.0), None, None, 5.5), Goal::Roam);
+    }
+
+    #[test]
+    fn carrier_is_slower_than_a_normal_step() {
+        assert!(carrier_scale() < 1.0 && carrier_scale() > 0.0);
+        assert!(carrier_step() < STEP_PER_TICK);
+    }
 }

@@ -14,6 +14,7 @@ target, forgotten kiting, finite potion stock.
 
 ```
 tick_bots -> tick_fighting -> bot_brain::tick_pk        (legacy loop only when disabled)
+event_bots::tick -> bot_brain::tick_event             (BDW / Chaos / Juraid, same core)
    1 perception    zone Snapshot (players+bots, 16 m grid), built once per zone per tick
    2 threat        assess(): hp/mp ratio, enemies vs allies within 30 m, "hit recently", ally HP
    3 consumables   virtual HP/MP potion, buff scroll, TS (never blocks movement)
@@ -72,10 +73,15 @@ nearest party mate closer than the member's own spacing. Each member has its own
 | Impl | Behaviour |
 |------|-----------|
 | `PkObjective` | `patrol_percent` of PK bots are `Role::Patrol` (surveyed waypoint routes over the whole map, `tick_waypoint_patrol`), the rest `Role::Hotspot`: weighted pick among bowl / bridges / base fronts (enemy front x2, own front x0.5), re-picked every 1.5-4 min; at the spot the bot drifts 2-14 m every 2.5-6 s. Spots are projected on walkable ground; unreachable ones are dropped. Zones 71/72/73. |
-| `ChaosObjective` | free for all: fight the nearest |
-| `BdwObjective` / `JuraidObjective` | `Handled`: the event modules (`bdw_ai::drive`, `event_bots_juraid::tick_bot`) keep driving the objective |
+| `ChaosObjective` | free for all (allies = party mates only); nobody near -> `roam_drive`: random reachable arena points, re-picked every 15-40 s |
+| `BdwObjective` | `bdw_ai::objective`: carrier -> home at the Fragment speed (`Drive::GoalScaled`), enemy carrier -> intercept (+60 target bonus), own carrier -> escort, altar takers (`Role::Hotspot`) -> altar / hit it, roamers (`Role::Patrol`) -> sweep altar..enemy base |
+| `JuraidObjective` | `event_bots_juraid::objective`: lane chain + stage clearing + Deva (PvE: `fights_players() == false`); closed bridge gates are `dyn_blocks` for the path queries |
 
-A real player in the party overrides everything: `move_toward_party_anchor` as before.
+PK bots: a real player in the party overrides everything (`move_toward_party_anchor` as before).
+Event bots (`tick_event`) never regroup on or follow a player: they assist the party (+15 on an
+enemy hitting a mate) and keep acting on their own. Event bots also use the event attack
+mechanics (`event_bots::brain_attack`) and room-filtered movement packets
+(`event_bots::brain_move`) instead of `bot_perform_attack` / `broadcast_bot_move_ex`.
 
 ### Parties
 

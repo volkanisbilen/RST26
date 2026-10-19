@@ -231,9 +231,13 @@ pub struct MapData {
     /// The event grid carries no data at all (e.g. Moradon): bots then rely on the terrain
     /// mask alone. Maps with a real event grid (PK zones) keep the strict rule.
     bot_ignore_event: bool,
-    /// Bots navigate by the event grid alone (maps whose terrain mask walls in the spawn areas,
-    /// e.g. the BDW arena: the mask left the spawn room a closed pocket, the players walk out).
+    /// Event arenas (BDW / Chaos / Juraid): the event grid is walkable in addition to the client
+    /// mask. Their doors and bridges are dynamic objects, so the baked collision alone leaves
+    /// the spawn rooms closed pockets; the server-authored event grid knows the arena layout.
     bot_event_only: bool,
+    /// Authored openings of an event arena (`systems::event_nav`), world rectangles bots may
+    /// walk in addition to the mask / event grid.
+    event_openings: &'static [crate::systems::event_nav::Rect],
     /// Client-derived mask + player trace, swapped atomically on reload.
     bot_nav: parking_lot::RwLock<Arc<BotNav>>,
 }
@@ -299,16 +303,69 @@ impl BotView<'_> {
     }
 }
 
+thread_local! {
+    /// Extra circles `(x, z, radius)` (world units) a bot must treat as
+    /// blocked for the duration of one path query: closed Juraid bridge
+    /// gates of the bot's own room and nation. Per room state cannot live in
+    /// the zone-wide mask, so the caller installs it around its path step
+    /// (`DynBlockGuard`).
+    static BOT_DYN_BLOCKS: std::cell::RefCell<Vec<(f32, f32, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Installs per-bot dynamic obstacles for the current thread until dropped.
+pub struct DynBlockGuard;
+
+impl DynBlockGuard {
+    pub fn install(blocks: Vec<(f32, f32, f32)>) -> Self {
+        BOT_DYN_BLOCKS.with(|b| *b.borrow_mut() = blocks);
+        DynBlockGuard
+    }
+}
+
+impl Drop for DynBlockGuard {
+    fn drop(&mut self) {
+        BOT_DYN_BLOCKS.with(|b| b.borrow_mut().clear());
+    }
+}
+
+fn dyn_blocked(unit: f32, x: i32, z: i32) -> bool {
+    BOT_DYN_BLOCKS.with(|b| {
+        let b = b.borrow();
+        if b.is_empty() {
+            return false;
+        }
+        let cx = (x as f32 + 0.5) * unit;
+        let cz = (z as f32 + 0.5) * unit;
+        b.iter().any(|&(bx, bz, r)| (cx - bx).powi(2) + (cz - bz).powi(2) <= r * r)
+    })
+}
+
 impl MapData {
     fn bot_cell_walkable(&self, nav: &BotNav, x: i32, z: i32) -> bool {
-        // BDW-style zones: the event grid is the arena layout (doors open at
-        // start), the collision data would seal the spawn rooms.
+        if dyn_blocked(self.smd.unit_dist, x, z) {
+            return false;
+        }
+        // Event arenas (BDW / Chaos / Juraid): the SMD event grid is the arena
+        // layout the server authored (doors and bridges are dynamic objects
+        // that the client's baked collision does not contain, so the client
+        // mask alone seals the spawn rooms). A cell is walkable when either
+        // the event grid or the client mask says so.
         if self.bot_event_only {
-            return x >= 0
+            let on_event_grid = x >= 0
                 && z >= 0
                 && x < self.smd.map_size
                 && z < self.smd.map_size
                 && self.smd.get_event_id(x, z) > 0;
+            return on_event_grid
+                || nav.nav.as_ref().is_some_and(|m| m.is_walkable(x, z))
+                || (!self.event_openings.is_empty()
+                    && x >= 0
+                    && z >= 0
+                    && crate::systems::event_nav::contains(
+                        self.event_openings,
+                        (x as f32 + 0.5) * self.smd.unit_dist,
+                        (z as f32 + 0.5) * self.smd.unit_dist,
+                    ));
         }
         // Client-derived mask: authoritative. The SMD event grid is not
         // consulted, it may belong to a different revision of the map.
@@ -416,9 +473,12 @@ impl MapData {
             )
     }
 
-    /// Let bots navigate by the event grid only (see `bot_event_only`).
-    pub fn with_event_grid_navigation(mut self) -> Self {
+    /// Event arena navigation: the SMD event grid and the authored openings of
+    /// `zone_id` (`systems::event_nav`) are walkable in addition to the client
+    /// mask (see `bot_event_only`). Used for zones 84 / 85 / 87.
+    pub fn with_event_navigation(mut self, zone_id: u16) -> Self {
         self.bot_event_only = true;
+        self.event_openings = crate::systems::event_nav::openings(zone_id);
         self
     }
 
@@ -431,7 +491,13 @@ impl MapData {
             walked: Arc::new(WalkedMap::new(smd.map_size, smd.unit_dist)),
             grid_size: smd.map_size,
         };
-        Self { smd, bot_ignore_event, bot_event_only: false, bot_nav: parking_lot::RwLock::new(Arc::new(bot_nav)) }
+        Self {
+            smd,
+            bot_ignore_event,
+            bot_event_only: false,
+            event_openings: &[],
+            bot_nav: parking_lot::RwLock::new(Arc::new(bot_nav)),
+        }
     }
 
     /// Create map data with a client-derived mask already installed.

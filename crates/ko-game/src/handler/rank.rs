@@ -62,6 +62,87 @@ pub(crate) fn pk_rank_zone_allowed(zone_id: u16, is_war_zone: bool) -> bool {
         || zone_id == ZONE_ARDREAM
 }
 
+/// Which event board a WIZ_RANK request opens inside an event zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventBoard {
+    Bdw,
+    Chaos,
+    Juraid,
+}
+
+/// Zone gating of the event boards. The 2625 client's ALT handler sends type 2 in zone 84
+/// (`sub_D31DE0`: `zone == 84 -> [0x80][2]`), type 3 in zone 85 (`UILadderChaos`) and type 1 / 5
+/// elsewhere; the reply type decides which window opens (type 2 -> the temple board
+/// `sub_D304D0`, type 3 -> the Chaos ladder `sub_BCA100`). Inside an event zone every request
+/// type is answered with that zone's own board, so a stale type-1/5 request never opens the PK
+/// window and never goes unanswered. Juraid (87) uses the temple board layout (type 2) with the
+/// room's kills as the score.
+pub(crate) fn event_zone_reply(zone_id: u16, rank_type: u8) -> Option<EventBoard> {
+    if !matches!(
+        rank_type,
+        RANK_TYPE_PK_ZONE | RANK_TYPE_ZONE_BORDER_DEFENSE_WAR | RANK_TYPE_CHAOS_DUNGEON | RANK_TYPE_LADDER
+    ) {
+        return None;
+    }
+    match zone_id {
+        crate::world::ZONE_CHAOS_DUNGEON => Some(EventBoard::Chaos),
+        crate::world::ZONE_BDW => Some(EventBoard::Bdw),
+        crate::world::ZONE_JURAID => Some(EventBoard::Juraid),
+        _ => None,
+    }
+}
+
+/// One row of the temple board (type 2 reply): `(name, nation, knights_id, mark_version,
+/// knights_name, score)`.
+pub(crate) type TempleRow = (String, u8, u16, u16, String, u32);
+
+/// The temple board rows a client row must carry per list: list A is drawn from rows whose
+/// nation byte is 1 (Karus), list B from rows whose nation byte is 2 (El Morad) -- the client
+/// parser (`sub_D304D0`) drops every other row. The C++ reference wrote the requester's nation
+/// into every row, which emptied the enemy list; the real nation is written here.
+pub(crate) const TEMPLE_BOARD_MAX_ROWS: usize = 8;
+
+/// Build the type-2 (temple board) reply:
+/// `[u8 2] {[u16 count] count x ([string name][u8 nation][u16 kid][u16 mark][string kname][u32 score])} x2
+///  [i64 exp][i64 premium_exp]`. `rows` must already be sorted; each list keeps only the rows
+/// of its own nation and at most [`TEMPLE_BOARD_MAX_ROWS`].
+pub(crate) fn build_temple_rank_packet(rows: &[TempleRow], exp: i64, premium_exp: i64) -> Packet {
+    let mut result = Packet::new(Opcode::WizRank as u8);
+    result.write_u8(RANK_TYPE_ZONE_BORDER_DEFENSE_WAR);
+    for nation in [1u8, 2u8] {
+        let list: Vec<&TempleRow> = rows.iter().filter(|r| r.1 == nation).take(TEMPLE_BOARD_MAX_ROWS).collect();
+        result.write_u16(list.len() as u16);
+        for (name, nation, kid, mark, kname, score) in list {
+            result.write_string(name);
+            result.write_u8(*nation);
+            result.write_u16(*kid);
+            result.write_u16(*mark);
+            result.write_string(kname);
+            result.write_u32(*score);
+        }
+    }
+    result.write_i64(exp);
+    result.write_i64(premium_exp);
+    result
+}
+
+/// Clan columns of a room member for the temple board. Event bots have no session and are
+/// listed like a clanless player.
+fn temple_clan_columns(world: &crate::world::WorldState, sid: crate::zone::SessionId) -> Option<(u16, u16, String)> {
+    let knights_id = match world.with_session(sid, |h| h.character.as_ref().map(|c| c.knights_id)) {
+        Some(Some(kid)) => kid,
+        _ if rank_entry_is_event_bot(world, sid) => 0,
+        _ => return None,
+    };
+    if knights_id == 0 || knights_id == 0xFFFF {
+        return Some((0, 0, String::new()));
+    }
+    Some(match world.get_knights(knights_id) {
+        Some(ki) => (ki.id, ki.mark_version, ki.name.clone()),
+        None => (0, 0, String::new()),
+    })
+}
+
 /// Handle incoming WIZ_RANK (0x80) packet.
 pub async fn handle(session: &mut ClientSession, packet: Packet) -> anyhow::Result<()> {
     if session.state() != SessionState::InGame {
@@ -90,13 +171,12 @@ pub async fn handle(session: &mut ClientSession, packet: Packet) -> anyhow::Resu
         let sid = session.session_id();
         world.with_session(sid, |h| h.position.zone_id).unwrap_or(0)
     };
-    if zone_id == crate::world::ZONE_CHAOS_DUNGEON
-        && matches!(
-            rank_type,
-            RANK_TYPE_PK_ZONE | RANK_TYPE_CHAOS_DUNGEON | RANK_TYPE_LADDER
-        )
-    {
-        return handle_chaos_dungeon(session).await;
+    if let Some(reply) = event_zone_reply(zone_id, rank_type) {
+        return match reply {
+            EventBoard::Chaos => handle_chaos_dungeon(session).await,
+            EventBoard::Bdw => handle_bdw(session).await,
+            EventBoard::Juraid => handle_juraid(session).await,
+        };
     }
     let is_war_zone = world.get_zone(zone_id).is_some_and(|z| z.is_war_zone());
     if matches!(rank_type, RANK_TYPE_PK_ZONE | RANK_TYPE_LADDER)
@@ -572,11 +652,11 @@ async fn handle_bdw(session: &mut ClientSession) -> anyhow::Result<()> {
     let sid = session.session_id();
 
     // Get requester's character info
-    let (char_name, requester_nation, requester_level, my_bdw_points) =
+    let (char_name, requester_level, my_bdw_points) =
         match world.with_session(sid, |h| {
             h.character
                 .as_ref()
-                .map(|c| (c.name.clone(), c.nation, c.level, 0u32))
+                .map(|c| (c.name.clone(), c.level, 0u32))
         }) {
             Some(Some(v)) => v,
             _ => return Ok(()),
@@ -658,66 +738,18 @@ async fn handle_bdw(session: &mut ClientSession) -> anyhow::Result<()> {
         (karus, elmo, my_pts)
     }; // room lock dropped
 
-    let mut result = Packet::new(Opcode::WizRank as u8);
-    result.write_u8(RANK_TYPE_ZONE_BORDER_DEFENSE_WAR);
-
-    // Write entries for each nation (max 8 per nation)
-    for entries in [&karus_entries, &elmo_entries] {
-        let count_offset = result.wpos();
-        result.write_u16(0); // placeholder
-
-        let mut count: u16 = 0;
+    let mut rows: Vec<TempleRow> = Vec::with_capacity(16);
+    for (nation, entries) in [(1u8, &karus_entries), (2u8, &elmo_entries)] {
         for (name, entry_sid, bdw_points) in entries.iter() {
-            if count >= 8 {
-                break;
-            }
-
-            // Verify user is still in-game; event bots have no session and are listed like a
-            // clanless player (their bdw_points live on the room's EventUser as for humans).
-            let user_data =
-                world.with_session(*entry_sid, |h| h.character.as_ref().map(|c| c.knights_id));
-
-            let knights_id = match user_data {
-                Some(Some(kid)) => kid,
-                _ if rank_entry_is_event_bot(world, *entry_sid) => 0,
-                _ => continue,
-            };
-
-            result.write_string(name);
-            // C++ BUG: writes requester's nation for all entries (line 408)
-            result.write_u8(requester_nation);
-
-            if knights_id == 0 || knights_id == 0xFFFF {
-                result.write_u16(0);
-                result.write_u16(0);
-                result.write_string("");
-            } else {
-                match world.get_knights(knights_id) {
-                    Some(ki) => {
-                        result.write_u16(ki.id);
-                        result.write_u16(ki.mark_version);
-                        result.write_string(&ki.name);
-                    }
-                    None => {
-                        result.write_u16(0);
-                        result.write_u16(0);
-                        result.write_string("");
-                    }
-                }
-            }
-
-            result.write_u32(*bdw_points);
-            count += 1;
+            // Verify the member is still in-game (event bots have no session but are listed)
+            let Some((kid, mark, kname)) = temple_clan_columns(world, *entry_sid) else { continue };
+            rows.push((name.clone(), nation, kid, mark, kname, *bdw_points));
         }
-
-        result.put_u16_at(count_offset, count);
     }
 
     // Requester's own EXP preview (display-only)
     let (gained_exp, premium_gained_exp) = bdw_user_point_exp(requester_level, my_points);
-    result.write_i64(gained_exp);
-    result.write_i64(premium_gained_exp);
-
+    let result = build_temple_rank_packet(&rows, gained_exp, premium_gained_exp);
     session.send_packet(&result).await?;
 
     debug!(
@@ -729,6 +761,48 @@ async fn handle_bdw(session: &mut ClientSession) -> anyhow::Result<()> {
         premium_gained_exp,
     );
 
+    Ok(())
+}
+
+/// Juraid Mountain board (zone 87): the temple board layout (type 2) with every room member of
+/// both nations and their kills as the score. The reference has no Juraid ranking packet; the
+/// 2625 client has no ALT board of its own in zone 87 either, so this only answers an explicit
+/// request (type 1 / 2 / 5) with a window the client knows how to draw.
+async fn handle_juraid(session: &mut ClientSession) -> anyhow::Result<()> {
+    let world = session.world();
+    let sid = session.session_id();
+    let Some(Some(char_name)) = world.with_session(sid, |h| h.character.as_ref().map(|c| c.name.clone())) else {
+        return Ok(());
+    };
+    let erm = world.event_room_manager();
+    let active = erm.read_temple_event(|te| te.is_juraid_active());
+    let room_id = erm.find_user_room(TempleEventType::JuraidMountain, &char_name).map(|(r, _)| r);
+    let rows: Vec<TempleRow> = match (active, room_id) {
+        (true, Some(room_id)) => {
+            let Some(room) = erm.get_room(TempleEventType::JuraidMountain, room_id) else {
+                session.send_packet(&build_temple_rank_packet(&[], 0, 0)).await?;
+                return Ok(());
+            };
+            let mut members: Vec<(String, u8, crate::zone::SessionId, u32)> = room
+                .karus_users
+                .values()
+                .chain(room.elmorad_users.values())
+                .filter(|u| !u.user_name.is_empty() && !u.logged_out)
+                .map(|u| (u.user_name.clone(), u.nation, u.session_id, u.kills))
+                .collect();
+            drop(room);
+            members.sort_by(|a, b| b.3.cmp(&a.3));
+            members
+                .into_iter()
+                .filter_map(|(name, nation, msid, kills)| {
+                    temple_clan_columns(world, msid).map(|(kid, mark, kname)| (name, nation, kid, mark, kname, kills))
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    session.send_packet(&build_temple_rank_packet(&rows, 0, 0)).await?;
+    debug!("[{}] WIZ_RANK JURAID board: room={:?}, rows={}", session.addr(), room_id, rows.len());
     Ok(())
 }
 
@@ -896,6 +970,71 @@ mod tests {
         assert!(rank_entry_is_event_bot(&world, 20_500));
         assert!(!rank_entry_is_event_bot(&world, 20_501), "unregistered bot id");
         assert!(!rank_entry_is_event_bot(&world, 7), "player ids are never bots");
+    }
+
+    /// Inside the event zones every ALT request type opens that zone's own board; the PK window
+    /// gating stays for the other zones (the live bug: types 1/5 in zone 84/87 were dropped, so
+    /// no window ever opened there).
+    #[test]
+    fn event_zones_answer_every_request_type_with_their_own_board() {
+        for ty in [RANK_TYPE_PK_ZONE, RANK_TYPE_ZONE_BORDER_DEFENSE_WAR, RANK_TYPE_CHAOS_DUNGEON, RANK_TYPE_LADDER] {
+            assert_eq!(event_zone_reply(84, ty), Some(EventBoard::Bdw), "type {ty} in BDW");
+            assert_eq!(event_zone_reply(85, ty), Some(EventBoard::Chaos), "type {ty} in Chaos");
+            assert_eq!(event_zone_reply(87, ty), Some(EventBoard::Juraid), "type {ty} in Juraid");
+            assert_eq!(event_zone_reply(71, ty), None, "type {ty} in Ronark");
+            assert_eq!(event_zone_reply(21, ty), None, "type {ty} in Moradon");
+        }
+        assert_eq!(event_zone_reply(84, 99), None, "unknown types are not routed");
+    }
+
+    /// The client parser (`sub_D304D0`) keeps list-A rows whose nation byte is 1 and list-B rows
+    /// whose nation byte is 2: the reply carries each row's real nation, bots included.
+    #[test]
+    fn temple_board_writes_each_rows_real_nation_and_caps_the_lists() {
+        let mut rows: Vec<TempleRow> = vec![
+            ("KarusMan".into(), 1, 7, 3, "Clan".into(), 30),
+            ("ElmoBot".into(), 2, 0, 0, String::new(), 20),
+            ("KarusBot".into(), 1, 0, 0, String::new(), 10),
+        ];
+        for i in 0..10 {
+            rows.push((format!("Elmo{i}"), 2, 0, 0, String::new(), 5));
+        }
+        let pkt = build_temple_rank_packet(&rows, 468_750, 937_500);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u8(), Some(RANK_TYPE_ZONE_BORDER_DEFENSE_WAR));
+        // list A: the two Karus rows, in order, nation byte 1
+        assert_eq!(r.read_u16(), Some(2));
+        assert_eq!(r.read_string().as_deref(), Some("KarusMan"));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(7));
+        assert_eq!(r.read_u16(), Some(3));
+        assert_eq!(r.read_string().as_deref(), Some("Clan"));
+        assert_eq!(r.read_u32(), Some(30));
+        assert_eq!(r.read_string().as_deref(), Some("KarusBot"));
+        assert_eq!(r.read_u8(), Some(1));
+        assert_eq!(r.read_u16(), Some(0));
+        assert_eq!(r.read_u16(), Some(0));
+        assert_eq!(r.read_string().as_deref(), Some(""));
+        assert_eq!(r.read_u32(), Some(10));
+        // list B: 11 El Morad rows capped at 8, nation byte 2, the bot first (sorted input)
+        assert_eq!(r.read_u16(), Some(TEMPLE_BOARD_MAX_ROWS as u16));
+        assert_eq!(r.read_string().as_deref(), Some("ElmoBot"));
+        assert_eq!(r.read_u8(), Some(2));
+        for _ in 0..7 {
+            r.read_u16();
+            r.read_u16();
+            r.read_string();
+            r.read_u32();
+            r.read_string();
+            assert_eq!(r.read_u8(), Some(2));
+        }
+        r.read_u16();
+        r.read_u16();
+        r.read_string();
+        r.read_u32();
+        assert_eq!(r.read_i64(), Some(468_750));
+        assert_eq!(r.read_i64(), Some(937_500));
+        assert_eq!(r.remaining(), 0);
     }
 
     #[test]

@@ -1606,8 +1606,13 @@ impl WorldState {
                     tracing::debug!(zone_id, smd_name = %row.smd_name, map_size = smd.map_size, map_width = smd.map_width, warps = smd.warps.len(), "SMD loaded");
                     smd_loaded += 1;
                     let map = crate::zone::MapData::new(smd);
-                    // BDW arena: the terrain mask closes the spawn room for bots
-                    let map = if zone_id == crate::systems::bdw::ZONE_BDW { map.with_event_grid_navigation() } else { map };
+                    // Event arenas (BDW / Chaos / Juraid): doors and bridges are dynamic objects the
+                    // baked client collision does not contain, so the event grid stays walkable too.
+                    let map = if crate::systems::event_room::is_in_temple_event_zone(zone_id) {
+                        map.with_event_navigation(zone_id)
+                    } else {
+                        map
+                    };
                     // Client-derived bot mask + player trace (Map/nav/<zone>.nav / .walked).
                     let status = crate::systems::nav_trace::load_zone_nav(&map, &nav_dir, zone_id);
                     tracing::info!("{status}");

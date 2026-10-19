@@ -18,6 +18,7 @@ pub mod daily_reset;
 pub mod dot_tick;
 pub mod event_bots;
 pub mod event_bots_juraid;
+pub mod event_nav;
 pub mod event_room;
 pub mod event_system;
 pub mod expiry_tick;

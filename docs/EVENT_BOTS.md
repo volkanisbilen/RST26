@@ -12,11 +12,11 @@ Code: `crates/ko-game/src/systems/event_bots.rs` (new module), table `event_bot_
 
 | Event | Support | What the bots do |
 |-------|---------|------------------|
-| Chaos Dungeon / Expansion (zone 85) | **full** | Join the free-for-all room, hunt every other participant (humans and bots). Kills/deaths are booked in the room exactly like human kills. |
-| Border Defence War (zone 84) | **full** | Fill the free slots so that both teams end up the same size (humans + bots, see "Mirror fill"), walk to the central Altar of Manes and fight over it, carry it (slowed) to their base and deliver, fight enemies and the enemy carrier, join the party of a real player of their nation. Kills and deliveries score like players; bots never get a reward (their `EventUser`s are `prize_given = true`). Code: `systems/event_bots/bdw_ai.rs`. |
+| Chaos Dungeon / Expansion (zone 85) | **full** | Join the free-for-all room and hunt every other participant (humans and bots) with the PK bot brain; when nobody is near they roam the arena (random reachable points) instead of waiting. Kills/deaths are booked in the room exactly like human kills. |
+| Border Defence War (zone 84) | **full** | Fill the free slots so that both teams end up the same size (humans + bots, see "Mirror fill"). Driven by the PK bot brain with the BDW objective: altar takers walk to the central Altar of Manes, hit it down, carry it (slowed) to their base and deliver; roamers sweep the arena between the altar and the enemy base; everybody converges on an enemy carrier and escorts an own carrier. Players may party them: the bots assist the party (enemies hitting a mate get priority) but act independently -- no following. Kills and deliveries score like players; bots never get a reward (their `EventUser`s are `prize_given = true`). Code: `systems/event_bots/bdw_ai.rs` (objective), `systems/bot_brain.rs` (decisions). |
 | Ultima's Dungeon (zone 55) | **full** | Extra raiders in the first room (existing `ultima.rs` bot driver). They count towards the 4-player minimum, so one human can start a raid. |
 | Full Moon Rift (zone 89) | **partial** | Support bots hold the Outer Tower and take monsters down to 10 % HP, but never land the killing blow, so every drop/reward stays with the players. |
-| Juraid Mountain (zone 87) | **partial** | Follow a real player's party, or walk their nation's lane stage by stage and kill the monsters; mirror fill keeps both teams the same size. Never take chests (see "Juraid bots"). |
+| Juraid Mountain (zone 87) | **full (PvE)** | Walk their nation's lane stage by stage through the bot brain and kill the monsters themselves, never passing a closed bridge gate, then the Deva room; mirror fill keeps both teams the same size. They join a real player's party but never follow him. Never take chests (see "Juraid bots"). |
 | Forgotten Temple (zone 55) | not supported | No registration step, rewards go to whoever stands in the zone. |
 | Manes Survival (zones 57-60) | not supported | Individual survival ranking with Manes Orb prizes; bots would only distort the ranking. |
 
@@ -41,6 +41,29 @@ the game server also forces them off.
 * **Fairness.** The result of a room (winner nation, Chaos kills) is computed from real scores,
   bots included. Bots have class-based damage (`calculate_bot_damage`, mitigated by the target's
   armour: `dmg * 240 / (AC + 240)`), a 12 % miss chance and 2 s / 3 s attack cooldowns.
+* **One brain.** Since the PK bot brain (`docs/BOT_AI.md`) every event bot is driven by
+  `bot_brain::tick_event`: zone snapshot, threat assessment (Chaos counts only party mates as
+  allies), scored targeting with a human reaction delay, kite / retreat / heal-up, class
+  formation and spacing, virtual potions and scrolls, and the common pathing
+  (`bot_path_step_toward`, A* on the navigation mask; no straight-line fallback on a loaded map).
+  The events only supply the **objective layer** (`Objective` trait: `BdwObjective`,
+  `ChaosObjective`, `JuraidObjective`) and the attack mechanics (room-aware packets, event kill
+  credit, no NP / gold). The old follow-the-player drivers are gone.
+* **Navigation.** Zones 84 / 85 / 87 navigate on the client nav mask (`Map/nav/<zone>.nav`)
+  **united with the SMD event grid**: the client's baked collision does not contain the doors and
+  bridges (they are dynamic objects), so the mask alone leaves every spawn room a closed pocket
+  (84: Karus spawn 123 cells, El Morad 107 cells; 87: each spawn cage 36 cells), while the
+  server-authored event grid is the arena layout (BDW only: the Chaos and Juraid SMDs carry no
+  event grid, and their masks also bake the object floors of the upper levels as walls). So
+  `systems/event_nav.rs` adds **authored openings** for 85 / 87: the Chaos centre's north and
+  south corridor ends, and the Juraid lane centre lines (8 m wide, the doorway width of the
+  chamber walls) spawn -> stages -> Deva room for both nations. A cell is walkable when the mask,
+  the event grid or an opening says so. Closed
+  Juraid bridge gates are per-room, per-nation dynamic obstacles (`zone::DynBlockGuard`, 7 m around
+  the gate NPC) for that nation's bots, so they wait for the bridge like the players. Real-map
+  reachability tests: `event_bots::tests::{bdw_real_map_has_bot_routes_spawn_altar_and_bases,
+  chaos_real_map_arena_is_connected_from_the_start_position,
+  juraid_real_map_lanes_and_deva_room_are_reachable_from_both_spawns}`.
 
 ## Configuration (`event_bot_config`, one row per event)
 
@@ -96,7 +119,8 @@ web sources on these private-server-era event mechanics are thin; the code is th
 admin panel --save--> event_bot_config --event_bots_reload--> WorldState.event_bots (config)
 event_system tick: TransitionedToActive -> fill_temple_rooms()  (before teleport_users_to_event)
                    cleanup arms / temple_event_room_close / sweep -> cleanup_*()
-driver task (250 ms): tick() -> per bot: respawn | pick enemy | walk (A* on the SMD) | attack
+driver task (250 ms): tick() -> per bot: respawn | bot_brain::tick_event (threat, target,
+   mode, objective) -> event_bots::brain_move / brain_attack (room-aware packets)
 death of an event bot (bot_on_death hook) -> handle_bot_death(): WIZ_DEAD to the room, kill
    credit by name (dead.rs track_*_kill_by_name), respawn timer, no NP/gold
 ```
@@ -105,10 +129,11 @@ death of an event bot (bot_on_death hook) -> handle_bot_death(): WIZ_DEAD to the
   them) registered in a per-world `EventBotRegistry` (also holds the config). Room bots are also
   `EventUser`s of their room (name keyed, session-band id >= 20000), so team counts, BDW score
   multipliers and Chaos kill books work unchanged. Auto-party creation skips them (no session).
-* Bot-driven fighting is NOT done through `bot_ai`'s PK AI (it is hard-wired to zones 71-73);
-  `event_bots.rs` has its own small driver and reuses `spawn_gm_bot`, `select_bot_skill_with_weapon`,
-  `calculate_bot_damage`, `build_bot_inout_packet` and the pathfinder. `bot_ai.rs` itself only got
-  a 4-line death hook and room-aware broadcasts in `event_bot_swing` / `event_bot_place`.
+* Decisions come from the shared brain (`bot_brain::tick_event`, the same core as the PK bots);
+  `event_bots.rs` keeps the mechanics: spawn / cleanup, `brain_move` (WIZ_MOVE + INOUT on region
+  change, room filtered), `brain_attack` -> `attack()` (`select_bot_skill_with_weapon`,
+  `calculate_bot_damage`, event kill credit), death / respawn. Targets are validated with the
+  room rules (`resolve_target` / `human_attackable`), Chaos is free for all.
 * Hooks outside the new module (all minimal): `bot_ai::bot_on_death`, `attack.rs` / `magic_process.rs`
   bot branches (attack gate), `region.rs` (room-aware bot listing), `event_system.rs` (fill,
   cleanup, driver start), `event_room.rs` (room close), `dead.rs` (name-based `track_*` cores),
@@ -134,17 +159,18 @@ El Morad  spawn (799,748) -> (799,459) -> (799,171) -> (511,172) -> Deva room (5
   gets extra bots until both teams have the same number of members (humans + bots), max 8 per
   nation. Examples with `bots_per_team = 4`: 3 Karus players, 0 El Morad -> 1 Karus bot + 4 El
   Morad bots (4 vs 4); a 5-man Karus party -> 0 Karus bots + 5 El Morad bots (5 vs 5).
-* **Follow.** While a real player of the bot's nation is alive in the room the bot joins his party
-  (a lone player gets a party created around him, max 8 members) and stays within ~6 m, attacking
-  stage monsters within 40 m of him.
-* **Lane runner.** With no living real player of its nation the bot walks the chain by itself.
-  A stage is cleared when no alive main/child monster (summon types 2/3) is within 60 m of the
-  waypoint; only then does the nation's team move to the next waypoint (several stages can pass at
-  once when humans cleared them). The last leg ends at the Deva Bird. The tracker only arms after
-  the room's monsters were seen once, so the first ticks (bots spawn just before the monsters) do
-  not count as "cleared". Per-nation stage state lives in `JuraidRt` (registry), rebuilt per room.
-* **Movement** reuses the event-bot walker (A* over the zone's SMD walkability, the 40-degree /
-  clearance `bot_blocked` rules via `pathfind`), bots respawn at their nation spawn after 8 s.
+* **Party.** A bot joins the party of a living real player of its nation (a lone player gets a
+  party created around him, max 8 members). It assists the party through the brain but never
+  follows the player: the lane is the objective.
+* **Lane runner.** Every bot walks the chain by itself (`event_bots_juraid::objective`). A stage
+  is cleared when no alive main/child monster (summon types 2/3) is within 60 m of the waypoint;
+  only then does the nation's team move to the next waypoint (several stages can pass at once
+  when humans cleared them). The last leg ends at the Deva Bird. The tracker only arms after the
+  room's monsters were seen once. Per-nation stage state lives in `JuraidRt` (registry), rebuilt
+  per room. A closed bridge gate of the bot's nation (`JuraidBridgeState`) is a dynamic obstacle
+  for its path queries, so bots never slip past a bridge the players cannot cross.
+* **Movement** is the brain's common pathing (`bot_path_step_toward` on the nav mask + event grid,
+  closed bridges blocked); bots respawn at their nation spawn after 8 s.
 * **Killing.** Bots never attack players or monuments (the lanes are PvE; humans may still hit
   enemy bots in the Deva room). A bot swing deals class damage x 8; the killing blow calls
   `dead::track_juraid_monster_kill_by_name` (the name based core that the player path now also
@@ -180,16 +206,18 @@ wait for a bridge to open, they only wait for the stage to be cleared).
 * Chaos: enable with 6 bots, join alone: the room has 6 extra named players in zone 85 who walk
   to you and fight; your kills/deaths and the Chaos rank EXP follow normally; you receive no NP or
   gold for bot kills; after the event the bots are gone (check `+where` / the minimap).
-* BDW: enable, join as Karus alone: 3 Karus + 1 El Morad bots appear and the 3 Karus bots are in your
-  party (the room's event party; players' own parties get the room's free bots too, 2 slots stay
-  free); bots walk to the altar, one kills it and carries it slowly to its base; the scoreboard rises
-  with kills and deliveries; you cannot hit Karus bots; bots vanish after the 20 s countdown.
+* BDW: enable, join as Karus alone: 3 Karus + 4 El Morad bots appear (equal teams) and the Karus
+  bots are in your party (the room's event party; players' own parties get the room's free bots
+  too, 2 slots stay free) but do NOT follow you: altar takers run to the altar, roamers sweep the
+  arena, one kills the altar and carries it slowly to its base; enemies converge on the carrier;
+  the scoreboard rises with kills and deliveries; you can hit El Morad bots, not Karus bots; ALT
+  opens the BDW board with bots listed under their own nation; bots vanish after the 20 s countdown.
 * Two rooms open at once (e.g. 17+ Chaos players): players of room 1 never see room 2's bots.
 * Ultima: with the config on, a solo level-80 GM/player can start a raid (bots join room 1).
 * Rift: a solo group sees 3 support bots; monsters stop at ~10 % HP until you finish them.
-* Juraid: enable, join as El Morad alone: Karus gets `bots_per_team` mirror bots that walk (224,272) -> (224,558) ... clearing
-  each stage; your own bots (if `bots_per_team` > 1) join your party and follow you. Bots never loot the Deva
-  chest; they leave the Deva at ~10 % HP while you are in the room.
+* Juraid: enable, join as El Morad alone: Karus gets mirror bots that walk (224,272) -> (224,558) ... clearing
+  each stage and waiting at a closed bridge; your own bots (if `bots_per_team` > 1) join your party but walk
+  their own lane. Bots never loot the Deva chest; they leave the Deva at ~10 % HP while you are in the room.
 * Turn everything off: no bot appears in any event.
 
 ## Limitations
@@ -197,8 +225,11 @@ wait for a bridge to open, they only wait for the stage to be cleared).
 * Forgotten Temple and Manes are not bot-driven (see above).
 * BDW altar: bot carriers have no client session, so the carrier slow-down/effect is simulated by the
   driver (shorter steps + a MAGIC_EFFECTING broadcast); players get the real buff.
-* Bots fight with a simplified model (no skill rotation, no buffs, no potions; mages/priests only
-  use the ranged attack animation). The kill feed is zone-wide, as for human PvP.
+* Bots fight with the event damage model (class damage, 12 % miss, 2 s / 3 s cooldowns; mages/priests
+  use the ranged attack animation) on top of the brain's decisions (potions, scrolls, kiting,
+  retreat, formation). The kill feed is zone-wide, as for human PvP.
+* The 2625 client has no ALT rank board in zone 87 (its ALT handler knows 71-73/69, 84 -> type 2,
+  85 -> Chaos ladder); the server answers a Juraid request with the temple board anyway.
 * Ultima/Rift helper bots reuse the existing GM test-bot drivers; their swing animations are now
   room-aware, but they remain simple "stand near the target and hit" bots.
 * Bot ids come from the shared runtime id counter (base 20000, session band is 16-bit): after
