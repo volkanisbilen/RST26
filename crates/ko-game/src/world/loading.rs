@@ -1606,8 +1606,8 @@ impl WorldState {
                     tracing::debug!(zone_id, smd_name = %row.smd_name, map_size = smd.map_size, map_width = smd.map_width, warps = smd.warps.len(), "SMD loaded");
                     smd_loaded += 1;
                     let map = crate::zone::MapData::new(smd);
-                    // Event arenas (BDW / Chaos / Juraid): doors and bridges are dynamic objects the
-                    // baked client collision does not contain, so the event grid stays walkable too.
+                    // Event arenas (BDW / Chaos / Juraid): client mask + authored openings
+                    // (`systems::event_nav`); the SMD event grid is only a fallback.
                     let map = if crate::systems::event_room::is_in_temple_event_zone(zone_id) {
                         map.with_event_navigation(zone_id)
                     } else {

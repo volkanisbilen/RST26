@@ -345,27 +345,31 @@ impl MapData {
         if dyn_blocked(self.smd.unit_dist, x, z) {
             return false;
         }
-        // Event arenas (BDW / Chaos / Juraid): the SMD event grid is the arena
-        // layout the server authored (doors and bridges are dynamic objects
-        // that the client's baked collision does not contain, so the client
-        // mask alone seals the spawn rooms). A cell is walkable when either
-        // the event grid or the client mask says so.
+        // Event arenas (BDW / Chaos / Juraid): the client mask plus the authored
+        // openings of `systems::event_nav` (ledges players drop off, gates
+        // narrower than two cells, cage doors that open with the event). The
+        // SMD event grid is NOT consulted when a client mask is loaded: the
+        // server SMDs of 84 / 85 are different (1024 m) maps whose grid is
+        // walkable almost everywhere and used to let bots into the rocks.
         if self.bot_event_only {
+            let in_opening = !self.event_openings.is_empty()
+                && x >= 0
+                && z >= 0
+                && crate::systems::event_nav::contains(
+                    self.event_openings,
+                    (x as f32 + 0.5) * self.smd.unit_dist,
+                    (z as f32 + 0.5) * self.smd.unit_dist,
+                );
+            if let Some(mask) = &nav.nav {
+                return mask.is_walkable(x, z) || in_opening;
+            }
+            // No client mask shipped for this arena: fall back to the SMD event grid.
             let on_event_grid = x >= 0
                 && z >= 0
                 && x < self.smd.map_size
                 && z < self.smd.map_size
                 && self.smd.get_event_id(x, z) > 0;
-            return on_event_grid
-                || nav.nav.as_ref().is_some_and(|m| m.is_walkable(x, z))
-                || (!self.event_openings.is_empty()
-                    && x >= 0
-                    && z >= 0
-                    && crate::systems::event_nav::contains(
-                        self.event_openings,
-                        (x as f32 + 0.5) * self.smd.unit_dist,
-                        (z as f32 + 0.5) * self.smd.unit_dist,
-                    ));
+            return on_event_grid || in_opening;
         }
         // Client-derived mask: authoritative. The SMD event grid is not
         // consulted, it may belong to a different revision of the map.
@@ -473,9 +477,9 @@ impl MapData {
             )
     }
 
-    /// Event arena navigation: the SMD event grid and the authored openings of
-    /// `zone_id` (`systems::event_nav`) are walkable in addition to the client
-    /// mask (see `bot_event_only`). Used for zones 84 / 85 / 87.
+    /// Event arena navigation: the client mask plus the authored openings of
+    /// `zone_id` (`systems::event_nav`); the SMD event grid is only a fallback
+    /// when no `.nav` is loaded (see `bot_event_only`). Used for zones 84 / 85 / 87.
     pub fn with_event_navigation(mut self, zone_id: u16) -> Self {
         self.bot_event_only = true;
         self.event_openings = crate::systems::event_nav::openings(zone_id);

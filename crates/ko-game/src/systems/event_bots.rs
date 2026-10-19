@@ -1521,10 +1521,10 @@ mod tests {
         assert_eq!(reg.event_room_of(20_002), 0);
     }
 
-    // ── real map navigation (client nav mask + event grid, exactly as the server loads them) ──
+    // ── real map navigation (client nav mask + authored openings, exactly as the server loads them) ──
 
-    /// Load a zone the way `load_zones` does: server SMD + `Map/nav/<zone>.nav` + the event
-    /// arena union. `None` when the files are not checked out (the tests then skip).
+    /// Load a zone the way `load_zones` does: server SMD + `Map/nav/<zone>.nav` + the authored
+    /// event openings. `None` when the files are not checked out (the tests then skip).
     fn real_event_map(zone: u16, smd: &str) -> Option<crate::zone::MapData> {
         use ko_protocol::nav::NavMask;
         use ko_protocol::smd::SmdFile;
@@ -1548,9 +1548,9 @@ mod tests {
         assert!(r.found, "{what}: no bot route {from:?} -> {to:?} (snapped {s:?} -> {g:?})");
     }
 
-    /// BDW (84): both spawns reach the altar, the altar reaches both delivery zones. The client
-    /// mask alone leaves every spawn room a closed pocket (the doors are dynamic objects); the
-    /// union with the event grid is what the live server navigates on.
+    /// BDW (84): both spawns reach the altar, the altar reaches both delivery zones, and the
+    /// bases reach each other. The client mask closes the spawn ledges and the two base gates
+    /// (see `event_nav`); the authored openings reopen exactly those.
     #[test]
     fn bdw_real_map_has_bot_routes_spawn_altar_and_bases() {
         let Some(map) = real_event_map(84, "In_dungeon04.smd") else { return };
@@ -1560,15 +1560,47 @@ mod tests {
         assert_route(&map, "altar -> karus base", altar, bdw_ai::base_centre(1));
         assert_route(&map, "altar -> elmo base", altar, bdw_ai::base_centre(2));
         assert_route(&map, "karus spawn -> elmo base", (51.0, 58.0), bdw_ai::base_centre(2));
+        assert_route(&map, "elmo spawn -> karus base", (201.0, 207.0), bdw_ai::base_centre(1));
     }
 
-    /// Chaos (85): the whole arena is one connected hunting ground from the start position.
+    /// BDW (84): the arena's rocks and walls stay blocked. The points are the centres of
+    /// baked collision objects read from `in_dungeon04.opd` (the two pillars in the field
+    /// around the altar, the bastions beside each base gate) plus the SMD-only cells the old
+    /// event-grid union let bots walk (the SMD is a different 1024 m map, walkable everywhere).
+    #[test]
+    fn bdw_real_map_keeps_rocks_and_walls_blocked() {
+        let Some(map) = real_event_map(84, "In_dungeon04.smd") else { return };
+        let rocks = [
+            (143.7, 120.6, "field pillar east of the altar (.opd faces 1123..1137)"),
+            (136.3, 137.3, "field pillar north-east of the altar (.opd faces 1139..1154)"),
+            (74.0, 122.0, "karus base south bastion"),
+            (70.0, 142.0, "karus base north bastion"),
+            (186.0, 118.0, "elmo base south bastion"),
+            (182.0, 142.0, "elmo base north bastion"),
+            (10.0, 10.0, "map corner (SMD event grid says walkable)"),
+            (128.0, 246.0, "north edge (SMD event grid says walkable)"),
+        ];
+        for (x, z, what) in rocks {
+            assert!(!map.is_bot_movable(x, z), "{what} at ({x}, {z}) must stay blocked for bots");
+        }
+        // The event grid of the foreign SMD is no longer consulted: the arena keeps the
+        // client mask's shape (the whole map would be ~95% walkable otherwise).
+        let n = map.bot_grid_size();
+        let walkable = (0..n).flat_map(|x| (0..n).map(move |z| (x, z))).filter(|&(x, z)| map.is_bot_movable_grid(x, z)).count();
+        assert!(walkable < (n * n) as usize / 2, "BDW bot grid is {walkable} / {} walkable: the SMD grid leaked in", n * n);
+    }
+
+    /// Chaos (85): the whole arena is one connected hunting ground from the start position,
+    /// including the raised south room behind its gate; the arena's inner walls stay blocked.
     #[test]
     fn chaos_real_map_arena_is_connected_from_the_start_position() {
         let Some(map) = real_event_map(85, "sky_war_2009.smd") else { return };
         let start = (126.0, 130.0);
-        for corner in [(40.0, 40.0), (216.0, 40.0), (40.0, 216.0), (216.0, 216.0), (126.0, 60.0), (126.0, 200.0)] {
+        for corner in [(40.0, 40.0), (216.0, 40.0), (40.0, 216.0), (216.0, 216.0), (126.0, 60.0), (126.0, 200.0), (126.0, 40.0)] {
             assert_route(&map, "chaos start -> arena point", start, corner);
+        }
+        for (x, z) in [(62.0, 130.0), (190.0, 130.0), (80.0, 102.0), (80.0, 154.0)] {
+            assert!(!map.is_bot_movable(x, z), "chaos inner wall at ({x}, {z}) must stay blocked");
         }
     }
 

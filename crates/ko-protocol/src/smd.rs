@@ -1380,3 +1380,21 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod event_grid_dump {
+    /// Diagnostic: `cargo test -p ko-protocol --lib -- event_grid_dump --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn dump_bdw_event_grid() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map");
+        for name in ["In_dungeon04.smd", "sky_war_2009.smd"] {
+            let Ok(smd) = super::SmdFile::load(&root.join(name)) else { continue };
+            println!("{name}: size {} unit {} nonzero {}", smd.map_size, smd.unit_dist, smd.event_grid.iter().filter(|&&v| v != 0).count());
+            for z in (0..65.min(smd.map_size)).rev() {
+                let row: String = (0..65.min(smd.map_size)).map(|x| match smd.get_event_id(x, z) { 0 => '#', v if v < 10 => char::from(b'0' + v as u8), _ => '+' }).collect();
+                println!("{row} {z}");
+            }
+        }
+    }
+}

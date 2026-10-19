@@ -2288,12 +2288,19 @@ async fn execute_type1_aoe(
             continue;
         }
 
+        // The bot's AC and evasion enter the formula like a player target's
+        // (`bot_defense_ac`: coeff.ac * (level + item_ac) from its worn gear).
+        let bot_ac = crate::systems::bot_ai::bot_defense_ac(world, &bot);
+        let bot_evasion = world
+            .get_coefficient(bot.class)
+            .map(|c| 1.0 + c.evasionrate as f32 * bot.level as f32 * bot.dex_stat as f32)
+            .unwrap_or(1.0);
         let mut damage = compute_type1_hit_damage(
             caster_total_hit,
-            0,
+            bot_ac,
             type1_data,
             caster_hitrate,
-            1.0,
+            bot_evasion,
             attack_amount,
             player_attack_amount,
             &mut rng,
