@@ -1585,6 +1585,8 @@ impl WorldState {
                 .insert(row.s_index, info);
         }
 
+        let nav_dir = map_dir.join("nav");
+        crate::systems::nav_trace::set_nav_dir(nav_dir.clone());
         let mut loaded_count = 0u32;
         let mut smd_loaded = 0u32;
         let mut smd_failed = 0u32;
@@ -1600,7 +1602,11 @@ impl WorldState {
                     smd_loaded += 1;
                     let map = crate::zone::MapData::new(smd);
                     // BDW arena: the terrain mask closes the spawn room for bots
-                    Some(if zone_id == crate::systems::bdw::ZONE_BDW { map.with_event_grid_navigation() } else { map })
+                    let map = if zone_id == crate::systems::bdw::ZONE_BDW { map.with_event_grid_navigation() } else { map };
+                    // Client-derived bot mask + player trace (Map/nav/<zone>.nav / .walked).
+                    let status = crate::systems::nav_trace::load_zone_nav(&map, &nav_dir, zone_id);
+                    tracing::info!("{status}");
+                    Some(map)
                 }
                 Err(e) => {
                     tracing::warn!(zone_id, smd_name = %row.smd_name, error = %e, "SMD file not found or failed to parse");

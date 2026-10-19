@@ -65,9 +65,9 @@ pub struct RegeneEvent {
 }
 
 /// Constants matching the C++ collision system.
-const CELL_MAIN_DEVIDE: i32 = 4;
-const CELL_SUB_SIZE: i32 = 4;
-const CELL_MAIN_SIZE: i32 = CELL_MAIN_DEVIDE * CELL_SUB_SIZE; // 16
+pub const CELL_MAIN_DEVIDE: i32 = 4;
+pub const CELL_SUB_SIZE: i32 = 4;
+pub const CELL_MAIN_SIZE: i32 = CELL_MAIN_DEVIDE * CELL_SUB_SIZE; // 16
 
 /// Size of the packed `_WARP_INFO` struct in bytes.
 /// Layout: i16(2) + char[32](32) + char[256](256) + u16(2) + u32(4) +
@@ -243,7 +243,7 @@ pub type CollisionFace = [[f32; 3]; 3];
 /// faces of uninitialised memory; coordinates like 1e29 or -44610 are not
 /// map geometry. The invisible boundary walls the map editors emit run from
 /// y = -5000 to y = 5000, so that is the vertical bound.
-fn collision_face_is_sane(v: &CollisionFace, extent: f32) -> bool {
+pub fn collision_face_is_sane(v: &CollisionFace, extent: f32) -> bool {
     v.iter().flatten().all(|c| c.is_finite())
         && v.iter().all(|p| {
             p[0] >= -1000.0
@@ -260,7 +260,7 @@ fn collision_face_is_sane(v: &CollisionFace, extent: f32) -> bool {
 /// the client walks over. A cell is blocked when such a face comes within
 /// `BOT_WALL_CLEARANCE` of the cell box and overlaps the body's vertical
 /// extent above the cell's ground.
-fn rasterize_wall_faces(faces: &[CollisionFace], size: i32, unit: f32, heights: &[f32], blocked: &mut [bool]) {
+pub fn rasterize_wall_faces(faces: &[CollisionFace], size: i32, unit: f32, heights: &[f32], blocked: &mut [bool]) {
     let margin = BOT_WALL_CLEARANCE;
     for v in faces {
         let a = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]];
@@ -666,6 +666,18 @@ impl SmdFile {
     /// plus the sane collision faces. The per-cell polygon index grid that
     /// follows the faces is skipped.
     fn read_collision_data<R: Read + Seek>(reader: &mut R, size: i32, unit: f32) -> io::Result<(f32, f32, Vec<CollisionFace>)> {
+        read_shape_mgr_collision(reader, (size - 1) as f32 * unit)
+    }
+}
+
+/// Read a `CN3ShapeMgr` collision block (`LoadCollisionData`): map width and
+/// length, the collision faces (garbage faces dropped, see
+/// [`collision_face_is_sane`]) and the per-cell polygon index grid, which is
+/// skipped. The same block sits in the server `.smd` (after the terrain) and
+/// in the client `.opd` (after the file name and version), so both parsers
+/// share it. `extent` is the expected map width used for the sanity bounds.
+pub fn read_shape_mgr_collision<R: Read + Seek>(reader: &mut R, extent: f32) -> io::Result<(f32, f32, Vec<CollisionFace>)> {
+    {
         let map_width = read_f32(reader)?;
         let map_length = read_f32(reader)?;
 
@@ -677,7 +689,6 @@ impl SmdFile {
                 "negative collision face count",
             ));
         }
-        let extent = (size - 1) as f32 * unit;
         let mut faces = Vec::new();
         // Each face = 3 vertices, each vertex = 3 floats (12 bytes)
         for _ in 0..face_count {
@@ -726,7 +737,9 @@ impl SmdFile {
 
         Ok((map_width, map_length, faces))
     }
+}
 
+impl SmdFile {
     /// Read the warp list section.
     ///
     ///
@@ -810,25 +823,25 @@ fn read_null_terminated(buf: &[u8]) -> String {
 }
 
 // Little-endian binary read helpers
-fn read_i16<R: Read>(r: &mut R) -> io::Result<i16> {
+pub(crate) fn read_i16<R: Read>(r: &mut R) -> io::Result<i16> {
     let mut buf = [0u8; 2];
     r.read_exact(&mut buf)?;
     Ok(i16::from_le_bytes(buf))
 }
 
-fn read_i32<R: Read>(r: &mut R) -> io::Result<i32> {
+pub(crate) fn read_i32<R: Read>(r: &mut R) -> io::Result<i32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
     Ok(i32::from_le_bytes(buf))
 }
 
-fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
+pub(crate) fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
     Ok(u32::from_le_bytes(buf))
 }
 
-fn read_f32<R: Read>(r: &mut R) -> io::Result<f32> {
+pub(crate) fn read_f32<R: Read>(r: &mut R) -> io::Result<f32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)?;
     Ok(f32::from_le_bytes(buf))

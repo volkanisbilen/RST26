@@ -7,8 +7,11 @@
 //! * zone 72 Ardream          -> `freezone_a.smd`
 //! * zone 73 Ronark Land Base -> `freezone_c.smd`
 //!
-//! The model here re-reads the SMD with `SmdFile::load_with_faces` and never
-//! looks at `bot_blocked`, so it cannot share a bug with the mask it checks.
+//! The model here re-reads the raw map files and never looks at the mask it
+//! checks. When the client files (`KO_CLIENT_DIR`, default
+//! `D:/ai/JstKO Client`) and `Map/nav/<zone>.nav` exist the model is built
+//! from the client's `.gtd` terrain and `.opd` collision faces and the world
+//! runs on the client-derived mask; otherwise both fall back to the SMD.
 
 use super::*;
 use crate::zone::{MapData, ZoneAbilities, ZoneAbilityType, ZoneInfo};
@@ -21,14 +24,53 @@ fn map_path(file: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map").join(file)
 }
 
+fn nav_path(zone_id: u16) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/nav").join(format!("{zone_id}.nav"))
+}
+
+fn client_files(zone_id: u16) -> Option<(ko_protocol::nav::ClientTerrain, ko_protocol::nav::ClientCollision)> {
+    use ko_protocol::nav::{client_map_for_zone, find_client_file, ClientCollision, ClientTerrain};
+    let dir = PathBuf::from(std::env::var("KO_CLIENT_DIR").unwrap_or_else(|_| "D:/ai/JstKO Client".into())).join("Zones");
+    let (name, _) = client_map_for_zone(zone_id)?;
+    let gtd = find_client_file(&dir, name, "gtd")?;
+    let opd = find_client_file(&dir, name, "opd")?;
+    Some((ClientTerrain::load(&gtd).ok()?, ClientCollision::load(&opd).ok()?))
+}
+
+/// The client-derived mask is used when both the client files (for the
+/// independent model) and the committed `.nav` exist.
+fn use_client_nav(zone_id: u16) -> bool {
+    nav_path(zone_id).exists() && client_files(zone_id).is_some()
+}
+
 /// The "what may a player do" reference for one map.
 struct PlayerModel {
-    smd: SmdFile,
+    size: i32,
+    unit: f32,
+    heights: Vec<f32>,
+    /// SMD event grid (only consulted in SMD mode).
+    event_grid: Option<SmdFile>,
     walls: WallIndex,
 }
 
 impl PlayerModel {
     fn load(file: &str) -> Option<Self> {
+        Self::load_for(0, file)
+    }
+
+    fn load_for(zone_id: u16, file: &str) -> Option<Self> {
+        if zone_id != 0 && use_client_nav(zone_id) {
+            let (terrain, collision) = client_files(zone_id)?;
+            let extent = (terrain.size - 1) as f32 * terrain.unit;
+            eprintln!("zone {zone_id}: player model from client files ({} faces)", collision.faces.len());
+            return Some(Self {
+                size: terrain.size,
+                unit: terrain.unit,
+                heights: terrain.heights,
+                event_grid: None,
+                walls: WallIndex::new(&collision.faces, extent),
+            });
+        }
         let path = map_path(file);
         if !path.exists() {
             eprintln!("skipping {file}: map not found");
@@ -37,22 +79,27 @@ impl PlayerModel {
         let (smd, faces) = SmdFile::load_with_faces(&path).expect("load SMD");
         let extent = (smd.map_size - 1) as f32 * smd.unit_dist;
         Some(Self {
+            size: smd.map_size,
+            unit: smd.unit_dist,
+            heights: smd.heights.clone(),
             walls: WallIndex::new(&faces, extent),
-            smd,
+            event_grid: Some(smd),
         })
     }
 
     /// Reason a player could not stand at `(x, z)`, if any.
     fn cannot_stand(&self, x: f32, z: f32) -> Option<String> {
-        let (size, unit) = (self.smd.map_size, self.smd.unit_dist);
+        let (size, unit) = (self.size, self.unit);
         let extent = (size - 1) as f32 * unit;
         if !(x.is_finite() && z.is_finite()) || x < 4.0 || z < 4.0 || x > extent - 4.0 || z > extent - 4.0 {
             return Some(format!("({x:.2},{z:.2}) outside the client's walkable map edge"));
         }
-        if self.smd.get_event_id((x / unit) as i32, (z / unit) as i32) <= 0 {
-            return Some(format!("({x:.2},{z:.2}) on an event-grid blocked tile"));
+        if let Some(smd) = &self.event_grid {
+            if smd.get_event_id((x / unit) as i32, (z / unit) as i32) <= 0 {
+                return Some(format!("({x:.2},{z:.2}) on an event-grid blocked tile"));
+            }
         }
-        let feet = client_terrain_height(&self.smd.heights, size, unit, x, z)?;
+        let feet = client_terrain_height(&self.heights, size, unit, x, z)?;
         let clearance = self.walls.clearance(x, feet, z);
         if clearance < CLIENT_BODY_RADIUS - 0.02 {
             return Some(format!("({x:.2},{z:.2}) only {clearance:.2} from a wall (body radius {CLIENT_BODY_RADIUS})"));
@@ -74,7 +121,7 @@ impl PlayerModel {
             if let Some(why) = self.cannot_stand(x, z) {
                 return Some(why);
             }
-            if client_incline_blocks(&self.smd.heights, self.smd.map_size, self.smd.unit_dist, x, z, dir_x, dir_z) {
+            if client_incline_blocks(&self.heights, self.size, self.unit, x, z, dir_x, dir_z) {
                 return Some(format!("({x:.2},{z:.2}) terrain too steep to climb heading ({dir_x:.2},{dir_z:.2})"));
             }
         }
@@ -113,7 +160,12 @@ fn world_with_mask(zone_id: u16, file: &str, legacy: bool) -> Option<WorldState>
     if legacy {
         smd.bot_blocked = legacy_blocked(&smd, &faces);
     }
-    world.set_zone_with_map(zone_id, zone_info(), MapData::new(smd));
+    let map = if !legacy && use_client_nav(zone_id) {
+        MapData::with_nav(smd, ko_protocol::nav::NavMask::load(&nav_path(zone_id)).expect("load nav"))
+    } else {
+        MapData::new(smd)
+    };
+    world.set_zone_with_map(zone_id, zone_info(), map);
     Some(world)
 }
 
@@ -188,7 +240,7 @@ fn simulate(zone_id: u16, file: &str, per_nation: usize, ticks: usize) -> Option
 }
 
 fn simulate_with(zone_id: u16, file: &str, per_nation: usize, ticks: usize, legacy: bool) -> Option<SimStats> {
-    let model = PlayerModel::load(file)?;
+    let model = if legacy { PlayerModel::load(file)? } else { PlayerModel::load_for(zone_id, file)? };
     let world = world_with_mask(zone_id, file, legacy)?;
     spawn_pk_bot_wave(&world, zone_id, Some(per_nation), Some(59)).expect("spawn wave");
     let ids: Vec<BotId> = world.bots.iter().map(|e| *e.key()).collect();
@@ -302,7 +354,7 @@ fn patrol_waypoint_walks_stay_player_legal() {
         (ZONE_ARDREAM, "freezone_a.smd"),
         (ZONE_RONARK_LAND_BASE, "freezone_c.smd"),
     ] {
-        let Some(model) = PlayerModel::load(file) else { continue };
+        let Some(model) = PlayerModel::load_for(zone_id, file) else { continue };
         let Some(world) = world_with_map(zone_id, file) else { continue };
         let mut walked = 0usize;
         for nation in [1u8, 2u8] {
@@ -355,7 +407,7 @@ fn make_walk_bot(zone_id: u16, nation: u8, x: f32, z: f32) -> BotInstance {
 
 #[test]
 fn bot_standing_on_a_wall_is_returned_to_walkable_ground_on_the_next_tick() {
-    let Some(model) = PlayerModel::load("freezone_b.smd") else { return };
+    let Some(model) = PlayerModel::load_for(ZONE_RONARK_LAND, "freezone_b.smd") else { return };
     let Some(world) = world_with_map(ZONE_RONARK_LAND, "freezone_b.smd") else { return };
     // Find a tile the mask refuses next to ground it accepts (a cliff foot).
     let zone = world.get_zone(ZONE_RONARK_LAND).unwrap();
