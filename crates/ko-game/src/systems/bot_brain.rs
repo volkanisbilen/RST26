@@ -513,18 +513,24 @@ fn cell(x: f32, z: f32) -> (i32, i32) {
     ((x / GRID_CELL).floor() as i32, (z / GRID_CELL).floor() as i32)
 }
 
-static SNAPSHOTS: OnceLock<Mutex<HashMap<u16, Arc<Snapshot>>>> = OnceLock::new();
+/// Keyed by (world, zone): tests run several worlds in one process.
+static SNAPSHOTS: OnceLock<Mutex<HashMap<(usize, u16), Arc<Snapshot>>>> = OnceLock::new();
 
 /// The zone snapshot of this tick (built once per zone per `now_ms`).
 pub fn snapshot(world: &WorldState, zone_id: u16, now_ms: u64) -> Arc<Snapshot> {
+    let key = (world as *const WorldState as usize, zone_id);
     let cache = SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(s) = cache.lock().get(&zone_id) {
+    if let Some(s) = cache.lock().get(&key) {
         if s.built_ms == now_ms {
             return Arc::clone(s);
         }
     }
     let snap = Arc::new(build_snapshot(world, zone_id, now_ms));
-    cache.lock().insert(zone_id, Arc::clone(&snap));
+    let mut cache = cache.lock();
+    if cache.len() > 256 {
+        cache.retain(|_, s| s.built_ms + 60_000 > now_ms);
+    }
+    cache.insert(key, Arc::clone(&snap));
     snap
 }
 
@@ -2191,28 +2197,34 @@ mod tests {
     #[test]
     fn brain_takes_over_the_pk_tick_and_moves_toward_a_hotspot() {
         use crate::systems::bot_ai::{spawn_gm_bot, SpawnGmBotParams};
-        set_config(BrainConfig { patrol_percent: 0, ..cfg() });
         let world = WorldState::new();
         let id = spawn_gm_bot(
             &world,
             SpawnGmBotParams { zone_id: ZONE_ARDREAM, x: 300.0, y: 0.0, z: 300.0, class: 1, level: 59, nation: 1, ai_state: BotAiState::Pk },
         );
+        // The config is process-global (other tests may change it concurrently):
+        // pin this bot's role directly instead of relying on patrol_percent.
+        forget(id);
+        {
+            let mut st = state_of(id, 10_000);
+            st.role = Role::Hotspot;
+            store_state(id, st);
+        }
         let bot = world.get_bot(id).unwrap();
         // no map data in a bare test world: pathing refuses, but the brain still owns the tick
         assert!(tick_pk(&world, &bot, 10_000));
         let st = state_of(id, 10_000);
         assert_eq!(st.role, Role::Hotspot);
-        assert_eq!(st.mode, Mode::Objective);
+        assert_eq!(st.mode, Mode::Objective, "alone in the zone: objective layer");
         // (without map data the step is refused and the spot is dropped for a re-pick,
         // so only role/mode are asserted here; hotspot picking is covered above)
         forget(id);
-        set_config(cfg());
     }
 
     #[test]
     fn two_enemy_bots_engage_each_other_with_reaction_delay() {
         use crate::systems::bot_ai::{spawn_gm_bot, SpawnGmBotParams};
-        set_config(BrainConfig { target_mistake_percent: 0, ..cfg() });
+        // (a single candidate cannot be "mistaken", so no config change is needed)
         let world = WorldState::new();
         let a = spawn_gm_bot(
             &world,
