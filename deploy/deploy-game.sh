@@ -37,6 +37,14 @@ if git cat-file -e "$LAST^{commit}" 2>/dev/null; then
 fi
 git rev-parse HEAD > "$MARK"
 
+echo "== bot nav data"
+# Client-derived walkability masks (Map/nav/*.nav, built by `navgen`); the runtime reads them
+# from /opt/ko26xx/Map/nav. Never touch *.walked there: that is live player-trace data.
+if [ -d Map/nav ]; then
+  mkdir -p /opt/ko26xx/Map/nav
+  cp Map/nav/*.nav /opt/ko26xx/Map/nav/ && echo "nav files installed: $(ls Map/nav/*.nav | wc -l)"
+fi
+
 echo "== install"
 systemctl stop ko-server
 cp target/release/ko-server /opt/ko26xx/ko-server
