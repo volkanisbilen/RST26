@@ -51,6 +51,58 @@ impl WorldState {
     pub fn get_magic_type4(&self, i_num: i32) -> Option<MagicType4Row> {
         self.magic_type4.get(&i_num).map(|r| r.clone())
     }
+    /// Item potions of the magic table: `(skill id, direct type 1=HP 2=MP, amount)`.
+    /// Same selection the player potion path uses (`item_group 9`, self moral,
+    /// type 3 with `first_damage > 0`). Used by the bot brain's virtual potions.
+    pub fn potion_skills(&self) -> Vec<(i32, i32, i32)> {
+        self.magic_table
+            .iter()
+            .filter(|r| {
+                r.item_group == Some(9)
+                    && r.moral == Some(crate::magic_constants::MORAL_SELF)
+                    && r.type1 == Some(3)
+                    && r.type2.unwrap_or(0) == 0
+                    && r.magic_num > 400_000
+            })
+            .filter_map(|r| {
+                let t3 = self.magic_type3.get(&r.magic_num)?;
+                let direct = t3.direct_type.unwrap_or(0);
+                let amount = t3.first_damage.unwrap_or(0);
+                ((direct == 1 || direct == 2) && amount > 0).then_some((r.magic_num, direct, amount))
+            })
+            .collect()
+    }
+
+    /// Self buff scrolls of the magic table: `(skill id, duration s)`.
+    pub fn scroll_buff_skills(&self) -> Vec<(i32, i32)> {
+        self.magic_table
+            .iter()
+            .filter(|r| {
+                r.item_group == Some(9)
+                    && r.moral == Some(crate::magic_constants::MORAL_SELF)
+                    && r.type1 == Some(4)
+                    && r.use_item.unwrap_or(0) != 0
+            })
+            .filter_map(|r| {
+                let t4 = self.magic_type4.get(&r.magic_num)?;
+                let d = t4.duration.unwrap_or(0);
+                (d > 0).then_some((r.magic_num, d))
+            })
+            .collect()
+    }
+
+    /// Monster transformation scrolls: `(skill id, duration s)`.
+    pub fn transform_scroll_skills(&self) -> Vec<(i32, i32)> {
+        self.magic_table
+            .iter()
+            .filter(|r| r.type1 == Some(6) && r.use_item.unwrap_or(0) != 0)
+            .filter_map(|r| {
+                let t6 = self.magic_type6.get(&r.magic_num)?;
+                (t6.user_skill_use == 1 && t6.duration > 0 && t6.nation == 0).then_some((r.magic_num, t6.duration))
+            })
+            .collect()
+    }
+
     /// Insert a magic row into the master magic table. Used for tests.
     #[cfg(test)]
     pub(crate) fn insert_magic(&self, row: MagicRow) {

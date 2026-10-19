@@ -439,6 +439,11 @@ impl WorldState {
             tracing::warn!(error = %e, "bot_loadout_override tables not found or error; GM PK bots use fully automatic gear/stats/skills until a migration adds them");
         }
 
+        // ─── Bot brain knobs (admin panel "Bot Zekâsı"; defaults when missing) ──
+        if let Err(e) = crate::systems::bot_brain::reload_config(pool).await {
+            tracing::warn!(error = %e, "bot_brain_config table not found or error; bot brain runs with defaults");
+        }
+
         // ─── Event bot configuration (admin panel, default: all OFF) ────────────
         if let Err(e) = crate::systems::event_bots::reload_config(pool, self).await {
             tracing::warn!(error = %e, "event_bot_config table not found or error; event bots stay disabled until a migration adds it");

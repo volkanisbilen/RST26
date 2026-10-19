@@ -1685,6 +1685,8 @@ fn think(world: &WorldState, bot: &BotInstance, st: &mut FieldBotRt, ctx: &mut C
     if (bot.is_priest() || bot.is_rogue()) && bot_ai::tick_bot_support(world, bot, now_ms) {
         return;
     }
+    // Virtual potions / scrolls (shared bot brain; never blocks movement).
+    crate::systems::bot_brain::tick_consumables_for(world, bot, now_ms);
 
     // Resting.
     let hp_pct = if bot.max_hp > 0 { bot.hp as i32 * 100 / bot.max_hp as i32 } else { 100 };
