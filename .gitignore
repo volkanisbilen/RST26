@@ -137,3 +137,8 @@ docs/ko-admin-paket/
 docs/ko-admin-paket.zip
 docs/rift_review/
 docs/rift_review.zip
+
+# bot nav runtime output (player traces, debug PNGs)
+Map/nav/*.walked
+Map/nav/*.walked.tmp
+Map/nav/debug/

@@ -29,6 +29,7 @@ pub mod letter_admin_notify;
 pub mod loyalty;
 pub mod manes_survival;
 pub mod monster_stone;
+pub mod nav_trace;
 pub mod npc_ai;
 pub mod offline_merchant;
 pub mod pathfind;

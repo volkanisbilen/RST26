@@ -7,7 +7,9 @@
 //! Nearby players = current region + 8 surrounding (3×3 grid).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use ko_protocol::nav::{NavMask, WalkedMap};
 use ko_protocol::smd::{SmdFile, WarpInfo};
 use parking_lot::RwLock;
 use smallvec::SmallVec;
@@ -220,8 +222,8 @@ pub struct ZoneAbilities {
 
 // ─── Map Data ───────────────────────────────────────────────────────────
 
-/// Parsed map data from an SMD file.
-/// Holds the event grid and warp info needed for movement validation.
+/// Parsed map data from an SMD file, plus the client-derived bot navigation
+/// data (`Map/nav/<zone>.nav`, see `ko_protocol::nav`) when it exists.
 #[derive(Debug)]
 pub struct MapData {
     /// Parsed SMD file with event grid, warps, dimensions.
@@ -232,12 +234,75 @@ pub struct MapData {
     /// Bots navigate by the event grid alone (maps whose terrain mask walls in the spawn areas,
     /// e.g. the BDW arena: the mask left the spawn room a closed pocket, the players walk out).
     bot_event_only: bool,
+    /// Client-derived mask + player trace, swapped atomically on reload.
+    bot_nav: parking_lot::RwLock<Arc<BotNav>>,
+}
+
+/// Minimum number of player-walked cells before the trace influences bot
+/// routing (`KO_NAV_WALKED_MIN_CELLS`, default 1500).
+pub fn walked_min_cells() -> usize {
+    static MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        std::env::var("KO_NAV_WALKED_MIN_CELLS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500)
+    })
+}
+
+/// One generation of bot navigation data for a zone.
+#[derive(Debug)]
+pub struct BotNav {
+    /// Client-derived walkability (`None`: fall back to the SMD-derived mask).
+    pub nav: Option<NavMask>,
+    /// Cells/edges real players were seen walking (grid of the active mask).
+    pub walked: Arc<WalkedMap>,
+    /// Grid cells per axis of the active mask.
+    pub grid_size: i32,
+}
+
+impl BotNav {
+    /// Enough trace data to let bots prefer player-walked cells.
+    pub fn walked_ready(&self) -> bool {
+        self.walked.walked_count() >= walked_min_cells()
+    }
+}
+
+/// Snapshot of a map's bot navigation state for one query (no lock per cell).
+pub struct BotView<'a> {
+    map: &'a MapData,
+    nav: Arc<BotNav>,
+    walked_ready: bool,
+}
+
+impl BotView<'_> {
+    #[inline]
+    pub fn grid_size(&self) -> i32 {
+        self.nav.grid_size
+    }
+
+    #[inline]
+    pub fn walkable(&self, x: i32, z: i32) -> bool {
+        self.map.bot_cell_walkable(&self.nav, x, z)
+    }
+
+    /// Extra A* cost for stepping into `(x, z)`: cells no real player has
+    /// walked cost more once the zone has enough trace data.
+    #[inline]
+    pub fn step_penalty(&self, x: i32, z: i32) -> i32 {
+        if self.walked_ready && !self.nav.walked.is_walked(x, z) {
+            crate::systems::pathfind::COST_UNWALKED_PENALTY
+        } else {
+            0
+        }
+    }
+
+    pub fn walked_ready(&self) -> bool {
+        self.walked_ready
+    }
 }
 
 impl MapData {
-    pub fn is_bot_movable_grid(&self, x: i32, z: i32) -> bool {
-        // Bot movement follows the terrain mask (zero = blocked). The legacy
-        // NPC pathfinder uses the inverse convention; keep that API separate.
+    fn bot_cell_walkable(&self, nav: &BotNav, x: i32, z: i32) -> bool {
+        // BDW-style zones: the event grid is the arena layout (doors open at
+        // start), the collision data would seal the spawn rooms.
         if self.bot_event_only {
             return x >= 0
                 && z >= 0
@@ -245,9 +310,20 @@ impl MapData {
                 && z < self.smd.map_size
                 && self.smd.get_event_id(x, z) > 0;
         }
+        // Client-derived mask: authoritative. The SMD event grid is not
+        // consulted, it may belong to a different revision of the map.
+        if let Some(mask) = &nav.nav {
+            return mask.is_walkable(x, z);
+        }
+        // Legacy: terrain mask (zero = blocked) from the SMD.
         x >= 0 && z >= 0 && x < self.smd.map_size && z < self.smd.map_size
             && (self.bot_ignore_event || self.smd.get_event_id(x, z) > 0) && (self.smd.bot_blocked.is_empty()
             || !self.smd.bot_blocked[(x * self.smd.map_size + z) as usize])
+    }
+
+    pub fn is_bot_movable_grid(&self, x: i32, z: i32) -> bool {
+        let nav = self.bot_nav.read().clone();
+        self.bot_cell_walkable(&nav, x, z)
     }
 
     pub fn is_bot_movable(&self, x: f32, z: f32) -> bool {
@@ -255,11 +331,66 @@ impl MapData {
             && self.is_bot_movable_grid((x / self.unit_dist()) as i32, (z / self.unit_dist()) as i32)
     }
 
+    /// Snapshot for a path query.
+    pub fn bot_view(&self) -> BotView<'_> {
+        let nav = self.bot_nav.read().clone();
+        let walked_ready = nav.walked_ready();
+        BotView { map: self, nav, walked_ready }
+    }
+
+    /// Current bot navigation generation (mask + player trace).
+    pub fn bot_nav(&self) -> Arc<BotNav> {
+        self.bot_nav.read().clone()
+    }
+
+    /// Cells per axis of the grid bots navigate on (the client map's when a
+    /// `.nav` is loaded; it can differ from the SMD, e.g. zone 73).
+    pub fn bot_grid_size(&self) -> i32 {
+        self.bot_nav.read().grid_size
+    }
+
+    /// Install (or clear) the client-derived mask. The player trace is kept
+    /// when the grid size is unchanged, otherwise restarted.
+    pub fn set_nav(&self, nav: Option<NavMask>) {
+        let grid_size = nav.as_ref().map_or(self.smd.map_size, |n| n.size);
+        let mut slot = self.bot_nav.write();
+        let walked = if slot.grid_size == grid_size {
+            slot.walked.clone()
+        } else {
+            Arc::new(WalkedMap::new(grid_size, self.smd.unit_dist))
+        };
+        *slot = Arc::new(BotNav { nav, walked, grid_size });
+    }
+
+    /// Replace the player trace (e.g. loaded from `Map/nav/<zone>.walked`).
+    pub fn set_walked(&self, walked: WalkedMap) -> Result<(), WalkedMap> {
+        let mut slot = self.bot_nav.write();
+        if walked.size != slot.grid_size {
+            return Err(walked);
+        }
+        *slot = Arc::new(BotNav { nav: slot.nav.clone(), walked: Arc::new(walked), grid_size: slot.grid_size });
+        Ok(())
+    }
+
+    /// Record a validated real-player move into the trace.
+    pub fn record_player_move(&self, from: (f32, f32), to: (f32, f32)) -> bool {
+        self.bot_nav.read().walked.mark_move(from, to)
+    }
+
     /// Terrain height under `(x, z)`, computed exactly like the client does
     /// (`sub_8C7B40`: checkerboard triangulation, not bilinear), so the Y we
-    /// send for bots is the Y the client would stand a player at.
+    /// send for bots is the Y the client would stand a player at. Uses the
+    /// client terrain from the `.nav` file when loaded (the SMD terrain of
+    /// zones 71/73 is a different map revision).
     pub fn terrain_height(&self, x: f32, z: f32) -> Option<f32> {
-        if !self.is_valid_position(x, z) || self.smd.heights.is_empty() {
+        if !self.is_valid_position(x, z) {
+            return None;
+        }
+        let nav = self.bot_nav.read().clone();
+        if let Some(mask) = nav.nav.as_ref().filter(|m| !m.heights.is_empty()) {
+            return ko_protocol::smd::client_terrain_height(&mask.heights, mask.size, mask.unit, x, z);
+        }
+        if self.smd.heights.is_empty() {
             return None;
         }
         ko_protocol::smd::client_terrain_height(&self.smd.heights, self.smd.map_size, self.smd.unit_dist, x, z)
@@ -269,6 +400,10 @@ impl MapData {
     /// direction `(dir_x, dir_z)` because the terrain triangle is too steep
     /// (>40 degrees uphill, `sub_8C9210`)?
     pub fn client_incline_blocks(&self, x: f32, z: f32, dir_x: f32, dir_z: f32) -> bool {
+        let nav = self.bot_nav.read().clone();
+        if let Some(mask) = nav.nav.as_ref().filter(|m| !m.heights.is_empty()) {
+            return ko_protocol::smd::client_incline_blocks(&mask.heights, mask.size, mask.unit, x, z, dir_x, dir_z);
+        }
         !self.smd.heights.is_empty()
             && ko_protocol::smd::client_incline_blocks(
                 &self.smd.heights,
@@ -291,7 +426,19 @@ impl MapData {
     pub fn new(smd: SmdFile) -> Self {
         // Only trust the terrain mask when it exists, otherwise an empty-grid map would be fully open.
         let bot_ignore_event = !smd.bot_blocked.is_empty() && smd.event_grid.iter().all(|&v| v == 0);
-        Self { smd, bot_ignore_event, bot_event_only: false }
+        let bot_nav = BotNav {
+            nav: None,
+            walked: Arc::new(WalkedMap::new(smd.map_size, smd.unit_dist)),
+            grid_size: smd.map_size,
+        };
+        Self { smd, bot_ignore_event, bot_event_only: false, bot_nav: parking_lot::RwLock::new(Arc::new(bot_nav)) }
+    }
+
+    /// Create map data with a client-derived mask already installed.
+    pub fn with_nav(smd: SmdFile, nav: NavMask) -> Self {
+        let map = Self::new(smd);
+        map.set_nav(Some(nav));
+        map
     }
 
     /// Check if a world position is within map boundaries.

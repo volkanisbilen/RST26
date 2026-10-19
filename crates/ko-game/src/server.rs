@@ -182,6 +182,9 @@ impl GameServer {
         ));
         info!("Periodic character save started (10min interval)");
 
+        bg_tasks.push(crate::systems::nav_trace::start_nav_trace_flush_task(self.world.clone()));
+        info!("Bot nav player-trace flush started (5min interval)");
+
         bg_tasks.push(crate::systems::knights_save::start_knights_save_task(
             self.world.clone(),
             self.pool.clone(),

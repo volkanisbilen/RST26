@@ -348,6 +348,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
     // Update position in world state
     let region_result = world.update_position(sid, zone_id, x, y, z);
 
+    // Bot navigation heatmap: real players only (no GM authority 0/250/251);
+    // teleport-sized jumps are filtered inside.
+    if !matches!(snap.authority, 0 | 250 | 251) {
+        crate::systems::nav_trace::record_player_move(&world, zone_id, (old_x, old_z), (x, z));
+    }
+
     // ── GM invisible broadcast suppression ──────────────────────────
     //   if (isGM() && m_bAbnormalType == ABNORMAL_INVISIBLE) skip broadcast
     // ABNORMAL_INVISIBLE = 0
