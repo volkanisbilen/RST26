@@ -9,7 +9,7 @@ server `.smd` terrain/collision is **not the map the 2625 client plays on**:
 | 72 Ardream | `freezone_a.smd` 257x257 | `Zones/FreeZone_a.*` 257x257 | terrain matches (330 samples differ); smd has 11,319 faces of which 1,591 are garbage (faces 648..2270), opd has 12,636 sane faces |
 | 73 Ronark Land Base | `freezone_c.smd` 513x513 | `Zones/FreeZone_c.*` 257x257 (1024 m) | `freezone_c.smd` heights are byte-identical to `freezone_b.smd`: the server map is a different map altogether |
 | 21 Moradon | `moradon_0826.smd` | `Zones/Moradon.*` (Aug 2025) | 61k samples differ |
-| 84 BDW / 85 Chaos | 257x257 smd | 65x65 (256 m) client maps | different maps; BDW keeps event-grid navigation |
+| 84 BDW / 85 Chaos | 257x257 smd | 65x65 (256 m) client maps | different maps; the SMD event grid is NOT used (see "Event arenas") |
 
 So the bot mask is now generated from the client's own files and shipped as
 `Map/nav/<zone>.nav`; the server loads it in preference to the SMD mask.
@@ -88,3 +88,40 @@ walkable, red old-mask-only, blue client-only, dark blocked.
   cells; walked cells never override a blocked mask cell.
 * GM: `+navreload [zone]`, `+navstats [zone]`, `+navdump [zone]` (PNG under
   `Map/nav/debug`, yellow bots, cyan players, green walked).
+
+## Event arenas (84 BDW, 85 Chaos, 87 Juraid)
+
+The server SMDs of BDW (`In_dungeon04.smd`) and Chaos (`sky_war_2009.smd`)
+are 257x257 (1024 m) files that do not describe the 65x65 (256 m) client
+arenas: the BDW event grid is `1` on 59,037 of 66,049 cells (walkable
+everywhere, rocks included) and the Chaos grid is all zero. The old rule
+"client mask OR SMD event grid" therefore let BDW bots walk into every rock.
+Since fix5 the event zones navigate on the **client mask plus the authored
+openings of `systems/event_nav.rs` only**; the SMD grid is just a fallback
+when no `.nav` is shipped.
+
+What the pure client mask gets wrong there, verified cell by cell against
+`in_dungeon04.gtd/.opd` and `sky_war_2009.gtd/.opd` (no door shapes exist in
+the baked faces; `.opd` strings show only walls, bastions, trees and rocks):
+
+* **Ledges.** The BDW spawn castles sit ~11 m above the base yards (~3 m), the
+  Chaos south room 6.9 m above the ring (1.9 m); the drop happens within one
+  4 m cell (BDW Karus: z 100 -> 104 at x 28..60, El Morad: z 164 -> 160 at
+  x 188..224). The client's `CheckIncline` only refuses *uphill* steps, so
+  players walk off the edge; the undirected mask blocks the row.
+* **Gates narrower than two cells.** The BDW base gates are 6.4 m gaps between
+  bastions (`.opd` faces x 68.3..82.3, z 115.8..128.8 / 135.2..148.2 for
+  Karus; x 173..187, z 114.3..127.1 / 134.1..146.4 for El Morad). The gap
+  straddles two 4 m cells and the 1.124 m body clearance reaches into both,
+  so the gate is closed in the mask although a player walks through.
+* **Chaos cage gates** (north corridor z 192..200, south corridor z 72..80)
+  are baked closed and open when the event starts.
+
+Each case is one rectangle in `event_nav.rs` (BDW: two gates, two ledges;
+Chaos: two gates; Juraid: lane corridors as before). `event_bots::tests`
+(`bdw_real_map_*`, `chaos_real_map_*`) assert the spawn -> altar -> base
+routes, that the arena pillars / bastions / map corners stay blocked, and that
+the BDW grid stays under 50 % walkable (the SMD union made it ~95 %).
+Diagnostics: `cargo test -p ko-protocol --lib -- event_grid_dump --ignored
+--nocapture` prints both SMD event grids; `navgen --zones 84,85` reports
+reachability from the spawn / altar / base anchors.

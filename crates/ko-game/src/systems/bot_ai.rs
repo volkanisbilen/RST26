@@ -120,6 +120,43 @@ fn forget_bot_navigation_state(bot_id: BotId) {
     if let Some(table) = BOT_UNREACHABLE_TARGETS.get() {
         table.lock().remove(&bot_id);
     }
+    if let Some(homes) = PK_BOT_HOMES.get() {
+        homes.lock().remove(&bot_id);
+    }
+}
+
+/// Where each PK-zone bot was first placed (the wave / database spawn point of its
+/// nation). A dead PK bot regenerates exactly there (snapped to a walkable cell), the
+/// way a player regenerates at the nation start, instead of on the spread rings
+/// `spread_pk_spawn` lays out for the initial wave.
+static PK_BOT_HOMES: OnceLock<parking_lot::Mutex<HashMap<BotId, (u16, f32, f32)>>> = OnceLock::new();
+
+/// Record the first placement of a PK bot in `zone_id` (see `PK_BOT_HOMES`).
+pub(crate) fn remember_pk_bot_home(bot_id: BotId, zone_id: u16, x: f32, z: f32) {
+    PK_BOT_HOMES.get_or_init(Default::default).lock().insert(bot_id, (zone_id, x, z));
+}
+
+/// The recorded first placement of a PK bot in `zone_id`, if any (a home recorded for
+/// another zone is ignored).
+pub(crate) fn pk_bot_home(bot_id: BotId, zone_id: u16) -> Option<(f32, f32)> {
+    PK_BOT_HOMES
+        .get()
+        .and_then(|h| h.lock().get(&bot_id).copied())
+        .filter(|&(z, _, _)| z == zone_id)
+        .map(|(_, x, z)| (x, z))
+}
+
+/// Regeneration point of a dead PK bot: its own first placement (`PK_BOT_HOMES`), or the
+/// nation start of the zone when none was recorded, snapped to the nearest walkable cell.
+/// `None` only when the zone has no map or nothing walkable lies within 16 cells.
+pub(crate) fn pk_bot_regene_point(world: &WorldState, bot_id: BotId, zone_id: u16, nation: u8) -> Option<(f32, f32)> {
+    let (hx, hz) = pk_bot_home(bot_id, zone_id).unwrap_or_else(|| get_bot_respawn_position(zone_id, nation));
+    if hx == 0.0 && hz == 0.0 {
+        return None;
+    }
+    let zone = world.get_zone(zone_id)?;
+    let map = zone.map_data.as_ref()?;
+    crate::systems::pathfind::nearest_bot_point(map, hx, hz, 16)
 }
 
 /// Default movement step per tick for non-PK zones (game units).
@@ -4760,12 +4797,16 @@ fn bot_regene(world: &WorldState, bot_id: BotId, now_ms: u64) {
     // non-PK bots (farmer/afk) must respawn where they died, not get reset
     // to the map origin.
     let respawn = if original_state == BotAiState::Pk {
-        spread_pk_spawn(
-            world,
-            zone_id,
-            nation,
-            bot_id.saturating_sub(crate::world::BOT_ID_BASE) as usize,
-        )
+        // Back to this bot's own nation start (where the wave first placed it), like a
+        // player's regene; the spread rings are only for the initial placement.
+        pk_bot_regene_point(world, bot_id, zone_id, nation).or_else(|| {
+            spread_pk_spawn(
+                world,
+                zone_id,
+                nation,
+                bot_id.saturating_sub(crate::world::BOT_ID_BASE) as usize,
+            )
+        })
     } else if original_state == BotAiState::Field {
         crate::systems::field_bots::respawn_point(world, &bot)
     } else {
@@ -5310,6 +5351,9 @@ pub fn spawn_database_bots(
                 ai_state,
             },
         );
+        if kind == DatabaseBotKind::Pk {
+            remember_pk_bot_home(bot_id, zone_id, x, z);
+        }
 
         if let Some(stall) = merchant {
             let items = merchant_slots(stall);
@@ -6331,7 +6375,7 @@ const BOT_VISUAL_SLOT_ORDER: [usize; 17] = [
 
 /// Aggregate a bot's worn item bonuses with the exact routine used for real
 /// players (`compute_slot_item_values`, including set bonuses).
-fn bot_equipped_stats(
+pub(crate) fn bot_equipped_stats(
     world: &WorldState,
     equip_visual: &[(u32, i16, u8); 17],
 ) -> crate::world::types::EquippedStats {
@@ -6620,7 +6664,7 @@ pub fn spawn_pk_bot_wave(
                 continue;
             };
 
-            spawn_gm_bot(
+            let bot_id = spawn_gm_bot(
                 world,
                 SpawnGmBotParams {
                     zone_id,
@@ -6633,6 +6677,7 @@ pub fn spawn_pk_bot_wave(
                     ai_state: BotAiState::Pk,
                 },
             );
+            remember_pk_bot_home(bot_id, zone_id, x, z);
             spawned += 1;
         }
     }
@@ -8870,6 +8915,85 @@ mod tests {
         }
     }
 
+    /// A dead PK bot regenerates at its own first placement (the nation start the wave put
+    /// it on), snapped to a walkable cell, not on the spread rings or anywhere else.
+    #[test]
+    fn test_pk_bot_regenes_at_its_own_nation_start() {
+        use crate::zone::{MapData, ZoneInfo};
+        let world = WorldState::new();
+        let smd_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Map/freezone_c.smd");
+        let map_data =
+            MapData::new(ko_protocol::smd::SmdFile::load(&smd_path).expect("load Ronark Land Base SMD"));
+        world.set_zone_with_map(
+            ZONE_RONARK_LAND_BASE,
+            ZoneInfo {
+                smd_name: String::new(),
+                zone_name: "RonarkLandBase".to_string(),
+                zone_type: crate::zone::ZoneAbilityType::PvP,
+                min_level: 0,
+                max_level: 83,
+                init_x: 0.0,
+                init_z: 0.0,
+                init_y: 0.0,
+                abilities: crate::zone::ZoneAbilities::default(),
+                status: 1,
+            },
+            map_data,
+        );
+        let map = world.get_zone(ZONE_RONARK_LAND_BASE).unwrap();
+        let map = map.map_data.as_ref().unwrap();
+
+        for nation in [NATION_KARUS, NATION_ELMORAD] {
+            // Place the bot the way `spawn_pk_bot_wave` does.
+            let (raw_x, raw_z) = get_bot_respawn_position(ZONE_RONARK_LAND_BASE, nation);
+            let (home_x, home_z) = crate::systems::pathfind::nearest_bot_point(map, raw_x, raw_z, 8).unwrap();
+            let id = spawn_gm_bot(
+                &world,
+                SpawnGmBotParams {
+                    zone_id: ZONE_RONARK_LAND_BASE,
+                    x: home_x,
+                    y: 0.0,
+                    z: home_z,
+                    class: 1,
+                    level: 83,
+                    nation,
+                    ai_state: BotAiState::Pk,
+                },
+            );
+            remember_pk_bot_home(id, ZONE_RONARK_LAND_BASE, home_x, home_z);
+
+            // Kill it far away from home and let it regenerate.
+            world.update_bot(id, |b| {
+                b.x = 513.0;
+                b.z = 510.0;
+                b.hp = 0;
+                b.presence = BotPresence::Dead;
+                b.original_ai_state = BotAiState::Pk;
+                b.regene_at_ms = 1;
+            });
+            bot_regene(&world, id, 10_000);
+
+            let bot = world.get_bot(id).unwrap();
+            assert_eq!(bot.presence, BotPresence::Standing);
+            assert_eq!(bot.hp, bot.max_hp);
+            let d = (bot.x - home_x).hypot(bot.z - home_z);
+            assert!(d < 0.01, "nation {nation}: regenerated {d:.1} m from its own start ({home_x}, {home_z}) at ({}, {})", bot.x, bot.z);
+            assert!(map.is_bot_movable(bot.x, bot.z));
+            assert_eq!(pk_bot_home(id, ZONE_RONARK_LAND_BASE), Some((home_x, home_z)));
+            assert_eq!(pk_bot_home(id, ZONE_RONARK_LAND), None, "a home belongs to its zone");
+
+            // Despawning forgets the home.
+            despawn_bot(&world, id);
+            assert_eq!(pk_bot_home(id, ZONE_RONARK_LAND_BASE), None);
+        }
+
+        // Without a recorded home the nation start itself is used (snapped), never a ring.
+        let (sx, sz) = get_bot_respawn_position(ZONE_RONARK_LAND_BASE, NATION_KARUS);
+        let (rx, rz) = pk_bot_regene_point(&world, 999_999_999, ZONE_RONARK_LAND_BASE, NATION_KARUS).unwrap();
+        assert!((rx - sx).hypot(rz - sz) < 12.0, "fallback regene point ({rx}, {rz}) is not the nation start ({sx}, {sz})");
+    }
+
     #[test]
     fn test_generated_gear_uses_class_armor_kind() {
         let world = WorldState::new();
@@ -10551,7 +10675,8 @@ mod tests {
     #[test]
     fn test_bot_regene_moves_to_start_position() {
         // Bot dies at (500, 500) in zone 71 (Ronark Land) with nation 1 (Karus).
-        // PK bots respawn dispersed around the Karus start instead of stacking.
+        // Without a recorded first placement a PK bot regenerates at its nation start
+        // (`get_bot_respawn_position`, which adds a 0..=5 m offset), never on a ring elsewhere.
         let world = WorldState::new();
         create_zone_with_event_grid(&world, 71, 400, vec![1i16; 400 * 400]);
         let row = make_farm_row(1, "RegeneMove", 71);
@@ -10567,10 +10692,9 @@ mod tests {
 
         let alive = world.get_bot(id).unwrap();
         assert_eq!(alive.presence, BotPresence::Standing);
-        let distance_from_start = ((alive.x - 1375.0).powi(2) + (alive.z - 1098.0).powi(2)).sqrt();
         assert!(
-            (5.0..=50.0).contains(&distance_from_start),
-            "PK bot should respawn dispersed near the nation start, got ({}, {})",
+            (1375.0..=1380.0).contains(&alive.x) && (1098.0..=1103.0).contains(&alive.z),
+            "PK bot should regenerate at the Karus start, got ({}, {})",
             alive.x,
             alive.z
         );

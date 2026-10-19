@@ -710,6 +710,123 @@ fn calculate_r_damage_with_class_bonus(
     }
 }
 
+/// Target-side inputs of the steps that follow the R-damage formula (`finish_physical_damage`).
+/// Players fill it from their `CombatSnapshot`; bots from their worn gear
+/// (`bot_ai::bot_equipped_stats`) with the unbuffed defaults a player has.
+pub(crate) struct PhysicalTarget<'a> {
+    pub class: u16,
+    pub stats: &'a crate::world::EquippedStats,
+    pub pct_fire_r: u8,
+    pub pct_cold_r: u8,
+    pub pct_lightning_r: u8,
+    pub pct_poison_r: u8,
+    pub dagger_r_amount: u8,
+    pub bow_r_amount: u8,
+    /// Session whose MP the attacker's MP-damage / MP-drain weapons hit (none for bots).
+    pub mp_sink: Option<SessionId>,
+}
+
+/// Everything a player's R-hit goes through after `calculate_r_damage_with_class_bonus`,
+/// in C++ order: buff attack %, mage weapon plus-damage, the R multiplier, elemental weapon
+/// bonuses against the target's resistances, weapon-type armour resistance (`GetACDamage`),
+/// the class-vs-class multiplier, perks, the zone override (Chaos / Snow fixed damage), the
+/// `MAX_DAMAGE` cap and the GM fixed damage. One function for player AND bot targets so a
+/// bot can never take an R-hit differently from a player with the same stats.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_physical_damage(
+    world: &WorldState,
+    attacker_sid: SessionId,
+    attacker: &CharacterInfo,
+    attacker_snap: &crate::world::combat::CombatSnapshot,
+    weapon_kinds: [Option<i32>; 2],
+    target: &PhysicalTarget<'_>,
+    zone_id: u16,
+    mut damage: i16,
+) -> i16 {
+    if damage > 0 && attacker_snap.player_attack_amount != 100 {
+        damage = (damage as i32 * attacker_snap.player_attack_amount / 100) as i16;
+    }
+
+    if damage > 0 && is_mage(attacker.class) {
+        damage = (damage as f64
+            * world.get_plus_damage_from_item_ids(
+                attacker_snap.left_hand_item_id,
+                attacker_snap.right_hand_item_id,
+            )) as i16;
+    }
+
+    // R-attack damage multiplier for level>30 non-priests
+    if damage > 0 && attacker.level > 30 && !is_priest(attacker.class) {
+        damage = (damage as f64 * world.get_r_damage_multiplier()) as i16;
+    }
+
+    // Elemental weapon damage bonuses (GetMagicDamage) minus the target's resistances.
+    if damage > 0 {
+        damage = apply_elemental_weapon_damage_pvp(
+            world,
+            attacker_sid,
+            &attacker_snap.equipped_stats,
+            target.mp_sink,
+            target.stats,
+            target.pct_fire_r,
+            target.pct_cold_r,
+            target.pct_lightning_r,
+            target.pct_poison_r,
+            damage,
+        );
+    }
+
+    // Weapon-type armour resistance (GetACDamage).
+    if damage > 0 {
+        damage = get_ac_damage(damage, &weapon_kinds, target.stats, target.dagger_r_amount, target.bow_r_amount);
+    }
+
+    // Class-vs-class PvP multiplier.
+    if damage > 0 {
+        let mult = world.get_class_damage_multiplier(attacker.class, target.class);
+        damage = (damage as f64 * mult) as i16;
+    }
+
+    if damage > 0 {
+        let perk_dmg = world.compute_perk_bonus(&attacker_snap.perk_levels, 10, false);
+        if perk_dmg > 0 {
+            damage = (damage as i32 + damage as i32 * perk_dmg / 100).clamp(0, i16::MAX as i32) as i16;
+        }
+    }
+
+    damage = apply_zone_damage_override(zone_id, damage);
+    damage = damage.min(crate::attack_constants::MAX_DAMAGE as i16);
+    if attacker.authority == 0 {
+        damage = GM_FIXED_DAMAGE;
+    }
+    damage
+}
+
+/// A bot seen as the target of the player R-damage formula: the same fields
+/// (`level`, `dex`, class, stats) a player's `CharacterInfo` feeds into
+/// `calculate_r_damage_with_class_bonus` (`compute_evasion`, class bonus index).
+pub(crate) fn bot_as_target_character(bot: &crate::world::BotInstance) -> CharacterInfo {
+    CharacterInfo {
+        session_id: bot.id as SessionId,
+        name: bot.name.clone(),
+        nation: bot.nation,
+        race: bot.race,
+        class: bot.class,
+        level: bot.level,
+        max_hp: bot.max_hp,
+        hp: bot.hp,
+        max_mp: bot.max_mp,
+        mp: bot.mp,
+        str: bot.str_stat,
+        sta: bot.sta_stat,
+        dex: bot.dex_stat,
+        intel: bot.int_stat,
+        cha: bot.cha_stat,
+        authority: 1,
+        ..Default::default()
+    }
+}
+
 /// Apply zone-specific damage overrides.
 /// - Snow Battle: R-attack damage = 0
 /// - Chaos Dungeon: fixed 50 (500/10)
@@ -1184,89 +1301,37 @@ async fn handle_player_attack(
         Some(attacker_stats.total_hit),
     );
 
-    // ── Apply buff-based PvP modifiers ──────────────────────────────
-    if damage > 0 && attacker_snap.player_attack_amount != 100 {
-        damage = (damage as i32 * attacker_snap.player_attack_amount / 100) as i16;
-    }
-
-    if damage > 0 && is_mage(attacker.class) {
-        damage = (damage as f64
-            * world.get_plus_damage_from_item_ids(
-                attacker_snap.left_hand_item_id,
-                attacker_snap.right_hand_item_id,
-            )) as i16;
-    }
-
-    // ── R-attack damage multiplier for level>30 non-priests ──────────
-    if damage > 0 && attacker.level > 30 && !is_priest(attacker.class) {
-        damage = (damage as f64 * world.get_r_damage_multiplier()) as i16;
-    }
-
-    // ── Elemental weapon damage bonuses (GetMagicDamage) ─────────────
-    // Adds fire/ice/lightning/poison damage from attacker's weapons minus target resistance.
-    if damage > 0 {
-        damage = apply_elemental_weapon_damage_pvp(
-            world,
-            attacker_sid,
-            &attacker_snap.equipped_stats,
-            target_sid,
-            &target_snap.equipped_stats,
-            target_snap.pct_fire_r,
-            target_snap.pct_cold_r,
-            target_snap.pct_lightning_r,
-            target_snap.pct_poison_r,
-            damage,
-        );
-    }
-
-    // ── Weapon-type armor resistance (GetACDamage) ──────────────────
-    // Reduces damage based on target's weapon-type-specific armor resistances (PvP only).
-    if damage > 0 {
-        let right_kind = if attacker_snap.right_hand_item_id != 0 {
-            world
-                .get_item(attacker_snap.right_hand_item_id)
-                .and_then(|w| w.kind)
-        } else {
-            None
-        };
-        let left_kind = if attacker_snap.left_hand_item_id != 0 {
-            world
-                .get_item(attacker_snap.left_hand_item_id)
-                .and_then(|w| w.kind)
-        } else {
-            None
-        };
-        damage = get_ac_damage(
-            damage,
-            &[right_kind, left_kind],
-            target_stats,
-            target_snap.dagger_r_amount,
-            target_snap.bow_r_amount,
-        );
-    }
-
-    // ── Class-vs-class PvP multiplier ─────────────────────────────────
-    if damage > 0 {
-        let mult = world.get_class_damage_multiplier(attacker.class, target.class);
-        damage = (damage as f64 * mult) as i16;
-    }
-
-    if damage > 0 {
-        let perk_dmg = world.compute_perk_bonus(&attacker_snap.perk_levels, 10, false);
-        if perk_dmg > 0 {
-            damage =
-                (damage as i32 + damage as i32 * perk_dmg / 100).clamp(0, i16::MAX as i32) as i16;
-        }
-    }
-
-    // ── Zone damage overrides ──────────────────────────────────────────
-    damage = apply_zone_damage_override(attacker_pos.zone_id, damage);
-
-    // ── MAX_DAMAGE cap ─────────────────────────────────────────────────
-    damage = damage.min(crate::attack_constants::MAX_DAMAGE as i16);
-    if attacker.authority == 0 {
-        damage = GM_FIXED_DAMAGE;
-    }
+    // ── Buff / weapon / class / zone steps shared with the bot target path ──
+    let right_kind = if attacker_snap.right_hand_item_id != 0 {
+        world.get_item(attacker_snap.right_hand_item_id).and_then(|w| w.kind)
+    } else {
+        None
+    };
+    let left_kind = if attacker_snap.left_hand_item_id != 0 {
+        world.get_item(attacker_snap.left_hand_item_id).and_then(|w| w.kind)
+    } else {
+        None
+    };
+    damage = finish_physical_damage(
+        world,
+        attacker_sid,
+        &attacker,
+        &attacker_snap,
+        [right_kind, left_kind],
+        &PhysicalTarget {
+            class: target.class,
+            stats: target_stats,
+            pct_fire_r: target_snap.pct_fire_r,
+            pct_cold_r: target_snap.pct_cold_r,
+            pct_lightning_r: target_snap.pct_lightning_r,
+            pct_poison_r: target_snap.pct_poison_r,
+            dagger_r_amount: target_snap.dagger_r_amount,
+            bow_r_amount: target_snap.bow_r_amount,
+            mp_sink: Some(target_sid),
+        },
+        attacker_pos.zone_id,
+        damage,
+    );
 
     // ── Apply damage ───────────────────────────────────────────────────
     if damage <= 0 {
@@ -1657,10 +1722,9 @@ pub(crate) async fn handle_npc_attack(
     unknown: u8,
 ) {
     // ── Bot target: apply damage, send HP update, handle death ─────
-    // Bots are stored in world.bots (not the NPC instance map).
-    // Unlike the previous stub that only tracked last_attacker_id, we now
-    // apply actual damage using the player's attack stats against a simplified
-    // bot AC derived from STA + level, then send WIZ_TARGET_HP to the attacker.
+    // Bots are stored in world.bots (not the NPC instance map) but are hit
+    // with the player-vs-player formula and post steps (see below), so a bot
+    // takes an R-hit exactly like a player with the same level / gear.
     if let Some(bot) = world.get_bot(npc_id) {
         if bot.hp <= 0 || bot.presence == crate::world::BotPresence::Dead {
             return;
@@ -1679,120 +1743,92 @@ pub(crate) async fn handle_npc_attack(
             return;
         }
 
-        // Distance check — bot position (attacker_pos passed from parent)
+        // Distance check: the same melee range + weapon reach a player target gets.
         if attacker_pos.zone_id != bot.zone_id {
             return;
         }
+        let attack_range = DEFAULT_MELEE_RANGE + get_weapon_range(&world, attacker_sid);
         let dx = attacker_pos.x - bot.x;
         let dz = attacker_pos.z - bot.z;
-        if dx * dx + dz * dz > DEFAULT_MELEE_RANGE * DEFAULT_MELEE_RANGE {
+        if dx * dx + dz * dz > attack_range * attack_range {
             return;
         }
 
-        // Attacker info + coefficient
+        // Attacker and target (the bot as a character) with their class coefficients.
         let attacker = match world.get_character_info(attacker_sid) {
             Some(ch) => ch,
             None => return,
         };
         let is_gm = attacker.authority == 0;
-        let attacker_coeff = match world.get_coefficient(attacker.class) {
-            Some(c) => c,
-            None => return,
+        let (Some(attacker_coeff), Some(target_coeff)) =
+            (world.get_coefficient(attacker.class), world.get_coefficient(bot.class))
+        else {
+            broadcast_attack_result(&world, attacker_sid, b_type, ATTACK_FAIL, npc_id, unknown);
+            return;
         };
-
-        // Damage calculation — C++ formula: (ap * 2) / (ac + 240)
-        // Bot AC approximation: STA * 3 + level * 2
-        // C++ bots go through full SetUserAbility, but we use a simplified AC.
-        let mut rng = rand::rngs::StdRng::from_entropy();
-        // Snapshot attacker combat data in a single DashMap read.
         let attacker_snap = match world.snapshot_combat(attacker_sid) {
             Some(s) => s,
             None => return,
         };
-        // Use pre-computed total_hit from set_user_ability() — includes actual
-        // weapon damage, stat bonuses, and buffs.
-        let total_hit = attacker_snap.equipped_stats.total_hit;
-        let temp_ap = total_hit as i32 * attacker_snap.attack_amount;
-        let bot_ac = crate::systems::bot_ai::bot_defense_ac(&world, &bot);
-        let temp_hit_b = if bot_ac + 240 > 0 {
-            (temp_ap * 2) / (bot_ac + 240)
-        } else {
-            temp_ap * 2
-        };
+        let attacker_stats = &attacker_snap.equipped_stats;
 
-        let mut damage = if temp_hit_b <= 0 {
-            0i16
-        } else {
-            let attacker_hitrate = compute_hitrate(&attacker, &attacker_coeff);
-            let rate = attacker_hitrate + 1.0;
-            let hit_result = get_hit_rate(rate, &mut rng);
-            match hit_result {
-                GREAT_SUCCESS | SUCCESS | NORMAL => {
-                    let random = if temp_hit_b > 0 {
-                        rng.gen_range(0..=temp_hit_b)
-                    } else {
-                        0
-                    };
-                    let d = if is_priest(attacker.class) {
-                        (0.15 * temp_hit_b as f32 + 0.2 * random as f32) as i32
-                    } else {
-                        (0.75 * temp_hit_b as f32 + 0.3 * random as f32) as i32
-                    };
-                    d.max(1) as i16
-                }
-                _ => {
-                    if is_gm {
-                        30000i16
-                    } else {
-                        0
-                    }
-                }
-            }
-        };
-
-        // R-attack damage multiplier for level>30 non-priests
-        if damage > 0 && attacker.level > 30 && !is_priest(attacker.class) {
-            damage = (damage as f64 * world.get_r_damage_multiplier()) as i16;
+        // ── Damage: the player-vs-player formula with the bot's own stats ────
+        // Bot AC = coeff.ac * (level + item_ac) from its worn gear
+        // (`bot_defense_ac`), hit chance = attacker hit rate / bot evasion,
+        // class AP/AC bonuses by base class, then every post step a player
+        // target gets (`finish_physical_damage`). Bots carry no buffs, so the
+        // percentage resistances and the dagger / bow resistance factors are
+        // the unbuffed player defaults (100).
+        let target = bot_as_target_character(&bot);
+        let bot_stats = crate::systems::bot_ai::bot_equipped_stats(&world, &bot.equip_visual);
+        let bot_full_ac = crate::systems::bot_ai::bot_defense_ac(&world, &bot);
+        let mut rng = rand::rngs::StdRng::from_entropy();
+        let mut damage = calculate_r_damage_with_class_bonus(
+            &attacker,
+            &attacker_coeff,
+            &target,
+            &target_coeff,
+            &mut rng,
+            Some(&attacker_stats.ap_class_bonus),
+            Some(&bot_stats.ac_class_bonus),
+            Some(bot_full_ac),
+            attacker_snap.attack_amount,
+            Some(attacker_stats.total_hit),
+        );
+        if damage <= 0 && is_gm {
+            damage = GM_FIXED_DAMAGE;
         }
 
-        // ── Elemental weapon damage bonuses (GetMagicDamage) ─────────
-        // Bots have no tracked elemental resistance, so full bonus applies.
-        if damage > 0 {
-            let mut elem_bonus: i32 = 0;
-            for bonuses in attacker_snap.equipped_stats.equipped_item_bonuses.values() {
-                for &(btype, amount) in bonuses {
-                    if amount > 0
-                        && matches!(
-                            btype,
-                            ITEM_TYPE_FIRE
-                                | ITEM_TYPE_COLD
-                                | ITEM_TYPE_LIGHTNING
-                                | ITEM_TYPE_POISON
-                        )
-                    {
-                        elem_bonus += amount;
-                    }
-                }
-            }
-            if elem_bonus > 0 {
-                damage = (damage as i32 + elem_bonus) as i16;
-            }
-        }
-
-        if damage > 0 {
-            let perk_dmg = world.compute_perk_bonus(&attacker_snap.perk_levels, 10, false);
-            if perk_dmg > 0 {
-                damage = (damage as i32 + damage as i32 * perk_dmg / 100).clamp(0, i16::MAX as i32)
-                    as i16;
-            }
-        }
-
-        // Cap at MAX_DAMAGE
-        let damage = if is_gm {
-            GM_FIXED_DAMAGE
+        let right_kind = if attacker_snap.right_hand_item_id != 0 {
+            world.get_item(attacker_snap.right_hand_item_id).and_then(|w| w.kind)
         } else {
-            damage.min(crate::attack_constants::MAX_DAMAGE as i16)
+            None
         };
+        let left_kind = if attacker_snap.left_hand_item_id != 0 {
+            world.get_item(attacker_snap.left_hand_item_id).and_then(|w| w.kind)
+        } else {
+            None
+        };
+        let damage = finish_physical_damage(
+            &world,
+            attacker_sid,
+            &attacker,
+            &attacker_snap,
+            [right_kind, left_kind],
+            &PhysicalTarget {
+                class: bot.class,
+                stats: &bot_stats,
+                pct_fire_r: 100,
+                pct_cold_r: 100,
+                pct_lightning_r: 100,
+                pct_poison_r: 100,
+                dagger_r_amount: 100,
+                bow_r_amount: 100,
+                mp_sink: None,
+            },
+            attacker_pos.zone_id,
+            damage,
+        );
 
         if damage <= 0 {
             broadcast_attack_result(&world, attacker_sid, b_type, ATTACK_FAIL, npc_id, unknown);
@@ -4843,7 +4879,7 @@ fn apply_elemental_weapon_damage_pvp(
     world: &WorldState,
     attacker_sid: SessionId,
     attacker_stats: &crate::world::EquippedStats,
-    target_sid: SessionId,
+    target_sid: Option<SessionId>,
     target_stats: &crate::world::EquippedStats,
     target_pct_fire_r: u8,
     target_pct_cold_r: u8,
@@ -4913,16 +4949,20 @@ fn apply_elemental_weapon_damage_pvp(
 
     // Apply MP damage: reduce target MP
     if mp_damage_total > 0 {
-        world.update_character_stats(target_sid, |ch| {
-            ch.mp = (ch.mp as i32 - mp_damage_total).max(0) as i16;
-        });
+        if let Some(target_sid) = target_sid {
+            world.update_character_stats(target_sid, |ch| {
+                ch.mp = (ch.mp as i32 - mp_damage_total).max(0) as i16;
+            });
+        }
     }
 
     // Apply MP drain: reduce target MP and restore attacker MP
     if mp_drain_total > 0 {
-        world.update_character_stats(target_sid, |ch| {
-            ch.mp = (ch.mp as i32 - mp_drain_total).max(0) as i16;
-        });
+        if let Some(target_sid) = target_sid {
+            world.update_character_stats(target_sid, |ch| {
+                ch.mp = (ch.mp as i32 - mp_drain_total).max(0) as i16;
+            });
+        }
         world.update_character_stats(attacker_sid, |ch| {
             ch.mp = (ch.mp as i32 + mp_drain_total).min(ch.max_mp as i32) as i16;
         });
@@ -5165,6 +5205,66 @@ mod tests {
             reb_cha: 0,
             cover_title: 0,
         }
+    }
+
+    /// A bot and a player with identical level / class / stats / AC take identical R-damage
+    /// from the same attacker and the same dice: the bot target path feeds
+    /// `calculate_r_damage_with_class_bonus` through `bot_as_target_character`.
+    #[test]
+    fn bot_target_takes_the_same_r_damage_as_a_player_with_identical_stats() {
+        use rand::SeedableRng;
+        let attacker = make_test_char(206, 83, 255, 60, 60, 50);
+        let coeff = make_test_coeff();
+        let mut bot = make_test_bot(crate::world::BOT_ID_BASE + 7, 71, 100.0, 100.0);
+        bot.class = 106;
+        bot.level = 83;
+        bot.str_stat = 150;
+        bot.sta_stat = 255;
+        bot.dex_stat = 60;
+        bot.int_stat = 50;
+        let player_target = make_test_char(106, 83, 150, 255, 60, 50);
+        let bot_target = bot_as_target_character(&bot);
+        assert_eq!((bot_target.level, bot_target.dex, bot_target.class), (83, 60, 106));
+        let ap_bonus = [10u8, 0, 5, 0];
+        let ac_bonus = [0u8, 20, 0, 0];
+        let mut hits = 0;
+        for seed in 0..64u64 {
+            let mut r1 = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut r2 = rand::rngs::StdRng::seed_from_u64(seed);
+            let d_player = calculate_r_damage_with_class_bonus(
+                &attacker, &coeff, &player_target, &coeff, &mut r1,
+                Some(&ap_bonus), Some(&ac_bonus), Some(1200), 100, Some(900),
+            );
+            let d_bot = calculate_r_damage_with_class_bonus(
+                &attacker, &coeff, &bot_target, &coeff, &mut r2,
+                Some(&ap_bonus), Some(&ac_bonus), Some(1200), 100, Some(900),
+            );
+            assert_eq!(d_player, d_bot, "seed {seed}");
+            hits += (d_bot > 0) as u32;
+        }
+        assert!(hits > 32, "an 83 warrior lands most R-hits on an equal-level target ({hits}/64)");
+    }
+
+    /// The bot's AC enters the formula the way a player's does: more AC, less damage.
+    #[test]
+    fn bot_target_damage_falls_with_its_armour_class() {
+        use rand::SeedableRng;
+        let attacker = make_test_char(206, 83, 255, 60, 60, 50);
+        let coeff = make_test_coeff();
+        let bot = make_test_bot(crate::world::BOT_ID_BASE + 8, 71, 100.0, 100.0);
+        let target = bot_as_target_character(&bot);
+        let avg = |ac: i32| -> f64 {
+            let mut total = 0i64;
+            for seed in 0..200u64 {
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+                total += calculate_r_damage_with_class_bonus(
+                    &attacker, &coeff, &target, &coeff, &mut rng, None, None, Some(ac), 100, Some(900),
+                ) as i64;
+            }
+            total as f64 / 200.0
+        };
+        let (naked, armoured) = (avg(0), avg(1500));
+        assert!(armoured < naked * 0.3, "AC 1500 should cut the damage hard: {naked} -> {armoured}");
     }
 
     fn make_test_coeff() -> CoefficientRow {

@@ -1,19 +1,30 @@
 //! Authored navigation openings for the event arenas (zones 84 / 85 / 87).
 //!
 //! The bot navigation mask of these zones is built from the client's baked collision
-//! (`Map/nav/<zone>.nav`). That mask is right for terrain maps but these arenas are dungeon
-//! maps: doors, bridges and ramps are dynamic objects (not in the baked faces) and the floors
-//! of their upper levels are object tops, which the mask builder treats as unwalkable. The
-//! result is a mask whose spawn rooms / lane cages are closed pockets (BDW: Karus spawn 123
-//! cells, El Morad 107; Juraid: each spawn cage 36 cells; Chaos: the centre sealed off from
-//! the outer ring) although players walk straight through. The server SMD helps only for BDW
-//! (its event grid is the arena layout); the Chaos and Juraid SMDs carry no event grid.
+//! (`Map/nav/<zone>.nav`) and is the **only** walkability source for them: the server SMDs of
+//! BDW (`In_dungeon04.smd`) and Chaos (`sky_war_2009.smd`) are 1024 m maps that do not belong to
+//! the 256 m client arenas (the BDW event grid is `1` almost everywhere, the Chaos one is all
+//! zero), so OR-ing the SMD event grid into the mask (the previous rule) made nearly every BDW
+//! cell walkable and sent the bots straight into the rocks.
+//!
+//! The client mask alone leaves a few designed passages closed, for two reasons that were
+//! verified cell by cell against the client `.gtd` / `.opd` files
+//! (`docs/reverse-engineering/2625/CLIENT_MAP_NAV.md`, "Event arenas"):
+//!
+//! * **Drops.** The spawn castles of BDW and the south room of Chaos sit on a raised terrain
+//!   level (BDW spawn ~11 m above the base at ~3 m, Chaos south room 6.9 m above the ring at
+//!   1.9 m). The client only refuses *uphill* steps steeper than 40 degrees, so players leave by
+//!   walking off the ledge; the mask is undirected and marks the ledge blocked both ways.
+//! * **Gates narrower than two cells.** The BDW base gates are 6.4 m gaps between two bastions
+//!   (`.opd` faces 68.3..82.3 m / 173..187 m) straddling two 4 m cells; the 1.124 m body
+//!   clearance touches both cells, so a gap a player walks through is closed in the mask.
+//!   The Chaos corridor gates are cage doors that open when the event starts (dynamic objects,
+//!   baked closed).
 //!
 //! So each arena gets a short list of **openings**: world-space rectangles that bots may walk
-//! in addition to the mask / event grid. They follow the event design (the lane centre lines
-//! and the doorways the mask shows as 2-cell gaps everywhere else), are verified by the
-//! real-map reachability tests in `event_bots::tests` and are consulted by
-//! `MapData::bot_cell_walkable` for the event zones only.
+//! in addition to the mask. They are verified by the real-map reachability tests in
+//! `event_bots::tests` (which also assert that sampled rock cells stay blocked) and are
+//! consulted by `MapData::bot_cell_walkable` for the event zones only.
 //!
 //! Dynamic gates (Juraid bridges) are not openings: a closed bridge is a per-room dynamic
 //! obstacle (`zone::DynBlockGuard`) installed by the Juraid objective.
@@ -23,11 +34,12 @@ use crate::world::types::{ZONE_BDW, ZONE_CHAOS, ZONE_JURAID};
 /// `(x0, z0, x1, z1)` in world units, inclusive.
 pub type Rect = (f32, f32, f32, f32);
 
-/// Chaos arena (`sky_war_2009`, 256 m): the centre's north and south corridors end in a
-/// baked wall the players pass over (ramps to the outer ring).
+/// Chaos arena (`sky_war_2009`, 256 m): the centre's north corridor ends in the baked cage
+/// gate at z 192..200 (open while the event runs) and its south corridor in the gate at
+/// z 72..80 into the raised south room.
 const CHAOS: &[Rect] = &[
-    (104.0, 186.0, 148.0, 206.0), // north corridor end -> outer ring
-    (104.0, 66.0, 148.0, 86.0),   // south corridor end -> outer ring
+    (104.0, 186.0, 148.0, 206.0), // north corridor gate -> outer ring
+    (104.0, 66.0, 148.0, 86.0),   // south corridor gate -> south room
 ];
 
 /// Juraid Mountain (`In_Dungeon05`, 1024 m): the lane centre lines (8 m wide, the width of
@@ -46,9 +58,22 @@ const JURAID: &[Rect] = &[
     (478.0, 488.0, 544.0, 540.0),
 ];
 
-/// Border Defence War (`In_dungeon04`, 256 m): the SMD event grid already carries the arena
-/// layout (doors included); nothing authored.
-const BDW: &[Rect] = &[];
+/// Border Defence War (`In_dungeon04`, 256 m, point-symmetric about (128, 128)).
+/// Cells are 4 m; a rectangle must contain the centre of every cell it opens.
+const BDW: &[Rect] = &[
+    // Karus base gate: 6.4 m gap between the bastions at x 68.3..82.3 (z 115.8..128.8 and
+    // z 135.2..148.2 in the .opd), i.e. cells x 17..20, z 32..33.
+    (68.0, 128.5, 83.0, 135.5),
+    // El Morad base gate: gap between the bastions at x 173..187 (z 114.3..127.1 and
+    // z 134.1..146.4), cells x 43..46, z 31..33.
+    (173.0, 124.5, 187.0, 135.5),
+    // Karus spawn castle ledge: terrain drops from ~11 m (z <= 100) to ~4 m (z >= 104) over
+    // one cell row at x 28..60; players walk off it, bots may too (cells x 7..14, z 25).
+    (28.0, 100.0, 60.0, 104.0),
+    // El Morad spawn castle ledge: ~11 m (z >= 164) down to ~4 m (z <= 160) at x 188..224
+    // (cells x 47..55, z 40).
+    (188.0, 160.0, 224.0, 164.0),
+];
 
 /// Authored openings of an event zone (empty for every other zone).
 pub fn openings(zone_id: u16) -> &'static [Rect] {
@@ -85,8 +110,12 @@ mod tests {
 
     #[test]
     fn only_the_event_zones_have_openings() {
-        assert!(openings(71).is_empty() && openings(21).is_empty() && openings(ZONE_BDW).is_empty());
-        assert!(!openings(ZONE_CHAOS).is_empty() && !openings(ZONE_JURAID).is_empty());
+        assert!(openings(71).is_empty() && openings(21).is_empty() && openings(72).is_empty());
+        assert!(!openings(ZONE_BDW).is_empty() && !openings(ZONE_CHAOS).is_empty() && !openings(ZONE_JURAID).is_empty());
+        // BDW gates open only the gap cells, not the bastions beside them.
+        assert!(contains(openings(ZONE_BDW), 74.0, 130.0) && contains(openings(ZONE_BDW), 78.0, 134.0));
+        assert!(!contains(openings(ZONE_BDW), 74.0, 122.0) && !contains(openings(ZONE_BDW), 74.0, 142.0));
+        assert!(contains(openings(ZONE_BDW), 182.0, 130.0) && !contains(openings(ZONE_BDW), 182.0, 142.0));
         assert!(contains(openings(ZONE_CHAOS), 126.0, 196.0) && !contains(openings(ZONE_CHAOS), 126.0, 130.0));
     }
 }
