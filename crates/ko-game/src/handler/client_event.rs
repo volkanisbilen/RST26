@@ -421,7 +421,7 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        crate::systems::chaos_arena::handle_saw_touch(&world, sid, now_ms);
+        crate::systems::chaos_arena::handle_saw_touch(&world, sid, npc_nid, now_ms);
         return Ok(());
     }
     if proto_id == crate::systems::chaos_arena::CHAOS_CUBE_PROTO {

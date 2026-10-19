@@ -69,10 +69,38 @@ pub fn handle(session: &mut ClientSession, _pkt: Packet) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// "No killer" marker of the WIZ_DEAD killer field (the client reads it as a signed id).
+pub const DEAD_NO_KILLER: u32 = 0xFFFF_FFFF;
+
+/// Build the v2600+ WIZ_DEAD body: `[u32 dead id][i32 killer id][u64 exp lost]`.
+///
+/// The 2625 client (`sub_833CD0`, the 0x11 handler) offers the **Resurrection Scroll choice**
+/// (revive here with a scroll / go to town) only from this very packet: with a scroll of type-5
+/// `RESURRECTION_SELF` in the bag, a level above 5, an allowed zone, a killer that is not one of
+/// the special NPC types, and `killer_id > 45000 || (exp_lost as u32) > 0`. A second WIZ_DEAD
+/// for the same death is ignored by the client, so the exp loss has to ride in the first one.
+/// The reference server (`CUser::CheckRespawnScroll`) emulated this with a second packet.
+/// `exp_lost` is clamped so that a real loss never shows up as a zero low dword.
+pub fn build_dead_packet(dead_id: u32, killer_id: u32, exp_lost: u64) -> Packet {
+    let mut pkt = Packet::new(Opcode::WizDead as u8);
+    pkt.write_u32(dead_id);
+    pkt.write_u32(killer_id);
+    let exp = if exp_lost != 0 && (exp_lost & 0xFFFF_FFFF) == 0 { exp_lost | 1 } else { exp_lost };
+    pkt.write_u64(exp);
+    pkt
+}
+
 /// Broadcast a death animation to the 3x3 region grid and apply XP loss.
 /// This is called by combat/HP handlers when a player's HP reaches 0.
-/// Packet format: `WIZ_DEAD [u32 dead_unit_id]`
+/// Packet format: `WIZ_DEAD [u32 dead_unit_id][i32 -1][u64 0]` (no killer / no exp loss; a death
+/// by NPC with exp loss goes through [`broadcast_death_with_killer`]).
 pub fn broadcast_death(world: &WorldState, dead_sid: SessionId) {
+    broadcast_death_with_killer(world, dead_sid, DEAD_NO_KILLER, 0);
+}
+
+/// [`broadcast_death`] with the killer id and the exp the death cost (see [`build_dead_packet`]):
+/// this is what lets the client open the Resurrection Scroll window after a monster kill.
+pub fn broadcast_death_with_killer(world: &WorldState, dead_sid: SessionId, killer_id: u32, exp_lost: u64) {
     // Mark player as dead
     world.update_res_hp_type(dead_sid, USER_DEAD);
     world.update_character_hp(dead_sid, 0);
@@ -231,12 +259,8 @@ pub fn broadcast_death(world: &WorldState, dead_sid: SessionId) {
     let pos = world.get_position(dead_sid);
 
     // Build death packet — v2600 sniff verified: 16 bytes body
-    // [u32 dead_unit_id] [u32 attacker_id] [u32 0] [u32 0]
-    let mut pkt = Packet::new(Opcode::WizDead as u8);
-    pkt.write_u32(dead_sid as u32);
-    pkt.write_u32(0xFFFF_FFFF); // attacker_id (TODO: track last attacker per session)
-    pkt.write_u32(0);
-    pkt.write_u32(0);
+    // [u32 dead_unit_id] [i32 killer_id] [u64 exp_lost]  (see build_dead_packet)
+    let pkt = build_dead_packet(dead_sid as u32, killer_id, exp_lost);
 
     // Broadcast to 3x3 region (including self)
     if let Some(pos) = &pos {
@@ -389,23 +413,32 @@ pub async fn apply_npc_death_xp_loss(
     dead_sid: SessionId,
     npc_type: u8,
     npc_proto: u16,
-) {
+) -> i64 {
+    let lost_exp = npc_death_exp_loss(world, dead_sid, npc_type, npc_proto);
+    apply_exp_loss(world, dead_sid, lost_exp).await;
+    lost_exp
+}
+
+/// How much EXP a death by this NPC costs (0 when nothing is lost). Pure: nothing is changed.
+/// Computed **before** the death packet so the client can be told about the loss
+/// ([`build_dead_packet`]).
+pub fn npc_death_exp_loss(world: &WorldState, dead_sid: SessionId, npc_type: u8, npc_proto: u16) -> i64 {
     // Exclude specific NPC types from causing XP loss
     if npc_type == NPC_TYPE_ROLLINGSTONE
         || npc_proto == SAW_BLADE_PROTO
+        || npc_proto == crate::systems::chaos_arena::SAW_BLADE_PROTO
         || npc_type == NPC_TYPE_GUARD_SUMMON
     {
-        return;
+        return 0;
     }
 
-    let pos = match world.get_position(dead_sid) {
-        Some(p) => p,
-        None => return,
+    let Some(pos) = world.get_position(dead_sid) else {
+        return 0;
     };
 
     // Manes Survival runs on its own temporary level: a death never costs real EXP.
     if crate::systems::manes_survival::ZONES_MANES_SURVIVAL.contains(&pos.zone_id) {
-        return;
+        return 0;
     }
 
     // C++ checks ONLY m_bExpLost — war_zone flag is independent (Unit.cpp:2162,2174).
@@ -414,20 +447,21 @@ pub async fn apply_npc_death_xp_loss(
             .as_ref()
             .is_some_and(|zi| zi.abilities.exp_lost)
     });
-
     if !should_lose_exp {
-        return;
+        return 0;
     }
 
-    let ch = match world.get_character_info(dead_sid) {
-        Some(ch) => ch,
-        None => return,
+    let Some(ch) = world.get_character_info(dead_sid) else {
+        return 0;
     };
 
     // Check premium status for XP loss reduction
     let premium_restore = world.get_premium_exp_restore(dead_sid) as f32;
+    super::level::on_death_lost_exp_calc(ch.max_exp, premium_restore).max(0)
+}
 
-    let lost_exp = super::level::on_death_lost_exp_calc(ch.max_exp, premium_restore);
+/// Take `lost_exp` from the dead player and remember it for the resurrection EXP recovery.
+pub async fn apply_exp_loss(world: &WorldState, dead_sid: SessionId, lost_exp: i64) {
     if lost_exp > 0 {
         // Store for resurrection skill EXP recovery
         world.update_session(dead_sid, |h| {
@@ -1427,6 +1461,30 @@ pub fn track_chaos_pvp_kill(world: &WorldState, killer_sid: SessionId, dead_sid:
     track_chaos_kill_by_name(world, &killer_name, &dead_name);
 }
 
+/// A Chaos death without a player killer (saw blade): only the victim's death counter moves.
+pub fn track_chaos_death_by_name(world: &WorldState, dead_name: &str) {
+    let is_chaos_active = world
+        .event_room_manager
+        .read_temple_event(|s| s.is_chaos_active());
+    if !is_chaos_active {
+        return;
+    }
+    let Some((room_id, _)) = world
+        .event_room_manager
+        .find_user_room(TempleEventType::ChaosDungeon, dead_name)
+    else {
+        return;
+    };
+    if let Some(mut room) = world
+        .event_room_manager
+        .get_room_mut(TempleEventType::ChaosDungeon, room_id)
+    {
+        if let Some(victim) = room.mixed_users.get_mut(dead_name) {
+            victim.deaths += 1;
+        }
+    }
+}
+
 /// Name-based core of [`track_chaos_pvp_kill`] (event bots have no `ClientSession`).
 pub fn track_chaos_kill_by_name(world: &WorldState, killer_name: &str, dead_name: &str) {
     let is_chaos_active = world
@@ -1477,6 +1535,51 @@ mod tests {
     use super::*;
     use crate::systems::bdw;
     use ko_protocol::{Opcode, Packet, PacketReader};
+
+    /// WIZ_DEAD body the 2625 client parses: `[u32 dead][i32 killer][u64 exp lost]`.
+    #[test]
+    fn dead_packet_layout_without_killer() {
+        let pkt = build_dead_packet(42, DEAD_NO_KILLER, 0);
+        assert_eq!(pkt.opcode, Opcode::WizDead as u8);
+        assert_eq!(pkt.data.len(), 16);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u32(), Some(42));
+        assert_eq!(r.read_u32().map(|v| v as i32), Some(-1), "no killer = -1");
+        assert_eq!(r.read_u64(), Some(0), "no exp lost: the client offers no scroll revive");
+        assert_eq!(r.remaining(), 0);
+    }
+
+    /// A monster kill with exp loss: killer id + lost exp, the client's scroll-window trigger
+    /// (`sub_D73BD0`: `killer > 45000 || exp_low_dword > 0`).
+    #[test]
+    fn dead_packet_carries_killer_and_lost_exp_for_the_scroll_window() {
+        let pkt = build_dead_packet(7, 10_123, 123_456_789);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u32(), Some(7));
+        assert_eq!(r.read_u32(), Some(10_123));
+        let exp = r.read_u64().unwrap();
+        assert_eq!(exp, 123_456_789);
+        assert!((exp & 0xFFFF_FFFF) > 0);
+        // a loss that is an exact multiple of 2^32 must still show a non-zero low dword
+        let pkt = build_dead_packet(7, 10_123, 1u64 << 32);
+        let mut r = PacketReader::new(&pkt.data);
+        r.read_u32();
+        r.read_u32();
+        let exp = r.read_u64().unwrap();
+        assert!((exp & 0xFFFF_FFFF) > 0);
+        assert_eq!(exp >> 32, 1);
+    }
+
+    /// The reference's `CheckRespawnScroll` emulation packet has the same 16-byte shape.
+    #[test]
+    fn dead_packet_matches_reference_check_respawn_scroll_shape() {
+        let pkt = build_dead_packet(5, 18483, 0);
+        assert_eq!(pkt.data.len(), 16);
+        let mut r = PacketReader::new(&pkt.data);
+        assert_eq!(r.read_u32(), Some(5));
+        assert_eq!(r.read_u32(), Some(18483));
+        assert_eq!(r.read_u64(), Some(0));
+    }
 
     #[test]
     fn test_dead_broadcast_format() {

@@ -8,6 +8,10 @@ impl WorldState {
     pub fn get_coefficient(&self, class: u16) -> Option<CoefficientRow> {
         self.coefficients.get(&class).map(|c| c.clone())
     }
+    /// Insert (or replace) one class coefficient row (loader / tests).
+    pub fn insert_coefficient(&self, row: CoefficientRow) {
+        self.coefficients.insert(row.s_class as u16, row);
+    }
     /// Get the required XP for a given level and rebirth level.
     ///
     ///

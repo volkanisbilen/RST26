@@ -60,12 +60,35 @@ pub fn parse_path(path: &str) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// A player standing this close to a saw's centre is hit by it (server-side collision; the
+/// client's own touch event, `WIZ_CLIENT_EVENT`, is handled as well).
+pub const SAW_TOUCH_RADIUS: f32 = 2.5;
+
 #[derive(Debug, Clone)]
 struct SawPatrol {
     waypoints: Vec<(f32, f32)>,
     /// Waypoint the saw is currently travelling to (None before the first leg).
     heading_to: Option<usize>,
+    /// Where the current leg started and when, for the position interpolation.
+    from: (f32, f32),
+    leg_start_ms: u64,
     arrive_at_ms: u64,
+}
+
+/// Position on the leg `from -> to` at time `now_ms` (linear, clamped to the leg).
+pub fn interpolate(from: (f32, f32), to: (f32, f32), start_ms: u64, arrive_ms: u64, now_ms: u64) -> (f32, f32) {
+    if now_ms >= arrive_ms || arrive_ms <= start_ms {
+        return to;
+    }
+    let t = now_ms.saturating_sub(start_ms) as f32 / (arrive_ms - start_ms) as f32;
+    (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+}
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn patrols() -> &'static DashMap<NpcId, SawPatrol> {
@@ -84,11 +107,14 @@ pub fn register_saw(nid: NpcId, path: &str) {
     if waypoints.len() < 2 {
         return;
     }
+    let from = waypoints[0];
     patrols().insert(
         nid,
         SawPatrol {
             waypoints,
             heading_to: None,
+            from,
+            leg_start_ms: 0,
             arrive_at_ms: 0,
         },
     );
@@ -139,7 +165,9 @@ fn send_npc_move(world: &WorldState, nid: NpcId, x: f32, z: f32, speed: f32) {
     );
 }
 
-/// One driver pass: advance every saw whose current leg is finished.
+/// One driver pass: move every saw along its leg (the server-side position follows the client
+/// animation, so touch events pass the NPC range check), start the next leg when one is finished,
+/// and hurt the players standing on a saw ([`SAW_TOUCH_RADIUS`]).
 pub fn tick(world: &WorldState, now_ms: u64) {
     let chaos_running = world
         .event_room_manager()
@@ -162,6 +190,13 @@ pub fn tick(world: &WorldState, now_ms: u64) {
             continue;
         };
         if now_ms < patrol.arrive_at_ms {
+            // mid-leg: follow the animation
+            if let Some(i) = patrol.heading_to {
+                let (x, z) = interpolate(patrol.from, patrol.waypoints[i], patrol.leg_start_ms, patrol.arrive_at_ms, now_ms);
+                drop(patrol);
+                world.move_runtime_npc(nid, x, z);
+                touch_players_near(world, nid, x, z);
+            }
             continue;
         }
         // arrived at the waypoint of the previous leg: commit the position
@@ -177,9 +212,42 @@ pub fn tick(world: &WorldState, now_ms: u64) {
             .unwrap_or((npc.x, npc.z));
         let dist = ((tx - cx).powi(2) + (tz - cz).powi(2)).sqrt();
         patrol.heading_to = Some(next);
+        patrol.from = (cx, cz);
+        patrol.leg_start_ms = now_ms;
         patrol.arrive_at_ms = now_ms + travel_ms(dist, speed);
         drop(patrol);
         send_npc_move(world, nid, tx, tz, speed);
+        touch_players_near(world, nid, cx, cz);
+    }
+}
+
+/// Server-side saw collision: every living player of the saw's room within [`SAW_TOUCH_RADIUS`]
+/// of `(x, z)` is hit (the per-player cooldown of [`handle_saw_touch`] applies).
+fn touch_players_near(world: &WorldState, saw_nid: NpcId, x: f32, z: f32) {
+    use crate::systems::event_room::TempleEventType;
+    let Some(npc) = world.get_npc_instance(saw_nid) else { return };
+    let sids: Vec<SessionId> = match world
+        .event_room_manager()
+        .get_room(TempleEventType::ChaosDungeon, npc.event_room as u8)
+    {
+        Some(room) => room
+            .mixed_users
+            .values()
+            .filter(|u| !u.logged_out)
+            .map(|u| u.session_id)
+            .collect(),
+        None => return,
+    };
+    let r2 = SAW_TOUCH_RADIUS * SAW_TOUCH_RADIUS;
+    let now = wall_ms();
+    for sid in sids {
+        let Some(pos) = world.get_position(sid) else { continue };
+        if pos.zone_id != ZONE_CHAOS_DUNGEON {
+            continue;
+        }
+        if (pos.x - x).powi(2) + (pos.z - z).powi(2) <= r2 {
+            handle_saw_touch(world, sid, saw_nid, now);
+        }
     }
 }
 
@@ -201,9 +269,13 @@ pub fn start_saw_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// A player touched a saw blade (ClientEvent on proto 32153). Returns `true` when the NPC was a
-/// saw (the click is consumed either way).
-pub fn handle_saw_touch(world: &WorldState, sid: SessionId, now_ms: u64) -> bool {
+/// A player touched saw blade `saw_nid` (the client's ClientEvent on proto 32153, or the
+/// server-side collision of [`tick`]). `now_ms` is wall-clock milliseconds (cooldown key).
+/// Returns `true` when the touch was consumed (always: a saw click never opens anything).
+///
+/// Reference `CUser::ClientEvent`: `HpChange(-5000 / 10, pNpc)`; a death by saw costs no exp
+/// (`OnDeathKilledNpc` excludes `SAW_BLADE_SSID`) but is a death for the Chaos ranking.
+pub fn handle_saw_touch(world: &WorldState, sid: SessionId, saw_nid: NpcId, now_ms: u64) -> bool {
     let in_chaos = world
         .get_position(sid)
         .is_some_and(|p| p.zone_id == ZONE_CHAOS_DUNGEON);
@@ -219,14 +291,26 @@ pub fn handle_saw_touch(world: &WorldState, sid: SessionId, now_ms: u64) -> bool
     let Some(ch) = world.get_character_info(sid) else {
         return true;
     };
+    if ch.hp <= 0 {
+        return true;
+    }
     let new_hp = (ch.hp - SAW_DAMAGE).max(0);
-    world.update_character_stats(sid, |c| c.hp = new_hp);
+    world.update_character_hp(sid, new_hp);
+    // HP bar with the saw as attacker (same packet an NPC hit uses)
     world.send_to_session_owned(
         sid,
-        crate::systems::regen::build_hp_change_packet(ch.max_hp, new_hp),
+        crate::systems::regen::build_hp_change_packet_with_attacker(ch.max_hp, new_hp, saw_nid),
     );
     if new_hp <= 0 {
-        crate::handler::dead::broadcast_death(world, sid);
+        crate::handler::dead::broadcast_death_with_killer(world, sid, saw_nid, 0);
+        // `WIZ_ATTACK [LONG_ATTACK][ATTACK_TARGET_DEAD][killer][victim]` (OnDeathKilledNpc)
+        let mut atk = Packet::new(Opcode::WizAttack as u8);
+        atk.write_u8(crate::attack_constants::LONG_ATTACK);
+        atk.write_u8(crate::attack_constants::ATTACK_TARGET_DEAD);
+        atk.write_u32(saw_nid);
+        atk.write_u32(sid as u32);
+        world.send_to_session_owned(sid, atk);
+        crate::handler::dead::track_chaos_death_by_name(world, &ch.name);
     }
     true
 }
@@ -321,6 +405,50 @@ mod tests {
         assert_eq!(next_leg(None, 4), 0);
         assert_eq!(next_leg(Some(0), 4), 1);
         assert_eq!(next_leg(Some(3), 4), 0);
+    }
+
+    #[test]
+    fn saw_position_follows_the_leg() {
+        let from = (100.0, 200.0);
+        let to = (140.0, 200.0);
+        assert_eq!(interpolate(from, to, 1_000, 5_000, 1_000), from);
+        assert_eq!(interpolate(from, to, 1_000, 5_000, 3_000), (120.0, 200.0));
+        assert_eq!(interpolate(from, to, 1_000, 5_000, 5_000), to);
+        assert_eq!(interpolate(from, to, 1_000, 5_000, 9_000), to, "clamped after arrival");
+        assert_eq!(interpolate(from, to, 5_000, 5_000, 5_000), to, "degenerate leg");
+    }
+
+    #[test]
+    fn saw_touch_costs_500_hp_like_the_reference() {
+        assert_eq!(SAW_DAMAGE, 5000 / 10);
+        assert!(SAW_TOUCH_RADIUS > 0.0 && SAW_TOUCH_RADIUS < 5.0);
+    }
+
+    /// Two touches (outside the cooldown) take 1000 HP: 500 each, the second one kills.
+    #[test]
+    fn saw_touches_take_hp_and_kill_in_the_chaos_dungeon() {
+        use crate::world::{CharacterInfo, Position};
+        let world = WorldState::new();
+        world.ensure_zone(ZONE_CHAOS_DUNGEON, 1024);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(777, tx);
+        world.register_ingame(
+            777,
+            CharacterInfo { session_id: 777, name: "Saw".into(), nation: 1, level: 70, hp: 1000, max_hp: 1000, authority: 1, ..Default::default() },
+            Position { zone_id: ZONE_CHAOS_DUNGEON, x: 100.0, y: 0.0, z: 100.0, region_x: calc_region(100.0), region_z: calc_region(100.0) },
+        );
+        let saw = 10_777u32;
+        assert!(handle_saw_touch(&world, 777, saw, 50_000));
+        assert_eq!(world.get_character_info(777).unwrap().hp, 500);
+        // re-sent touch inside the cooldown: ignored
+        handle_saw_touch(&world, 777, saw, 50_000 + SAW_HIT_COOLDOWN_MS / 2);
+        assert_eq!(world.get_character_info(777).unwrap().hp, 500);
+        handle_saw_touch(&world, 777, saw, 50_000 + SAW_HIT_COOLDOWN_MS + 1);
+        assert_eq!(world.get_character_info(777).unwrap().hp, 0);
+        assert!(world.is_player_dead(777));
+        // dead players are left alone
+        handle_saw_touch(&world, 777, saw, 60_000);
+        assert_eq!(world.get_character_info(777).unwrap().hp, 0);
     }
 
     #[test]
