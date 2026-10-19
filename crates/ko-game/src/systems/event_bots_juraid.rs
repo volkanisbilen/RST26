@@ -4,9 +4,12 @@
 //! both lanes meet in the Deva room where the Deva Bird decides the event.
 //!
 //! ```text
-//! El Morad  spawn (224,272) -> (224,558) -> (224,848) -> (511,848) -> Deva room (508,513)
-//! Karus     spawn (799,748) -> (799,459) -> (799,171) -> (511,172) -> Deva room (508,513)
+//! Karus     spawn (224,272) -> (224,558) -> (224,848) -> (511,848) -> Deva room (508,513)
+//! El Morad  spawn (799,748) -> (799,459) -> (799,171) -> (511,172) -> Deva room (508,513)
 //! ```
+//!
+//! (The Karus lane is the x = 224 side: the human respawn points of `handler::regene` use the
+//! same sides, Karus bridge 1 at (224,671), El Morad bridge 1 at (800,349).)
 //!
 //! ## What the bots do
 //! * **Follow** - when a real player of the bot's nation is alive in the room the bot joins that
@@ -15,8 +18,9 @@
 //!   themselves. A stage is "cleared" when no stage monster (main or child) is alive within
 //!   [`STAGE_RADIUS`] of its waypoint; only then does the team move on to the next waypoint. The
 //!   last leg ends in the Deva room.
-//! * **Mirror fill** - a nation without any real player gets as many bots as the other nation has
-//!   real players ([`plan_fill`]); a nation that has players is topped up by the usual config.
+//! * **Mirror fill** - both teams end up the same size: each nation is topped up by the usual
+//!   config and the smaller team then gets extra bots until humans + bots match the other side
+//!   ([`plan_fill`], the rule shared with BDW in `event_bots::plan_nation_fill`).
 //!
 //! ## Rewards / chests
 //! * Bots only ever damage room monsters (never players, never the monuments).
@@ -51,12 +55,12 @@ use ko_protocol::{Opcode, Packet};
 
 // ── Geometry ─────────────────────────────────────────────────────────────
 
-pub const ELMORAD_SPAWN: (f32, f32) = (224.0, 272.0);
-pub const KARUS_SPAWN: (f32, f32) = (799.0, 748.0);
+pub const KARUS_SPAWN: (f32, f32) = (224.0, 272.0);
+pub const ELMORAD_SPAWN: (f32, f32) = (799.0, 748.0);
 pub const DEVA_ROOM: (f32, f32) = (508.0, 513.0);
 /// Waypoints per nation: three stage points and the Deva room.
-pub const ELMORAD_CHAIN: [(f32, f32); 4] = [(224.0, 558.0), (224.0, 848.0), (511.0, 848.0), DEVA_ROOM];
-pub const KARUS_CHAIN: [(f32, f32); 4] = [(799.0, 459.0), (799.0, 171.0), (511.0, 172.0), DEVA_ROOM];
+pub const KARUS_CHAIN: [(f32, f32); 4] = [(224.0, 558.0), (224.0, 848.0), (511.0, 848.0), DEVA_ROOM];
+pub const ELMORAD_CHAIN: [(f32, f32); 4] = [(799.0, 459.0), (799.0, 171.0), (511.0, 172.0), DEVA_ROOM];
 /// Index of the Deva room in a chain.
 pub const DEVA_STAGE: u8 = 3;
 
@@ -99,21 +103,13 @@ pub fn spawn_override(zone_id: u16, nation: u8) -> Option<(f32, f32)> {
 // ── Mirror fill ──────────────────────────────────────────────────────────
 
 /// Bots to add per nation, `[karus, elmorad]`, for a room that holds `humans = [karus, elmorad]`
-/// real players. A nation without a real player is filled with as many bots as the other nation
-/// has real players (mirror); a nation with players follows the usual top-up rule.
+/// real players: the usual top-up per nation, then the smaller team is mirrored up until both
+/// teams (humans + bots) are the same size ([`crate::systems::event_bots::plan_nation_fill`]).
 pub fn plan_fill(cfg: &EventBotConfig, humans: [usize; 2]) -> [usize; 2] {
     if !cfg.enabled || humans[0] + humans[1] < cfg.min_humans.max(1) as usize {
         return [0, 0];
     }
-    let cap = MAX_ROOM_USERS_PER_NATION;
-    let side = |own: usize, other: usize| -> usize {
-        if own == 0 {
-            other.min(cap)
-        } else {
-            crate::systems::event_bots::bots_needed(cfg, own, cap)
-        }
-    };
-    [side(humans[0], humans[1]), side(humans[1], humans[0])]
+    crate::systems::event_bots::plan_nation_fill(cfg, humans, MAX_ROOM_USERS_PER_NATION)
 }
 
 // ── Stage logic (pure) ───────────────────────────────────────────────────
@@ -581,11 +577,21 @@ mod tests {
 
     #[test]
     fn chains_match_the_design() {
-        assert_eq!(ELMORAD_CHAIN, [(224.0, 558.0), (224.0, 848.0), (511.0, 848.0), (508.0, 513.0)]);
-        assert_eq!(KARUS_CHAIN, [(799.0, 459.0), (799.0, 171.0), (511.0, 172.0), (508.0, 513.0)]);
-        assert_eq!(spawn_override(87, 2), Some((224.0, 272.0)));
-        assert_eq!(spawn_override(87, 1), Some((799.0, 748.0)));
+        // Karus runs the x = 224 lane, El Morad the x = 799 lane (owner-confirmed after a live test)
+        assert_eq!(KARUS_CHAIN, [(224.0, 558.0), (224.0, 848.0), (511.0, 848.0), (508.0, 513.0)]);
+        assert_eq!(ELMORAD_CHAIN, [(799.0, 459.0), (799.0, 171.0), (511.0, 172.0), (508.0, 513.0)]);
+        assert_eq!(spawn_override(87, 1), Some((224.0, 272.0)));
+        assert_eq!(spawn_override(87, 2), Some((799.0, 748.0)));
+        assert_eq!(chain(1), &KARUS_CHAIN);
+        assert_eq!(chain(2), &ELMORAD_CHAIN);
         assert_eq!(spawn_override(85, 1), None);
+    }
+
+    #[test]
+    fn lanes_agree_with_the_human_respawn_sides() {
+        // handler::regene puts a dead Karus player on bridge 1 at (224,671), El Morad at (800,349)
+        assert!((KARUS_CHAIN[0].0 - 224.0).abs() < 1.0 && (KARUS_SPAWN.0 - 224.0).abs() < 1.0);
+        assert!((ELMORAD_CHAIN[0].0 - 799.0).abs() < 1.5 && (ELMORAD_SPAWN.0 - 799.0).abs() < 1.5);
     }
 
     #[test]
@@ -683,13 +689,19 @@ mod tests {
     }
 
     #[test]
-    fn mirror_fill_matches_the_real_players_of_the_other_side() {
+    fn mirror_fill_makes_both_teams_the_same_size() {
         let c = cfg(4);
-        // 3 Karus players, nobody on El Morad: 3 El Morad bots (mirror), Karus topped up to 4
-        assert_eq!(plan_fill(&c, [3, 0]), [1, 3]);
+        // 3 Karus players, nobody on El Morad: Karus topped up to 4, El Morad mirrors the 4
+        assert_eq!(plan_fill(&c, [3, 0]), [1, 4]);
+        // 5 Karus players (more than bots_per_team): El Morad gets 5 bots
         assert_eq!(plan_fill(&c, [0, 5]), [5, 0]);
-        // both sides populated: no mirror, plain top-up
+        assert_eq!(plan_fill(&c, [5, 0]), [0, 5]);
+        // the owner's live case: a 5-man Karus party, bots_per_team 5 -> 5 El Morad bots
+        assert_eq!(plan_fill(&cfg(5), [5, 0]), [0, 5]);
+        // both sides populated: plain top-up already makes 4 vs 4
         assert_eq!(plan_fill(&c, [2, 3]), [2, 1]);
+        // both sides populated, one above bots_per_team: the other side is mirrored up to it
+        assert_eq!(plan_fill(&c, [6, 1]), [0, 5]);
         // never more than a nation can hold
         assert_eq!(plan_fill(&cfg(8), [0, 8]), [8, 0]);
         // no humans / disabled / min_humans: nothing
@@ -933,7 +945,7 @@ mod tests {
     #[test]
     fn bots_join_the_party_of_a_real_player() {
         let world = juraid_world(&[(1, 1, "KarusMan")]);
-        assert_eq!(fill(&world, 3), 3); // 2 Karus teammates + 1 El Morad mirror bot
+        assert_eq!(fill(&world, 3), 5); // 2 Karus teammates + 3 El Morad mirror bots (equal teams)
         let karus_bots: Vec<BotId> = world
             .event_bots
             .ids_of(EventBotKind::Juraid)

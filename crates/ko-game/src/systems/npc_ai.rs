@@ -1481,11 +1481,13 @@ async fn npc_fighting(
     }
 
     let b_result = if new_hp <= 0 {
-        // Player died
-        crate::handler::dead::broadcast_death(world, target_id);
-        // XP loss only on NPC kills (with type exclusions)
-        crate::handler::dead::apply_npc_death_xp_loss(world, target_id, tmpl.npc_type, tmpl.s_sid)
-            .await;
+        // Player died. The exp loss (NPC kills only, with type exclusions) is computed first so
+        // the WIZ_DEAD packet can carry killer + lost exp: that is what makes the client offer
+        // the Resurrection Scroll revive.
+        let lost_exp =
+            crate::handler::dead::npc_death_exp_loss(world, target_id, tmpl.npc_type, tmpl.s_sid);
+        crate::handler::dead::broadcast_death_with_killer(world, target_id, npc_id, lost_exp as u64);
+        crate::handler::dead::apply_exp_loss(world, target_id, lost_exp).await;
         ATTACK_TARGET_DEAD
     } else {
         ATTACK_SUCCESS
@@ -3356,8 +3358,8 @@ async fn npc_apply_magic_effect(
 
     // Handle death
     if new_hp <= 0 {
-        crate::handler::dead::broadcast_death(world, target_sid);
-        // XP loss only on NPC kills (with type exclusions)
+        // XP loss only on NPC kills (with type exclusions); computed before the death packet so
+        // WIZ_DEAD carries killer + lost exp (the client's Resurrection Scroll trigger).
         let (npc_type, npc_proto) = world
             .get_npc_instance(npc_id)
             .and_then(|inst| {
@@ -3366,7 +3368,9 @@ async fn npc_apply_magic_effect(
                     .map(|t| (t.npc_type, inst.proto_id))
             })
             .unwrap_or((0, 0));
-        crate::handler::dead::apply_npc_death_xp_loss(world, target_sid, npc_type, npc_proto).await;
+        let lost_exp = crate::handler::dead::npc_death_exp_loss(world, target_sid, npc_type, npc_proto);
+        crate::handler::dead::broadcast_death_with_killer(world, target_sid, npc_id, lost_exp as u64);
+        crate::handler::dead::apply_exp_loss(world, target_sid, lost_exp).await;
 
         // NPC should stop fighting dead target
         world.update_npc_ai(npc_id, |s| {

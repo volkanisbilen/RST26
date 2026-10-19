@@ -284,6 +284,9 @@ pub async fn process_chat_command(
         "botitems" => handle_bot_items(session, &args)?,
         "dbbots" => handle_database_bots(session, &args)?,
         "botkill" | "allbotkill" => handle_bot_kill(session, &args, &command)?,
+        "navreload" => handle_nav_reload(session, &args)?,
+        "navdump" => handle_nav_dump(session, &args)?,
+        "navstats" => handle_nav_stats(session, &args)?,
         "funclass_open" => handle_funclass_open(session, &args)?,
         "funclass_close" => handle_funclass_close(session)?,
         "tournamentstart" => handle_tournament_start(session, &args)?,
@@ -2102,6 +2105,9 @@ fn handle_help(session: &mut ClientSession) -> anyhow::Result<()> {
         "dbbots merchant|pk|farmer Count|all - Spawn saved DB bots manually",
         "pkbots clear Zone|here - Remove GM PK bots only",
         "botkill/allbotkill - Kill bots",
+        "navreload [Zone] - Reload Map/nav/<zone>.nav bot masks (+walked trace)",
+        "navstats [Zone] - Bot nav source / player-trace status",
+        "navdump [Zone] - Write nav mask + bots PNG under Map/nav/debug",
         "genie CharName on/off - Toggle genie",
         "givegenietime CharName Hours",
     ];
@@ -3821,6 +3827,51 @@ fn handle_count_zone(session: &mut ClientSession) -> anyhow::Result<()> {
             bot_elmorad
         ),
     );
+    Ok(())
+}
+
+fn nav_zone_arg(session: &ClientSession, args: &[&str]) -> u16 {
+    args.first().and_then(|a| a.parse().ok()).unwrap_or_else(|| {
+        let sid = session.session_id();
+        session.world().with_session(sid, |h| h.position.zone_id).unwrap_or(0)
+    })
+}
+
+/// Handle +navreload [zone] — re-read the client-derived bot masks.
+fn handle_nav_reload(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let zone = args.first().and_then(|a| a.parse::<u16>().ok());
+    let lines = crate::systems::nav_trace::reload(&world, zone);
+    let n = lines.len();
+    for line in lines.iter().take(12) {
+        send_help(session, line);
+    }
+    if n > 12 {
+        send_help(session, &format!("... {n} zones reloaded (see server log)"));
+    }
+    for line in &lines {
+        tracing::info!("navreload: {line}");
+    }
+    Ok(())
+}
+
+/// Handle +navstats [zone].
+fn handle_nav_stats(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let zone = nav_zone_arg(session, args);
+    let line = crate::systems::nav_trace::stats(&world, zone);
+    send_help(session, &line);
+    Ok(())
+}
+
+/// Handle +navdump [zone] — PNG of the nav mask with bot positions.
+fn handle_nav_dump(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
+    let world = session.world().clone();
+    let zone = nav_zone_arg(session, args);
+    match crate::systems::nav_trace::dump_png(&world, zone) {
+        Ok(path) => send_help(session, &format!("nav dump written: {}", path.display())),
+        Err(e) => send_help(session, &format!("nav dump failed: {e}")),
+    }
     Ok(())
 }
 

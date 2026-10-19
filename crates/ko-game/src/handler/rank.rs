@@ -672,12 +672,14 @@ async fn handle_bdw(session: &mut ClientSession) -> anyhow::Result<()> {
                 break;
             }
 
-            // Verify user is still in-game
+            // Verify user is still in-game; event bots have no session and are listed like a
+            // clanless player (their bdw_points live on the room's EventUser as for humans).
             let user_data =
                 world.with_session(*entry_sid, |h| h.character.as_ref().map(|c| c.knights_id));
 
             let knights_id = match user_data {
                 Some(Some(kid)) => kid,
+                _ if rank_entry_is_event_bot(world, *entry_sid) => 0,
                 _ => continue,
             };
 
@@ -728,6 +730,13 @@ async fn handle_bdw(session: &mut ClientSession) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Event bots sit in the event rooms with bot-band session ids and no `ClientSession`; the
+/// BDW / Chaos rank windows list them like players (kills, deaths, BDW points are kept on their
+/// room `EventUser` exactly as for humans).
+pub(crate) fn rank_entry_is_event_bot(world: &crate::world::WorldState, sid: crate::zone::SessionId) -> bool {
+    crate::systems::event_bots::is_event_bot_sid(world, sid)
 }
 
 /// The Chaos window lists at most 19 rows (`if (sCount > 18) break;`).
@@ -845,10 +854,11 @@ async fn handle_chaos_dungeon(session: &mut ClientSession) -> anyhow::Result<()>
     let rows: Vec<(String, u32, u32)> = entries
         .iter()
         .filter(|(_, entry_sid, _, _)| {
-            // Verify user is still in-game
+            // Verify user is still in-game (event bots have no session but are ranked too)
             world
                 .with_session(*entry_sid, |h| h.character.is_some())
                 .unwrap_or(false)
+                || rank_entry_is_event_bot(world, *entry_sid)
         })
         .map(|(name, _, kills, deaths)| (name.clone(), *kills, *deaths))
         .collect();
@@ -875,6 +885,18 @@ async fn handle_chaos_dungeon(session: &mut ClientSession) -> anyhow::Result<()>
 mod tests {
     use super::*;
     use ko_protocol::Packet;
+
+    /// Event bots (no session, bot-band id) are listed in the BDW / Chaos rank windows; an
+    /// unknown session-band id (a player that logged out) is not.
+    #[test]
+    fn event_bots_are_listed_in_the_event_rank_windows() {
+        use crate::systems::event_bots::{BotEntry, EventBotKind};
+        let world = crate::world::WorldState::new();
+        world.event_bots.insert(20_500, BotEntry::new(EventBotKind::Bdw, 1, 2, "ElmoBot".into()));
+        assert!(rank_entry_is_event_bot(&world, 20_500));
+        assert!(!rank_entry_is_event_bot(&world, 20_501), "unregistered bot id");
+        assert!(!rank_entry_is_event_bot(&world, 7), "player ids are never bots");
+    }
 
     #[test]
     fn test_pk_zone_ranking_packet_format() {

@@ -231,18 +231,25 @@ pub fn plan_room_fill(kind: EventBotKind, cfg: &EventBotConfig, humans: [usize; 
     if kind == EventBotKind::Juraid {
         return crate::systems::event_bots_juraid::plan_fill(cfg, humans);
     }
+    plan_nation_fill(cfg, humans, kind.team_capacity())
+}
+
+/// Bots per nation for a nation-versus-nation event (BDW, Juraid): every team is topped up by
+/// the usual rule ([`bots_needed`]) and the smaller team is then **mirrored** up with extra bots
+/// until both teams have the same total size (humans + bots), capped by `capacity` per nation.
+/// So a 5-man party meets 5 opponents even when `bots_per_team` is 4, and a lone player gets an
+/// even match instead of a fixed crowd.
+pub fn plan_nation_fill(cfg: &EventBotConfig, humans: [usize; 2], capacity: usize) -> [usize; 2] {
     let mut plan = [
-        bots_needed(cfg, humans[0], kind.team_capacity()),
-        bots_needed(cfg, humans[1], kind.team_capacity()),
+        bots_needed(cfg, humans[0], capacity),
+        bots_needed(cfg, humans[1], capacity),
     ];
-    // BDW: a nation without any human gets exactly as many bots as the other side has players
-    // (mirror), so one player fights an even match instead of a fixed `bots_per_team` crowd.
-    if kind == EventBotKind::Bdw {
-        for side in 0..2 {
-            if humans[side] == 0 && humans[1 - side] > 0 {
-                plan[side] = humans[1 - side].min(kind.team_capacity());
-            }
-        }
+    let target = (humans[0] + plan[0]).max(humans[1] + plan[1]);
+    for side in 0..2 {
+        let want = target.saturating_sub(humans[side]);
+        plan[side] = plan[side]
+            .max(want)
+            .min(capacity.saturating_sub(humans[side]));
     }
     plan
 }
@@ -1484,17 +1491,33 @@ mod tests {
     }
 
     #[test]
-    fn nation_events_fill_both_teams_independently() {
+    fn nation_events_end_up_with_equal_team_sizes() {
         let mut cfg = on(EventBotKind::Bdw);
         cfg.bots_per_team = 4;
-        // a lone Karus player: Karus gets 3 teammates, El Morad (no human) mirrors the 1 player
-        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [1, 0]), [3, 1]);
-        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [0, 3]), [3, 1]);
-        // 5 Karus players: 5 mirror bots on the empty El Morad side, capped by the team capacity
+        // a lone Karus player: Karus gets 3 teammates, El Morad (no human) mirrors the 4
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [1, 0]), [3, 4]);
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [0, 3]), [4, 1]);
+        // 5 Karus players (more than bots_per_team): 5 mirror bots on the empty El Morad side
         assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [5, 0]), [0, 5]);
+        // the live case: a 5-man party against a side that got only 1 bot before -> now 5
+        let mut five = on(EventBotKind::Bdw);
+        five.bots_per_team = 5;
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &five, [5, 0]), [0, 5]);
+        // capped by the team capacity
         assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [8, 0])[1], 8);
-        // both sides have humans: no mirroring
+        // both sides have humans: the plain top-up already gives 4 vs 4
         assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [2, 1]), [2, 3]);
+        // one side above bots_per_team: the other side is mirrored up to it
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &cfg, [6, 2]), [0, 4]);
+        for humans in [[1usize, 0usize], [0, 3], [5, 0], [2, 1], [6, 2], [3, 3]] {
+            let p = plan_room_fill(EventBotKind::Bdw, &cfg, humans);
+            assert_eq!(humans[0] + p[0], humans[1] + p[1], "equal teams for {humans:?}: {p:?}");
+        }
+        // fill_only_when_short = false: always bots_per_team extra, still equal
+        let mut always = on(EventBotKind::Bdw);
+        always.bots_per_team = 2;
+        always.fill_only_when_short = false;
+        assert_eq!(plan_room_fill(EventBotKind::Bdw, &always, [1, 0]), [2, 3]);
     }
 
     #[test]
@@ -1677,17 +1700,17 @@ mod tests {
         world.event_bots.set_config(EventBotKind::Bdw, cfg);
 
         let added = fill_temple_rooms(&world, TempleEventType::BorderDefenceWar);
-        // Karus: 3 - 1 human = 2 teammates; El Morad has no human: 1 mirror bot
-        assert_eq!(added, 3);
-        assert_eq!(world.event_bots.count(EventBotKind::Bdw), 3);
-        assert_eq!(world.bot_count(), 3);
+        // Karus: 3 - 1 human = 2 teammates; El Morad has no human: 3 mirror bots (equal teams)
+        assert_eq!(added, 5);
+        assert_eq!(world.event_bots.count(EventBotKind::Bdw), 5);
+        assert_eq!(world.bot_count(), 5);
         {
             let room = world
                 .event_room_manager
                 .get_room(TempleEventType::BorderDefenceWar, 1)
                 .unwrap();
             assert_eq!(room.karus_users.len(), 3);
-            assert_eq!(room.elmorad_users.len(), 1);
+            assert_eq!(room.elmorad_users.len(), 3);
             // bots are flagged as already rewarded and carry bot-band session ids
             assert!(room.elmorad_users.values().all(|u| u.prize_given && u.session_id as u32 >= BOT_ID_BASE));
         }
@@ -1697,7 +1720,7 @@ mod tests {
         }
         assert!(!is_event_bot_sid(&world, 1));
 
-        assert_eq!(cleanup_kind(&world, EventBotKind::Bdw), 3);
+        assert_eq!(cleanup_kind(&world, EventBotKind::Bdw), 5);
         assert_eq!(world.bot_count(), 0);
         assert_eq!(world.event_bots.total(), 0);
         let room = world
@@ -1933,6 +1956,63 @@ mod tests {
         assert!(deny_player_attack(&world, 1, enemy), "combat not open yet");
         // ordinary bots are never gated here
         assert!(!deny_player_attack(&world, 1, 29_998));
+    }
+
+    /// The real R-attack path: a player standing next to an enemy-nation BDW bot hurts it, a
+    /// same-nation bot is untouchable. Guards the whole chain (field-bot rule, event gate, zone and
+    /// range checks), not only `deny_player_attack`.
+    #[tokio::test]
+    async fn bdw_players_hurt_enemy_bots_through_the_attack_handler() {
+        let world = Arc::new(world_with_zone_start(84));
+        add_human(&world, 1, 1, 84, 1, "Human");
+        open_room_with_humans(&world, TempleEventType::BorderDefenceWar, &[(1, 1, "Human")]);
+        let mut cfg = on(EventBotKind::Bdw);
+        cfg.bots_per_team = 2;
+        world.event_bots.set_config(EventBotKind::Bdw, cfg);
+        fill_temple_rooms(&world, TempleEventType::BorderDefenceWar);
+        phase_active(&world);
+        // the human has no gear in this world: use GM damage so the swing cannot miss for 0; the
+        // attack path still needs the class coefficient row (live: loaded from the DB)
+        world.update_character_stats(1, |c| {
+            c.authority = 0;
+            c.class = 101;
+        });
+        world.insert_coefficient(
+            ko_db::models::CoefficientRow {
+                s_class: 101,
+                short_sword: 0.001,
+                jamadar: 0.001,
+                sword: 0.002,
+                axe: 0.002,
+                club: 0.002,
+                spear: 0.002,
+                pole: 0.001,
+                staff: 0.001,
+                bow: 0.001,
+                hp: 1.0,
+                mp: 1.0,
+                sp: 1.0,
+                ac: 0.05,
+                hitrate: 0.001,
+                evasionrate: 0.001,
+            },
+        );
+        let ids = world.event_bots.ids();
+        let enemy = ids.iter().copied().find(|id| world.get_bot(*id).unwrap().nation == 2).unwrap();
+        let friend = ids.iter().copied().find(|id| world.get_bot(*id).unwrap().nation == 1).unwrap();
+
+        let enemy_bot = world.get_bot(enemy).unwrap();
+        world.update_position(1, 84, enemy_bot.x + 2.0, 0.0, enemy_bot.z);
+        let pos = world.get_position(1).unwrap();
+        crate::handler::attack::handle_npc_attack(Arc::clone(&world), 1, pos, enemy, 1, 0).await;
+        let after = world.get_bot(enemy).unwrap();
+        assert!(after.hp < enemy_bot.hp, "enemy bot must take damage ({} -> {})", enemy_bot.hp, after.hp);
+
+        let friend_bot = world.get_bot(friend).unwrap();
+        world.update_position(1, 84, friend_bot.x + 2.0, 0.0, friend_bot.z);
+        let pos = world.get_position(1).unwrap();
+        crate::handler::attack::handle_npc_attack(Arc::clone(&world), 1, pos, friend, 1, 0).await;
+        assert_eq!(world.get_bot(friend).unwrap().hp, friend_bot.hp, "same-nation bot stays unhurt");
     }
 
     #[test]

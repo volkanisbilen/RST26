@@ -29,6 +29,12 @@ const COST_ORTHOGONAL: i32 = 10;
 /// (C++ naming is confusing: "CROSS" constant is used for diagonal moves)
 const COST_DIAGONAL: i32 = 11;
 
+/// Extra cost (on the 10/11 scale) for a bot to step into a cell no real
+/// player has been seen walking, once a zone has enough trace data
+/// (`MapData::walked_min_cells`). Keeps the Chebyshev heuristic admissible
+/// because it only ever adds cost.
+pub const COST_UNWALKED_PENALTY: i32 = 10;
+
 /// Absolute ceiling for A* iterations — prevents runaway searches on huge maps.
 /// The actual per-search limit is computed dynamically via `calc_max_iterations()`.
 const MAX_ITERATIONS_CAP: u32 = 250_000;
@@ -133,10 +139,13 @@ pub fn find_bot_path(map: &MapData, start_x: f32, start_z: f32, goal_x: f32, goa
 }
 
 fn find_path_impl(map: &MapData, start_x: f32, start_z: f32, goal_x: f32, goal_z: f32, bot: bool) -> PathResult {
-    let is_walkable = |map: &MapData, x, z, size| {
-        if bot { x >= 0 && z >= 0 && x < size && z < size && map.is_bot_movable_grid(x, z) }
-        else { is_walkable(map, x, z, size) }
+    // Bots: one snapshot of the navigation generation for the whole query.
+    let view = bot.then(|| map.bot_view());
+    let is_walkable = |map: &MapData, x, z, size| match &view {
+        Some(v) => v.walkable(x, z),
+        None => is_walkable(map, x, z, size),
     };
+    let penalty = |x: i32, z: i32| view.as_ref().map_or(0, |v| v.step_penalty(x, z));
     let unit_dist = map.unit_dist();
     if unit_dist <= 0.0 {
         return PathResult {
@@ -151,7 +160,7 @@ fn find_path_impl(map: &MapData, start_x: f32, start_z: f32, goal_x: f32, goal_z
     let gx = (goal_x / unit_dist) as i32;
     let gz = (goal_z / unit_dist) as i32;
 
-    let map_grid_size = map.grid_size();
+    let map_grid_size = view.as_ref().map_or_else(|| map.grid_size(), |v| v.grid_size());
 
     // Validate start and goal are in-bounds and walkable
     if !is_walkable(map, sx, sz, map_grid_size) || !is_walkable(map, gx, gz, map_grid_size) {
@@ -231,7 +240,7 @@ fn find_path_impl(map: &MapData, start_x: f32, start_z: f32, goal_x: f32, goal_z
                 continue;
             }
 
-            let new_g = current.g + cost;
+            let new_g = current.g + cost + penalty(nx, nz);
 
             if let Some(&existing_g) = g_scores.get(&(nx, nz)) {
                 if new_g >= existing_g {
@@ -274,9 +283,8 @@ pub fn bot_segment_walkable(map: &MapData, from_x: f32, from_z: f32, to_x: f32, 
     if unit <= 0.0 {
         return false;
     }
-    let grid_size = map.grid_size();
-    let walkable =
-        |x: i32, z: i32| x >= 0 && z >= 0 && x < grid_size && z < grid_size && map.is_bot_movable_grid(x, z);
+    let view = map.bot_view();
+    let walkable = |x: i32, z: i32| view.walkable(x, z);
 
     let mut x = (from_x / unit).floor() as i32;
     let mut z = (from_z / unit).floor() as i32;
@@ -744,6 +752,55 @@ mod tests {
     fn test_bot_segment_walkable_rejects_nonfinite() {
         let map = make_bot_test_map(5, &[]);
         assert!(!bot_segment_walkable(&map, 4.0, 4.0, f32::NAN, 4.0));
+    }
+
+    /// With enough player trace the bot route prefers walked cells: an L
+    /// shaped corridor walked by players beats the untouched diagonal.
+    #[test]
+    fn test_bot_path_prefers_player_walked_cells() {
+        let size = 80;
+        let smd = SmdFile {
+            heights: Vec::new(),
+            bot_blocked: Vec::new(),
+            map_size: size,
+            unit_dist: 4.0,
+            map_width: (size - 1) as f32 * 4.0,
+            map_height: (size - 1) as f32 * 4.0,
+            event_grid: vec![1i16; (size * size) as usize],
+            warps: Vec::new(),
+            regene_events: Vec::new(),
+        };
+        let map = MapData::new(smd);
+        let threshold = crate::zone::walked_min_cells();
+        let walked = ko_protocol::nav::WalkedMap::new(size, 4.0);
+        for x in 2..=30 {
+            walked.mark_cell(x, 2);
+            walked.mark_cell(30, x);
+        }
+        // Filler far from the route so the activation threshold is met.
+        let mut filler = 0;
+        'fill: for x in 0..size {
+            for z in 50..size {
+                if filler >= threshold {
+                    break 'fill;
+                }
+                walked.mark_cell(x, z);
+                filler += 1;
+            }
+        }
+        map.set_walked(walked).unwrap();
+        assert!(map.bot_view().walked_ready(), "trace must be active for this test");
+        let result = find_bot_path(&map, 10.0, 10.0, 122.0, 122.0);
+        assert!(result.found);
+        let off_trace = result
+            .waypoints
+            .iter()
+            .filter(|&&(wx, wz)| {
+                let (gx, gz) = ((wx / 4.0) as i32, (wz / 4.0) as i32);
+                !(gz == 2 || gx == 30)
+            })
+            .count();
+        assert!(off_trace <= 1, "route left the walked corridor at {off_trace} waypoints: {:?}", result.waypoints);
     }
 
     #[test]

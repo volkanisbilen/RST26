@@ -1648,7 +1648,7 @@ async fn handle_player_attack(
 /// Validates NPC state, calculates damage using a simplified formula
 /// (player AP vs NPC AC), deducts NPC HP, handles death (XP + respawn),
 /// and broadcasts the result.
-async fn handle_npc_attack(
+pub(crate) async fn handle_npc_attack(
     world: Arc<WorldState>,
     attacker_sid: SessionId,
     attacker_pos: Position,
