@@ -1998,6 +1998,32 @@ mod tests {
         assert!(!deny_player_attack(&world, 1, 29_998));
     }
 
+    /// The attack handler needs the target's class coefficient row too (a bot is hit with the
+    /// player formula); live the whole table is loaded, tests get one row per bot class.
+    fn insert_bot_class_coefficients(world: &WorldState) {
+        for id in world.event_bots.ids() {
+            let class = world.get_bot(id).unwrap().class;
+            world.insert_coefficient(ko_db::models::CoefficientRow {
+                s_class: class as i16,
+                short_sword: 0.001,
+                jamadar: 0.001,
+                sword: 0.002,
+                axe: 0.002,
+                club: 0.002,
+                spear: 0.002,
+                pole: 0.001,
+                staff: 0.001,
+                bow: 0.001,
+                hp: 1.0,
+                mp: 1.0,
+                sp: 1.0,
+                ac: 0.05,
+                hitrate: 0.001,
+                evasionrate: 0.001,
+            });
+        }
+    }
+
     /// The real R-attack path: a player standing next to an enemy-nation BDW bot hurts it, a
     /// same-nation bot is untouchable. Guards the whole chain (field-bot rule, event gate, zone and
     /// range checks), not only `deny_player_attack`.
@@ -2037,6 +2063,7 @@ mod tests {
                 evasionrate: 0.001,
             },
         );
+        insert_bot_class_coefficients(&world);
         let ids = world.event_bots.ids();
         let enemy = ids.iter().copied().find(|id| world.get_bot(*id).unwrap().nation == 2).unwrap();
         let friend = ids.iter().copied().find(|id| world.get_bot(*id).unwrap().nation == 1).unwrap();
@@ -2084,6 +2111,7 @@ mod tests {
             hitrate: 0.001,
             evasionrate: 0.001,
         });
+        insert_bot_class_coefficients(&world);
         let ids = world.event_bots.ids();
         let same = ids.iter().copied().find(|id| world.get_bot(*id).unwrap().nation == 1).expect("a nation-1 bot");
         assert!(!deny_player_attack(&world, 1, same), "FFA: same nation is a valid target");
