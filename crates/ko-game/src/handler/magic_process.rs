@@ -711,6 +711,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 .map(|bot| bot.hp <= 0 || bot.presence == crate::world::BotPresence::Dead)
                 .unwrap_or_else(|| world.is_npc_dead(npc_id));
             if target_is_dead {
+                // The target died between CASTING and EFFECTING: end the cast instead of
+                // leaving the client waiting.
+                if matches!(b_opcode, MAGIC_CASTING | MAGIC_FLYING | MAGIC_EFFECTING) {
+                    world.send_to_session_owned(sid, instance.build_fail_packet());
+                }
                 return Ok(());
             }
         } else {
@@ -1104,6 +1109,12 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
 
             // Execute the skill based on type
             if !execute_skill(&world, sid, &mut instance, &skill).await {
+                // Every failing path must end the cast on the client: several branches return
+                // false without sending anything (target vanished, blink gate, HOT already
+                // active, ...) and the 2625 client then stays in the casting state. A second
+                // MAGIC_FAIL after one that was already sent is harmless.
+                instance.data[3] = SKILLMAGIC_FAIL_NOEFFECT;
+                world.send_to_session_owned(sid, instance.build_fail_packet());
                 return Ok(());
             }
 
@@ -1657,6 +1668,9 @@ async fn execute_type1(
     if !target_is_player {
         // NPC target — compute base melee damage + skill bonus damage
         let npc_id = target_id as u32;
+        if let Some(bot) = world.get_bot(npc_id) {
+            return execute_type1_bot(world, caster_sid, instance, skill, &type1_data, &bot).await;
+        }
 
         let caster = match world.get_character_info(caster_sid) {
             Some(ch) => ch,
@@ -2392,6 +2406,10 @@ async fn execute_type2(
         if !check_type2_npc_range(world, caster_sid, npc_id, &type2_data, skill) {
             send_skill_failed(world, caster_sid, instance);
             return false;
+        }
+
+        if let Some(bot) = world.get_bot(npc_id) {
+            return execute_type2_bot(world, caster_sid, instance, skill, &type2_data, &bot).await;
         }
 
         let npc_ac = {
@@ -3221,9 +3239,23 @@ async fn execute_type3(
             } else {
                 (-first_damage).max(0) as i16
             };
-            let adp_npc = type3_data.add_dmg_perc_to_npc.unwrap_or(0);
-            if adp_npc != 0 {
-                magic_damage = ((magic_damage as i32 * adp_npc as i32) / 100) as i16;
+            let bot_target = world.get_bot(npc_id);
+            if let Some(bot) = bot_target.as_ref() {
+                // Bots take iADPtoUser + the class bonus like a player target.
+                magic_damage = bot_magic_post(
+                    world,
+                    caster_sid,
+                    &caster,
+                    bot,
+                    magic_damage,
+                    type3_data.add_dmg_perc_to_user.unwrap_or(0) as i32,
+                    use_magic_formula && direct_type != 13,
+                );
+            } else {
+                let adp_npc = type3_data.add_dmg_perc_to_npc.unwrap_or(0);
+                if adp_npc != 0 {
+                    magic_damage = ((magic_damage as i32 * adp_npc as i32) / 100) as i16;
+                }
             }
             apply_skill_damage_to_npc(
                 world,
@@ -3235,6 +3267,12 @@ async fn execute_type3(
                 attr,
             )
             .await;
+            if bot_target.is_some() {
+                // Bot hits never reach the NPC branch's own MAGIC_EFFECTING; without it the
+                // client keeps waiting after the cast.
+                let effect = instance.build_packet(MAGIC_EFFECTING);
+                broadcast_to_caster_region(world, caster_sid, &effect);
+            }
 
             // Register DOT on NPC if time_damage != 0 and duration > 0
             // sTimeDamage < 0 && attribute != 4 (different filter from first damage)
@@ -3921,10 +3959,15 @@ async fn execute_type3(
                 } else {
                     (-first_damage).max(0) as i16
                 };
-                let adp_npc = type3_data.add_dmg_perc_to_npc.unwrap_or(0);
-                if adp_npc != 0 {
-                    bot_damage = ((bot_damage as i32 * adp_npc as i32) / 100) as i16;
-                }
+                bot_damage = bot_magic_post(
+                    world,
+                    caster_sid,
+                    &caster,
+                    &bot,
+                    bot_damage,
+                    type3_data.add_dmg_perc_to_user.unwrap_or(0) as i32,
+                    aoe_use_magic_formula,
+                );
 
                 apply_skill_damage_to_npc(
                     world, caster_sid, bot.id, instance, bot_damage, skill, aoe_attr,
@@ -4318,6 +4361,21 @@ fn build_npc_ctx(
         .map(|c| c.class)
         .unwrap_or(0);
     let (rh_dmg, attr_dmg) = world.get_magic_weapon_damage(caster_sid, caster_class, attribute);
+    // A runtime bot shares the NPC id band but is a player-like target: its own gear
+    // resistances, class multiplier and the player "/3" step, exactly like a session target.
+    if let Some(bot) = world.get_bot(npc_id) {
+        let bt = bot_skill_target(world, &bot);
+        return MagicDamageContext {
+            target_kind: MagicTargetKind::Player,
+            target_total_r: bot_total_resistance(&bt.stats, attribute),
+            target_class: bot.class,
+            target_ac_amount: 0,
+            damage_settings: world.get_damage_settings(),
+            righthand_damage: rh_dmg,
+            attribute_damage: attr_dmg,
+            attribute,
+        };
+    }
     MagicDamageContext {
         target_kind: MagicTargetKind::Npc,
         target_total_r: get_npc_target_resistance(world, npc_id, attribute),
@@ -4483,6 +4541,33 @@ fn apply_magic_class_bonus(
     caster_sid: crate::zone::SessionId,
     target_sid: crate::zone::SessionId,
 ) -> i16 {
+    // Snapshot both combatants — 2 DashMap reads instead of 4.
+    let Some(caster_snap) = world.snapshot_combat(caster_sid) else {
+        return damage;
+    };
+    let Some(target_snap) = world.snapshot_combat(target_sid) else {
+        return damage;
+    };
+    apply_magic_class_bonus_stats(
+        damage,
+        caster,
+        &caster_snap,
+        target.class,
+        target.sta,
+        &target_snap.equipped_stats,
+    )
+}
+
+/// Core of `apply_magic_class_bonus` on explicit target inputs, so a runtime bot (no session,
+/// no snapshot) goes through the very same arithmetic as a player target.
+fn apply_magic_class_bonus_stats(
+    damage: i16,
+    caster: &CharacterInfo,
+    mcb_caster_snap: &CombatSnapshot,
+    target_class: u16,
+    target_sta: u8,
+    target_stats: &crate::world::EquippedStats,
+) -> i16 {
     use crate::handler::attack::class_group_index;
 
     // Class bonus only applies to non-mage casters (isChaSkill = false).
@@ -4496,22 +4581,11 @@ fn apply_magic_class_bonus(
         Some(i) => i,
         None => return damage,
     };
-    let target_idx = match class_group_index(target.class) {
+    let target_idx = match class_group_index(target_class) {
         Some(i) => i,
         None => return damage,
     };
-
-    // Snapshot both combatants — 2 DashMap reads instead of 4.
-    let mcb_caster_snap = match world.snapshot_combat(caster_sid) {
-        Some(s) => s,
-        None => return damage,
-    };
-    let mcb_target_snap = match world.snapshot_combat(target_sid) {
-        Some(s) => s,
-        None => return damage,
-    };
     let caster_stats = &mcb_caster_snap.equipped_stats;
-    let target_stats = &mcb_target_snap.equipped_stats;
 
     // (simplified: use caster's base stats since we don't track m_sTotalHit separately for magic)
     let total_hit = caster.str.max(1) as i32 * 3;
@@ -4519,7 +4593,7 @@ fn apply_magic_class_bonus(
     // C++ MagicInstance.cpp:6298 — temp_ap = temp_ap * m_bPlayerAttackAmount / 100
     // Applied unconditionally in GetMagicDamage() for non-mage casters (both PvP and PvE)
     temp_ap = temp_ap * mcb_caster_snap.player_attack_amount / 100;
-    let total_ac = target.sta.max(1) as i32 * 2;
+    let total_ac = target_sta.max(1) as i32 * 2;
     let mut temp_ac = total_ac;
 
     // AC: target's AcClassBonusAmount[caster's GetBaseClass() - 1]
@@ -5514,6 +5588,176 @@ pub(crate) fn apply_bot_type4_support(
             event_room,
         );
     }
+    true
+}
+
+// ── Runtime bots as ENEMY targets of player damage skills ────────────────
+//
+// A bot is hit like a player with the same class / gear: the Type1/2/3 paths below build the
+// same inputs a session target would give (AC, evasion, resistances, class multipliers) from
+// the bot's own state instead of falling into the monster formulas (AC 0, `mon_take_damage`).
+
+/// Defensive inputs of a bot as a skill target.
+pub(crate) struct BotSkillTarget {
+    pub info: CharacterInfo,
+    pub stats: crate::world::EquippedStats,
+    pub ac: i32,
+    pub evasion: f32,
+}
+
+pub(crate) fn bot_skill_target(world: &WorldState, bot: &crate::world::BotInstance) -> BotSkillTarget {
+    let stats = crate::systems::bot_ai::bot_equipped_stats(world, &bot.equip_visual);
+    let evasion = world
+        .get_coefficient(bot.class)
+        .map(|c| 1.0 + c.evasionrate as f32 * bot.level as f32 * bot.dex_stat as f32)
+        .unwrap_or(1.0);
+    BotSkillTarget {
+        info: super::attack::bot_as_target_character(bot),
+        stats,
+        ac: crate::systems::bot_ai::bot_defense_ac(world, bot),
+        evasion,
+    }
+}
+
+/// Total elemental resistance of a bot (worn gear only; bots carry no resistance buffs).
+fn bot_total_resistance(stats: &crate::world::EquippedStats, attribute: u8) -> i32 {
+    let item_r = match attribute {
+        1 => stats.fire_r as i32,
+        2 => stats.cold_r as i32,
+        3 => stats.lightning_r as i32,
+        4 => stats.magic_r as i32,
+        5 => stats.disease_r as i32,
+        6 => stats.poison_r as i32,
+        _ => 0,
+    };
+    item_r + stats.resistance_bonus as i32
+}
+
+/// Player-parity steps after `compute_magic_damage` for a bot target: iADPtoUser and the
+/// non-mage class bonus, as in the player-target Type3 path.
+fn bot_magic_post(
+    world: &WorldState,
+    caster_sid: SessionId,
+    caster: &CharacterInfo,
+    bot: &crate::world::BotInstance,
+    mut damage: i16,
+    adp_user: i32,
+    class_bonus: bool,
+) -> i16 {
+    if adp_user != 0 {
+        damage = ((damage as i32 * adp_user) / 100) as i16;
+    }
+    if !class_bonus {
+        return damage;
+    }
+    let bt = bot_skill_target(world, bot);
+    if let Some(snap) = world.snapshot_combat(caster_sid) {
+        damage = apply_magic_class_bonus_stats(damage, caster, &snap, bot.class, bot.sta_stat, &bt.stats);
+    }
+    damage
+}
+
+/// Type1 single-target skill against an enemy bot: the player-target formula with the bot's AC
+/// and evasion. Always ends with MAGIC_EFFECTING to the caster.
+async fn execute_type1_bot(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &mut MagicInstance,
+    skill: &MagicRow,
+    type1_data: &MagicType1Row,
+    bot: &crate::world::BotInstance,
+) -> bool {
+    let Some(caster) = world.get_character_info(caster_sid) else {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    };
+    let Some(snap) = world.snapshot_combat(caster_sid) else {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    };
+    let bt = bot_skill_target(world, bot);
+    let caster_hitrate = world
+        .get_coefficient(caster.class)
+        .map(|c| 1.0 + c.hitrate as f32 * caster.level as f32 * caster.dex as f32)
+        .unwrap_or(1.0);
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let base = compute_type1_hit_damage(
+        snap.equipped_stats.total_hit,
+        bt.ac,
+        type1_data,
+        caster_hitrate,
+        bt.evasion,
+        snap.attack_amount,
+        snap.player_attack_amount,
+        &mut rng,
+    );
+    let mut add_damage = type1_data.add_damage.unwrap_or(0) as i16;
+    if add_damage > 0 {
+        let in_war_zone = world
+            .get_position(caster_sid)
+            .and_then(|pos| world.get_zone(pos.zone_id))
+            .is_some_and(|z| z.is_war_zone());
+        add_damage /= if in_war_zone { 2 } else { 3 };
+    }
+    let mut damage = base.saturating_add(add_damage);
+    let adp_user = type1_data.add_dmg_perc_to_user.unwrap_or(0);
+    if adp_user != 0 {
+        damage = ((damage as i32 * adp_user) / 100) as i16;
+    }
+    if world.get_position(caster_sid).map(|p| p.zone_id) == Some(ZONE_CHAOS_DUNGEON) {
+        damage = if instance.skill_id == 490226 { 1000 } else { 100 };
+    }
+    damage = damage.max(0);
+    instance.data[3] = if damage == 0 { SKILLMAGIC_FAIL_ATTACKZERO } else { 0 };
+    apply_skill_damage_to_npc(world, caster_sid, bot.id, instance, damage, skill, 0).await;
+    let effect = instance.build_packet(MAGIC_EFFECTING);
+    broadcast_to_caster_region(world, caster_sid, &effect);
+    true
+}
+
+/// Type2 (ranged) single-target skill against an enemy bot. Always ends with MAGIC_EFFECTING.
+async fn execute_type2_bot(
+    world: &WorldState,
+    caster_sid: SessionId,
+    instance: &mut MagicInstance,
+    skill: &MagicRow,
+    type2_data: &MagicType2Row,
+    bot: &crate::world::BotInstance,
+) -> bool {
+    let Some(caster) = world.get_character_info(caster_sid) else {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    };
+    let Some(snap) = world.snapshot_combat(caster_sid) else {
+        send_skill_failed(world, caster_sid, instance);
+        return false;
+    };
+    let bt = bot_skill_target(world, bot);
+    let caster_hitrate = world
+        .get_coefficient(caster.class)
+        .map(|c| 1.0 + c.hitrate as f32 * caster.level as f32 * caster.dex as f32)
+        .unwrap_or(1.0);
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let mut damage = compute_type2_hit_damage(
+        snap.equipped_stats.total_hit,
+        bt.ac,
+        type2_data,
+        caster_hitrate,
+        bt.evasion,
+        snap.attack_amount,
+        snap.player_attack_amount,
+        &mut rng,
+    );
+    let adp_user = type2_data.add_dmg_perc_to_user.unwrap_or(0);
+    if adp_user != 0 {
+        damage = ((damage as i32 * adp_user as i32) / 100) as i16;
+    }
+    damage = damage.max(0);
+    instance.data[3] = if damage == 0 { SKILLMAGIC_FAIL_ATTACKZERO } else { 0 };
+    instance.data[1] = 1;
+    apply_skill_damage_to_npc(world, caster_sid, bot.id, instance, damage, skill, 0).await;
+    let effect = instance.build_packet(MAGIC_EFFECTING);
+    broadcast_to_caster_region(world, caster_sid, &effect);
     true
 }
 
@@ -15261,6 +15505,204 @@ mod tests {
         let pct_r2: i32 = 70; // 100 - 30 = 70
         let result2 = ((base_r + add_r + resistance_bonus) * pct_r2 / 100).max(0) as u16;
         assert_eq!(result2, 70); // 100 * 70 / 100 = 70
+    }
+
+    // ── Player damage skills on enemy bots: terminal packet + player parity ─────
+
+    fn enemy_bot_world(
+        zone: u16,
+    ) -> (
+        crate::world::WorldState,
+        u32,
+        tokio::sync::mpsc::UnboundedReceiver<std::sync::Arc<ko_protocol::Packet>>,
+    ) {
+        use crate::world::{CharacterInfo, Position};
+        let world = crate::world::WorldState::new();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        world.register_session(1, tx);
+        world.register_ingame(
+            1,
+            CharacterInfo {
+                session_id: 1,
+                name: "Mage".into(),
+                nation: 1,
+                class: 104,
+                level: 83,
+                cha: 100,
+                str: 60,
+                hp: 5000,
+                max_hp: 5000,
+                ..Default::default()
+            },
+            Position { zone_id: zone, x: 100.0, y: 0.0, z: 100.0, region_x: 3, region_z: 3 },
+        );
+        let bot = crate::systems::bot_ai::spawn_gm_bot(
+            &world,
+            crate::systems::bot_ai::SpawnGmBotParams {
+                zone_id: zone,
+                x: 102.0,
+                y: 0.0,
+                z: 100.0,
+                class: 1,
+                level: 83,
+                nation: 2,
+                ai_state: crate::world::BotAiState::Pk,
+            },
+        );
+        world.update_bot(bot, |b| {
+            b.max_hp = 8000;
+            b.hp = 8000;
+        });
+        world.ensure_zone(zone, 2048);
+        world.get_zone(zone).unwrap().add_user(3, 3, 1);
+        (world, bot, rx)
+    }
+
+    /// First MAGIC_EFFECTING / MAGIC_FAIL sub-opcode the caster received, if any.
+    fn terminal_magic_packets(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<std::sync::Arc<ko_protocol::Packet>>,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Ok(pkt) = rx.try_recv() {
+            if pkt.opcode == Opcode::WizMagicProcess as u8 {
+                if let Some(&sub) = pkt.data.first() {
+                    if sub == MAGIC_EFFECTING || sub == MAGIC_FAIL {
+                        out.push(sub);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn damage_skill(world: &crate::world::WorldState, id: i32, first: i32, time: i32, dur: i32) -> MagicRow {
+        let mut row = make_test_magic(id, MORAL_ENEMY);
+        row.type1 = Some(3);
+        row.range = Some(30);
+        world.insert_magic(row.clone());
+        world.insert_magic_type3(ko_db::models::MagicType3Row {
+            i_num: id,
+            direct_type: Some(1),
+            first_damage: Some(first),
+            time_damage: Some(time),
+            duration: Some(dur),
+            attribute: Some(1),
+            radius: Some(0),
+            add_dmg_perc_to_user: None,
+            add_dmg_perc_to_npc: None,
+        });
+        row
+    }
+
+    #[tokio::test]
+    async fn type3_cast_on_enemy_bot_always_ends_with_one_effecting() {
+        for zone in [71u16, 84, 85, 87] {
+            let (world, bot, mut rx) = enemy_bot_world(zone);
+            let skill = damage_skill(&world, 111_545, -400, 0, 0);
+            let mut inst = instance_on(111_545, bot as i32);
+            assert!(execute_type3(&world, 1, &mut inst, &skill).await, "zone {zone}");
+            let got = terminal_magic_packets(&mut rx);
+            assert_eq!(got, vec![MAGIC_EFFECTING], "zone {zone}: exactly one terminal packet");
+        }
+    }
+
+    #[tokio::test]
+    async fn type3_dot_cast_on_enemy_bot_ends_and_registers() {
+        let (world, bot, mut rx) = enemy_bot_world(71);
+        let skill = damage_skill(&world, 111_546, -100, -200, 20);
+        let mut inst = instance_on(111_546, bot as i32);
+        assert!(execute_type3(&world, 1, &mut inst, &skill).await);
+        assert_eq!(terminal_magic_packets(&mut rx), vec![MAGIC_EFFECTING]);
+    }
+
+    /// Event room the caster may not hit (other room / combat closed): the hit is refused but
+    /// the cast must still end on the client (this used to send nothing at all).
+    #[tokio::test]
+    async fn type3_cast_on_denied_event_bot_still_ends_the_cast() {
+        use crate::systems::event_bots::{BotEntry, EventBotKind};
+        let (world, bot, mut rx) = enemy_bot_world(84);
+        world.update_session(1, |h| h.event_room = 1);
+        world.event_bots.insert(bot, BotEntry::new(EventBotKind::Bdw, 2, 2, "B".into()));
+        let skill = damage_skill(&world, 111_547, -400, 0, 0);
+        let mut inst = instance_on(111_547, bot as i32);
+        assert!(execute_type3(&world, 1, &mut inst, &skill).await);
+        assert_eq!(terminal_magic_packets(&mut rx), vec![MAGIC_EFFECTING]);
+        assert_eq!(world.get_bot(bot).unwrap().hp, 8000, "denied hit must not hurt");
+    }
+
+    #[tokio::test]
+    async fn type1_and_type2_casts_on_enemy_bot_end_with_one_effecting() {
+        let (world, bot, mut rx) = enemy_bot_world(71);
+        let skill = make_test_magic(111_548, MORAL_ENEMY);
+        let t1 = ko_db::models::MagicType1Row {
+            i_num: 111_548,
+            hit_type: Some(0),
+            hit_rate: Some(100),
+            hit: Some(100),
+            add_damage: Some(30),
+            combo_type: None,
+            combo_count: None,
+            combo_damage: None,
+            range: Some(10),
+            delay: None,
+            add_dmg_perc_to_user: None,
+            add_dmg_perc_to_npc: None,
+        };
+        let mut inst = instance_on(111_548, bot as i32);
+        assert!(execute_type1_bot(&world, 1, &mut inst, &skill, &t1, &world.get_bot(bot).unwrap()).await);
+        assert_eq!(terminal_magic_packets(&mut rx), vec![MAGIC_EFFECTING], "type1");
+
+        let t2 = ko_db::models::MagicType2Row {
+            i_num: 111_548,
+            hit_type: Some(0),
+            hit_rate: Some(100),
+            add_damage: Some(100),
+            add_range: Some(100),
+            need_arrow: Some(1),
+            add_dmg_perc_to_user: None,
+            add_dmg_perc_to_npc: None,
+        };
+        let mut inst = instance_on(111_548, bot as i32);
+        assert!(execute_type2_bot(&world, 1, &mut inst, &skill, &t2, &world.get_bot(bot).unwrap()).await);
+        assert_eq!(terminal_magic_packets(&mut rx), vec![MAGIC_EFFECTING], "type2");
+    }
+
+    /// A bot target must go through the PLAYER magic formula: same context a session target
+    /// with the same class / resistances gets, hence identical damage for the same RNG seed.
+    #[test]
+    fn bot_magic_context_matches_a_player_with_the_same_stats() {
+        for zone in [71u16, 84, 85, 87] {
+            let (world, bot, _rx) = enemy_bot_world(zone);
+            let bot_inst = world.get_bot(bot).unwrap();
+            let ctx_bot = build_npc_ctx(&world, bot, 1, 1);
+            assert_eq!(ctx_bot.target_kind, MagicTargetKind::Player, "zone {zone}: player formula");
+            assert_eq!(ctx_bot.target_class, bot_inst.class);
+            let caster = world.get_character_info(1).unwrap();
+            let ctx_player = MagicDamageContext {
+                target_kind: MagicTargetKind::Player,
+                target_total_r: 0,
+                target_class: bot_inst.class,
+                target_ac_amount: 0,
+                damage_settings: world.get_damage_settings(),
+                righthand_damage: ctx_bot.righthand_damage,
+                attribute_damage: ctx_bot.attribute_damage,
+                attribute: 1,
+            };
+            for seed in 0..20u64 {
+                let a = compute_magic_damage(
+                    &caster, -500, 0, &ctx_bot, &mut rand::rngs::StdRng::seed_from_u64(seed),
+                );
+                let b = compute_magic_damage(
+                    &caster, -500, 0, &ctx_player, &mut rand::rngs::StdRng::seed_from_u64(seed),
+                );
+                assert_eq!(a, b, "zone {zone} seed {seed}");
+            }
+            // the old NPC context gave ~3x the player damage (no "/3" step, no resistances)
+            let npc_like = MagicDamageContext { target_kind: MagicTargetKind::Npc, ..ctx_player };
+            let p = compute_magic_damage(&caster, -500, 0, &ctx_bot, &mut rand::rngs::StdRng::seed_from_u64(1));
+            let n = compute_magic_damage(&caster, -500, 0, &npc_like, &mut rand::rngs::StdRng::seed_from_u64(1));
+            assert!(n > p, "NPC formula would overshoot the player one ({n} vs {p})");
+        }
     }
 
     // ── Player heals / buffs on runtime bots ─────────────────────────────
