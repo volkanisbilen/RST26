@@ -4024,3 +4024,14 @@ Own source: Steel Lion weapons. Own 15 %, Red Gem 85 %.
 ## Existing breakable items that are not boxes (untouched)
 
 Transform scrolls (390000000-398000000), Abyss Gem, Confidential State Document x2, Village Key, Lost Gift have no `random_flag` 1..3 rows. Red Gem itself is the pool source and is not changed.
+
+## Round 2: reward grades (+1 everywhere, wing weapon boxes by name)
+
+Migration: `migrations/20261020300000_box_reward_grades.sql` (single transaction, idempotent; validates reward ids exist and that every box keeps its exact slot sum). Scope: all rows with `random_flag IN (1,2,3)` of every `effect2 = 251` box (the 86 generated boxes incl. the Red Gem box).
+
+1. **Plain +0 equipment becomes +1.** A reward item `N` is replaced by `N+1` when `N+1` is named `<name> (+1)` (a few name typos allow-listed: Jamadhar/Jamadar, Flaming/Fire Staff Black Lion) and has the same kind/slot/race/class/req_level. Result on the live DB: 4454 reward rows switched to a `(+1)` item (0 plain +0 equipment rows with a +1 sibling remain); weights are untouched. Unchanged: consumables, scrolls, gems, materials, and ~200 distinct unique/set pieces that have no `(+1)` variant (e.g. Dark Vane, Cold-Hearted Dagger, Spear of Murky Waters, Dread Shield, Eagle's Eye, Dark Knight/Phoenix Axe, Chitin Bow). The Red Gem box's original `(+3)` rows stay as they are.
+2. **Wing Weapon Boxes follow the box name.** "Wing weapons" = the own weapon/shield rewards (ids >= 1100000000: Star, Garges, Bloody, Dark Knight, Phoenix, Legend King, Aztec Holy, plus Chaos Wirinom/Baal/Nebiros in the Chaos box). Their `+N` siblings are looked up by name (not by `id+N`, Dark Knight Jamadar has a duplicated `(+1)` so its grades sit at id+N+1).
+   * `(+7)Wing Weapon Box` 900733000 gives only `(+7)`, 900734000 `(+6)`, 900735000 `(+5)`, 900736000 `(+4)`; the weapon slots are unchanged (1500 of 10000 slots).
+   * `Wing Weapon Box` 810284000 and `Chaos Wing Weapon Box` 810329000 (names carry no grade): interpreted as "+4..+7 spread". Each wing weapon keeps its slot share, split 50 % +4 / 30 % +5 / 15 % +6 / 5 % +7 (rounded in whole slots, remainder to +4). The existing row becomes the +4 row, +5/+6/+7 are new rows in the reserved range `n_index 2110000000..2110099999` (93 rows; 2200000000+ does not fit the INTEGER column). 810284000: 14 weapons, +4 758 / +5 448 / +6 224 / +7 70 slots; 810329000: 17 weapons, 740 / 457 / 223 / 80.
+   * `[Gold Dragon Egg] Shenlong Weapon Box` 810209000 and every other box use rule 1 only (their name encodes no grade).
+   * Re-running first merges the spread rows back into the +4 row and deletes them, then re-splits.
