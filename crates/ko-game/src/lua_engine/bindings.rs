@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use mlua::prelude::*;
 
+use super::quest_reward;
 use crate::handler::quest;
 use crate::handler::select_msg;
 use crate::handler::tag_change;
@@ -31,6 +32,8 @@ const MAX_MESSAGE_EVENT: usize = 12;
 #[derive(Default)]
 pub struct QuestRunState {
     reward_blocked: std::sync::atomic::AtomicBool,
+    /// Set by refusals a later successful exchange must not undo (bag full, reward item unknown).
+    reward_hard_blocked: std::sync::atomic::AtomicBool,
 }
 
 /// Remember that the reward of this script run could not be delivered.
@@ -39,6 +42,27 @@ fn block_quest_completion(lua: &Lua) {
         state
             .reward_blocked
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .reward_hard_blocked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A `RunQuestExchange` finished. A refusal (turn-in items / gold missing, ...) blocks the
+/// completion `SaveEvent` of the same run, so a quest never completes without its reward; a later
+/// successful exchange of the same run lifts a soft block again (scripts that try several
+/// exchanges in a row).
+fn note_quest_exchange_result(lua: &Lua, ok: bool, reason: &str) {
+    if let Some(state) = lua.app_data_ref::<QuestRunState>() {
+        use std::sync::atomic::Ordering::Relaxed;
+        if ok {
+            if !state.reward_hard_blocked.load(Relaxed) {
+                state.reward_blocked.store(false, Relaxed);
+            }
+        } else if reason != "exchange_row_missing" {
+            // a missing data row must not make a quest impossible to finish
+            state.reward_blocked.store(true, Relaxed);
+        }
     }
 }
 
@@ -743,6 +767,12 @@ fn lua_save_event(lua: &Lua, (uid, quest_helper_id): (i32, u16)) -> LuaResult<()
     };
     let qid = helper.s_event_data_index as u16;
     let status = helper.b_event_status as u8;
+    quest_reward::trace(quest_reward::TraceEvent::Save {
+        helper: quest_helper_id,
+        quest: qid,
+        status,
+        blocked: status == 2 && quest_completion_blocked(lua),
+    });
 
     // Never complete a quest whose reward was refused earlier in this run
     // (bag full / gold cap): the player keeps the quest and its turn-in items
@@ -2548,7 +2578,7 @@ fn is_special_origin_skip(item_id: u32) -> bool {
 /// RunQuestExchange(uid, exchange_id) -> bool
 /// Quest-specific exchange: skips special origin items during removal,
 /// handles premium reward selection (flag 20/30), gives ALL output items.
-fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResult<bool> {
+fn lua_run_quest_exchange_impl(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResult<bool> {
     let w = get_world(lua)?;
     let sid = uid as SessionId;
 
@@ -2562,6 +2592,7 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
                 exchange_id,
                 "RunQuestExchange: exchange_id not found in item_exchange table"
             );
+            quest_reward::set_reason("exchange_row_missing");
             return Ok(false);
         }
     };
@@ -2595,6 +2626,7 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
                 have,
                 "RunQuestExchange: FAIL — origin item check (have < required)"
             );
+            quest_reward::set_reason("origin_missing");
             return Ok(false);
         }
     }
@@ -2609,6 +2641,7 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
     if total_gold > 0 {
         let gold = w.get_character_info(sid).map(|c| c.gold).unwrap_or(0);
         if gold < total_gold {
+            quest_reward::set_reason("gold_missing");
             return Ok(false);
         }
     }
@@ -2625,29 +2658,55 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         (exchange.exchange_item_num5, exchange.exchange_item_count5),
     ];
 
-    // Build the exchange list — C++ uses m_exchangelist vector
-    let mut exchange_list: Vec<(u32, u32)> = Vec::new();
+    // Build the list of paid rewards. Which slots are paid depends on the row flags (see
+    // `quest_reward`): flag 11/12 rows are choose-one lists (only the slot the player picked is paid,
+    // `by_selected_reward` = 0-based client index), everything else is paid completely.
+    let by_selected_reward = w.with_session(sid, |h| h.by_selected_reward).unwrap_or(-1);
+    if by_selected_reward > 4 {
+        tracing::warn!(
+            sid,
+            exchange_id,
+            by_selected_reward,
+            "RunQuestExchange: FAIL - reward index out of range"
+        );
+        quest_reward::set_reason("bad_selected_reward");
+        return Ok(false);
+    }
+    let player_class = w.get_character_info(sid).map(|c| c.class).unwrap_or(0);
+    let item_exists = |id: u32| {
+        matches!(
+            id,
+            ITEM_GOLD | ITEM_EXP | ITEM_COUNT | ITEM_LADDERPOINT | ITEM_SKILL
+        ) || w.get_item(id).is_some()
+    };
+    let item_class_ok = |id: u32| {
+        w.get_item(id)
+            .map(|it| crate::handler::item_move::item_class_available(&it, player_class))
+            .unwrap_or(true)
+    };
 
-    if exchange.random_flag == 20 || exchange.random_flag == 30 {
+    let mut main_is_choice = false;
+    let main_list: Vec<(u32, u32)> = if exchange.random_flag == 20 || exchange.random_flag == 30 {
         // Premium users get slot[3], non-premium get slot[0]
-        // C++ line 1743: if (nItemID == ITEM_EXP && nCount != 0) — ONLY ITEM_EXP
+        // C++ line 1743: if (nItemID == ITEM_EXP && nCount != 0) - ONLY ITEM_EXP
         let premium = w.with_session(sid, |h| h.premium_in_use).unwrap_or(0);
         let (item_id, count) = if premium > 0 { outputs[3] } else { outputs[0] };
         if item_id as u32 == ITEM_EXP && count != 0 {
-            exchange_list.push((item_id as u32, count as u32));
+            vec![(item_id as u32, count as u32)]
+        } else {
+            Vec::new()
         }
     } else if exchange.random_flag == 101 {
         // The five exchange_item_count fields are weights (not quantities) for
         // random_flag 101. Match the regular RunExchange path: choose exactly
-        // one non-empty reward and grant one copy. Moira's box exchanges use
-        // this format, so treating all five weighted rows as rewards duplicated
-        // the intended single box drop into five items.
+        // one non-empty reward and grant one copy.
         use rand::Rng;
         let total_weight: u32 = outputs
             .iter()
             .filter(|(item_id, weight)| *item_id > 0 && *weight > 0)
             .map(|(_, weight)| *weight as u32)
             .sum();
+        let mut picked = Vec::new();
         if total_weight > 0 {
             let roll = rand::thread_rng().gen_range(0..total_weight);
             let mut cumulative = 0u32;
@@ -2657,87 +2716,62 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
                 }
                 cumulative += weight as u32;
                 if roll < cumulative {
-                    exchange_list.push((item_id as u32, 1));
+                    picked.push((item_id as u32, 1));
                     break;
                 }
             }
         }
+        picked
     } else {
-        // Give ALL output items
-        for &(item_id, count) in &outputs {
-            if item_id == 0 || count == 0 {
-                continue;
-            }
-            exchange_list.push((item_id as u32, count as u32));
-        }
-    }
-
-    // Index (inside `exchange_list`) of the reward the player picked from the
-    // item_exchange_exp table, if any.
-    let mut selected_reward_idx: Option<usize> = None;
-
-    // C++ CheckExchangeExp contract: an exchange with selectable rewards must
-    // never finish without a valid client selection. Previously Rust silently
-    // gave only the base rewards and Lua then marked the quest completed.
-    let by_selected_reward = w.with_session(sid, |h| h.by_selected_reward).unwrap_or(-1);
-    let select_msg_flag = w.with_session(sid, |h| h.select_msg_flag).unwrap_or(0);
-    let exp_exchange = w.get_item_exchange_exp(exchange_id);
-    if by_selected_reward > 4
-        || (select_msg_flag == 5 && by_selected_reward < 0)
-        || (exp_exchange.is_some() && by_selected_reward < 0)
-        || (exp_exchange.is_none() && by_selected_reward > 0)
-    {
+        main_is_choice = quest_reward::is_choice_flag(exchange.random_flag as i32);
+        quest_reward::main_slots(&exchange)
+    };
+    let exp_row = w.get_item_exchange_exp(exchange_id);
+    let exp_list: Option<(Vec<(u32, u32)>, bool)> = exp_row.as_ref().map(|r| {
+        (
+            quest_reward::exp_slots(r),
+            quest_reward::is_choice_flag(r.random_flag.unwrap_or(0) as i32),
+        )
+    });
+    let plan = quest_reward::plan_rows(
+        &main_list,
+        main_is_choice,
+        exp_list.as_ref().map(|(s, c)| (s.as_slice(), *c)),
+        by_selected_reward as i32,
+        &item_exists,
+        &item_class_ok,
+    );
+    let has_choice = (main_is_choice && main_list.len() > 1)
+        || exp_list
+            .as_ref()
+            .map(|(s, c)| *c && s.len() > 1)
+            .unwrap_or(false);
+    if has_choice && by_selected_reward >= 0 && !plan.notes.is_empty() {
+        // The reward is still paid (the pick falls back to the class variant / first usable entry), but
+        // the client index and the table disagree - make it visible.
         tracing::warn!(
             sid,
             exchange_id,
             by_selected_reward,
-            select_msg_flag,
-            has_selected_rewards = exp_exchange.is_some(),
-            "RunQuestExchange: invalid or missing selected reward"
+            notes = ?plan.notes,
+            "RunQuestExchange: choose-one reward without a usable client pick"
         );
+    } else if !plan.notes.is_empty() {
+        tracing::debug!(sid, exchange_id, notes = ?plan.notes, "RunQuestExchange: reward plan notes");
+    }
+    if plan.choice_failed {
+        tracing::warn!(
+            sid,
+            exchange_id,
+            by_selected_reward,
+            "RunQuestExchange: FAIL - none of the choose-one rewards exists in the item table"
+        );
+        quest_reward::set_reason("choice_item_unknown");
+        block_quest_completion(lua);
         return Ok(false);
     }
-
-    if let Some(exp_exchange) = exp_exchange {
-        if by_selected_reward >= 0 && (by_selected_reward as usize) < 5 {
-            let idx = by_selected_reward as usize;
-            let exp_outputs: [(i32, i32); 5] = [
-                (
-                    exp_exchange.exchange_item_num1.unwrap_or(0),
-                    exp_exchange.exchange_item_count1.unwrap_or(0),
-                ),
-                (
-                    exp_exchange.exchange_item_num2.unwrap_or(0),
-                    exp_exchange.exchange_item_count2.unwrap_or(0),
-                ),
-                (
-                    exp_exchange.exchange_item_num3.unwrap_or(0),
-                    exp_exchange.exchange_item_count3.unwrap_or(0),
-                ),
-                (
-                    exp_exchange.exchange_item_num4.unwrap_or(0),
-                    exp_exchange.exchange_item_count4.unwrap_or(0),
-                ),
-                (
-                    exp_exchange.exchange_item_num5.unwrap_or(0),
-                    exp_exchange.exchange_item_count5.unwrap_or(0),
-                ),
-            ];
-            let (exp_item_id, exp_count) = exp_outputs[idx];
-            if exp_item_id != 0 && exp_count != 0 {
-                selected_reward_idx = Some(exchange_list.len());
-                exchange_list.push((exp_item_id as u32, exp_count as u32));
-                tracing::info!(
-                    sid,
-                    exchange_id,
-                    by_selected_reward,
-                    exp_item_id,
-                    exp_count,
-                    "RunQuestExchange: adding item_exchange_exp reward"
-                );
-            }
-        }
-    }
+    let exchange_list: Vec<(u32, u32)> = plan.list;
+    let chosen_idx: Vec<usize> = plan.chosen;
 
     tracing::info!(
         sid,
@@ -2768,13 +2802,14 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         if !is_virtual {
             match w.get_item(item_id) {
                 None => {
-                    if Some(idx) == selected_reward_idx {
+                    if chosen_idx.contains(&idx) {
                         tracing::warn!(
                             sid,
                             exchange_id,
                             item_id,
                             "RunQuestExchange: FAIL - the selected reward item is not in the items table"
                         );
+                        quest_reward::set_reason("choice_item_unknown");
                         block_quest_completion(lua);
                         return Ok(false);
                     }
@@ -2814,7 +2849,24 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
                 && item_id != ITEM_LADDERPOINT
         })
         .collect();
-    let additions: Vec<(u32, u16)> = deliverable
+    // A non-stackable item (countable 0 / scroll kind 255) lives in one slot per piece: "5 potions"
+    // means five slots, the bag holds exactly one per slot (`give_item` forces count 1).
+    let expanded: Vec<(u32, u32)> = deliverable
+        .iter()
+        .flat_map(|&(item_id, count)| {
+            let single = !is_exchange_virtual_id(item_id)
+                && count > 1
+                && w.get_item(item_id)
+                    .map(|it| it.countable.unwrap_or(0) == 0 || it.kind.unwrap_or(0) == 255)
+                    .unwrap_or(false);
+            if single {
+                vec![(item_id, 1u32); count.min(20) as usize]
+            } else {
+                vec![(item_id, count)]
+            }
+        })
+        .collect();
+    let additions: Vec<(u32, u16)> = expanded
         .iter()
         .filter(|&&(item_id, _)| {
             !matches!(
@@ -2834,6 +2886,7 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         );
         // C++ sends WIZ_QUEST sub-opcode 13 with error code 3 (no slots)
         send_no_slot_error(&w, sid);
+        quest_reward::set_reason("no_slots");
         block_quest_completion(lua);
         return Ok(false);
     }
@@ -2849,11 +2902,13 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         }
         if id_u == ITEM_GOLD {
             if !w.gold_lose(sid, count as u32) {
+                quest_reward::set_reason("remove_failed");
                 return Ok(false);
             }
         } else if id_u == ITEM_COUNT {
             let loyalty = w.get_character_info(sid).map(|c| c.loyalty).unwrap_or(0);
             if loyalty < count as u32 {
+                quest_reward::set_reason("np_missing");
                 return Ok(false);
             }
             w.update_character_stats(sid, |ch| {
@@ -2862,12 +2917,13 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         } else if id_u == ITEM_LADDERPOINT {
             // Skip ladder point removal (C++ does continue)
         } else if !w.rob_item(sid, id_u, count.min(u16::MAX as i32) as u16) {
+            quest_reward::set_reason("remove_failed");
             return Ok(false);
         }
     }
 
     // ── Give all items in exchange list ──
-    for &(item_id, count) in &deliverable {
+    for &(item_id, count) in &expanded {
         tracing::info!(sid, item_id, count, "RunQuestExchange: give_exchange_item");
         // exchange_item_timeN = lifetime in days of the reward (C++ passes it to GiveItem);
         // without it timed quest rewards (Moradon event quests, 30 day items) were permanent.
@@ -2903,8 +2959,42 @@ fn lua_run_quest_exchange(lua: &Lua, (uid, exchange_id): (i32, i32)) -> LuaResul
         }
     }
     w.send_to_session_owned(sid, show_pkt);
+    quest_reward::set_paid(&deliverable);
 
     Ok(true)
+}
+
+/// RunQuestExchange(uid, exchange_id): wrapper that records the outcome (trace for the quest
+/// simulation) and logs a warning with the quest and exchange id whenever the reward is refused.
+fn lua_run_quest_exchange(lua: &Lua, args: (i32, i32)) -> LuaResult<bool> {
+    quest_reward::begin_call();
+    let (uid, exchange_id) = args;
+    let result = lua_run_quest_exchange_impl(lua, args)?;
+    let sid = uid as SessionId;
+    let (sel, helper) = get_world(lua)
+        .ok()
+        .and_then(|w| w.with_session(sid, |h| (h.by_selected_reward, h.quest_helper_id)))
+        .unwrap_or((-1, 0));
+    let reason = quest_reward::take_reason();
+    note_quest_exchange_result(lua, result, reason);
+    if !result {
+        tracing::warn!(
+            sid,
+            exchange_id,
+            quest_helper_id = helper,
+            by_selected_reward = sel,
+            reason,
+            "RunQuestExchange: reward NOT delivered"
+        );
+    }
+    quest_reward::trace(quest_reward::TraceEvent::Exchange {
+        id: exchange_id,
+        sel: sel as i32,
+        ok: result,
+        reason: if result { "" } else { reason },
+        paid: if result { quest_reward::take_paid() } else { Vec::new() },
+    });
+    Ok(result)
 }
 
 /// RunRandomExchange(uid, exchange_id) -> bool
@@ -10336,4 +10426,7 @@ mod tests {
         lua.load(format!("RobItem(1, {item})")).exec().unwrap();
         assert_eq!(count_in_bag(&world, item), 2);
     }
+
+    include!("quest_sim_tests.rs");
+    include!("quest_choice_tests.rs");
 }

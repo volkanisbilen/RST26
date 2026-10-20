@@ -10,6 +10,7 @@
 //! - Script errors are logged with context (filename, UID, zone) and never panic.
 
 pub mod bindings;
+pub(crate) mod quest_reward;
 
 use std::path::PathBuf;
 use std::sync::Arc;

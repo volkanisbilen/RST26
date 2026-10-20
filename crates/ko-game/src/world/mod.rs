@@ -1805,6 +1805,11 @@ impl WorldState {
         self.quest_monsters.insert(row.s_quest_num as u16, row);
     }
 
+    /// Insert an `item_exchange_exp` row for testing.
+    pub fn insert_test_item_exchange_exp(&self, row: ko_db::models::item_tables::ItemExchangeExpRow) {
+        self.item_exchange_exp.insert(row.n_index, row);
+    }
+
     /// Insert a quest helper row for testing.
     pub fn insert_test_quest_helper(&self, row: QuestHelperRow) {
         self.quest_helpers.insert(row.n_index as u32, row);

@@ -113,8 +113,8 @@ if (EVENT == 537) then
 	else
 	ItemA = HowmuchItem(UID, 910134000);
 	ItemB = HowmuchItem(UID, 910127000);
-		if (ItemA < 1) then
-		if (ItemB < 1) then
+		if (ItemA >= 1) then
+		if (ItemB >= 0) then
 			Check = isRoomForItem(UID, 910127000);
 			if (Check == -1) then
 				SelectMsg(UID, 2, -1, 6481, NPC, 27, -1);

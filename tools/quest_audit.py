@@ -556,6 +556,50 @@ def main():
                     add("EXCHANGE_CLIENT_ITEMS", "WARN", fname, line, ev,
                         f"`{fn}({ex_id})`: client Item_Exchange lists reward item(s) {lost} that the server row does not give")
 
+    # ---- reward CHOICE lists (round 4) -------------------------------------------
+    # random_flag 11/12 on item_exchange or item_exchange_exp = "choose ONE slot" (the client reward
+    # window sends the 0-based index). Engine: lua_engine/quest_reward.rs.
+    flag5_events: dict[str, set] = collections.defaultdict(set)
+    for name_, sc_ in scripts.items():
+        for c_ in sc_.calls:
+            if c_.name == "SelectMsg":
+                fl_ = c_.arg_const(1, sc_.env)
+                if fl_ and 5 in fl_:
+                    for k_ in range(6, len(c_.args), 2):
+                        flag5_events[name_] |= (c_.arg_const(k_, sc_.env) or set())
+
+    def _filled(r_, pre, cnt="count"):
+        return [(int(r_[f"{pre}num{k}"]), int(r_[f"{pre}{cnt}{k}"])) for k in range(1, 6)
+                if r_.get(f"{pre}num{k}") not in (None, "", "0") and r_.get(f"{pre}{cnt}{k}") not in (None, "", "0")]
+
+    for ex_id, uses in sorted(used_exchanges.items()):
+        r = data.exchange.get(ex_id)
+        if r is None or exchange_shifted(r):
+            continue
+        e_ = data.exchange_exp.get(ex_id)
+        main_choice = int(r["random_flag"] or 0) in (11, 12) and len(_filled(r, "exchange_item_")) > 1
+        exp_choice = bool(e_) and int(e_["random_flag"] or 0) in (11, 12) and len(_filled(e_, "exchange_item_")) > 1
+        c = client_ex.get(ex_id)
+        if c:
+            cflag = int(c["c1"])
+            if (cflag in (11, 12)) != (int(r["random_flag"] or 0) in (11, 12)) and len(_filled(r, "exchange_item_")) > 1:
+                for (fname, line, ev, fn) in uses:
+                    add("CHOICE_FLAG_MISMATCH", "WARN", fname, line, ev,
+                        f"`{fn}({ex_id})`: client Item_Exchange flag {cflag}, server flag {r['random_flag']} "
+                        f"(11/12 = choose one of the reward slots)")
+        if not (main_choice or exp_choice):
+            continue
+        for (fname, line, ev, fn) in uses:
+            if fn != "RunQuestExchange":
+                continue
+            evs = flag5_events.get(fname, set())
+            if ev is not None and ev in evs:
+                continue
+            add("CHOICE_NO_REWARD_WINDOW", "INFO", fname, line, ev,
+                f"`{fn}({ex_id})` is a choose-one list but EVENT {ev} is not reached from a reward window "
+                f"(SelectMsg flag 5): no pick is sent, the engine pays the class variant (or the whole list "
+                f"when no slot is class specific)")
+
     # ---- client vs server (round 3) ---------------------------------------------
     if args.client_dump:
         import types

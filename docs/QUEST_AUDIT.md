@@ -628,3 +628,102 @@ Quests with at least one ERROR on a path they reach: **111** of 1644.
 `14201_SkakySPELLI.lua`, `14202_ClarenceSPELLI.lua`, `14203_DreakSPELLI.lua`, `14204_MinervaSPELLI.lua`, `14410_Chef.lua`, `15424_dela.lua`, `15438_Beldan.lua`, `15439_Agata.lua`, `15725_thethyke_kill.lua`, `15895_thethyke_kill.lua`, `18030_Envoy.lua`, `1881_NTSJOB.lua`, `19073_Shozin.lua`, `19074_Shojin.lua`, `23500_ZindanWarExit.lua`, `23523_shield.lua`, `24201_SkakySPELLLI.lua`, `24202_ClarenceSPELLI.lua`, `24203_DreakSPELLI.lua`, `24204_MinervaSPELLI.lua`, `25075_2_Prison1.lua`, `25076_2_Prison2.lua`, `25077_2_Prison3.lua`, `25078_2_Prison4.lua`, `25079_2_Prison5.lua`, `25080_1_Prison1.lua`, `25081_1_Prison2.lua`, `25082_1_Prison3.lua`, `25083_1_Prison4.lua`, `25084_1_Prison5.lua`, `25282_thethyke_prison_kill.lua`, `25283_thethyke_prison_kill.lua`, `26005_Earth.lua`, `26276_Rily.lua`, `29447_Voyeur.lua`, `29448_Voyeur.lua`, `29449_Voyeur.lua`, `29450_Voyeur.lua`, `29451_Voyeur.lua`, `29452_Voyeur.lua`, `29453_Voyeur.lua`, `29454_Voyeur.lua`, `29455_Voyeur.lua`, `29456_Voyeur.lua`, `29457_Voyeur.lua`, `29458_Voyeur.lua`, `29459_Voyeur.lua`, `29460_Voyeur.lua`, `29461_Voyeur.lua`, `29462_Voyeur.lua`, `30001_Akara.lua`, `31720_(JAPKO) LvL Jump.lua`
 
 <!-- AUTO:END -->
+
+## Round 4: reward CHOICE quests (the picked reward was not delivered / all rewards were delivered / exp lost)
+
+Owner reports: "I pick the reward and the quest does not deliver it", "3-item choice: I pick one and get all three",
+"item + exp quests only pay exp", "some quests give no exp".
+
+### Root cause (engine, `RunQuestExchange`)
+
+The client tables define the reward of a quest in two rows with the same index. **`random_flag` 11 and 12 (on either row) mean
+"choose ONE slot"** (the reward window lists the filled slots - one item per class family, or a free choice such as food / accessories -
+and the client sends the 0-based index of the pick). Every other flag (0, 10, 13) pays all filled slots:
+
+| Row | flag | meaning (evidence: `Item_Exchange.tbl` / `Item_Exchange_exp.tbl` of the client = the server rows) |
+|---|---|---|
+| `item_exchange` | 11/12, >=2 items | choose one (e.g. 2445: Opal Earring / Necklace / Ring / Belt, 3011: four class helmets, 888: four Wolf weapons) |
+| `item_exchange_exp` | 0/10 | the "exp part", always paid (EXP, national points, an extra item), e.g. 2445 = 7.5M EXP **and** 100 NP |
+| `item_exchange_exp` | 11/12, >=2 slots | choose one (e.g. 28/29/304/320-325: five rings, four class armour pieces) |
+
+The old engine (C++ port) did this instead:
+
+1. It paid **every** slot of the item row (pick one of 3 -> get all 3; 92 used exchange ids are choose lists).
+2. It treated the exp row as the choose list: slot `exp[selected]`. For the common "4 weapons + one EXP slot" rows (Wolf/Orc/Clarence/accessory
+   quests, `888-895`, `953-959`, `214-221`, `1106-1137`, `3001-3060`) picking weapon 2..4 addressed an empty exp slot: no exp at all (or, when
+   there was no exp row, the whole reward was refused: `exp none && selected > 0`). Picking weapon 1 gave all weapons.
+3. Multi-slot exp rows with flag 0 (`2445-2452`, `3001-3060`: EXP + NP + map) paid only ONE slot (exp **or** NP).
+4. An exp row + a dialog without reward window (`selected == -1`) refused the whole reward.
+
+Fix: `crates/ko-game/src/lua_engine/quest_reward.rs` (pure planner, 10 unit tests) used by `lua_run_quest_exchange`:
+choose lists pay only the picked slot (class-specific lists: the variant the player's class can use, even if the window index points at
+another one; no pick at all (`-1`): the class variant, or the whole list when nothing is class specific), exp rows are always paid,
+an exp-row item that repeats the item row is not paid twice. `by_selected_reward` stays 0-based (as the C++ server and `select_msg.rs`).
+
+Other engine changes:
+* Any refused `RunQuestExchange` (turn-in item / gold / NP missing, bag full, ...) blocks the completing `SaveEvent` of the same run
+  (a later successful exchange of the run lifts a soft block; bag-full stays blocked). Before, only bag-full did: quests completed without a reward.
+* Every refusal logs `warn RunQuestExchange: reward NOT delivered` with `sid`, `exchange_id`, `quest_helper_id`, `by_selected_reward`, `reason`
+  (`origin_missing`, `gold_missing`, `np_missing`, `no_slots`, `bad_selected_reward`, `choice_item_unknown`, `exchange_row_missing`, `remove_failed`).
+  A pick the table cannot honour (bad index / class substitution) logs `choose-one reward without a usable client pick`.
+* Non-stackable rewards with count > 1 (e.g. 5x "Maximum HP Increase Potion (for quests)") were delivered once; now one slot per piece (max 20).
+
+### Simulation harness (all quests, both nations)
+
+`tools/quest_sim_plan.py` + `crates/ko-game/src/lua_engine/quest_sim_tests.rs` (`quest_sim_all`, `#[ignore]`): for every `EVENT` handler of every
+Lua script that calls `RunQuestExchange` (1730 handlers, 844 scripts), both nations (nation 3 scripts run as Karus **and** El Morad), 8 class
+families (x01-x04 base, x06/x08/x10/x12 mastered) when the script checks the class, reward window indexes 0-4 when the handler is reached from
+a flag-5 `SelectMsg` (also through `EVENT = N` jumps), quest state 1/3/0, with and without the turn-in items, the REAL Lua engine runs and the
+outcome (bag, EXP, NP, gold) is compared with the client rows (`Item_Exchange.tbl`, `Item_Exchange_exp.tbl`).
+Run: `QUEST_SIM_DIR=<dir> QUEST_SIM_QUESTS=<Quests> cargo test -p ko-game --lib quest_sim_all -- --ignored --nocapture` (15 s).
+Data: read-only dump of the live DB of 2026-10-20 (item_exchange 12021, exp 163, helper 12336, monster 828) + this round's migration.
+
+| Verdict (runs, after the engine fix + migration + Lua fix) | count |
+|---|---|
+| OK (item / exp / NP / gold exactly as the client table) | 12894 |
+| OK_RANDOM (random / premium rows) | 910 |
+| OK_NOT_IN_CLIENT (server-only rows) | 344 |
+| CHOICE_ALL (script has no reward window, free-choice list paid whole) | 16 |
+| MISSING_ITEM (client reward item not in the server item table: 810261000, 890227000, 900355762, 900421000, 931750000, 900013000..) | 8 groups |
+| REFUSED origin_missing (turn-in item not in the item table: Carlos/KIFA/Beak/Hyun/Joo/Ran event items) | 44 runs, 22 handlers |
+| NOT_REACHED (level/class/dialog gate the simulation does not satisfy) | 112 handlers in 19 scripts |
+| NO_EXP / NO_NP | 0 (14 before: Kesar/Julius 182) |
+| Lua errors | 0 |
+
+"Before" (static count of what the old engine did, per (script, exchange id) used by Lua; "both" = shared script of nation 3 helper rows):
+
+| Old behaviour | exchange ids | scripts | Karus / El Morad / both |
+|---|---|---|---|
+| choose row paid ALL slots | 92 | 44 | 31 / 27 / 77 pairs |
+| pick > 0 refused (choose row without exp row, reward window) | 26 | 9 | 4 / 7 / 19 |
+| pick > 0: exp part lost, all items paid (choose row + 1-slot exp row) | 22 | 13 | 9 / 7 / 12 |
+| multi-slot exp row paid one slot only (EXP **or** NP) | 34 | 26 | 14 / 11 / 45 |
+
+### Data: migration `20261020200000_quest_reward_client_rows.sql` (idempotent absolute UPDATEs, 14 rows)
+
+Rows whose reward part misses what the client lists: `182` (Kesar/Julius: 4x EXP -> EXP 3.75M/5M + ladder points 150/200, the NP/LP part was
+missing), `944/945` (Weapon/Armor Enchant scroll ids of Bess/Hashan -> client ids 900145000/900146000), `985-992` (`[Quest]` Water of favors /
+Potion of Soul 931786000/931787000), `1042/1043` and `6242` (Dark Mithril Fragment 998080000 instead of Green Treasure Chest). Turn-in (origin)
+columns are not touched. Server-only extras (Coin bonus) and smaller client amounts (1225) are left alone. Rows 944/945 and 1042/1043 were
+kept differently on purpose in rounds 1-2; the client wins now - revert those 4 UPDATEs if the old ids should stay.
+
+### Lua: `14424_dela.lua`, `15424_dela.lua`, `24424_beda.lua` (EVENT 537, quest 317)
+
+The script demanded `HowmuchItem(910134000) < 1` and then called `RunQuestExchange(481)` whose turn-in item IS `910134000`: the quest could not be finished.
+Condition turned around (`ItemA >= 1`), the inventory-room check stays.
+
+### New audit check
+
+`tools/quest_audit.py`: `CHOICE_NO_REWARD_WINDOW` (a choose-one exchange called from an EVENT that is not reached from a flag-5 `SelectMsg`: no pick is sent;
+25 findings: Forkwain/Hwargo 94-96, Kuger 502, Kaira 639/640, Scady 1221, KIFA/Ran/cake 2453/2454/5013, Rucel 11129/11133, Hill/Rily 16243-16255),
+`CHOICE_FLAG_MISMATCH` (client says choose, server row flag does not): 0.
+
+### Not fixable / left
+
+* Event items absent from the item table (turn-in `900371000`, `900375000`, `900427000`...: Carlos, KIFA, Beak, Hyun, Joo, Ran; rewards 810261000, 890227000,
+  900355762, 900421000, 931750000): cannot be invented.
+* 16 choose lists reached without a reward window (above): the player gets the class variant, or everything for free-choice lists (food, accessories).
+  Making them a real window needs the original dialog (text ids) in the Lua.
+* 112 handlers in 19 scripts (Dela 1303-1359 level quests, Agata, Earth, SPELLI duplicates) are not reached by the simulation: unverified, not known broken.
+* `thethyke_prison_kill` 6250-6254: exchange ids exist in neither the server nor the client table.
+* The client index base (0) and the "pick = position among the filled slots" rule follow the C++ server and `select_msg.rs`; the client binary was not traced for it.
