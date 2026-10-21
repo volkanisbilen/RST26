@@ -362,7 +362,8 @@ async fn spawn_create(
     .map_err(internal("spawn insert"))?;
     audit(&mut tx, &s.actor, "spawn.create", &format!("zone{zone}:{id}"), json!({"npc":npc,"x":x,"z":z}), peer.ip()).await?;
     tx.commit().await.map_err(internal("commit"))?;
-    Ok(Json(json!({"ok":true,"id":id,"note":"Spawn kaydedildi; oyun sunucusunun yeniden başlatılması gerekir."})))
+    let _ = queue_command(&app.pool, "reload", json!({"what":"npc_spawn"})).await;
+    Ok(Json(json!({"ok":true,"id":id,"note":"Spawn kaydedildi ve oyun sunucusuna canlı yükleme gönderildi."})))
 }
 
 async fn spawn_update(
@@ -395,6 +396,7 @@ async fn spawn_update(
     }
     audit(&mut tx, &s.actor, "spawn.update", &id.to_string(), json!({"x":p.x,"z":p.z,"npc":p.npc,"num":p.num,"range":p.range}), peer.ip()).await?;
     tx.commit().await.map_err(internal("commit"))?;
+    let _ = queue_command(&app.pool, "reload", json!({"what":"npc_spawn"})).await;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -415,6 +417,7 @@ async fn spawn_delete(
     let (zone, npc) = row.ok_or(ApiError::NotFound)?;
     audit(&mut tx, &s.actor, "spawn.delete", &id.to_string(), json!({"zone":zone,"npc":npc,"reason":q.q}), peer.ip()).await?;
     tx.commit().await.map_err(internal("commit"))?;
+    let _ = queue_command(&app.pool, "reload", json!({"what":"npc_spawn"})).await;
     Ok(Json(json!({"ok":true})))
 }
 

@@ -100,7 +100,7 @@ PAGE.maps=async function(main,[zoneArg]){
     if(d.t==='rect'){const r=S.rect;S.rect=null;S.sel=new Set(spawns.filter(s=>visible(s)&&matches(s)&&sx(s.x)>=r.x&&sx(s.x)<=r.x+r.w&&sy(s.z)>=r.y&&sy(s.z)<=r.y+r.h).map(s=>s.id));drawPanel();S.dirty=true;return}
     if(d.t==='spawn'&&d.moved){
       const moved=spawns.filter(q=>d.orig.has(q.id));
-      try{for(const q of moved)await api('/spawns/'+q.id,{body:{x:q.x,z:q.z}});toast(moved.length+' spawn taşındı (sunucu yeniden başlatılınca uygulanır)','ok')}
+      try{for(const q of moved)await api('/spawns/'+q.id,{body:{x:q.x,z:q.z}});toast(moved.length+' spawn taşındı (oyuna canlı uygulanır)','ok')}
       catch(_){for(const q of moved){const o=d.orig.get(q.id);q.x=o[0];q.z=o[1]}}
       drawPanel();S.dirty=true;
     }
@@ -148,7 +148,7 @@ PAGE.maps=async function(main,[zoneArg]){
     panel.append(h('h4',{},'Harita'),zsel,h('div',{class:'legend',style:'margin:12px 0'},h('span',{},h('i',{style:'background:#6fa8ff'}),'Canavar'),h('span',{},h('i',{style:'background:#22d3ee;border-radius:2px'}),'NPC'),h('span',{},h('i',{style:'background:#fff'}),'Seçili')),
       h('label',{class:'f'},'Bul / vurgula',f),h('h4',{style:'margin-top:16px'},'Yeni spawn ekle'),q,res,
       h('div',{class:'hint',style:'margin-top:14px'},'Sürükle: kaydır · Tekerlek: yakınlaştır · İşarete tıkla: seç · İşareti sürükle: taşı · Shift+sürükle: çoklu seçim · Ctrl+tık: seçime ekle/çıkar · Delete: sil'),
-      h('div',{class:'hint warn',style:'margin-top:10px'},'Spawn değişiklikleri veritabanına yazılır; oyun sunucusu haritaları açılışta okuduğu için yeniden başlatma gerekir.'));
+      h('div',{class:'hint warn',style:'margin-top:10px'},'Spawn değişiklikleri veritabanına yazılır ve oyun sunucusuna canlı yüklenir (birkaç saniye içinde).'));
   }
   function singlePanel(s){
     const F={npc:h('input',{type:'number',value:s.npc}),x:h('input',{type:'number',value:s.x}),z:h('input',{type:'number',value:s.z}),num:h('input',{type:'number',value:s.num}),range:h('input',{type:'number',value:s.range}),regen:h('input',{type:'number',value:s.regen}),dir:h('input',{type:'number',value:s.dir}),act:h('input',{type:'number',value:s.act})};
