@@ -27,7 +27,53 @@ $news = $pdo->query(
 )->fetchAll();
 
 $heroImage = jstko_c_image('hero_image');
+$slides = jstko_cms_slides();
 ?>
+
+
+<?php if ($slides): ?>
+<section class="relative border-b border-ink-500 overflow-hidden" id="slider">
+  <div class="relative w-full" style="aspect-ratio:1920/700;max-height:70vh">
+    <?php foreach ($slides as $i => $sl): ?>
+      <div class="slide absolute inset-0 transition-opacity duration-700 <?= $i === 0 ? 'opacity-100' : 'opacity-0 pointer-events-none' ?>">
+        <img src="/uploads/<?= jstko_e($sl['image']) ?>" class="w-full h-full object-cover" alt="<?= jstko_e($sl['title']) ?>">
+        <?php if ($sl['title'] !== '' || $sl['subtitle'] !== '' || $sl['button_text'] !== ''): ?>
+        <div class="absolute inset-0 bg-gradient-to-t from-ink-900/90 via-ink-900/20 to-transparent flex items-end">
+          <div class="max-w-6xl mx-auto w-full px-4 pb-8 sm:pb-12">
+            <?php if ($sl['title'] !== ''): ?><div class="text-2xl sm:text-4xl font-extrabold text-white"><?= jstko_e($sl['title']) ?></div><?php endif; ?>
+            <?php if ($sl['subtitle'] !== ''): ?><div class="text-slate-300 mt-2 text-sm sm:text-base max-w-2xl"><?= jstko_e($sl['subtitle']) ?></div><?php endif; ?>
+            <?php if ($sl['button_text'] !== '' && $sl['link_url'] !== ''): ?><a href="<?= jstko_e($sl['link_url']) ?>" class="btn-primary inline-block mt-4"><?= jstko_e($sl['button_text']) ?></a><?php endif; ?>
+          </div>
+        </div>
+        <?php endif; ?>
+        <?php if ($sl['link_url'] !== '' && $sl['button_text'] === ''): ?><a href="<?= jstko_e($sl['link_url']) ?>" class="absolute inset-0" aria-label="<?= jstko_e($sl['title']) ?>"></a><?php endif; ?>
+      </div>
+    <?php endforeach; ?>
+    <?php if (count($slides) > 1): ?>
+      <div class="absolute bottom-3 left-0 right-0 flex justify-center gap-2" id="sliderDots">
+        <?php foreach ($slides as $i => $sl): ?><button type="button" class="w-2.5 h-2.5 rounded-full <?= $i === 0 ? 'bg-gold-400' : 'bg-white/40' ?>" data-i="<?= $i ?>" aria-label="Slayt <?= $i + 1 ?>"></button><?php endforeach; ?>
+      </div>
+    <?php endif; ?>
+  </div>
+</section>
+<?php if (count($slides) > 1): ?>
+<script>
+(function () {
+  var root = document.getElementById('slider'), items = root.querySelectorAll('.slide'), dots = root.querySelectorAll('#sliderDots button'), cur = 0, timer;
+  function show(n) {
+    cur = (n + items.length) % items.length;
+    items.forEach(function (el, i) { el.classList.toggle('opacity-100', i === cur); el.classList.toggle('opacity-0', i !== cur); el.classList.toggle('pointer-events-none', i !== cur); });
+    dots.forEach(function (d, i) { d.classList.toggle('bg-gold-400', i === cur); d.classList.toggle('bg-white/40', i !== cur); });
+  }
+  function start() { clearInterval(timer); timer = setInterval(function () { show(cur + 1); }, 5500); }
+  dots.forEach(function (d) { d.addEventListener('click', function () { show(+d.dataset.i); start(); }); });
+  start();
+})();
+</script>
+<?php endif; ?>
+<?php endif; ?>
+
+<?php if ($b = jstko_banner_html('home_top')): ?><div class="max-w-6xl mx-auto px-4 pt-6 space-y-3"><?= $b ?></div><?php endif; ?>
 
 <section class="relative overflow-hidden border-b border-ink-500">
   <?php if ($heroImage): ?>
@@ -65,6 +111,7 @@ $heroImage = jstko_c_image('hero_image');
   </div>
 </section>
 
+<?php if ($b = jstko_banner_html('home_mid')): ?><div class="max-w-6xl mx-auto px-4 pt-8 space-y-3"><?= $b ?></div><?php endif; ?>
 <section class="max-w-6xl mx-auto px-4 py-12 grid lg:grid-cols-3 gap-8">
   <div class="lg:col-span-2 card p-6">
     <div class="flex items-center justify-between mb-4">
@@ -105,6 +152,13 @@ $heroImage = jstko_c_image('hero_image');
       <?php endforeach; ?>
       <?php if (!$news): ?><p class="text-sm text-slate-500">Henüz haber yok.</p><?php endif; ?>
     </div>
+    <?php if ($lp = jstko_cms_latest_patch()): ?>
+      <a href="/patches.php" class="mt-6 block rounded-lg border border-gold-500/40 bg-gold-500/10 px-4 py-3 text-sm hover:bg-gold-500/20 transition">
+        <span class="text-gold-400 font-semibold">⬇ Son Patch: <?= jstko_e($lp['version']) ?></span>
+        <span class="block text-xs text-slate-400">Sorun yaşıyorsan indir</span>
+      </a>
+    <?php endif; ?>
+    <?php if ($sb = jstko_banner_html('home_side')): ?><div class="mt-6 space-y-3"><?= $sb ?></div><?php endif; ?>
   </div>
 </section>
 

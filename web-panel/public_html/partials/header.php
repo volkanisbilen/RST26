@@ -4,6 +4,8 @@ require_once __DIR__ . '/../includes/bootstrap.php';
 $user = jstko_current_user();
 $siteName = jstko_c('site_name', 'JstKO');
 $logo = jstko_c_image('logo_image');
+$bgImage = jstko_c_image('site_bg_image');
+$cmsMenu = jstko_cms_menu();
 ?>
 <!doctype html>
 <html lang="tr">
@@ -29,7 +31,7 @@ $logo = jstko_c_image('logo_image');
   };
 </script>
 </head>
-<body class="bg-ink-900 text-slate-200 font-sans min-h-screen flex flex-col">
+<body class="bg-ink-900 text-slate-200 font-sans min-h-screen flex flex-col"<?php if ($bgImage): ?> style="background-image:linear-gradient(rgba(11,14,20,.78),rgba(11,14,20,.9)),url('<?= jstko_e($bgImage) ?>');background-size:cover;background-position:center;background-attachment:fixed"<?php endif; ?>>
 
 <header class="bg-ink-800 border-b border-ink-500 sticky top-0 z-40">
   <div class="max-w-6xl mx-auto px-4">
@@ -44,6 +46,25 @@ $logo = jstko_c_image('logo_image');
       </a>
 
       <nav class="hidden md:flex items-center gap-6 text-sm font-medium">
+        <?php if ($cmsMenu): foreach ($cmsMenu as $mi): ?>
+          <?php if ($mi['children']): ?>
+            <div class="relative group">
+              <button type="button" class="hover:text-gold-400 transition flex items-center gap-1">
+                <?= jstko_e($mi['label']) ?>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="hidden group-hover:block absolute left-0 top-full pt-2 w-56 z-50">
+                <div class="bg-ink-700 border border-ink-500 rounded-lg shadow-xl py-1.5">
+                  <?php foreach ($mi['children'] as $ch): ?>
+                    <a href="<?= jstko_e($ch['url']) ?>" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400"><?= jstko_e($ch['label']) ?></a>
+                  <?php endforeach; ?>
+                </div>
+              </div>
+            </div>
+          <?php else: ?>
+            <a href="<?= jstko_e($mi['url']) ?>" class="hover:text-gold-400 transition"><?= jstko_e($mi['label']) ?></a>
+          <?php endif; ?>
+        <?php endforeach; else: ?>
         <a href="/" class="hover:text-gold-400 transition">Anasayfa</a>
         <a href="/rankings.php" class="hover:text-gold-400 transition">Sıralamalar</a>
         <a href="/items.php" class="hover:text-gold-400 transition">Droplar</a>
@@ -68,6 +89,7 @@ $logo = jstko_c_image('logo_image');
         <a href="/gms.php" class="hover:text-gold-400 transition">Online GM'ler</a>
         <a href="/character_rescue.php" class="hover:text-gold-400 transition">Karakter Kurtar</a>
         <a href="/support.php" class="hover:text-gold-400 transition">Destek</a>
+        <?php endif; ?>
       </nav>
 
       <div class="hidden md:flex items-center gap-3">
@@ -91,6 +113,16 @@ $logo = jstko_c_image('logo_image');
 
   <div id="mobileMenu" class="hidden md:hidden border-t border-ink-500 bg-ink-800">
     <nav class="flex flex-col px-4 py-3 gap-1 text-sm font-medium">
+      <?php if ($cmsMenu): foreach ($cmsMenu as $mi): ?>
+        <?php if ($mi['children']): ?>
+          <div class="py-1 text-xs uppercase text-slate-500 mt-1"><?= jstko_e($mi['label']) ?></div>
+          <?php foreach ($mi['children'] as $ch): ?>
+            <a href="<?= jstko_e($ch['url']) ?>" class="py-2 pl-3 hover:text-gold-400"><?= jstko_e($ch['label']) ?></a>
+          <?php endforeach; ?>
+        <?php else: ?>
+          <a href="<?= jstko_e($mi['url']) ?>" class="py-2 hover:text-gold-400"><?= jstko_e($mi['label']) ?></a>
+        <?php endif; ?>
+      <?php endforeach; else: ?>
       <a href="/" class="py-2 hover:text-gold-400">Anasayfa</a>
       <a href="/rankings.php" class="py-2 hover:text-gold-400">Sıralamalar</a>
       <a href="/items.php" class="py-2 hover:text-gold-400">Droplar</a>
@@ -105,6 +137,7 @@ $logo = jstko_c_image('logo_image');
       <a href="/gms.php" class="py-2 hover:text-gold-400">Online GM'ler</a>
       <a href="/character_rescue.php" class="py-2 hover:text-gold-400">Karakter Kurtar</a>
       <a href="/support.php" class="py-2 hover:text-gold-400">Destek</a>
+      <?php endif; ?>
       <div class="h-px bg-ink-500 my-2"></div>
       <?php if ($user): ?>
         <a href="/account.php" class="py-2 font-semibold text-white">Hesabım (<?= jstko_e($user['str_account_id']) ?>)</a>

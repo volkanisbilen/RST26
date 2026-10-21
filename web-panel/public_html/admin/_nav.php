@@ -6,6 +6,11 @@
         'index.php' => 'Genel Bakış',
         'content.php' => 'Site İçeriği',
         'news.php' => 'Haberler',
+        'patches.php' => 'Patchler',
+        'slides.php' => 'Slider',
+        'banners.php' => 'Banner',
+        'pages.php' => 'Sayfalar',
+        'menu.php' => 'Menü',
         'tickets.php' => 'Destek Talepleri',
     ];
     foreach ($links as $file => $label):

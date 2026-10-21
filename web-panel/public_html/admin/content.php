@@ -18,7 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $notice = 'Kaydedildi.';
             } elseif ($action === 'update_image') {
                 $key = (string)($_POST['key'] ?? '');
-                $uploaded = jstko_admin_save_upload('file');
+                $uploaded = jstko_admin_save_upload('file', jstko_image_spec($key));
                 if ($uploaded !== null) {
                     jstko_set_content($key, $uploaded, 'image', $user['str_account_id']);
                     $notice = 'Görsel güncellendi.';
@@ -68,7 +68,7 @@ require __DIR__ . '/_nav.php';
               <?= jstko_csrf_field() ?>
               <input type="hidden" name="form_action" value="update_image">
               <input type="hidden" name="key" value="<?= jstko_e($r['key']) ?>">
-              <input type="file" name="file" accept="image/*" class="text-xs text-slate-400">
+              <?= jstko_image_input('file', $r['key']) ?>
               <button type="submit" class="text-sm px-3 py-1.5 rounded bg-ink-600 hover:bg-ink-500">Yükle</button>
             </form>
           </div>
@@ -99,4 +99,5 @@ require __DIR__ . '/_nav.php';
     </form>
   </div>
 </section>
+<?= jstko_image_check_script() ?>
 <?php require __DIR__ . '/../partials/footer.php'; ?>

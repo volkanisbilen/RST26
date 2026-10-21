@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($title === '' || $body === '') {
                     throw new RuntimeException('Başlık ve içerik gerekli.');
                 }
-                $image = jstko_admin_save_upload('image') ?? '';
+                $image = jstko_admin_save_upload('image', jstko_image_spec('news')) ?? '';
                 $stmt = $pdo->prepare(
                     'INSERT INTO web_news (title, body, image, published, created_by) VALUES (:t, :b, :i, :p, :c)'
                 );
@@ -61,7 +61,7 @@ require __DIR__ . '/_nav.php';
       <input type="hidden" name="form_action" value="create">
       <input class="input" type="text" name="title" placeholder="Başlık" required maxlength="200">
       <textarea class="input" name="body" rows="4" placeholder="İçerik" required></textarea>
-      <input type="file" name="image" accept="image/*" class="text-xs text-slate-400">
+      <?= jstko_image_input('image', 'news') ?>
       <label class="flex items-center gap-2 text-sm text-slate-400"><input type="checkbox" name="published" value="1" checked> Hemen yayınla</label>
       <button type="submit" class="btn-primary">Ekle</button>
     </form>
@@ -87,4 +87,5 @@ require __DIR__ . '/_nav.php';
     <?php if (!$news): ?><div class="card p-10 text-center text-slate-500">Henüz haber yok.</div><?php endif; ?>
   </div>
 </section>
+<?= jstko_image_check_script() ?>
 <?php require __DIR__ . '/../partials/footer.php'; ?>

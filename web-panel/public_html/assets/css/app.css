@@ -35,3 +35,10 @@ body {
 .btn-primary:hover { background: #facc15; }
 
 .table-row:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+
+.page-body h2 { font-size: 1.25rem; font-weight: 700; color: #fff; margin-top: 1.5rem; }
+.page-body h3 { font-size: 1.05rem; font-weight: 600; color: #fff; margin-top: 1rem; }
+.page-body a { color: #facc15; text-decoration: underline; }
+.page-body img { max-width: 100%; height: auto; border-radius: 0.5rem; }
+.page-body ul { list-style: disc; padding-left: 1.25rem; }
+.page-body ol { list-style: decimal; padding-left: 1.25rem; }
