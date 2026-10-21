@@ -47,7 +47,10 @@ struct HudLine { BYTE id; DWORD at; };
 static std::vector<HudLine> g_hud;   // quests that just got a kill (screen counter)
 void TargetHp_BarAnchor(int* centerOffX, int* bottomY);   // target_hp.cpp
 static HWND g_hHud = nullptr; static HDC g_hudDC = nullptr; static void* g_hudBits = nullptr;
-static const int HUD_W = 250, HUD_H = 96, HUD_LINES = 4; static const DWORD HUD_MS = 12000;
+// The counter is the game's own quest progress window (re_quest_completed.uif: title strip + 20 px lines + bottom cap),
+// skin made by build_dailyhud_ui.py. Window size = 291 x (48 + 20 * lines + 18).
+static const int HUD_W = 291, HUD_LINES = 4, HUD_TOP = 48, HUD_LINE = 20, HUD_BASE = 18;
+static const int HUD_H = HUD_TOP + HUD_LINE * HUD_LINES + HUD_BASE; static const DWORD HUD_MS = 12000;
 static std::map<UINT32, void*> g_iconCache;
 static HWND FindGameWindow();
 static std::string g_msg; DWORD g_msgAt = 0; bool g_msgOk = false;
@@ -118,7 +121,7 @@ static void LoadSkin()
     g_loaded = true;
     GetModuleFileNameA(nullptr, g_dir, MAX_PATH);
     *(strrchr(g_dir, '\\') + 1) = 0;
-    const char* names[] = { "bg", "row_a", "row_b", "close_n", "close_o", "close_d", "cancel_n", "cancel_o", "cancel_d" };
+    const char* names[] = { "bg", "row_a", "row_b", "close_n", "close_o", "close_d", "cancel_n", "cancel_o", "cancel_d", "hud_top", "hud_line", "hud_base" };
     int ok = 0;
     for (const char* n : names)
     {
@@ -129,7 +132,7 @@ static void LoadSkin()
         char p[MAX_PATH]; sprintf_s(p, "%sJstKO\\pus_ui\\noimage.pus", g_dir);
         Sprite s; if (LoadPus(p, s)) { g_skin["noimage"] = s; ok++; }
     }
-    char b[64]; sprintf_s(b, "DAILY: skin %d/10", ok); Log(b);
+    char b[64]; sprintf_s(b, "DAILY: skin %d/13", ok); Log(b);
 }
 
 static void Blit(Sprite* s, int x, int y, int w = -1, int h = -1)
@@ -447,53 +450,73 @@ static void HudSync()
 
     if (!fg || lines.empty()) { if (IsWindowVisible(g_hHud)) ShowWindow(g_hHud, SW_HIDE); return; }
 
-    // The counter sits just below the target's HP bar (target_hp.cpp), centred under it, one opaque
-    // dark panel with a gold border and bright text per quest (no see-through text).
+    // The counter is the game's quest progress window: title strip "<< Daily Quest >>", one 20 px line per quest
+    // "Name : kills / needed", bottom cap. It sits just below the target's HP bar (target_hp.cpp), centred under it.
+    auto sk = [](const char* n) -> Sprite* { auto it = g_skin.find(n); return it == g_skin.end() ? nullptr : &it->second; };
+    Sprite* sTop = sk("hud_top"); Sprite* sLine = sk("hud_line"); Sprite* sBase = sk("hud_base");
+    if (!sTop || !sLine || !sBase) { if (IsWindowVisible(g_hHud)) ShowWindow(g_hHud, SW_HIDE); return; }
+    const int n = (int)lines.size();
+    const int winH = HUD_TOP + HUD_LINE * n + HUD_BASE;
     memset(g_hudBits, 0, (size_t)HUD_W * HUD_H * 4);
-    for (size_t i = 0; i < lines.size(); i++)
+    BLENDFUNCTION abf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    AlphaBlend(g_hudDC, 1, 0, 289, HUD_TOP, sTop->dc, 0, 0, sTop->w, sTop->h, abf);
+    for (int i = 0; i < n; i++) AlphaBlend(g_hudDC, 5, HUD_TOP + HUD_LINE * i, 285, HUD_LINE, sLine->dc, 0, 0, sLine->w, sLine->h, abf);
+    AlphaBlend(g_hudDC, 2, HUD_TOP + HUD_LINE * n, 289, HUD_BASE, sBase->dc, 0, 0, sBase->w, sBase->h, abf);
+
+    // text: GDI cannot write alpha, so every string is drawn white-on-black into a scratch bitmap and its
+    // brightness is used as coverage when the colour is blended into the (premultiplied) window bits
+    auto drawText = [&](const char* t, RECT rc, COLORREF col, UINT fmt, int px, bool bold)
     {
-        const Quest& q = lines[i].first; const Prog& pr = lines[i].second;
-        char t[96];
-        bool done = pr.status == 2 || pr.kills >= q.kill;
-        if (done) sprintf_s(t, "%s  Completed!", q.name.c_str()); else sprintf_s(t, "%s  %u / %u", q.name.c_str(), pr.kills, (unsigned)q.kill);
-        const int slotH = 22, boxH = 20;
-        BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), HUD_W, -slotH, 1, 32, BI_RGB };
+        int w = rc.right - rc.left, h = rc.bottom - rc.top;
+        if (w <= 0 || h <= 0) return;
+        BITMAPINFO bmi = {}; bmi.bmiHeader = { sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB };
         void* bits = nullptr; HDC dc = CreateCompatibleDC(nullptr);
-        if (!dc) continue;
+        if (!dc) return;
         HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (!bmp || !bits) { DeleteDC(dc); continue; }
+        if (!bmp || !bits) { DeleteDC(dc); return; }
         HGDIOBJ ob = SelectObject(dc, bmp);
-        HFONT font = CreateFontA(-12, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Verdana");
+        memset(bits, 0, (size_t)w * h * 4);
+        HFONT font = CreateFontA(-px, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Verdana");
         HGDIOBJ of = SelectObject(dc, font);
-        RECT tr = { 0, 0, 0, 0 };
-        DrawTextA(dc, t, -1, &tr, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
-        int bw = min(HUD_W, (tr.right - tr.left) + 20);
-        RECT box = { (HUD_W - bw) / 2, 0, (HUD_W - bw) / 2 + bw, boxH };
-        COLORREF accent = done ? RGB(140, 255, 140) : RGB(255, 210, 90);
-        HBRUSH bg = CreateSolidBrush(RGB(16, 16, 26)), bd = CreateSolidBrush(accent);
-        FillRect(dc, &box, bg); FrameRect(dc, &box, bd);
-        DeleteObject(bg); DeleteObject(bd);
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, done ? RGB(170, 255, 170) : RGB(255, 245, 190));
-        DrawTextA(dc, t, -1, &box, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+        RECT lr = { 0, 0, w, h };
+        DrawTextA(dc, t, -1, &lr, fmt | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
         GdiFlush();
-        for (int y = 0; y < slotH; y++)
+        const BYTE cr = GetRValue(col), cg = GetGValue(col), cb = GetBValue(col);
+        for (int y = 0; y < h; y++)
         {
-            int dy = (int)i * slotH + y; if (dy >= HUD_H) break;
-            const BYTE* src = (const BYTE*)bits + (size_t)y * HUD_W * 4;
-            BYTE* d = (BYTE*)g_hudBits + (size_t)dy * HUD_W * 4;
-            for (int x = 0; x < HUD_W; x++, src += 4, d += 4)
+            int dy = rc.top + y; if (dy < 0 || dy >= HUD_H) continue;
+            const BYTE* sp = (const BYTE*)bits + (size_t)y * w * 4;
+            BYTE* dp = (BYTE*)g_hudBits + ((size_t)dy * HUD_W + rc.left) * 4;
+            for (int x = 0; x < w; x++, sp += 4, dp += 4)
             {
-                if (y >= boxH || x < box.left || x >= box.right) continue;   // outside the panel stays transparent
-                d[0] = src[0]; d[1] = src[1]; d[2] = src[2]; d[3] = 255;      // opaque
+                int cov = max(sp[0], max(sp[1], sp[2]));
+                if (!cov || rc.left + x < 0 || rc.left + x >= HUD_W) continue;
+                int inv = 255 - cov;
+                dp[0] = (BYTE)((dp[0] * inv + cb * cov) / 255);   // B
+                dp[1] = (BYTE)((dp[1] * inv + cg * cov) / 255);   // G
+                dp[2] = (BYTE)((dp[2] * inv + cr * cov) / 255);   // R
+                dp[3] = 255;
             }
         }
         SelectObject(dc, of); DeleteObject(font); SelectObject(dc, ob); DeleteObject(bmp); DeleteDC(dc);
+    };
+    drawText("<< Daily Quest >>", { 40, 17, 256, 34 }, RGB(0xF3, 0xD3, 0x81), DT_CENTER, 12, true);
+    for (int i = 0; i < n; i++)
+    {
+        const Quest& q = lines[i].first; const Prog& pr = lines[i].second;
+        char t[128];
+        bool done = pr.status == 2 || pr.kills >= q.kill;
+        if (done) sprintf_s(t, "%s : Completed!", q.name.c_str()); else sprintf_s(t, "%s : %u/%u", q.name.c_str(), pr.kills, (unsigned)q.kill);
+        int y0 = HUD_TOP + HUD_LINE * i;
+        drawText(t, { 14, y0, 282, y0 + HUD_LINE }, done ? RGB(170, 255, 170) : RGB(255, 255, 255), DT_LEFT, 12, false);
     }
+
     // anchor: centred under the target HP bar (target_hp.cpp), daily_hud.ini [hud] x/y = extra nudge
     static int offX = -9999, offY = -9999;
     if (offX == -9999)
     {
-        char ip[MAX_PATH]; sprintf_s(ip, "%sJstKO\daily_hud.ini", g_dir);
+        char ip[MAX_PATH]; sprintf_s(ip, "%sJstKO\\daily_hud.ini", g_dir);
         offX = GetPrivateProfileIntA("hud", "x", 0, ip);       // horizontal nudge from the bar's centre
         offY = GetPrivateProfileIntA("hud", "y", 0, ip);       // vertical nudge below the bar
     }
@@ -502,10 +525,10 @@ static void HudSync()
     if (gr.right - gr.left < 200 || gr.bottom - gr.top < 200) return;
     int barCx = 0, barBottom = 56;
     TargetHp_BarAnchor(&barCx, &barBottom);
-    POINT dst = { gr.left + (gr.right - gr.left) / 2 + barCx - HUD_W / 2 + offX, gr.top + barBottom + 6 + offY }, src = { 0, 0 }; SIZE sz = { HUD_W, HUD_H };
+    POINT dst = { gr.left + (gr.right - gr.left) / 2 + barCx - HUD_W / 2 + offX, gr.top + barBottom + 6 + offY }, src = { 0, 0 }; SIZE sz = { HUD_W, winH };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     UpdateLayeredWindow(g_hHud, nullptr, &dst, &sz, g_hudDC, &src, 0, &bf, ULW_ALPHA);
-    if (!IsWindowVisible(g_hHud)) SetWindowPos(g_hHud, HWND_TOPMOST, dst.x, dst.y, HUD_W, HUD_H, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (!IsWindowVisible(g_hHud)) SetWindowPos(g_hHud, HWND_TOPMOST, dst.x, dst.y, HUD_W, winH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 // ---------------------------------------------------------------- window plumbing

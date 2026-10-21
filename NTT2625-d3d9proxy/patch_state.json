@@ -1,5 +1,5 @@
 {
- "version": 2651,
+ "version": 2652,
  "files": {
   "Chr/bk_lion25_boww.n3chr": "32ea9ec61d2dabd1cc856c5267d22628ff58c34db02a4bd2592749dab8a1ff72",
   "Chr/bk_lion25_danger.n3chr": "d8581e57bd7332ff4c8edb63a74f859fc0ea22530aa679650ff37ad79463691c",
@@ -11,7 +11,7 @@
   "Chr/bk_lion25_staff_lightning.n3chr": "f9175f277db88dc77fcc0c29c767e2ef082265c31d397b91cdd6257c9ac87374",
   "Chr/bk_lion25_wea_axe.n3chr": "1232924c6c77037c1953e0620640daf7080d17d41e76b8c4b02a439a34a91c8b",
   "Chr/bk_lion25_wea_spear.n3chr": "2c37ea094c9b6615c410534c7a545b8e2d87c9196a3ac26aee82ef18e963d1e0",
-  "d3d9.dll": "4dba913ecdca12932a94340f2db251c48c3ca100f5aa2e679d96ff6cff8d98cc",
+  "d3d9.dll": "bd11fdac09b32343944d6a483a8c9c8826a7dbb220835875729853529c089aee",
   "Data/ACHIEVE_com.tbl": "3740a12a7400f1636abbeb9bb32c5d0d1068a499dd8f646f57fc5b15c7bf4dfd",
   "Data/ACHIEVE_main.tbl": "0676a83edd54adc763c939d6acc6488d19460ccec69912cc0ee6e0e714084cf0",
   "Data/ACHIEVE_mon.tbl": "1c488bdd0e0e5929f7c43638c188b35d00551486575fc01337f690f5f63c4266",
@@ -326,6 +326,9 @@
   "JstKO/daily_ui/close_d.pus": "a3d77c72e08b2b7176a824b47c7bc3625962ead763068a508c6eeee5cd683837",
   "JstKO/daily_ui/close_n.pus": "20fa25538a559e18b022733ca22d321a7e3c103641aa47e1962f95bb72511e93",
   "JstKO/daily_ui/close_o.pus": "23b0f6cf41bd6cf178e6f7475a8c1bbe38a6e5d4ff1e112afc7d0813e9539dde",
+  "JstKO/daily_ui/hud_base.pus": "5feda7996f1cf240b8c85dc660b9f9cd66c1c6804071e3bae050ce08a46e3868",
+  "JstKO/daily_ui/hud_line.pus": "4e92a110f53f0c6fa059a5f3acfa34d2c7660e13fa71011733f0a2a3885515ca",
+  "JstKO/daily_ui/hud_top.pus": "218ab8ad5555a306d23148e0ee3b8aa0d55ad648ba3fd0f3ab5292abccc08ccd",
   "JstKO/daily_ui/row_a.pus": "bed36e5a64f4fff2749f743c1aa6ad81f30695022da729aab4d1cdf594404adf",
   "JstKO/daily_ui/row_b.pus": "ae7a99576b9798d204a783192606f69b3aecc985604a3a61ae70d3ba80ef89a3",
   "JstKO/drop_ui/bg.pus": "b01dfb156103d621ca4fd12d2e01c01fd3928316114080669db809e0748cc2a5",
