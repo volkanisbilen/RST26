@@ -509,7 +509,7 @@ static void HudSync()
         bool done = pr.status == 2 || pr.kills >= q.kill;
         if (done) sprintf_s(t, "%s : Completed!", q.name.c_str()); else sprintf_s(t, "%s : %u/%u", q.name.c_str(), pr.kills, (unsigned)q.kill);
         int y0 = HUD_TOP + HUD_LINE * i;
-        drawText(t, { 14, y0, 282, y0 + HUD_LINE }, done ? RGB(170, 255, 170) : RGB(255, 255, 255), DT_LEFT, 12, false);
+        drawText(t, { 5, y0, 290, y0 + HUD_LINE }, done ? RGB(170, 255, 170) : RGB(255, 255, 255), DT_CENTER, 12, true);
     }
 
     // anchor: centred under the target HP bar (target_hp.cpp), daily_hud.ini [hud] x/y = extra nudge
