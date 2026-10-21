@@ -31,7 +31,7 @@ pub fn routes() -> Router<App> {
         )
         .route(
             "/jstkoadminpanel/api/chaotic/boxes/{id}/rewards/{n_index}",
-            axum::routing::delete(remove_reward),
+            axum::routing::delete(remove_reward).post(update_reward),
         )
 }
 
@@ -201,7 +201,11 @@ async fn add_reward(
         return Err(ApiError::BadRequest);
     }
     let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
-    let next_idx: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(n_index), 0) + 1 FROM item_exchange")
+    // Panel-made rows live above the generated ranges (2100000000.., 2110000000..2110099999) and
+    // below i32::MAX, because item_exchange.n_index is a 32-bit integer.
+    let next_idx: i32 = sqlx::query_scalar(
+        "SELECT (GREATEST(COALESCE(MAX(n_index) FILTER (WHERE n_index >= 2110100000), 0), 2110099999) + 1)::int4 FROM item_exchange",
+    )
         .fetch_one(&mut *tx)
         .await
         .map_err(internal("next n_index"))?;
@@ -228,6 +232,56 @@ async fn add_reward(
     tx.commit().await.map_err(internal("commit"))?;
     queue_reload(&app.pool).await;
     Ok(Json(json!({"ok": true, "n_index": next_idx})))
+}
+
+#[derive(Deserialize)]
+struct RewardEditIn {
+    weight: Option<i32>,
+    item_id: Option<i32>,
+}
+
+/// Change one reward row's weight and/or the item it pays.
+async fn update_reward(
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(app): State<App>,
+    Path((id, n_index)): Path<(i32, i32)>,
+    Json(p): Json<RewardEditIn>,
+) -> R {
+    let (_, s) = auth(&headers, true)?;
+    if p.weight.is_some_and(|w| w <= 0 || w > 100_000) || (p.weight.is_none() && p.item_id.is_none()) {
+        return Err(ApiError::BadRequest);
+    }
+    if let Some(item) = p.item_id {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM item WHERE num = $1)")
+            .bind(item)
+            .fetch_one(&app.pool)
+            .await
+            .map_err(internal("chaotic reward item check"))?;
+        if !exists {
+            return Err(ApiError::BadRequest);
+        }
+    }
+    let done = sqlx::query(
+        "UPDATE item_exchange SET exchange_item_count1 = COALESCE($3, exchange_item_count1), exchange_item_num1 = COALESCE($4, exchange_item_num1)
+         WHERE n_index = $1 AND origin_item_num1 = $2 AND random_flag IN (1,2,3)",
+    )
+    .bind(n_index)
+    .bind(id)
+    .bind(p.weight)
+    .bind(p.item_id)
+    .execute(&app.pool)
+    .await
+    .map_err(internal("chaotic reward update"))?
+    .rows_affected();
+    if done == 0 {
+        return Err(ApiError::NotFound);
+    }
+    let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
+    audit(&mut tx, &s.actor, "chaotic.reward.edit", &id.to_string(), json!({"box": id, "n_index": n_index, "weight": p.weight, "item_id": p.item_id}), peer.ip()).await?;
+    tx.commit().await.map_err(internal("commit"))?;
+    queue_reload(&app.pool).await;
+    Ok(Json(json!({"ok": true})))
 }
 
 async fn remove_reward(

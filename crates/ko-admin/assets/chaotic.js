@@ -81,7 +81,8 @@ async function chaoticBoxDetail(main, boxId) {
           toast('Kaldırıldı', 'ok'); render();
         }
       }, 'Kaldır');
-      return h('tr', {}, nameCell, weightCell, pctCell, h('td', {}, removeBtn));
+      const editBtn = h('button', { class: 'btn sm', onclick: () => chaoticEditRewardDialog(boxId, r, render) }, 'Düzenle');
+      return h('tr', {}, nameCell, weightCell, pctCell, h('td', { style: 'white-space:nowrap' }, editBtn, ' ', removeBtn));
     });
     const table = h('table', {}, h('thead', {}, headRow), h('tbody', {}, bodyRows));
     wrap.append(h('div', { class: 'card' }, h('div', { class: 'tw' }, table)));
@@ -102,6 +103,28 @@ function chaoticAddRewardDialog(boxId, onDone) {
         if (w <= 0) { toast('Geçerli bir ağırlık gir', 'err'); return true }
         await api('/chaotic/boxes/' + boxId + '/rewards', { body: { item_id: ctx.picked.id, weight: w } });
         toast('Eklendi', 'ok');
+        onDone();
+      }
+    }
+  ]);
+}
+
+function chaoticEditRewardDialog(boxId, r, onDone) {
+  const ctx = { picked: null };
+  const picker = pickerEl(ctx);
+  const weight = h('input', { type: 'number', min: '1', value: String(r.weight), style: 'width:100%' });
+  modal('Ödülü Düzenle — ' + (r.name || ('#' + r.item_id)), h('div', {},
+    field('Ağırlık (yüksek = daha sık çıkar)', weight),
+    h('p', { class: 'muted sm' }, 'İtemi değiştirmek istersen aşağıdan yenisini seç; seçmezsen mevcut item kalır.'), picker), [
+    { label: 'Vazgeç', cls: 'ghost' },
+    {
+      label: 'Kaydet', cls: 'primary', fn: async () => {
+        const w = Number(weight.value) || 0;
+        if (w <= 0) { toast('Geçerli bir ağırlık gir', 'err'); return true }
+        const body = { weight: w };
+        if (ctx.picked) body.item_id = ctx.picked.id;
+        await api('/chaotic/boxes/' + boxId + '/rewards/' + r.n_index, { body });
+        toast('Kaydedildi', 'ok');
         onDone();
       }
     }
