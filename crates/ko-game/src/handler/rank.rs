@@ -816,6 +816,12 @@ pub(crate) fn rank_entry_is_event_bot(world: &crate::world::WorldState, sid: cra
 /// The Chaos window lists at most 19 rows (`if (sCount > 18) break;`).
 pub(crate) const CHAOS_RANK_MAX_ROWS: usize = 19;
 
+/// Chaos is anonymous: the rank window shows every fighter as a guardian of its nation, never the
+/// character name.
+pub(crate) fn chaos_rank_display_name(nation: u8) -> String {
+    if nation == 1 { "Karus Guardian Deity" } else { "Human Guardion Deity" }.to_string()
+}
+
 /// Build the Chaos Dungeon ranking reply (C++ `HandleRankingChaosDungeon`):
 /// `[u8 3][u8 count]{[string name][u16 kills][u16 deaths]}*[i32 exp][i32 premium_exp][u32 1]`.
 /// `rows` must already be sorted; the exp values are clamped like the C++ (0..=8M / 0..=10M).
@@ -897,7 +903,7 @@ async fn handle_chaos_dungeon(session: &mut ClientSession) -> anyhow::Result<()>
             return Ok(());
         };
 
-        let mut data: Vec<(String, crate::zone::SessionId, u32, u32)> = Vec::with_capacity(24);
+        let mut data: Vec<(String, crate::zone::SessionId, u32, u32, u8)> = Vec::with_capacity(24);
         let mut mk = 0u32;
         let mut md = 0u32;
 
@@ -910,6 +916,7 @@ async fn handle_chaos_dungeon(session: &mut ClientSession) -> anyhow::Result<()>
                 user.session_id,
                 user.kills,
                 user.deaths,
+                user.nation,
             ));
             if user.user_name == char_name {
                 mk = user.kills;
@@ -927,14 +934,14 @@ async fn handle_chaos_dungeon(session: &mut ClientSession) -> anyhow::Result<()>
     let (gained_exp, premium_gained_exp) = chaos_user_exp(requester_level, my_kills, my_deaths);
     let rows: Vec<(String, u32, u32)> = entries
         .iter()
-        .filter(|(_, entry_sid, _, _)| {
+        .filter(|(_, entry_sid, _, _, _)| {
             // Verify user is still in-game (event bots have no session but are ranked too)
             world
                 .with_session(*entry_sid, |h| h.character.is_some())
                 .unwrap_or(false)
                 || rank_entry_is_event_bot(world, *entry_sid)
         })
-        .map(|(name, _, kills, deaths)| (name.clone(), *kills, *deaths))
+        .map(|(_, _, kills, deaths, nation)| (chaos_rank_display_name(*nation), *kills, *deaths))
         .collect();
     let count = rows.len().min(CHAOS_RANK_MAX_ROWS) as u8;
     let result = build_chaos_rank_packet(&rows, gained_exp, premium_gained_exp);

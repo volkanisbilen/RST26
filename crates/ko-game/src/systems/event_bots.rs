@@ -547,6 +547,12 @@ fn spawn_event_bot(
     world.update_bot(id, |b| {
         b.name = name.clone();
         b.duration_minutes = BOT_BACKSTOP_MINUTES;
+        // Chaos: every fighter has the same fixed max HP, players and bots alike (a bot at its
+        // normal level HP took 50 per hit and was practically unkillable).
+        if let Some(hp) = crate::systems::chaos::max_hp_override_for_zone(b.zone_id) {
+            b.max_hp = hp;
+            b.hp = hp;
+        }
     });
     world
         .event_bots
@@ -1208,6 +1214,9 @@ pub fn mitigated_damage(base: i16, ac: i32) -> i16 {
     d.clamp(0, i16::MAX as i64) as i16
 }
 
+/// Fixed damage of one bot hit inside the Chaos Dungeon (players' `apply_zone_damage_override`).
+const CHAOS_BOT_HIT: i16 = 50;
+
 fn attack(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Target, now_ms: u64) {
     let skill = bot_ai::select_bot_skill_with_weapon(bot, Some(world));
     let base = bot_ai::calculate_bot_damage(bot);
@@ -1215,6 +1224,9 @@ fn attack(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Targe
 
     let damage: i16 = if missed {
         0
+    } else if bot.zone_id == crate::world::types::ZONE_CHAOS {
+        // same fixed melee hit players deal in the Chaos Dungeon
+        CHAOS_BOT_HIT
     } else if target.id >= BOT_ID_BASE {
         base.max(1)
     } else {
