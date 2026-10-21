@@ -5444,7 +5444,7 @@ fn execute_type4(
 /// `icelightrate > rand(0..=10000) + resist% * 3`. Skill rows without an
 /// explicit rate (0, as in the seeded magic table) are treated as the maximum
 /// rate so slows, freezes and stuns still apply and only resistance reduces them.
-fn ice_light_speed_succeeds(icelightrate: i32, resist_percent: i32, rand_val: i32) -> bool {
+pub(crate) fn ice_light_speed_succeeds(icelightrate: i32, resist_percent: i32, rand_val: i32) -> bool {
     let rate = if icelightrate > 0 { icelightrate } else { 10000 };
     rate > rand_val + resist_percent * 3
 }

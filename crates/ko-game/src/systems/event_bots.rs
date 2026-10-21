@@ -1234,6 +1234,13 @@ fn attack(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Targe
         mitigated_damage(base, ac).max(1)
     };
 
+    // a landed hit also applies the skill's debuff (slow / stun) for real, like a player-cast one
+    let cc = if damage > 0 && target.id < BOT_ID_BASE {
+        bot_ai::bot_apply_cc_to_player(world, bot.id, skill, target.id as SessionId)
+    } else {
+        None
+    };
+
     // animation: cast + effect, only seen by the bot's own room
     let pos = [bot.x as i32, bot.y as i32, bot.z as i32];
     room_broadcast(
@@ -1250,7 +1257,7 @@ fn attack(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Targe
         bot.region_x,
         bot.region_z,
         entry.room,
-        magic_packet(3, skill, bot.id, target.id, bot_ai::bot_effect_data(world, skill, pos, damage)),
+        magic_packet(3, skill, bot.id, target.id, bot_ai::bot_effect_data(world, skill, pos, damage, cc)),
     );
     if damage == 0 {
         return;

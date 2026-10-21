@@ -79,7 +79,11 @@ pub fn apply(
     let base_max_hp = (bot.max_hp as i32 - buffed_delta).max(1);
     let flat_hp = type4.max_hp.unwrap_or(0);
     let pct_hp = base_max_hp * type4.max_hp_pct.unwrap_or(0) / 100;
-    let max_hp_delta = (flat_hp + pct_hp).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    // Bot max HP is fixed per class (bot_ai::bot_hp_target) and event rules (Chaos 1000): HP buffs from
+    // priest bots (up to +12500 flat / +350 %) used to lift mages from 5000 to 22500. They keep their
+    // other effects, but no longer change the bot's max HP.
+    let _ = (flat_hp, pct_hp);
+    let max_hp_delta: i16 = 0;
 
     if max_hp_delta != 0 {
         world.update_bot(bot_id, |b| {
@@ -220,16 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn hp_buff_raises_max_hp_and_reverts_on_expiry() {
+    fn hp_buff_never_changes_bot_max_hp() {
         let (world, id) = bot_world(1000);
         assert_eq!(apply(&world, id, 112_615, &type4(1, 10, 0, 0, 20), 1_000), Some(10));
         let b = world.get_bot(id).unwrap();
-        assert_eq!(b.max_hp, 1200);
-        assert_eq!(b.hp, 1200);
+        assert_eq!(b.max_hp, 1000, "HP buffs no longer raise a bot's fixed max HP");
+        assert_eq!(b.hp, 1000);
         // same type again: refused
         assert_eq!(apply(&world, id, 112_615, &type4(1, 10, 0, 0, 20), 2_000), None);
         expire(&world, 5_000);
-        assert_eq!(world.get_bot(id).unwrap().max_hp, 1200, "still running");
+        assert_eq!(world.get_bot(id).unwrap().max_hp, 1000, "still running");
         expire(&world, 11_001);
         let b = world.get_bot(id).unwrap();
         assert_eq!(b.max_hp, 1000);

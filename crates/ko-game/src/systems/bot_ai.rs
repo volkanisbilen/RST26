@@ -731,21 +731,65 @@ fn bot_hard_cc_map() -> &'static parking_lot::Mutex<HashMap<SessionId, u64>> {
     BOT_HARD_CC_UNTIL.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
 }
 
-/// `data[0..7]` of the MAGIC_EFFECTING packet a bot's damage skill broadcasts.
-///
-/// For a skill with a Type4 part (Static Nova stun, Ice Storm / Freeze slow, ...) the client reads
-/// `data[3]` as the duration of the debuff it applies to the victim itself. Sending the damage there
-/// (`-damage`, as an unsigned value 4294966xxx) made the client hold the stun / slow for ~71 million
-/// minutes, so a player hit by a bot mage stayed locked until relog. Such skills now carry the table
-/// duration (and speed) exactly like a player-cast one; every other skill keeps the damage value.
-pub(crate) fn bot_effect_data(world: &WorldState, skill_id: u32, pos: [i32; 3], damage: i16) -> [i32; 7] {
-    if let Some(t4) = world.get_magic_type4(skill_id as i32) {
-        let duration = t4.duration.unwrap_or(0);
-        if duration > 0 && t4.buff_type.unwrap_or(0) > 0 {
-            return [pos[0], 1, pos[2], duration, 0, t4.speed.unwrap_or(0), 0];
+/// Applies the Type4 debuff of a bot's damage skill (Frost Nova / Ice Storm slow, Static Nova stun, ...)
+/// to a real player the same way a player-cast skill does: resistance roll, a real `ActiveBuff` on the
+/// victim (so the buff tick sends the "buff ended" packet and Cure removes it), stat refresh and the
+/// speed indicator. Without the stored buff the client counted the debuff down but nothing ever told it
+/// to drop the slow / stun. `None` = the skill has no such debuff or the target is no player;
+/// `Some(true)` = applied (or already active), `Some(false)` = resisted.
+pub(crate) fn bot_apply_cc_to_player(world: &WorldState, bot_id: u32, skill_id: u32, target_sid: SessionId) -> Option<bool> {
+    use crate::buff_constants::{BUFF_TYPE_SPEED, BUFF_TYPE_SPEED2, BUFF_TYPE_STUN};
+    use crate::magic_constants::{USER_STATUS_POISON, USER_STATUS_SPEED};
+    if (target_sid as u32) >= crate::world::BOT_ID_BASE || world.get_character_info(target_sid).is_none() {
+        return None;
+    }
+    let t4 = world.get_magic_type4(skill_id as i32)?;
+    let buff_type = t4.buff_type.unwrap_or(0);
+    if t4.duration.unwrap_or(0) <= 0 || buff_type <= 0 {
+        return None;
+    }
+    if world.is_player_dead(target_sid) {
+        return Some(false);
+    }
+    if world.has_buff(target_sid, buff_type) {
+        return Some(true); // already locked by this effect: no second timer
+    }
+    let skill = world.get_magic(skill_id as i32)?;
+    if matches!(buff_type, BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2 | BUFF_TYPE_STUN) {
+        let eq = world.get_equipped_stats(target_sid);
+        let item_res = if buff_type == BUFF_TYPE_SPEED2 { eq.cold_r as i32 } else { eq.lightning_r as i32 };
+        let clamped = (item_res + eq.resistance_bonus as i32).min(250);
+        let pct = (clamped * 100) / 250;
+        let roll: i32 = rand::thread_rng().gen_range(0..=10000);
+        if !crate::handler::magic_process::ice_light_speed_succeeds(skill.icelightrate.unwrap_or(0) as i32, pct, roll) {
+            return Some(false);
         }
     }
-    [pos[0], pos[1], pos[2], -(damage as i32), 0, 0, 0]
+    let buff = crate::handler::magic_process::create_active_buff(skill_id, bot_id as SessionId, &t4, false);
+    world.apply_buff(target_sid, buff);
+    crate::handler::magic_process::apply_type4_stats(world, target_sid, &t4, skill.skill.unwrap_or(0), skill_id);
+    world.set_user_ability(target_sid);
+    world.send_item_move_refresh(target_sid);
+    let status = if matches!(buff_type, BUFF_TYPE_SPEED | BUFF_TYPE_SPEED2) { USER_STATUS_SPEED } else { USER_STATUS_POISON };
+    crate::systems::buff_tick::send_user_status_update_packet(world, target_sid, status, 1);
+    Some(true)
+}
+
+/// `data[0..7]` of the MAGIC_EFFECTING packet a bot's damage skill broadcasts.
+///
+/// For a skill with a Type4 part the client reads `data[3]` as the duration of the debuff it applies to
+/// the victim itself. Sending the damage there (`-damage`, an unsigned 4294966xxx) made the client hold
+/// the stun / slow for ~71 million minutes. `cc` is the result of [`bot_apply_cc_to_player`]: applied ->
+/// the table duration and speed (like a player-cast skill), resisted -> no effect, `None` -> a skill
+/// without such a debuff keeps the damage value.
+pub(crate) fn bot_effect_data(world: &WorldState, skill_id: u32, pos: [i32; 3], damage: i16, cc: Option<bool>) -> [i32; 7] {
+    let t4 = world.get_magic_type4(skill_id as i32);
+    let has_cc = t4.as_ref().is_some_and(|t| t.duration.unwrap_or(0) > 0 && t.buff_type.unwrap_or(0) > 0);
+    match (cc, t4) {
+        (Some(false), _) => [pos[0], 0, pos[2], 0, 0, 0, 0],
+        (_, Some(t)) if has_cc => [pos[0], 1, pos[2], t.duration.unwrap_or(0), 0, t.speed.unwrap_or(0), 0],
+        _ => [pos[0], pos[1], pos[2], -(damage as i32), 0, 0, 0],
+    }
 }
 
 /// Duration in ms of the hard-CC component of `skill_id`, if it has one.
@@ -3039,8 +3083,10 @@ pub(crate) fn bot_perform_attack(
 
     // Apply damage to the target.
     let (result, target_hp) = apply_damage_to_target(world, target_sid, damage, bot.id);
+    let mut cc = None;
     if result == ATTACK_SUCCESS {
         note_bot_hard_cc(world, skill_id, target_sid, now_ms);
+        cc = bot_apply_cc_to_player(world, bot.id, skill_id, target_sid);
     }
 
     // ── Post-damage drain effects ──────────────────────────────────────
@@ -3088,7 +3134,7 @@ pub(crate) fn bot_perform_attack(
         skill_id,
         bot.id,
         target_sid as u32,
-        bot_effect_data(world, skill_id, [bot.x as i32, bot.y as i32, bot.z as i32], damage),
+        bot_effect_data(world, skill_id, [bot.x as i32, bot.y as i32, bot.z as i32], damage, cc),
     );
     broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect_pkt);
 
@@ -3319,10 +3365,12 @@ fn bot_perform_aoe_attack(
     // ── Phase 2: Apply damage to primary target ──────────────────────
     let primary_damage = calculate_aoe_target_damage(world, bot, primary_target);
     let (result, target_hp) = apply_damage_to_target(world, primary_target, primary_damage, bot.id);
+    let mut cc = None;
     if result == ATTACK_SUCCESS {
         note_bot_hard_cc(world, skill_id, primary_target, now_ms);
+        cc = bot_apply_cc_to_player(world, bot.id, skill_id, primary_target);
     }
-    broadcast_bot_magic_effecting(world, bot, primary_target, skill_id, primary_damage);
+    broadcast_bot_magic_effecting(world, bot, primary_target, skill_id, primary_damage, cc);
     broadcast_target_hp_update(
         world,
         bot,
@@ -3348,10 +3396,12 @@ fn bot_perform_aoe_attack(
     for (target_sid, _tx, _tz) in &secondary_targets {
         let damage = calculate_aoe_target_damage(world, bot, *target_sid);
         let (res, hp) = apply_damage_to_target(world, *target_sid, damage, bot.id);
+        let mut cc = None;
         if res == ATTACK_SUCCESS {
             note_bot_hard_cc(world, skill_id, *target_sid, now_ms);
+            cc = bot_apply_cc_to_player(world, bot.id, skill_id, *target_sid);
         }
-        broadcast_bot_magic_effecting(world, bot, *target_sid, skill_id, damage);
+        broadcast_bot_magic_effecting(world, bot, *target_sid, skill_id, damage, cc);
         broadcast_target_hp_update(world, bot, *target_sid, res, hp, damage as i32);
         if res == ATTACK_TARGET_DEAD {
             process_bot_player_kill(world, bot, *target_sid);
@@ -3416,13 +3466,14 @@ fn broadcast_bot_magic_effecting(
     target_sid: SessionId,
     skill_id: u32,
     damage: i16,
+    cc: Option<bool>,
 ) {
     let effect_pkt = build_bot_magic_packet(
         MAGIC_EFFECTING,
         skill_id,
         bot.id,
         target_sid as u32,
-        bot_effect_data(world, skill_id, [bot.x as i32, bot.y as i32, bot.z as i32], damage),
+        bot_effect_data(world, skill_id, [bot.x as i32, bot.y as i32, bot.z as i32], damage, cc),
     );
     broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect_pkt);
 }
@@ -5952,6 +6003,14 @@ fn build_bot_gear_catalog(world: &WorldState, world_key: usize, item_count: usiz
             continue;
         }
         let acc = families.entry(item.num / 1000).or_default();
+        // "Draki" (Draki Tower) gear is never worn by bots: the whole family is dropped.
+        if item.str_name.as_deref().is_some_and(|n| {
+            let n = n.to_lowercase();
+            n.contains("draki") || n.contains("amazon")
+        }) {
+            acc.excluded = true;
+            continue;
+        }
         if item.race == Some(crate::world::types::RACE_UNTRADEABLE) {
             acc.excluded = true;
             continue;
@@ -6333,9 +6392,29 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
         let Some(item_slot) = *item_slot else {
             continue;
         };
-        if let Some((_, picked)) = pick_bot_gear(&catalog, class, level, &mut rng, false, |family| {
-            family.slot == item_slot && armor_kinds.contains(&family.kind)
-        }) {
+        // Warrior / rogue / priest / Kurian bots wear Chitin and Chitin Shell armour only (mages keep
+        // their own sets); when a slot has no such family the normal pick is the fallback.
+        let chitin_only = !armor_kinds.contains(&ARMOR_KIND_MAGE);
+        let is_chitin = |family: &GearFamily| {
+            family
+                .base
+                .str_name
+                .as_deref()
+                .is_some_and(|n| n.to_lowercase().contains("chitin"))
+        };
+        let mut pick = if chitin_only {
+            pick_bot_gear(&catalog, class, level, &mut rng, false, |family| {
+                family.slot == item_slot && armor_kinds.contains(&family.kind) && is_chitin(family)
+            })
+        } else {
+            None
+        };
+        if pick.is_none() {
+            pick = pick_bot_gear(&catalog, class, level, &mut rng, false, |family| {
+                family.slot == item_slot && armor_kinds.contains(&family.kind)
+            });
+        }
+        if let Some((_, picked)) = pick {
             equipment[vis_idx] = picked;
         }
     }
