@@ -1001,6 +1001,82 @@ pub fn start_bot_ai_task(world: Arc<WorldState>) -> tokio::task::JoinHandle<()> 
     })
 }
 
+/// Guard towers (types 62/63) and nation guards (11..=15) of one nation shoot the bots of the other nation that walk
+/// into their range in the Ronark Land zones. The NPC AI only scans real players, so without this the bots could
+/// stand in the middle of the enemy home base untouched.
+fn guard_tower_cooldowns() -> &'static parking_lot::Mutex<HashMap<u32, u64>> {
+    static M: OnceLock<parking_lot::Mutex<HashMap<u32, u64>>> = OnceLock::new();
+    M.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+fn tick_guards_vs_bots(world: &WorldState, now_ms: u64) {
+    let bot_ids: Vec<BotId> = world.bots.iter().map(|e| *e.key()).collect();
+    for id in bot_ids {
+        let bot = match world.get_bot(id) {
+            Some(b) => b,
+            None => continue,
+        };
+        if !bot.in_game || bot.presence == BotPresence::Dead || bot.hp <= 0 || !is_pk_zone(bot.zone_id) {
+            continue;
+        }
+        let zone = match world.get_zone(bot.zone_id) {
+            Some(z) => z,
+            None => continue,
+        };
+        for nid in zone.get_npcs_in_3x3(bot.region_x, bot.region_z) {
+            let ai = match world.get_npc_ai(nid) {
+                Some(a) => a,
+                None => continue,
+            };
+            if ai.nation == 0 || ai.nation == bot.nation || world.is_npc_dead(nid) {
+                continue;
+            }
+            let npc = match world.get_npc_instance(nid) {
+                Some(n) => n,
+                None => continue,
+            };
+            let tmpl = match world.get_npc_template(npc.proto_id, npc.is_monster) {
+                Some(t) => t,
+                None => continue,
+            };
+            if !matches!(tmpl.npc_type, 11..=15 | 62 | 63) {
+                continue;
+            }
+            let range = (tmpl.search_range as f32).max(tmpl.attack_range as f32).max(30.0);
+            let (dx, dz) = (ai.cur_x - bot.x, ai.cur_z - bot.z);
+            if (dx * dx + dz * dz).sqrt() > range {
+                continue;
+            }
+            {
+                let mut cd = guard_tower_cooldowns().lock();
+                let next = cd.get(&nid).copied().unwrap_or(0);
+                if now_ms < next {
+                    continue;
+                }
+                cd.insert(nid, now_ms + (tmpl.attack_delay as u64).max(1000));
+            }
+            // a tower hit is ~1/12 of the bot's health, so a bot cannot idle in an enemy base
+            let damage = ((bot.max_hp as i32) / 12).clamp(300, 800) as i16;
+            let new_hp = (bot.hp - damage).max(0);
+            world.update_bot(id, |b| {
+                b.hp = new_hp;
+                b.last_attacker_id = -1;
+            });
+            let mut pkt = Packet::new(Opcode::WizAttack as u8);
+            pkt.write_u8(crate::attack_constants::LONG_ATTACK);
+            pkt.write_u8(if new_hp <= 0 { ATTACK_TARGET_DEAD } else { ATTACK_SUCCESS });
+            pkt.write_u32(nid);
+            pkt.write_u32(id as u32);
+            world.broadcast_to_3x3(ai.zone_id, ai.region_x, ai.region_z, Arc::new(pkt), None, npc.event_room);
+            broadcast_bot_party_hp(world, id);
+            if new_hp <= 0 {
+                bot_on_death(world, id, now_ms);
+            }
+            break; // one tower hit per bot per tick
+        }
+    }
+}
+
 /// Process one AI tick for all active bots.
 /// This iterates the `WorldState::bots` DashMap and advances each bot's
 /// state machine based on its `ai_state`.
@@ -1008,6 +1084,7 @@ pub fn tick_bots(world: &WorldState) {
     let now_unix = unix_now();
     let now_ms = tick_ms();
     crate::systems::bot_buffs::expire(world, now_ms);
+    tick_guards_vs_bots(world, now_ms);
 
     // Collect IDs of bots to despawn (expired duration).
     let expired: Vec<BotId> = world.collect_expired_bot_ids(now_unix);
