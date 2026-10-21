@@ -192,6 +192,9 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 other => Err(format!("unknown field_bot action {other}")),
             }
         }
+        "bot_snapshot" => crate::systems::bot_ai::write_bot_snapshot(world, pool)
+            .await
+            .map(|n| format!("{n} bot(s) written to bot_snapshot")),
         "bot_loadout_reload" => crate::systems::bot_ai::reload_bot_loadout_overrides(pool)
             .await
             .map(|n| format!("{n} bot loadout override bracket(s) loaded"))

@@ -731,6 +731,23 @@ fn bot_hard_cc_map() -> &'static parking_lot::Mutex<HashMap<SessionId, u64>> {
     BOT_HARD_CC_UNTIL.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
 }
 
+/// `data[0..7]` of the MAGIC_EFFECTING packet a bot's damage skill broadcasts.
+///
+/// For a skill with a Type4 part (Static Nova stun, Ice Storm / Freeze slow, ...) the client reads
+/// `data[3]` as the duration of the debuff it applies to the victim itself. Sending the damage there
+/// (`-damage`, as an unsigned value 4294966xxx) made the client hold the stun / slow for ~71 million
+/// minutes, so a player hit by a bot mage stayed locked until relog. Such skills now carry the table
+/// duration (and speed) exactly like a player-cast one; every other skill keeps the damage value.
+pub(crate) fn bot_effect_data(world: &WorldState, skill_id: u32, pos: [i32; 3], damage: i16) -> [i32; 7] {
+    if let Some(t4) = world.get_magic_type4(skill_id as i32) {
+        let duration = t4.duration.unwrap_or(0);
+        if duration > 0 && t4.buff_type.unwrap_or(0) > 0 {
+            return [pos[0], 1, pos[2], duration, 0, t4.speed.unwrap_or(0), 0];
+        }
+    }
+    [pos[0], pos[1], pos[2], -(damage as i32), 0, 0, 0]
+}
+
 /// Duration in ms of the hard-CC component of `skill_id`, if it has one.
 fn bot_skill_hard_cc_ms(world: &WorldState, skill_id: u32) -> Option<u64> {
     let type4 = world.get_magic_type4(skill_id as i32)?;
@@ -3071,15 +3088,7 @@ pub(crate) fn bot_perform_attack(
         skill_id,
         bot.id,
         target_sid as u32,
-        [
-            bot.x as i32,
-            bot.y as i32,
-            bot.z as i32,
-            -(damage as i32), // data[3]: negative = damage dealt
-            0,
-            0,
-            0,
-        ],
+        bot_effect_data(world, skill_id, [bot.x as i32, bot.y as i32, bot.z as i32], damage),
     );
     broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect_pkt);
 
@@ -3413,15 +3422,7 @@ fn broadcast_bot_magic_effecting(
         skill_id,
         bot.id,
         target_sid as u32,
-        [
-            bot.x as i32,
-            bot.y as i32,
-            bot.z as i32,
-            -(damage as i32),
-            0,
-            0,
-            0,
-        ],
+        bot_effect_data(world, skill_id, [bot.x as i32, bot.y as i32, bot.z as i32], damage),
     );
     broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect_pkt);
 }
@@ -5054,6 +5055,99 @@ pub(crate) fn write_bot_user_info(pkt: &mut Packet, bot: &BotInstance, world: &W
     pkt.write_u8(1); // v2600 final marker
 }
 
+/// Fixed max HP of a PK / field bot by class family: mage 5000, rogue 6500, priest 7500,
+/// warrior and Kurian 8500.
+pub fn bot_hp_target(class: u16) -> i16 {
+    match class % 100 {
+        3 | 9 | 10 => 5000,
+        2 | 7 | 8 => 6500,
+        4 | 11 | 12 => 7500,
+        _ => 8500,
+    }
+}
+
+/// What the gear-and-level formula alone would give this bot (display only: the bot's real max HP
+/// is [`bot_hp_target`]). `bot.sta_stat` already contains the worn-item stat bonus.
+pub fn bot_formula_hp(world: &WorldState, bot: &BotInstance) -> i32 {
+    let Some(coeff) = world.get_coefficient(bot.class) else { return 0 };
+    let stats = bot_equipped_stats(world, &bot.equip_visual);
+    calc_bot_max_hp(bot.level, bot.sta_stat, &coeff) as i32 + stats.item_max_hp as i32
+}
+
+/// Writes every live bot (kind, class, level, HP, worn items) into `bot_snapshot` for the admin
+/// panel's "Bot Envanteri" page (queued by the `bot_snapshot` admin command). Capped at 2500 rows.
+pub async fn write_bot_snapshot(world: &WorldState, pool: &ko_db::DbPool) -> Result<usize, String> {
+    struct Row {
+        id: u32,
+        name: String,
+        class: u16,
+        level: u8,
+        nation: u8,
+        zone: u16,
+        kind: &'static str,
+        max_hp: i16,
+        formula_hp: i32,
+        item_hp: i32,
+        ac: i32,
+        items: Vec<(usize, u32)>,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for e in world.bots.iter() {
+        if rows.len() >= 2500 {
+            break;
+        }
+        let b = e.value();
+        let kind = if crate::systems::field_bots::is_field_bot(b) {
+            "field"
+        } else if world.event_bots.get(b.id).is_some() {
+            "event"
+        } else {
+            "pk"
+        };
+        let stats = bot_equipped_stats(world, &b.equip_visual);
+        rows.push(Row {
+            id: b.id,
+            name: b.name.clone(),
+            class: b.class,
+            level: b.level,
+            nation: b.nation,
+            zone: b.zone_id,
+            kind,
+            max_hp: b.max_hp,
+            formula_hp: bot_formula_hp(world, b),
+            item_hp: stats.item_max_hp as i32,
+            ac: stats.item_ac as i32,
+            items: b.equip_visual.iter().take(8).enumerate().filter(|(_, v)| v.0 != 0).map(|(i, v)| (i, v.0)).collect(),
+        });
+    }
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM bot_snapshot").execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    for r in &rows {
+        let items: Vec<serde_json::Value> = r.items.iter().map(|(i, id)| serde_json::json!({"slot": i, "item": id})).collect();
+        sqlx::query(
+            "INSERT INTO bot_snapshot (bot_id, name, class, level, nation, zone_id, kind, max_hp, formula_hp, item_hp, item_ac, items)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+        )
+        .bind(r.id as i64)
+        .bind(&r.name)
+        .bind(r.class as i32)
+        .bind(r.level as i32)
+        .bind(r.nation as i32)
+        .bind(r.zone as i32)
+        .bind(r.kind)
+        .bind(r.max_hp as i32)
+        .bind(r.formula_hp)
+        .bind(r.item_hp)
+        .bind(r.ac)
+        .bind(serde_json::Value::Array(items))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(rows.len())
+}
+
 /// Calculate max HP for a bot from the coefficient table.
 /// Formula: `(HP_COEFF * level^2 * STA) + (0.1 * level * STA) + (STA / 5) + 20`
 /// Minimum is 20 HP to match C++ behaviour.
@@ -6410,6 +6504,9 @@ fn set_bot_ability_with_equipment(world: &WorldState, bot: &mut BotInstance, coe
     set_bot_ability(bot, coeff);
 
     bot.max_hp = (bot.max_hp as i32 + stats.item_max_hp as i32).clamp(1, i16::MAX as i32) as i16;
+    // Every PK / field bot of a class has the same HP, whatever it wears (the gear-and-level formula
+    // gave 2000 to some bots and 18000 to others).
+    bot.max_hp = bot_hp_target(bot.class);
     bot.hp = bot.max_hp;
     bot.max_mp = (bot.max_mp as i32 + stats.item_max_mp as i32).clamp(0, i16::MAX as i32) as i16;
     bot.mp = bot.max_mp;

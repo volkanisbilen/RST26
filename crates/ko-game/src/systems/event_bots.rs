@@ -1250,7 +1250,7 @@ fn attack(world: &WorldState, entry: &BotEntry, bot: &BotInstance, target: Targe
         bot.region_x,
         bot.region_z,
         entry.room,
-        magic_packet(3, skill, bot.id, target.id, [pos[0], pos[1], pos[2], -(damage as i32), 0, 0, 0]),
+        magic_packet(3, skill, bot.id, target.id, bot_ai::bot_effect_data(world, skill, pos, damage)),
     );
     if damage == 0 {
         return;
