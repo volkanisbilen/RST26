@@ -2314,6 +2314,15 @@ impl WorldState {
                 *self.send_messages.write() = login_msgs;
                 Ok(format!("{n} login messages"))
             }
+            "item_upgrade_settings" => {
+                let rows = ItemTablesRepository::new(pool).load_all_upgrade_settings().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.upgrade_settings.clear();
+                for (idx, row) in rows.into_iter().enumerate() {
+                    self.upgrade_settings.insert(idx as u32, row);
+                }
+                Ok(format!("{n} item_upgrade_settings rows"))
+            }
             "item_exchange" => {
                 let rows = ItemTablesRepository::new(pool).load_all_item_exchanges().await.map_err(|e| e.to_string())?;
                 let n = rows.len();

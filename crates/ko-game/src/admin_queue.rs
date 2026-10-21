@@ -94,7 +94,7 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 world.reload_event_schedule(pool).await;
                 Ok(format!("drops {a}, groups {b}, quest {c}, events reloaded"))
             }
-            "event_rewards" | "chaos_rewards" | "daily_quests" | "cinderella" | "zone_rewards" | "collection_race" | "reward_rules" | "pus" | "send_messages" | "item_exchange" => {
+            "event_rewards" | "chaos_rewards" | "daily_quests" | "cinderella" | "zone_rewards" | "collection_race" | "reward_rules" | "pus" | "send_messages" | "item_exchange" | "item_upgrade_settings" => {
                 world.reload_reward_tables(pool, &s("what")).await
             }
             other => Err(format!("unknown reload target {other}")),
