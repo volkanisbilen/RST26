@@ -1707,7 +1707,7 @@ async fn shozin_exchange(
     // Success iff roll < rate, roll uniform in [0, 10000): rate 10000 always
     // succeeds, rate 0 never does.
     let rand_val = rand_range(0, 10000);
-    info!(
+    tracing::info!(
         "[{}] CRAFT recipe #{} -> item {} rate={}/10000 shadow={} shadow_success={} roll={}",
         session.addr(),
         recipe.n_index,
