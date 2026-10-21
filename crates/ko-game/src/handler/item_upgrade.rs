@@ -1346,6 +1346,13 @@ async fn send_crafting_fail(
     session.send_packet(&pkt).await
 }
 
+/// Shozin / jeweler craft refused ("wrong material" to the client): the reason (code line + detail) goes to the
+/// log at warn level so a failing recipe can be traced.
+async fn craft_reject(session: &mut ClientSession, line: u32, detail: String) -> anyhow::Result<()> {
+    warn!("[{}] CRAFT rejected (item_upgrade.rs:{}) {}", session.addr(), line, detail);
+    send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await
+}
+
 /// Send an item smash failure packet.
 async fn send_smash_fail(
     session: &mut ClientSession,
@@ -1412,7 +1419,7 @@ async fn shozin_exchange(
 
     // Validate material count
     if material_count > ITEMS_SPECIAL_EXCHANGE_GROUP {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
 
     // Player state validation
@@ -1423,41 +1430,41 @@ async fn shozin_exchange(
         || world.is_mining(sid)
         || world.is_fishing(sid)
     {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
 
     // Must be in Moradon
     let pos = match world.get_position(sid) {
         Some(p) => p,
-        None => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
+        None => return craft_reject(session, line!(), String::new()).await,
     };
     if !is_moradon(pos.zone_id) {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
 
     // Validate shadow piece slot
     if shadow_piece_slot as usize >= HAVE_MAX {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
 
     // Validate NPC: look up the NPC instance, get its template, check type + range
     // C++ removes dead NPCs from world — we keep them, so check explicitly
     let npc_inst = match world.get_npc_instance(npc_id_raw) {
         Some(n) => n,
-        None => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
+        None => return craft_reject(session, line!(), String::new()).await,
     };
     if world.is_npc_dead(npc_id_raw) {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
     if !world.is_in_npc_range(sid, npc_id_raw) {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
     let npc_tmpl = match world.get_npc_template(npc_inst.proto_id, npc_inst.is_monster) {
         Some(t) => t,
-        None => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
+        None => return craft_reject(session, line!(), String::new()).await,
     };
     if npc_tmpl.npc_type != NPC_CRAFTSMAN && npc_tmpl.npc_type != NPC_JEWELY {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
 
     // Check shadow piece item
@@ -1467,18 +1474,18 @@ async fn shozin_exchange(
         match world.get_inventory_slot(sid, actual_idx) {
             Some(slot) => {
                 if slot.item_id != ITEM_SHADOW_PIECE || slot.count < 1 {
-                    return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                    return craft_reject(session, line!(), String::new()).await;
                 }
                 if slot.flag == ITEM_FLAG_BOUND
                     || slot.flag == ITEM_FLAG_DUPLICATE
                     || slot.flag == ITEM_FLAG_RENTED
                     || slot.flag == ITEM_FLAG_SEALED
                 {
-                    return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                    return craft_reject(session, line!(), String::new()).await;
                 }
             }
             None => {
-                return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                return craft_reject(session, line!(), String::new()).await;
             }
         }
     }
@@ -1488,7 +1495,7 @@ async fn shozin_exchange(
     for _ in 0..material_count {
         let s = reader.read_u8().unwrap_or(0xff);
         if s as usize >= HAVE_MAX {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
         mat_slots.push(s);
     }
@@ -1497,14 +1504,14 @@ async fn shozin_exchange(
     for i in 0..mat_slots.len() {
         for j in (i + 1)..mat_slots.len() {
             if mat_slots[i] == mat_slots[j] {
-                return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                return craft_reject(session, line!(), String::new()).await;
             }
         }
     }
 
     // The shadow piece must sit in its own slot, never double as a material.
     if has_shadow && mat_slots.contains(&shadow_piece_slot) {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
 
     // Read nDownFlag (unused in our logic, but must be consumed)
@@ -1519,14 +1526,14 @@ async fn shozin_exchange(
         let inv_slot = match world.get_inventory_slot(sid, actual_idx) {
             Some(s) => s,
             None => {
-                return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                return craft_reject(session, line!(), String::new()).await;
             }
         };
         if inv_slot.item_id == 0 || inv_slot.count == 0 {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
         if inv_slot.flag == ITEM_FLAG_DUPLICATE || inv_slot.flag == ITEM_FLAG_RENTED {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
 
         // Determine digit length (9 or 10 digits)
@@ -1555,7 +1562,7 @@ async fn shozin_exchange(
             digit_place /= 10;
         }
         if !parse_ok {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
 
         // Read 3-digit ASCII count
@@ -1563,19 +1570,19 @@ async fn shozin_exchange(
         let c1 = reader.read_u8().unwrap_or(0).wrapping_sub(48);
         let c2 = reader.read_u8().unwrap_or(0).wrapping_sub(48);
         if c0 > 9 || c1 > 9 || c2 > 9 {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
         let count = c0 as u16 * 100 + c1 as u16 * 10 + c2 as u16;
 
         // Validate inventory matches parsed data
         if inv_slot.item_id != item_id || inv_slot.count < count || count == 0 {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
 
         // Check countable: if count > 1, the item must be countable
         if let Some(proto) = world.get_item(item_id) {
             if count > 1 && proto.countable.unwrap_or(0) == 0 {
-                return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                return craft_reject(session, line!(), String::new()).await;
             }
         }
 
@@ -1592,12 +1599,12 @@ async fn shozin_exchange(
         world.get_special_sewing_recipes(id).is_some()
     }) {
         Some(id) => id,
-        None => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
+        None => return craft_reject(session, line!(), String::new()).await,
     };
 
     let all_recipes = match world.get_special_sewing_recipes(npc_db_id) {
         Some(r) => r,
-        None => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
+        None => return craft_reject(session, line!(), String::new()).await,
     };
 
     // Offered materials as (item_id, count) pairs.
@@ -1617,7 +1624,45 @@ async fn shozin_exchange(
         .collect();
 
     if matching_recipes.is_empty() {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        let near: Vec<String> = all_recipes
+            .iter()
+            .filter(|r| {
+                let have = [
+                    (r.req_item_id_1, r.req_item_count_1), (r.req_item_id_2, r.req_item_count_2), (r.req_item_id_3, r.req_item_count_3),
+                    (r.req_item_id_4, r.req_item_count_4), (r.req_item_id_5, r.req_item_count_5), (r.req_item_id_6, r.req_item_count_6),
+                    (r.req_item_id_7, r.req_item_count_7), (r.req_item_id_8, r.req_item_count_8), (r.req_item_id_9, r.req_item_count_9),
+                    (r.req_item_id_10, r.req_item_count_10),
+                ];
+                offered.iter().any(|(id, _)| have.iter().any(|(rid, _)| *rid as u32 == *id))
+            })
+            .take(3)
+            .map(|r| {
+                format!(
+                    "#{}:[{}]",
+                    r.n_index,
+                    [
+                        (r.req_item_id_1, r.req_item_count_1), (r.req_item_id_2, r.req_item_count_2), (r.req_item_id_3, r.req_item_count_3),
+                        (r.req_item_id_4, r.req_item_count_4), (r.req_item_id_5, r.req_item_count_5), (r.req_item_id_6, r.req_item_count_6),
+                        (r.req_item_id_7, r.req_item_count_7), (r.req_item_id_8, r.req_item_count_8), (r.req_item_id_9, r.req_item_count_9),
+                        (r.req_item_id_10, r.req_item_count_10),
+                    ]
+                    .iter()
+                    .filter(|(i, _)| *i > 0)
+                    .map(|(i, c)| format!("{i}x{c}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                )
+            })
+            .collect();
+        let detail = format!(
+            "no recipe with exactly these materials: npc_set={} recipes_in_set={} offered=[{}] shadow={} candidates_sharing_an_item={:?}",
+            npc_db_id,
+            all_recipes.len(),
+            offered.iter().map(|(i, c)| format!("{i}x{c}")).collect::<Vec<_>>().join(" "),
+            has_shadow,
+            near
+        );
+        return craft_reject(session, line!(), detail).await;
     }
 
     // Class-specific result sets (e.g. Krowaz armor: one material list, five
@@ -1640,7 +1685,7 @@ async fn shozin_exchange(
 
     // Double-check the recipe (isnull check from C++)
     if recipe.n_index == 0 || recipe.give_item_id == 0 {
-        return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+        return craft_reject(session, line!(), String::new()).await;
     }
 
     // Client `mixtable` row for the result message (0 = unknown).
@@ -1662,6 +1707,16 @@ async fn shozin_exchange(
     // Success iff roll < rate, roll uniform in [0, 10000): rate 10000 always
     // succeeds, rate 0 never does.
     let rand_val = rand_range(0, 10000);
+    info!(
+        "[{}] CRAFT recipe #{} -> item {} rate={}/10000 shadow={} shadow_success={} roll={}",
+        session.addr(),
+        recipe.n_index,
+        recipe.give_item_id,
+        upgrade_rate,
+        has_shadow,
+        recipe.is_shadow_success,
+        rand_val
+    );
     let result_code;
     let mut give_item_slot: u8 = 0;
     let give_item_id = recipe.give_item_id as u32;
@@ -1688,7 +1743,7 @@ async fn shozin_exchange(
         if !world.update_inventory(sid, |inv| {
             consume_sewing_items(inv, &consume, shadow_consume)
         }) {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
         result_code = CraftingErrorCode::Failed;
     } else {
@@ -1702,7 +1757,7 @@ async fn shozin_exchange(
                     recipe.n_index,
                     give_item_id
                 );
-                return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                return craft_reject(session, line!(), String::new()).await;
             }
         };
 
@@ -1710,7 +1765,7 @@ async fn shozin_exchange(
         let item_weight = (give_proto.weight.unwrap_or(0) as i32).saturating_mul(give_count as i32);
         if let Some(ch) = world.get_character_info(sid) {
             if ch.item_weight + item_weight > ch.max_weight {
-                return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+                return craft_reject(session, line!(), String::new()).await;
             }
         }
 
@@ -1727,7 +1782,7 @@ async fn shozin_exchange(
         // client view can never produce a free item.
         let materials_ok = sewing_items_present(&world.get_inventory(sid), &consume, shadow_consume);
         if !materials_ok {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
 
         // Slot the result will land in (give_item picks the same slot). It must
@@ -1735,12 +1790,12 @@ async fn shozin_exchange(
         // "first free slot" is a different, empty slot.
         let target_slot = match world.find_slot_for_item(sid, give_item_id, final_count) {
             Some(s) if s >= SLOT_MAX => s,
-            _ => return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await,
+            _ => return craft_reject(session, line!(), String::new()).await,
         };
 
         // Give item (sends the inventory update to the client)
         if !world.give_item(sid, give_item_id, final_count) {
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
         give_item_slot = (target_slot - SLOT_MAX) as u8;
 
@@ -1769,7 +1824,7 @@ async fn shozin_exchange(
                 false
             });
             world.set_user_ability(sid);
-            return send_crafting_fail(session, CraftingErrorCode::WrongMaterial).await;
+            return craft_reject(session, line!(), String::new()).await;
         }
 
         result_code = CraftingErrorCode::Success;
