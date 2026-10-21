@@ -2323,6 +2323,24 @@ impl WorldState {
                 }
                 Ok(format!("{n} item_upgrade_settings rows"))
             }
+            "item_special_sewing" => {
+                let repo = ItemTablesRepository::new(pool);
+                let rows = repo.load_all_special_sewing().await.map_err(|e| e.to_string())?;
+                let n = rows.len();
+                self.special_sewing.clear();
+                for r in rows {
+                    self.special_sewing.entry(r.npc_id as i32).or_default().push(r);
+                }
+                if let Ok(map) = repo.load_special_sewing_client_map().await {
+                    self.special_sewing_client_idx.clear();
+                    for (n_index, mix_index) in map {
+                        if mix_index > 0 {
+                            self.special_sewing_client_idx.insert(n_index, mix_index as u16);
+                        }
+                    }
+                }
+                Ok(format!("{n} item_special_sewing rows"))
+            }
             "item_exchange" => {
                 let rows = ItemTablesRepository::new(pool).load_all_item_exchanges().await.map_err(|e| e.to_string())?;
                 let n = rows.len();

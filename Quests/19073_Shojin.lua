@@ -7,7 +7,7 @@ local NPC = 19073;
 
 -- ROOT: header=845 flag=20
 if (EVENT == 100) then
-	SelectMsg(UID, 20, -1, 845, NPC, 4520, 101, 4521, 102, 4526, 103, 40368, 105, 4522, 111, 4523, 3001);
+	SelectMsg(UID, 20, -1, 845, NPC, 4520, 101, 4521, 102, 4526, 103, 40368, 105, 4522, 111, 4523, 113);
 end
 
 -- header=846 flag=19
@@ -62,7 +62,19 @@ end
 
 -- header=848 flag=19
 if (EVENT == 111) then
-	SelectMsg(UID, 19, -1, 848, NPC, 4524, 3001, 4525, 3001 --[[ TODO: unknown ]]);
+	SelectMsg(UID, 19, -1, 848, NPC, 4524, 112, 4525, 3001);
+end
+
+-- "Manufacturing" -> "Yes, please show me your power": opens the Item Combination (craft) window.
+-- The client opens it for SelectMsg flag 18 and remembers this NPC (same as the jeweler 31402); the recipes
+-- come from item_special_sewing (admin panel "Craft / Birlestirme").
+if (EVENT == 112) then
+	SelectMsg(UID, 18, -1, -1, NPC);
+end
+
+-- "Check Manufacturing recipe": opens the formula book (SelectMsg flag 21).
+if (EVENT == 113) then
+	SelectMsg(UID, 21, -1, -1, NPC, -1, -1);
 end
 
 -- ═══ Action handlers (sniffer-verified) ═══
