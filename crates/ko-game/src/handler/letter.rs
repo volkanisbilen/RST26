@@ -119,6 +119,33 @@ async fn handle_unread(session: &mut ClientSession, char_name: &str) -> anyhow::
     Ok(())
 }
 
+/// The LETTER_LIST / LETTER_HISTORY reply for `letters` (also pushed to a recipient whose mailbox
+/// window is open when a new letter arrives).
+fn build_list_packet(opcode: u8, letters: &[ko_db::models::LetterRow]) -> Packet {
+    let mut response = letter_response(opcode);
+    response.write_u8(1); // success
+    response.write_i8(letters.len().min(127) as i8);
+
+    for letter in letters.iter().take(127) {
+        response.write_u32(letter.letter_id as u32);
+        response.write_u8(letter.b_status as u8);
+        // SByte strings for subject and sender (C++ uses SByte mode)
+        response.write_sbyte_string(&letter.subject);
+        response.write_sbyte_string(&letter.sender_name);
+        response.write_u8(letter.b_type as u8);
+
+        if letter.b_type == 2 {
+            response.write_u32(letter.item_id as u32);
+            response.write_u16(letter.item_count as u16);
+            response.write_u32(letter.coins as u32);
+        }
+
+        response.write_u32(letter.send_date as u32);
+        response.write_u16(letter.days_remaining as u16);
+    }
+    response
+}
+
 /// LETTER_LIST (2) / LETTER_HISTORY (3): List letters.
 /// Response: WIZ_SHOPPING_MALL + STORE_LETTER + opcode + u8(1=success) + i8(count)
 ///           + for each: u32(letter_id) + u8(status) + sbyte_string(subject)
@@ -136,28 +163,7 @@ async fn handle_list(
     };
     let repo = LetterRepository::new(session.pool());
     let letters = repo.load_letters(char_name, new_only).await?;
-
-    let mut response = letter_response(opcode);
-    response.write_u8(1); // success
-    response.write_i8(letters.len().min(127) as i8);
-
-    for letter in &letters {
-        response.write_u32(letter.letter_id as u32);
-        response.write_u8(letter.b_status as u8);
-        // SByte strings for subject and sender (C++ uses SByte mode)
-        response.write_sbyte_string(&letter.subject);
-        response.write_sbyte_string(&letter.sender_name);
-        response.write_u8(letter.b_type as u8);
-
-        if letter.b_type == 2 {
-            response.write_u32(letter.item_id as u32);
-            response.write_u16(letter.item_count as u16);
-            response.write_u32(letter.coins as u32);
-        }
-
-        response.write_u32(letter.send_date as u32);
-        response.write_u16(letter.days_remaining as u16);
-    }
+    let response = build_list_packet(opcode, &letters);
 
     session.send_packet(&response).await?;
     debug!(
@@ -362,9 +368,47 @@ async fn handle_send(
         yy * 10000 + mm * 100 + dd
     };
 
+    // ── Take the item and the gold FIRST, then store the letter ─────────────
+    // (the DB insert is async: with the old order the item could be traded / dropped / sent again
+    // in the meantime, or the gold could be gone, after the letter already existed.)
+    let total_gold_cost = if coins > 0 { gold_cost.saturating_add(coins) } else { gold_cost };
+    let mut taken_slot: Option<crate::world::UserItemSlot> = None;
+    if b_type == 2 && item_id != 0 {
+        let inv_pos = SLOT_MAX + src_pos as usize;
+        let ok = world.update_inventory(sid, |inv| {
+            if inv_pos < inv.len() && inv[inv_pos].item_id == item_id && inv[inv_pos].serial_num == item_serial {
+                taken_slot = Some(inv[inv_pos].clone());
+                inv[inv_pos] = crate::world::UserItemSlot::default();
+                true
+            } else {
+                false
+            }
+        });
+        if !ok || taken_slot.is_none() {
+            send_letter_result(session, -1i8).await?;
+            return Ok(());
+        }
+    }
+    let give_item_back = |world: &crate::world::WorldState| {
+        if let Some(slot) = taken_slot.clone() {
+            let inv_pos = SLOT_MAX + src_pos as usize;
+            world.update_inventory(sid, |inv| {
+                if inv_pos < inv.len() && inv[inv_pos].item_id == 0 {
+                    inv[inv_pos] = slot;
+                }
+                true
+            });
+        }
+    };
+    if !world.gold_lose(sid, total_gold_cost) {
+        give_item_back(&world);
+        send_letter_result(session, -3i8).await?;
+        return Ok(());
+    }
+
     // ── Send letter via DB ──────────────────────────────────────────────
     let repo = LetterRepository::new(session.pool());
-    let success = repo
+    let stored = repo
         .send_letter(
             char_name,
             &recipient,
@@ -379,36 +423,23 @@ async fn handle_send(
             coins as i32,
             send_date,
         )
-        .await?;
-
-    if !success {
-        // Recipient doesn't exist
-        send_letter_result(session, -2i8).await?;
-        return Ok(());
-    }
-
-    // ── Deduct gold — C++ LetterHandler.cpp:240-245 ─────────────────────
-    let total_gold_cost = if coins > 0 {
-        gold_cost.saturating_add(coins)
-    } else {
-        gold_cost
-    };
-    if !world.gold_lose(sid, total_gold_cost) {
-        send_letter_result(session, -3i8).await?;
-        return Ok(());
-    }
-
-    // ── Remove item from sender inventory — C++ LetterHandler.cpp:248-251 ─
-    if b_type == 2 && item_id != 0 {
-        let inv_pos = SLOT_MAX + src_pos as usize;
-        world.update_inventory(sid, |inv| {
-            if inv_pos < inv.len() && inv[inv_pos].item_id == item_id {
-                inv[inv_pos] = crate::world::UserItemSlot::default();
+        .await;
+    if !matches!(stored, Ok(true)) {
+        // recipient unknown or DB error: nothing was sent, give everything back
+        give_item_back(&world);
+        world.gold_gain(sid, total_gold_cost);
+        match stored {
+            Ok(_) => send_letter_result(session, -2i8).await?,
+            Err(e) => {
+                tracing::warn!("letter insert failed: {e}");
+                send_letter_result(session, -1i8).await?;
             }
-            true
-        });
+        }
+        return Ok(());
+    }
 
-        // SendStackChange — notify client of removed item
+    // ── The item is gone: tell the client (slot emptied) ─────────────────
+    if taken_slot.is_some() {
         let mut pkt = Packet::new(Opcode::WizItemCountChange as u8);
         pkt.write_u16(1); // count_type
         pkt.write_u8(1); // slot_section: inventory
@@ -427,12 +458,18 @@ async fn handle_send(
     }
 
     // ── Notify recipient if online ──────────────────────────────────────
+    // The unread flag, plus the refreshed new-letters list so a mailbox window that is already
+    // open shows the letter (with its item and text) at once instead of needing a close / reopen.
     if let Some(recipient_sid) = world.find_session_by_name(&recipient) {
         let mut notify = Packet::new(Opcode::WizShoppingMall as u8);
         notify.write_u8(STORE_LETTER);
         notify.write_u8(LETTER_UNREAD);
         notify.write_u8(1); // has unread = true
         world.send_to_session_owned(recipient_sid, notify);
+
+        if let Ok(letters) = repo.load_letters(&recipient, true).await {
+            world.send_to_session_owned(recipient_sid, build_list_packet(LETTER_LIST, &letters));
+        }
     }
 
     send_letter_result(session, 1i8).await?;
