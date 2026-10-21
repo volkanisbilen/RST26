@@ -15,6 +15,16 @@ impl<'a> LetterRepository<'a> {
         Self { pool }
     }
 
+    /// Deletes (soft) every letter older than 30 days, taken or not. Returns how many.
+    pub async fn purge_expired(&self) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE letter SET b_deleted = 1 WHERE b_deleted = 0 AND created_at < NOW() - INTERVAL '30 days'",
+        )
+        .execute(self.pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     /// Count unread letters for a character.
     ///
     pub async fn count_unread(&self, recipient: &str) -> Result<i64, sqlx::Error> {
@@ -38,12 +48,22 @@ impl<'a> LetterRepository<'a> {
         recipient: &str,
         new_only: bool,
     ) -> Result<Vec<LetterRow>, sqlx::Error> {
-        let status: i16 = if new_only { 0 } else { 1 };
-        sqlx::query_as::<_, LetterRow>(
-            "SELECT * FROM letter WHERE recipient_name = $1 AND b_status = $2 AND b_deleted = 0 ORDER BY created_at DESC LIMIT 127",
-        )
+        // A letter whose attached item has not been taken stays in "new mail" even after it was
+        // opened; it only moves to the read list once the item is out.
+        let cond = if new_only {
+            "(b_status = 0 OR (b_type = 2 AND item_id > 0 AND item_taken = 0))"
+        } else {
+            "(b_status = 1 AND NOT (b_type = 2 AND item_id > 0 AND item_taken = 0))"
+        };
+        let sql = format!(
+            "SELECT letter.*, \
+                    to_char(created_at, 'YYYYMMDDHH24MISS')::bigint AS created_stamp, \
+                    GREATEST(0, 30 - (CURRENT_DATE - created_at::date))::int AS days_left \
+             FROM letter WHERE recipient_name = $1 AND b_deleted = 0 AND {cond} \
+             ORDER BY created_at DESC LIMIT 127"
+        );
+        sqlx::query_as::<_, LetterRow>(&sql)
         .bind(recipient)
-        .bind(status)
         .fetch_all(self.pool)
         .await
     }
@@ -182,7 +202,8 @@ impl<'a> LetterRepository<'a> {
     /// Delete a letter (soft delete).
     ///
     pub async fn delete_letter(&self, recipient: &str, letter_id: i32) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE letter SET b_deleted = 1 WHERE letter_id = $1 AND recipient_name = $2")
+        // a letter with an item that was not taken yet cannot be deleted
+        sqlx::query("UPDATE letter SET b_deleted = 1 WHERE letter_id = $1 AND recipient_name = $2 AND NOT (b_type = 2 AND item_id > 0 AND item_taken = 0)")
             .bind(letter_id)
             .bind(recipient)
             .execute(self.pool)

@@ -280,6 +280,22 @@ impl GameServer {
         ));
         info!("Field bot scheduler started (every zone is OFF until enabled in the admin panel)");
 
+        // Mail lives 30 days: whatever was not taken or deleted by then is removed (checked hourly).
+        {
+            let pool = self.pool.clone();
+            bg_tasks.push(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(3600));
+                loop {
+                    interval.tick().await;
+                    match ko_db::repositories::letter::LetterRepository::new(&pool).purge_expired().await {
+                        Ok(0) => {}
+                        Ok(n) => info!(removed = n, "expired letters (older than 30 days) removed"),
+                        Err(e) => tracing::warn!(error = %e, "letter expiry purge failed"),
+                    }
+                }
+            }));
+        }
+
         // PK zones get their configured bots (admin panel "PK Otomatik Bot") shortly after start,
         // once the zones, tables and the bot AI are up.
         {

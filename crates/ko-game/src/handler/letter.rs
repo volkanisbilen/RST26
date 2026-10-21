@@ -122,8 +122,8 @@ async fn handle_unread(session: &mut ClientSession, char_name: &str) -> anyhow::
 
 /// Date encoding of the 64-bit date field of a list entry (GM `+mailfmt N` while the 2625 client's
 /// exact reading of it is being confirmed): 0 = unix seconds (UTC), 1 = yyyymmdd, 2 = yymmdd,
-/// 3 = unix milliseconds, 4 = yyyymmddhhmmss.
-pub static LETTER_LIST_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 3 = unix milliseconds, 4 = yyyymmddhhmmss (the client shows this one correctly; default).
+pub static LETTER_LIST_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(4);
 
 /// `send_date` (yymmdd) as a UTC midnight time.
 fn letter_datetime(send_date: i32) -> chrono::DateTime<chrono::Utc> {
@@ -136,13 +136,14 @@ fn letter_datetime(send_date: i32) -> chrono::DateTime<chrono::Utc> {
         .unwrap_or_else(chrono::Utc::now)
 }
 
-fn letter_date_field(send_date: i32) -> u64 {
+fn letter_date_field(send_date: i32, created_stamp: i64) -> u64 {
     use chrono::{Datelike, Timelike};
     let t = letter_datetime(send_date);
     match LETTER_LIST_FORMAT.load(std::sync::atomic::Ordering::Relaxed) {
         1 => (t.year() as u64) * 10_000 + t.month() as u64 * 100 + t.day() as u64,
         2 => (t.year() as u64 % 100) * 10_000 + t.month() as u64 * 100 + t.day() as u64,
         3 => (t.timestamp().max(0) as u64) * 1000,
+        4 if created_stamp > 0 => created_stamp as u64, // exact creation time
         4 => {
             (t.year() as u64) * 10_000_000_000
                 + t.month() as u64 * 100_000_000
@@ -157,7 +158,7 @@ fn letter_date_field(send_date: i32) -> u64 {
 /// (decoded from its mail window code, not the 1.298 layout):
 /// `[u8 1][u8 count]` then per letter
 /// `[u32 id][u8 status][u8 len + subject][u8 len + sender][u8 type]`
-/// `[type 2: u32 item][u16 count][u32 coins][u16 durability]][u64 date][u8 1][u8 sender nation]`.
+/// `[type 2: u32 item][u16 count][u32 coins][u16 durability]][u64 date][u8 days left][u8 sender nation]`.
 fn build_list_packet(opcode: u8, letters: &[ko_db::models::LetterRow]) -> Packet {
     let mut response = letter_response(opcode);
     response.write_u8(1); // success
@@ -178,8 +179,10 @@ fn build_list_packet(opcode: u8, letters: &[ko_db::models::LetterRow]) -> Packet
             response.write_u16(letter.item_durability.max(0) as u16);
         }
 
-        response.write_u64(letter_date_field(letter.send_date));
-        response.write_u8(1); // entry is valid / listed
+        response.write_u64(letter_date_field(letter.send_date, letter.created_stamp));
+        // days left of the 30-day lifetime (letters older than that are deleted automatically)
+        let left = if letter.created_stamp > 0 { letter.days_left } else { letter.days_remaining as i32 };
+        response.write_u8(left.clamp(0, 30) as u8);
         response.write_u8(0); // sender nation 0: never scramble the subject
     }
     response

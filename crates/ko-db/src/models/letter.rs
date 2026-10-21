@@ -37,4 +37,10 @@ pub struct LetterRow {
     pub send_date: i32,
     /// Days remaining before auto-delete.
     pub days_remaining: i16,
+    /// Creation time as yyyymmddhhmmss (filled by `load_letters`).
+    #[sqlx(default)]
+    pub created_stamp: i64,
+    /// Days left of the 30-day lifetime, from the creation time (filled by `load_letters`).
+    #[sqlx(default)]
+    pub days_left: i32,
 }
