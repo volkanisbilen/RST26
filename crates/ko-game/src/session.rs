@@ -279,6 +279,15 @@ impl ClientSession {
     /// AES path: If AES is enabled, encrypts with AES-128-CBC.
     /// JvCryption path: Legacy fallback (login server).
     pub async fn send_packet(&mut self, packet: &Packet) -> anyhow::Result<()> {
+        let fixed;
+        let packet = if crate::world::session::is_emptied_stack(packet) {
+            let mut p = packet.clone();
+            crate::world::session::normalize_emptied_stack(&mut p);
+            fixed = p;
+            &fixed
+        } else {
+            packet
+        };
         // S2C logging for ALL phases (Phase 1 + Phase 2)
         {
             let hex: String = packet

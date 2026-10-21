@@ -1165,13 +1165,16 @@ impl WorldState {
     /// Send a packet to a specific session.
     pub fn send_to_session(&self, id: SessionId, packet: &Packet) {
         if let Some(handle) = self.sessions.get(&id) {
-            let _ = handle.tx.send(Arc::new(packet.clone()));
+            let mut packet = packet.clone();
+            normalize_emptied_stack(&mut packet);
+            let _ = handle.tx.send(Arc::new(packet));
         }
     }
 
     /// Send a packet to a specific session, taking ownership (avoids clone).
-    pub fn send_to_session_owned(&self, id: SessionId, packet: Packet) {
+    pub fn send_to_session_owned(&self, id: SessionId, mut packet: Packet) {
         if let Some(handle) = self.sessions.get(&id) {
+            normalize_emptied_stack(&mut packet);
             let _ = handle.tx.send(Arc::new(packet));
         }
     }
@@ -1183,6 +1186,13 @@ impl WorldState {
     /// then call this with `Arc::clone()` for each recipient.
     pub fn send_to_session_arc(&self, id: SessionId, packet: Arc<Packet>) {
         if let Some(handle) = self.sessions.get(&id) {
+            let packet = if is_emptied_stack(&packet) {
+                let mut p = (*packet).clone();
+                normalize_emptied_stack(&mut p);
+                Arc::new(p)
+            } else {
+                packet
+            };
             let _ = handle.tx.send(packet);
         }
     }
@@ -3428,5 +3438,23 @@ mod tests {
             assert_eq!(soul_cats[i][2], 0i16);
             assert_eq!(soul_cats[i][3], 0i16);
         }
+    }
+}
+
+/// WIZ_ITEM_COUNT_CHANGE (`[u16 1][u8 section][u8 pos][u32 item][u32 count]...`) that empties a slot.
+pub fn is_emptied_stack(p: &Packet) -> bool {
+    p.opcode == ko_protocol::Opcode::WizItemCountChange as u8
+        && p.data.len() >= 12
+        && p.data[0..2] == [1, 0]
+        && p.data[8..12] == [0, 0, 0, 0]
+        && p.data[4..8] != [0, 0, 0, 0]
+}
+
+/// A stack that reached 0 is sent with item id 0 as well. With the old item id and count 0 the 2625
+/// client keeps the item in the bag showing "0" until the inventory is reopened (it only clears the
+/// slot when both are 0, the way the GM bag clear does). Every removal path funnels through here.
+pub fn normalize_emptied_stack(p: &mut Packet) {
+    if is_emptied_stack(p) {
+        p.data[4..8].copy_from_slice(&[0, 0, 0, 0]);
     }
 }
