@@ -109,6 +109,18 @@ impl<'a> LetterRepository<'a> {
             return Ok(false);
         }
 
+        // The client shows the date as yymmdd. Some callers pass a unix timestamp: convert it.
+        let send_date = if send_date > 991_231 {
+            chrono::DateTime::from_timestamp(send_date as i64, 0)
+                .map(|d| {
+                    use chrono::Datelike;
+                    (d.year() % 100) * 10_000 + d.month() as i32 * 100 + d.day() as i32
+                })
+                .unwrap_or(send_date)
+        } else {
+            send_date
+        };
+
         sqlx::query(
             "INSERT INTO letter (sender_name, recipient_name, subject, message, b_type, \
              item_id, item_count, item_durability, item_serial, item_expiry, coins, \
