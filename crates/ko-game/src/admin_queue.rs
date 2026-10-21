@@ -192,6 +192,7 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 other => Err(format!("unknown field_bot action {other}")),
             }
         }
+        "pk_autospawn" => crate::systems::bot_ai::autospawn_pk_bots(world, pool).await,
         "bot_snapshot" => crate::systems::bot_ai::write_bot_snapshot(world, pool)
             .await
             .map(|n| format!("{n} bot(s) written to bot_snapshot")),

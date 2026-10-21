@@ -5979,6 +5979,20 @@ fn is_presentable_item_name(name: Option<&str>) -> bool {
     !NOVELTY_ITEM_NAME_MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
+/// Bots wear only the plain "Chitin (Armor)" and "Chitin Shell" lines (also the Rogue / Priest
+/// versions of them). Every other chitin set -- Red / Black / Hepa's / Noah / Pathos / Jumping /
+/// Returnee / one-word test rows -- is banned.
+fn is_banned_chitin_name(name: &str) -> bool {
+    let n = name.trim().to_lowercase();
+    if !n.contains("chitin") {
+        return false;
+    }
+    let allowed_start = ["chitin armor", "chitin shell", "rogue chitin armor", "rogue chitin shell", "priest chitin armor", "priest chitin shell"]
+        .iter()
+        .any(|p| n.starts_with(p));
+    !(allowed_start && !n.contains("noah") && !n.contains("jumping"))
+}
+
 fn build_bot_gear_catalog(world: &WorldState, world_key: usize, item_count: usize) -> BotGearCatalog {
     let rows = world.collect_items_matching(|item| {
         matches!(item.slot, Some(0..=9)) && item.kind.is_some_and(is_bot_gear_kind)
@@ -6008,6 +6022,14 @@ fn build_bot_gear_catalog(world: &WorldState, world_key: usize, item_count: usiz
             let n = n.to_lowercase();
             n.contains("draki") || n.contains("amazon")
         }) {
+            acc.excluded = true;
+            continue;
+        }
+        if item
+            .str_name
+            .as_deref()
+            .is_some_and(|n| is_banned_chitin_name(n))
+        {
             acc.excluded = true;
             continue;
         }
@@ -6161,6 +6183,10 @@ fn pick_bot_gear<'a>(
     if candidates.iter().any(|family| family.has_upgrade_line) {
         candidates.retain(|family| family.has_upgrade_line);
     }
+    // Hand items (weapon / shield) are High Class lines worn at +8, so they glow.
+    if force_max_grade && candidates.iter().any(|family| family.base.item_class == Some(3)) {
+        candidates.retain(|family| family.base.item_class == Some(3));
+    }
     if candidates.is_empty() {
         return None;
     }
@@ -6176,7 +6202,7 @@ fn pick_bot_gear<'a>(
         family
             .variants
             .iter()
-            .filter(|(grade, _, _)| *grade <= 7)
+            .filter(|(grade, _, _)| *grade <= 8)
             .next_back()
             .or_else(|| family.variants.first())?
     } else {
@@ -6899,6 +6925,43 @@ fn is_gm_pk_bot(bot: &BotInstance, zone_id: u16) -> bool {
     bot.zone_id == zone_id
         && bot.db_id == 0
         && (bot.ai_state == BotAiState::Pk || bot.original_ai_state == BotAiState::Pk)
+}
+
+/// Fills the PK zones with the bots configured in `pk_bot_autospawn` (admin panel "PK Otomatik Bot"):
+/// per enabled zone `count_per_nation` bots of each nation, topping up what is missing only. Runs
+/// once shortly after the server started and whenever the panel queues the `pk_autospawn` command.
+pub async fn autospawn_pk_bots(world: &WorldState, pool: &ko_db::DbPool) -> Result<String, String> {
+    use sqlx::Row;
+    let rows = sqlx::query("SELECT zone_id, count_per_nation, level FROM pk_bot_autospawn WHERE enabled ORDER BY zone_id")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut report: Vec<String> = Vec::new();
+    for r in rows {
+        let zone_id = r.try_get::<i16, _>("zone_id").unwrap_or(0).max(0) as u16;
+        let want = r.try_get::<i16, _>("count_per_nation").unwrap_or(0).max(0) as usize;
+        let level = r.try_get::<Option<i16>, _>("level").ok().flatten().map(|l| l.clamp(1, 83) as u8);
+        let have = |nation: u8| {
+            world
+                .bots
+                .iter()
+                .filter(|e| is_gm_pk_bot(e.value(), zone_id) && e.value().nation == nation)
+                .count()
+        };
+        let deficit = want.saturating_sub(have(1).min(have(2)));
+        if deficit == 0 {
+            report.push(format!("{zone_id}: tam"));
+            continue;
+        }
+        match spawn_pk_bot_wave(world, zone_id, Some(deficit), level) {
+            Ok(res) => report.push(format!("{zone_id}: +{} bot", res.spawned)),
+            Err(e) => report.push(format!("{zone_id}: {e}")),
+        }
+    }
+    if report.is_empty() {
+        return Ok("no zone enabled".into());
+    }
+    Ok(report.join(", "))
 }
 
 /// Despawn all bots server-wide and return the count removed.

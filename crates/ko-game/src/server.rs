@@ -280,6 +280,20 @@ impl GameServer {
         ));
         info!("Field bot scheduler started (every zone is OFF until enabled in the admin panel)");
 
+        // PK zones get their configured bots (admin panel "PK Otomatik Bot") shortly after start,
+        // once the zones, tables and the bot AI are up.
+        {
+            let world = self.world.clone();
+            let pool = self.pool.clone();
+            bg_tasks.push(tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(25)).await;
+                match crate::systems::bot_ai::autospawn_pk_bots(&world, &pool).await {
+                    Ok(msg) => info!(result = %msg, "PK bot auto-spawn at start"),
+                    Err(e) => tracing::warn!(error = %e, "PK bot auto-spawn at start failed"),
+                }
+            }));
+        }
+
         // DISABLED: heartbeat probe sends opcode=0x02 (WIZ_NEW_CHAR) with 16 random bytes.
         // v2600 client parses this as NPC data → garbage parse → memory corruption → bag items cleared.
         // TODO: either remove entirely or send a properly formatted 0x02 packet.
