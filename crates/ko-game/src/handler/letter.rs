@@ -62,6 +62,7 @@ pub async fn handle(
     }
 
     let letter_opcode = reader.read_u8().unwrap_or(0);
+    debug!("[{}] LETTER request opcode={}", session.addr(), letter_opcode);
 
     let char_name = match session.world().get_character_info(session.session_id()) {
         Some(ch) => ch.name.clone(),
@@ -119,55 +120,70 @@ async fn handle_unread(session: &mut ClientSession, char_name: &str) -> anyhow::
     Ok(())
 }
 
-/// The LETTER_LIST / LETTER_HISTORY reply for `letters` (also pushed to a recipient whose mailbox
-/// window is open when a new letter arrives).
+/// Date encoding of the 64-bit date field of a list entry (GM `+mailfmt N` while the 2625 client's
+/// exact reading of it is being confirmed): 0 = unix seconds (UTC), 1 = yyyymmdd, 2 = yymmdd,
+/// 3 = unix milliseconds, 4 = yyyymmddhhmmss.
+pub static LETTER_LIST_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// `send_date` (yymmdd) as a UTC midnight time.
+fn letter_datetime(send_date: i32) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    let d = send_date.max(0);
+    let (yy, mm, dd) = (d / 10_000, (d / 100) % 100, d % 100);
+    chrono::Utc
+        .with_ymd_and_hms(2000 + yy, mm.clamp(1, 12) as u32, dd.clamp(1, 31) as u32, 0, 0, 0)
+        .single()
+        .unwrap_or_else(chrono::Utc::now)
+}
+
+fn letter_date_field(send_date: i32) -> u64 {
+    use chrono::{Datelike, Timelike};
+    let t = letter_datetime(send_date);
+    match LETTER_LIST_FORMAT.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => (t.year() as u64) * 10_000 + t.month() as u64 * 100 + t.day() as u64,
+        2 => (t.year() as u64 % 100) * 10_000 + t.month() as u64 * 100 + t.day() as u64,
+        3 => (t.timestamp().max(0) as u64) * 1000,
+        4 => {
+            (t.year() as u64) * 10_000_000_000
+                + t.month() as u64 * 100_000_000
+                + t.day() as u64 * 1_000_000
+                + t.hour() as u64 * 10_000
+        }
+        _ => t.timestamp().max(0) as u64,
+    }
+}
+
+/// The LETTER_LIST / LETTER_HISTORY reply for `letters`, in the layout the 2625 client parses
+/// (decoded from its mail window code, not the 1.298 layout):
+/// `[u8 1][u8 count]` then per letter
+/// `[u32 id][u8 status][u8 len + subject][u8 len + sender][u8 type]`
+/// `[type 2: u32 item][u16 count][u32 coins][u16 durability]][u64 date][u8 1][u8 sender nation]`.
 fn build_list_packet(opcode: u8, letters: &[ko_db::models::LetterRow]) -> Packet {
     let mut response = letter_response(opcode);
     response.write_u8(1); // success
-    response.write_i8(letters.len().min(127) as i8);
+    response.write_u8(letters.len().min(127) as u8);
 
     for letter in letters.iter().take(127) {
         response.write_u32(letter.letter_id as u32);
         response.write_u8(letter.b_status as u8);
-        // SByte strings for subject and sender (C++ uses SByte mode)
+        // SByte strings for subject and sender
         response.write_sbyte_string(&letter.subject);
         response.write_sbyte_string(&letter.sender_name);
         response.write_u8(letter.b_type as u8);
 
-        let fmt = LETTER_LIST_FORMAT.load(std::sync::atomic::Ordering::Relaxed);
         if letter.b_type == 2 {
             response.write_u32(letter.item_id as u32);
-            if fmt == 5 {
-                response.write_u32(letter.item_count as u32);
-            } else {
-                response.write_u16(letter.item_count as u16);
-            }
-            if fmt != 4 {
-                response.write_u32(letter.coins as u32);
-            }
-            match fmt {
-                1 => response.write_u32(0),
-                2 => {
-                    response.write_u32(0);
-                    response.write_u16(0);
-                }
-                3 => response.write_u64(0),
-                _ => {}
-            }
+            response.write_u16(letter.item_count as u16);
+            response.write_u32(letter.coins as u32);
+            response.write_u16(letter.item_durability.max(0) as u16);
         }
 
-        let date = letter.send_date as u32;
-        // 6: yyyymmdd instead of yymmdd
-        response.write_u32(if fmt == 6 { date + 20_000_000 } else { date });
-        response.write_u16(letter.days_remaining as u16);
+        response.write_u64(letter_date_field(letter.send_date));
+        response.write_u8(1); // entry is valid / listed
+        response.write_u8(0); // sender nation 0: never scramble the subject
     }
     response
 }
-
-/// Layout experiment for the 2625 client's mail list (GM `+mailfmt N`): 0 = reference layout,
-/// 1/2/3 = extra 4 / 6 / 8 zero bytes after the coins, 4 = no coins field, 5 = 32-bit item count,
-/// 6 = yyyymmdd date. Only the entries' type-2 part and the date are touched.
-pub static LETTER_LIST_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// LETTER_LIST (2) / LETTER_HISTORY (3): List letters.
 /// Response: WIZ_SHOPPING_MALL + STORE_LETTER + opcode + u8(1=success) + i8(count)
@@ -218,7 +234,8 @@ async fn handle_read(
         Some(msg) => {
             response.write_u8(1); // success
             response.write_u32(letter_id);
-            response.write_sbyte_string(&msg);
+            // the 2625 client reads the body with a 16-bit length (an 8-bit one left it blank)
+            response.write_string(&msg);
         }
         None => {
             response.write_u8(0); // not found

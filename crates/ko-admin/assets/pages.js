@@ -390,8 +390,8 @@ function eventDialog(e){
 
 /* letters */
 PAGE.letters=async function(main){
-  const f={recipient:h('input'),item_id:h('input',{type:'number',value:'0'}),count:h('input',{type:'number',value:'1'}),durability:h('input',{type:'number',value:'0'}),sender:h('input',{value:'Yönetim'}),subject:h('input',{value:'Ödül'}),message:h('input',{value:'İyi oyunlar!'})};
-  const names={recipient:'Alıcı karakter',item_id:'Item ID',count:'Adet',durability:'Dayanıklılık',sender:'Gönderen',subject:'Konu',message:'Mesaj'};
+  const f={recipient:h('input'),item_id:h('input',{type:'number',value:'0'}),count:h('input',{type:'number',value:'1'}),expiry_days:h('input',{type:'number',min:'0',value:'0',placeholder:'0 = süresiz'}),sender:h('input',{value:'Yönetim'}),subject:h('input',{value:'Ödül'}),message:h('input',{value:'İyi oyunlar!'})};
+  const names={recipient:'Alıcı karakter',item_id:'Item ID',count:'Adet',expiry_days:'Süre (gün) — 0 = süresiz, 1 = 1 günlük',sender:'Gönderen',subject:'Konu',message:'Mesaj'};
   const lib=libraryPanel({onPick:it=>{f.item_id.value=it.id}});
   /* recipient live search: prefix match after 1 letter, click to select */
   const dd=h('div',{class:'mlist',style:'position:absolute;left:0;right:0;top:100%;z-index:20;margin:2px 0 0;background:var(--panel,#0b1736);border:1px solid #22407f;border-radius:9px;max-height:300px;overflow:auto;display:none'});
@@ -413,7 +413,7 @@ PAGE.letters=async function(main){
   f.recipient.addEventListener('keydown',e=>{if(e.key==='Escape')hideDd()});
   main.append(head('Mektup / Ödül','Mektup sistemiyle item gönder'),h('div',{class:'grid g2'},
     h('div',{class:'card'},h('div',{class:'form'},Object.keys(f).map(k=>field(names[k],k==='recipient'?h('div',{style:'position:relative'},f.recipient,dd):f[k],k==='message'))),h('div',{class:'hint',style:'margin:14px 0'},'Oyuncu çevrimiçi olsa da olmasa da mektubu alır.'),
-      h('button',{class:'btn primary',onclick:async()=>{try{await api('/letters/item',{body:{recipient:f.recipient.value.trim(),item_id:Number(f.item_id.value),count:Number(f.count.value),durability:Number(f.durability.value),sender:f.sender.value,subject:f.subject.value,message:f.message.value}});toast('Mektup gönderildi','ok')}catch(_){}}},ico('mail'),'Gönder')),
+      h('button',{class:'btn primary',onclick:async()=>{try{await api('/letters/item',{body:{recipient:f.recipient.value.trim(),item_id:Number(f.item_id.value),count:Number(f.count.value),expiry_days:Number(f.expiry_days.value),sender:f.sender.value,subject:f.subject.value,message:f.message.value}});toast('Mektup gönderildi','ok')}catch(_){}}},ico('mail'),'Gönder')),
     h('div',{class:'card'},lib.el)));
 };
 

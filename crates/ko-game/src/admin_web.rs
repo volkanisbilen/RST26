@@ -1396,7 +1396,9 @@ struct AdminItemLetterInput {
     recipient: String,
     item_id: i32,
     count: i16,
-    durability: i16,
+    /// Days the item is usable after it is taken from the letter (0 = no time limit).
+    #[serde(default)]
+    expiry_days: i32,
     sender: String,
     subject: String,
     message: String,
@@ -1417,7 +1419,7 @@ async fn send_item_letter(
         || recipient_query.chars().count() > 21
         || input.item_id <= 0
         || input.count < 1
-        || input.durability < 0
+        || !(0..=3650).contains(&input.expiry_days)
         || sender.is_empty()
         || sender.chars().count() > 21
         || sender.chars().any(char::is_control)
@@ -1463,7 +1465,7 @@ async fn send_item_letter(
     let mut tx = app.pool.begin().await.map_err(|_| ApiError::Internal)?;
     let letter_id = sqlx::query_scalar::<_, i32>(
         r#"INSERT INTO letter (sender_name,recipient_name,subject,message,b_type,item_id,item_count,item_durability,item_serial,item_expiry,coins,send_date,days_remaining)
-         VALUES ($1,$2,$3,$4,2,$5,$6,$7,0,0,0,$8,30) RETURNING letter_id"#,
+         VALUES ($1,$2,$3,$4,2,$5,$6,0,0,$7,0,$8,30) RETURNING letter_id"#,
     )
     .bind(sender)
     .bind(&recipient)
@@ -1471,7 +1473,7 @@ async fn send_item_letter(
     .bind(message)
     .bind(input.item_id)
     .bind(input.count)
-    .bind(input.durability)
+    .bind(input.expiry_days)
     .bind(send_date)
     .fetch_one(&mut *tx)
     .await
@@ -1487,7 +1489,7 @@ async fn send_item_letter(
         &session.actor,
         "letter.item.send",
         &recipient,
-        json!({"letter_id":letter_id,"item_id":input.item_id,"count":input.count,"durability":input.durability,"subject":subject}),
+        json!({"letter_id":letter_id,"item_id":input.item_id,"count":input.count,"expiry_days":input.expiry_days,"subject":subject}),
         peer.ip(),
     )
     .await?;
