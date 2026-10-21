@@ -1762,10 +1762,40 @@ async fn shozin_exchange(
         };
 
         // Weight check
+        // The materials leave the bag in the same step, so only the NET weight change counts (the old check
+        // added the result on top of the still-present materials and refused every craft of a heavy recipe,
+        // e.g. 150 stackable materials -> 1 weapon, for a character near its weight limit).
         let item_weight = (give_proto.weight.unwrap_or(0) as i32).saturating_mul(give_count as i32);
+        let consumed_weight: i32 = consume
+            .iter()
+            .map(|(_, id, cnt)| {
+                world.get_item(*id).map(|p| (p.weight.unwrap_or(0) as i32).saturating_mul(*cnt as i32)).unwrap_or(0)
+            })
+            .sum::<i32>()
+            + if shadow_consume.is_some() {
+                world.get_item(ITEM_SHADOW_PIECE).map(|p| p.weight.unwrap_or(0) as i32).unwrap_or(0)
+            } else {
+                0
+            };
         if let Some(ch) = world.get_character_info(sid) {
-            if ch.item_weight + item_weight > ch.max_weight {
-                return craft_reject(session, line!(), String::new()).await;
+            if ch.item_weight + item_weight - consumed_weight > ch.max_weight {
+                // the client only knows "wrong material" for a refused craft: say what is really wrong
+                world.send_to_session_owned(
+                    sid,
+                    crate::systems::timed_notice::build_notice_packet(
+                        8,
+                        "Craft iptal edildi: cantaniz cok agir, sonuc esya tasinamaz. Biraz esya birakin.",
+                    ),
+                );
+                return craft_reject(
+                    session,
+                    line!(),
+                    format!(
+                        "too heavy: bag {} + result {} - materials {} > max {}",
+                        ch.item_weight, item_weight, consumed_weight, ch.max_weight
+                    ),
+                )
+                .await;
             }
         }
 
