@@ -1,5 +1,5 @@
 {
- "version": 2649,
+ "version": 2650,
  "files": {
   "Chr/bk_lion25_boww.n3chr": "32ea9ec61d2dabd1cc856c5267d22628ff58c34db02a4bd2592749dab8a1ff72",
   "Chr/bk_lion25_danger.n3chr": "d8581e57bd7332ff4c8edb63a74f859fc0ea22530aa679650ff37ad79463691c",
@@ -11,7 +11,7 @@
   "Chr/bk_lion25_staff_lightning.n3chr": "f9175f277db88dc77fcc0c29c767e2ef082265c31d397b91cdd6257c9ac87374",
   "Chr/bk_lion25_wea_axe.n3chr": "1232924c6c77037c1953e0620640daf7080d17d41e76b8c4b02a439a34a91c8b",
   "Chr/bk_lion25_wea_spear.n3chr": "2c37ea094c9b6615c410534c7a545b8e2d87c9196a3ac26aee82ef18e963d1e0",
-  "d3d9.dll": "b152cad0ee89c2089da7aedc7145978704ea4457145df11443bddc17257f541c",
+  "d3d9.dll": "b61f3a37f12755c685d75080eaea002b7dbf5613d3b01fe8aeb1dedbc11b1958",
   "Data/ACHIEVE_com.tbl": "3740a12a7400f1636abbeb9bb32c5d0d1068a499dd8f646f57fc5b15c7bf4dfd",
   "Data/ACHIEVE_main.tbl": "0676a83edd54adc763c939d6acc6488d19460ccec69912cc0ee6e0e714084cf0",
   "Data/ACHIEVE_mon.tbl": "1c488bdd0e0e5929f7c43638c188b35d00551486575fc01337f690f5f63c4266",
@@ -211,7 +211,7 @@
   "Data/Quest_Menu.tbl": "ca631cc3f8a7d9dc9e3acbfd1845c49bc93b23ab7917b5fe46a47afe43997289",
   "Data/Quest_Menu_TK.tbl": "b9d282ffd2bb923e1a992b07431d82db5ab758115017fdc95887414aadda40e4",
   "Data/quest_menu_tr.tbl": "2ed11e5aa037503dc18bc3a90092728e3f1335881ed346c3398dc123ceb77922",
-  "Data/Quest_Menu_us.tbl": "e819f8b3a4a6baeeb3f1a2ae2155f6ff0bb3b1e89c6e47b51966758477e3016d",
+  "Data/Quest_Menu_us.tbl": "dc2eccc598c50c85dc62f487ad5e3e9253d7c650e56710db0cdfb796830829e5",
   "Data/Quest_Monster_Exchange.tbl": "ab7396d14cff78e02b53a63b9332d6935b3abe4c3dfd6ad974275780d61a9699",
   "Data/quest_noparty.tbl": "17e6dc93e7162b58ec3fa0204807a27f7f70ffbb4fd12553550d017db2b918bf",
   "Data/quest_npc_desc_tk.tbl": "1d5c71a0b6e790a30446631ccaddadfe5ae0c18d8d6134f84d3170280f1fbde2",
@@ -220,7 +220,7 @@
   "Data/Quest_Talk_nc.tbl": "b8b1fb7f62d9c7d3e08db0ee3796ee9f218defc4c1b2f8059ad6792ac35adc47",
   "Data/Quest_Talk_TK.tbl": "7836ba72388f216652b5fa0a05be8e22914afb07afd53458bb505d84ff2f61d1",
   "Data/quest_talk_tr.tbl": "5963b2f1f92fc971e811a574ce1554a9160d69723be30c4fecb55baafb3f7603",
-  "Data/Quest_Talk_us.tbl": "495c5020f680b0513a6f25c9c830d207434f2ef36bb6fef8268020f314b10cca",
+  "Data/Quest_Talk_us.tbl": "6a25c47ee7dd546eab84d0d5c42ba5049af072b027919ae29d540fa63f268506",
   "Data/RamdomTip_us.tbl": "29580de43acf4f962392ae74d0ed20bf49cdf53a588609cea1a34ff7b8f93051",
   "Data/remove_curse.tbl": "7050fd98a122526b36d42d119153b07c31a121be9aa9db672fce296ff36b7b9d",
   "Data/Review_Cospre_us.tbl": "1587373e0e3f03c244c24942da67fe23eb5e8f1b5218bd31fc34859e55c8a363",
