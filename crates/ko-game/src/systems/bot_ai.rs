@@ -6435,7 +6435,8 @@ fn generate_bot_equipment(world: &WorldState, class: u16, level: u8) -> [(u32, i
         } else {
             None
         };
-        if pick.is_none() {
+        // Strictly Chitin / Chitin Shell for these classes (Kurians included): no other set as a fallback.
+        if pick.is_none() && !chitin_only {
             pick = pick_bot_gear(&catalog, class, level, &mut rng, false, |family| {
                 family.slot == item_slot && armor_kinds.contains(&family.kind)
             });
