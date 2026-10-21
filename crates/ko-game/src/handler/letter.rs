@@ -134,17 +134,40 @@ fn build_list_packet(opcode: u8, letters: &[ko_db::models::LetterRow]) -> Packet
         response.write_sbyte_string(&letter.sender_name);
         response.write_u8(letter.b_type as u8);
 
+        let fmt = LETTER_LIST_FORMAT.load(std::sync::atomic::Ordering::Relaxed);
         if letter.b_type == 2 {
             response.write_u32(letter.item_id as u32);
-            response.write_u16(letter.item_count as u16);
-            response.write_u32(letter.coins as u32);
+            if fmt == 5 {
+                response.write_u32(letter.item_count as u32);
+            } else {
+                response.write_u16(letter.item_count as u16);
+            }
+            if fmt != 4 {
+                response.write_u32(letter.coins as u32);
+            }
+            match fmt {
+                1 => response.write_u32(0),
+                2 => {
+                    response.write_u32(0);
+                    response.write_u16(0);
+                }
+                3 => response.write_u64(0),
+                _ => {}
+            }
         }
 
-        response.write_u32(letter.send_date as u32);
+        let date = letter.send_date as u32;
+        // 6: yyyymmdd instead of yymmdd
+        response.write_u32(if fmt == 6 { date + 20_000_000 } else { date });
         response.write_u16(letter.days_remaining as u16);
     }
     response
 }
+
+/// Layout experiment for the 2625 client's mail list (GM `+mailfmt N`): 0 = reference layout,
+/// 1/2/3 = extra 4 / 6 / 8 zero bytes after the coins, 4 = no coins field, 5 = 32-bit item count,
+/// 6 = yyyymmdd date. Only the entries' type-2 part and the date are touched.
+pub static LETTER_LIST_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// LETTER_LIST (2) / LETTER_HISTORY (3): List letters.
 /// Response: WIZ_SHOPPING_MALL + STORE_LETTER + opcode + u8(1=success) + i8(count)
@@ -467,9 +490,6 @@ async fn handle_send(
         notify.write_u8(1); // has unread = true
         world.send_to_session_owned(recipient_sid, notify);
 
-        if let Ok(letters) = repo.load_letters(&recipient, true).await {
-            world.send_to_session_owned(recipient_sid, build_list_packet(LETTER_LIST, &letters));
-        }
     }
 
     send_letter_result(session, 1i8).await?;

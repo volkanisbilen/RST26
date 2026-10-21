@@ -418,6 +418,11 @@ pub async fn process_chat_command(
         }
         "killnear" => handle_kill_near(session, &args).await?,
         "ekle" => handle_add_spawn(session, &args).await?,
+        "mailfmt" => {
+            let n = args.first().and_then(|a| a.parse::<u8>().ok()).unwrap_or(0).min(6);
+            super::letter::LETTER_LIST_FORMAT.store(n, std::sync::atomic::Ordering::Relaxed);
+            send_help(session, &format!("Mektup listesi düzeni: {n} (0 = standart). Mektup penceresini kapatıp aç."));
+        }
         "aggro" => handle_aggro(session, &args),
         "ultimaid" => {
             match args.first().and_then(|a| a.parse::<i16>().ok()) {
