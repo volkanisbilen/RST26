@@ -569,7 +569,7 @@ async fn handle_get_item(
 
     // Item granting path (item_id != 0)
     if item_id != 0 {
-        let _item_def = match world.get_item(item_id) {
+        let item_def = match world.get_item(item_id) {
             Some(i) => i,
             None => {
                 let mut r = letter_response(LETTER_GET_ITEM);
@@ -638,10 +638,19 @@ async fn handle_get_item(
                 return false;
             }
             let slot = &mut inv[pos];
+            let was_empty = slot.item_id == 0;
             slot.item_id = item_id;
             slot.count = (slot.count + count).min(ITEMCOUNT_MAX);
-            // C++ uses sDuration += sDurability (additive)
-            slot.durability += durability as i16;
+            // Letters created by the server (rewards, daily quest, GM gifts) carry durability 0:
+            // such an item arrives with its table durability instead of a broken 0. A stack that
+            // already exists keeps its own durability.
+            if was_empty {
+                slot.durability = if durability > 0 {
+                    durability as i16
+                } else {
+                    item_def.duration.unwrap_or(1).max(1)
+                };
+            }
             slot.serial_num = actual_serial;
             slot.expire_time = expire_time;
 
