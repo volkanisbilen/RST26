@@ -1577,6 +1577,7 @@ async fn handle_player_attack(
         // ── PvP loyalty (NP) change ──────────────────────────────────
         // If the zone grants loyalty, give NP to killer (or party) and deduct from victim.
         dead::pvp_loyalty_on_death(world, attacker_sid, target_sid);
+        super::quest::quest_player_kill_count_add(world, attacker_sid, target.nation);
 
         // ── Rivalry / Anger Gauge ────────────────────────────────────────
         // In Ardream / Ronark Land zones: increment victim's anger gauge, assign
@@ -1887,6 +1888,7 @@ pub(crate) async fn handle_npc_attack(
                     attacker_sid,
                     bot.nation,
                 );
+                super::quest::quest_player_kill_count_add(&world, attacker_sid, bot.nation);
             }
 
             ATTACK_TARGET_DEAD

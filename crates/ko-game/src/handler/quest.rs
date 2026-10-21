@@ -567,6 +567,37 @@ pub(crate) async fn save_event(
     Ok(())
 }
 
+/// Player-kill quests: `quest_monster` rows whose target id is 1 or 2 mean "kill a player of that
+/// nation" (the id is the victim's nation). The killer and the party members in the same zone get
+/// the credit, the same way an NPC kill is shared.
+pub fn quest_player_kill_count_add(
+    world: &crate::world::WorldState,
+    killer_sid: SessionId,
+    victim_nation: u8,
+) {
+    if victim_nation != 1 && victim_nation != 2 {
+        return;
+    }
+    let zone = world.get_position(killer_sid).map(|p| p.zone_id);
+    let mut credited = vec![killer_sid];
+    if let Some(party) = world
+        .get_party_id(killer_sid)
+        .and_then(|pid| world.get_party(pid))
+    {
+        for m in party.members.iter().filter_map(|&m| m) {
+            if m != killer_sid
+                && (m as u32) < crate::world::BOT_ID_BASE
+                && world.get_position(m).map(|p| p.zone_id) == zone
+            {
+                credited.push(m);
+            }
+        }
+    }
+    for sid in credited {
+        quest_monster_count_add(world, sid, victim_nation as u16);
+    }
+}
+
 /// Track monster kill for quest progress.
 /// Called when an NPC/monster is killed. Checks all active quests for matching
 /// monster IDs and increments kill counts. Uses `world.send_to_session` for
