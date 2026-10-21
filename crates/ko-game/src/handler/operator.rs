@@ -10205,19 +10205,22 @@ async fn handle_kill_near(session: &mut ClientSession, args: &[&str]) -> anyhow:
 }
 
 
-/// +ekle <npc/canavar SID> [adet=1] [cap_metre=15] - places `adet` of that NPC/monster evenly on a
+/// +ekle <npc/canavar SID> [adet=1] [yaricap_metre=7.5] - places `adet` of that NPC/monster evenly on a
 /// circle (default 15 m diameter, radius 7.5) around the GM, each point clamped to a walkable tile.
 /// Every monster is written as its own npc_spawn row (num_npc=1, gm_added=true when the column
 /// exists) and then the live spawn reload is run, so they appear at once, survive a restart and are
 /// covered by `+reload npc_spawn` / the panel's reload button -- never spawned twice.
 async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow::Result<()> {
     use crate::spawn_circle::{place_on_circle, DEFAULT_DIAMETER, MAX_DIAMETER, MIN_DIAMETER};
+    const MIN_RADIUS: f32 = MIN_DIAMETER / 2.0;
+    const MAX_RADIUS: f32 = MAX_DIAMETER / 2.0;
+    const DEFAULT_RADIUS: f32 = DEFAULT_DIAMETER / 2.0;
     let world = session.world().clone();
     let sid = session.session_id();
     let Some(npc_id) = args.first().and_then(|a| a.parse::<u16>().ok()) else {
         send_help(
             session,
-            "Kullanım: +ekle <npc/canavar SID> [adet=1] [çap_metre=15] -- GM'in etrafında daire şeklinde eşit aralıklı yerleştirir",
+            "Kullanım: +ekle <npc/canavar SID> [adet=1] [yarıçap_metre=7.5] -- GM'in etrafında daire şeklinde eşit aralıklı yerleştirir",
         );
         return Ok(());
     };
@@ -10226,11 +10229,11 @@ async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow:
         .and_then(|a| a.parse::<u16>().ok())
         .unwrap_or(1)
         .clamp(1, 50);
-    let diameter = args
+    let radius = args
         .get(2)
-        .and_then(|a| a.parse::<f32>().ok())
-        .unwrap_or(DEFAULT_DIAMETER)
-        .clamp(MIN_DIAMETER, MAX_DIAMETER);
+        .and_then(|a| a.replace(',', ".").parse::<f32>().ok())
+        .unwrap_or(DEFAULT_RADIUS)
+        .clamp(MIN_RADIUS, MAX_RADIUS);
     let Some(pos) = world.get_position(sid) else {
         return Ok(());
     };
@@ -10253,7 +10256,16 @@ async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow:
         vec![(pos.x, pos.z)]
     } else {
         let start = (rand::random::<u16>() % 360) as f32;
-        place_on_circle(pos.x, pos.z, count as usize, diameter / 2.0, start, ok)
+        let strict = place_on_circle(pos.x, pos.z, count as usize, radius, start, ok);
+        // When the server map marks (nearly) everything around as blocked every point falls back
+        // to the centre and the monsters pile up: then only keep them inside the map bounds.
+        let stacked = strict.iter().filter(|&&(x, z)| x == pos.x && z == pos.z).count();
+        if stacked * 2 > strict.len() {
+            let loose = |x: f32, z: f32| x >= 1.0 && z >= 1.0 && zone.as_ref().is_none_or(|zn| zn.is_valid_position(x, z));
+            place_on_circle(pos.x, pos.z, count as usize, radius, start, loose)
+        } else {
+            strict
+        }
     };
 
     let pool = session.pool().clone();
@@ -10299,7 +10311,7 @@ async fn handle_add_spawn(session: &mut ClientSession, args: &[&str]) -> anyhow:
             session,
             &match live {
                 Ok((added, ..)) => format!(
-                    "{count}x {name} (#{npc_id}) {diameter:.0} m çaplı daire üzerine eklendi: {saved} spawn kaydı yazıldı (kalıcı), canlı yüklemede {added} yeni kayıt işlendi."
+                    "{count}x {name} (#{npc_id}) {radius:.1} m yarıçaplı daire üzerine eklendi: {saved} spawn kaydı yazıldı (kalıcı), canlı yüklemede {added} yeni kayıt işlendi."
                 ),
                 Err(e) => format!("{saved} spawn kaydı yazıldı ama canlı yükleme başarısız ({e}); '+reload npc_spawn' deneyin."),
             },

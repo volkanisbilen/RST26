@@ -12,6 +12,7 @@
 //!   kratos <Data dir> <out dir>         build the Kratos skill-bar fix (Item_Org_us, Skill_Magic_Main_us, Skill_Magic_4)
 //!   skillfix <Data dir> <out dir>       skill audit: correct Skill_Magic_Main_us/tk rows (Kurian passive class codes, Rise MP)
 //!   tickets <Data dir> <out dir>        add the Emblem Exchange Voucher rows to TICKET_EXCHANGE.tbl (migration 20261018220000)
+//!   boxitems <Data dir> <out dir>       add the 6 box items the client table lacks (Item_Org_us/tk), icons borrowed from existing boxes
 //!   piece <Data dir> <out dir> <rewards.txt>  build the Chaotic Generator boxes fix (piece_Exchange_us)
 
 use anyhow::{bail, Context, Result};
@@ -243,6 +244,7 @@ fn main() -> Result<()> {
         Some("skillfix") => skillfix(Path::new(&a[2]), Path::new(&a[3]))?,
         Some("tickets") => tickets(Path::new(&a[2]), Path::new(&a[3]))?,
         Some("piece") => piece(Path::new(&a[2]), Path::new(&a[3]), Path::new(&a[4]))?,
+        Some("boxitems") => boxitems(Path::new(&a[2]), Path::new(&a[3]))?,
         Some("kratos") => kratos(Path::new(&a[2]), Path::new(&a[3]), a.get(4).map(String::as_str).unwrap_or("us"))?,
         _ => bail!("usage: tbl_rawedit roundtrip|show|orphans|kratos|tickets|piece ..."),
     }
@@ -479,5 +481,42 @@ fn tickets(src: &Path, out: &Path) -> Result<()> {
     }
     save(&t, &out.join("TICKET_EXCHANGE.tbl"))?;
     println!("rows now {}", t.rows.len());
+    Ok(())
+}
+
+/// The client Item_Org tables lack six breakable boxes, so they show as "?" items. Each new row is a
+/// clone of an existing box row (Accessory box 508194000 / Trophy box 508164000) with the id, name,
+/// description and that template's icon, which exists in the client's UI textures.
+fn boxitems(src: &Path, out: &Path) -> Result<()> {
+    // (item id, name, template row = icon source)
+    const NEW: [(i128, &str, i128); 6] = [
+        (507184000, "Holy Armor - Legend Dark Star Weapon Box", 508194000),
+        (507194000, "Krowaz Armor - Weapon Box", 508194000),
+        (507204000, "Legend Dragon Box", 508164000),
+        (507284000, "Black - Red Chitin - Weapon Box", 508194000),
+        (507294000, "70 Quest Box", 508164000),
+        (509194000, "Exp Item - Chitin Shell Box", 508164000),
+    ];
+    fs::create_dir_all(out)?;
+    for lang in ["us", "tk"] {
+        let (mut items, _, _) = load(&src.join(format!("Item_Org_{lang}.tbl")))?;
+        for (id, name, tpl) in NEW {
+            if find_row(&items, id).is_some() {
+                println!("{lang} {id}: already present");
+                continue;
+            }
+            let t = find_row(&items, tpl).with_context(|| format!("template {tpl} missing in {lang}"))?;
+            let mut row = items.rows[t].clone();
+            set_int(&mut row[0], id)?;
+            set_str(&mut row[2], name);
+            set_str(&mut row[3], "Break it at the Box Breaker in Moradon.");
+            set_int(&mut row[23], 1)?; // countable
+            set_int(&mut row[10], 95)?; // kind / slot like the server rows
+            set_int(&mut row[12], 15)?;
+            println!("{lang} {id}: {}", fmt_row(&row));
+            insert_sorted(&mut items, row);
+        }
+        save(&items, &out.join(format!("Item_Org_{lang}.tbl")))?;
+    }
     Ok(())
 }
