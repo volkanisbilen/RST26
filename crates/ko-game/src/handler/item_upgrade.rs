@@ -1746,6 +1746,10 @@ async fn shozin_exchange(
             return craft_reject(session, line!(), String::new()).await;
         }
         result_code = CraftingErrorCode::Failed;
+        world.send_to_session_owned(
+            sid,
+            crate::systems::timed_notice::build_notice_packet(8, "Craft basarisiz oldu, malzemeler kayboldu."),
+        );
     } else {
         // ── SUCCESS ──
         let give_proto = match world.get_item(give_item_id) {
@@ -1777,8 +1781,8 @@ async fn shozin_exchange(
             } else {
                 0
             };
-        if let Some(ch) = world.get_character_info(sid) {
-            if ch.item_weight + item_weight - consumed_weight > ch.max_weight {
+        if let Some((cur_weight, max_weight)) = world.with_session(sid, |h| (h.equipped_stats.item_weight as i32, h.equipped_stats.max_weight as i32)) {
+            if cur_weight + item_weight - consumed_weight > max_weight {
                 // the client only knows "wrong material" for a refused craft: say what is really wrong
                 world.send_to_session_owned(
                     sid,
@@ -1792,7 +1796,7 @@ async fn shozin_exchange(
                     line!(),
                     format!(
                         "too heavy: bag {} + result {} - materials {} > max {}",
-                        ch.item_weight, item_weight, consumed_weight, ch.max_weight
+                        cur_weight, item_weight, consumed_weight, max_weight
                     ),
                 )
                 .await;
