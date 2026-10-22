@@ -52,6 +52,17 @@ if ($q !== '') {
     });
 }
 
+// 10 recipes per page: the full list is far too long for the browser
+$perPage = 10;
+$totalGroups = count($groups);
+$pages = max(1, (int)ceil($totalGroups / $perPage));
+$page = min(max(1, (int)($_GET['p'] ?? 1)), $pages);
+$groups = array_slice(array_values($groups), ($page - 1) * $perPage, $perPage);
+function jstko_craft_page_url(int $npc, string $q, int $p): string
+{
+    return '?' . http_build_query(array_filter(['npc' => $npc, 'q' => $q, 'p' => $p > 1 ? $p : null], fn($v) => $v !== null && $v !== ''));
+}
+
 function jstko_craft_pct(int $rate): string
 {
     $p = $rate / 100;
@@ -82,7 +93,7 @@ function jstko_craft_icon(array $items, int $id): string
   <?php if (!$groups): ?>
     <p class="text-sm text-slate-500">Eşleşen tarif yok.</p>
   <?php else: ?>
-    <p class="text-xs text-slate-500 mb-3"><?= count($groups) ?> tarif</p>
+    <p class="text-xs text-slate-500 mb-3"><?= $totalGroups ?> tarif<?= $pages > 1 ? " · sayfa $page / $pages" : '' ?></p>
     <div class="space-y-4">
       <?php foreach ($groups as $g): ?>
         <div class="card p-4">
@@ -111,6 +122,17 @@ function jstko_craft_icon(array $items, int $id): string
         </div>
       <?php endforeach; ?>
     </div>
+    <?php if ($pages > 1):
+        $from = max(1, $page - 2); $to = min($pages, $page + 2); ?>
+      <nav class="flex flex-wrap items-center justify-center gap-2 mt-6" aria-label="Sayfalar">
+        <?php if ($page > 1): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $page - 1)) ?>" class="tab-pill">&larr; Önceki</a><?php endif; ?>
+        <?php if ($from > 1): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, 1)) ?>" class="tab-pill">1</a><?php if ($from > 2): ?><span class="text-slate-500">…</span><?php endif; ?><?php endif; ?>
+        <?php for ($i = $from; $i <= $to; $i++): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $i)) ?>" class="tab-pill <?= $i === $page ? 'on' : '' ?>"><?= $i ?></a><?php endfor; ?>
+        <?php if ($to < $pages): ?><?php if ($to < $pages - 1): ?><span class="text-slate-500">…</span><?php endif; ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $pages)) ?>" class="tab-pill"><?= $pages ?></a><?php endif; ?>
+        <?php if ($page < $pages): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $page + 1)) ?>" class="tab-pill">Sonraki &rarr;</a><?php endif; ?>
+      </nav>
+    <?php endif; ?>
+
   <?php endif; ?>
 </section>
 <?php require __DIR__ . '/partials/footer.php'; ?>

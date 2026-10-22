@@ -374,7 +374,7 @@ a.card:hover, .card.lift:hover { transform: translateY(-3px); border-color: var(
 
 /* tables */
 main table { border-collapse: separate; border-spacing: 0; }
-main table thead th { position: sticky; top: 60px; z-index: 1; background: linear-gradient(180deg, #121c32, #0c1424) !important; color: #c9a85c !important; font-size: .68rem !important; letter-spacing: .1em; border-bottom: 1px solid var(--gold-line); }
+main table thead th { background: linear-gradient(180deg, #121c32, #0c1424) !important; color: #c9a85c !important; font-size: .68rem !important; letter-spacing: .1em; border-bottom: 1px solid var(--gold-line); }
 main table tbody tr { transition: background .15s, transform .15s; animation: rise .45s ease both; }
 main table tbody tr:hover { background: linear-gradient(90deg, rgba(245, 196, 81, .12), rgba(245, 196, 81, .02)) !important; }
 main table tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 #f5c451; }
