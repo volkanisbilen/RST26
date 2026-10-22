@@ -154,7 +154,7 @@ function jstko_date_tr(string $ts): string
   <!-- video + update notes -->
   <div class="grid <?= $mediaMode === 'none' ? '' : 'lg:grid-cols-[1.45fr_1fr]' ?> gap-6">
     <?php if ($mediaMode !== 'none'): ?>
-    <div class="panel overflow-hidden relative min-h-[260px] sm:min-h-[340px] lg:min-h-[0] aspect-video lg:aspect-auto" id="videoBox">
+    <div class="panel overflow-hidden relative min-h-[260px] sm:min-h-[340px] lg:min-h-[0] aspect-video" id="videoBox">
       <?php if ($poster): ?><img src="<?= jstko_e($poster) ?>" alt="" class="absolute inset-0 w-full h-full object-cover"><?php endif; ?>
       <div class="absolute inset-0 bg-gradient-to-t from-ink-900/90 via-transparent to-transparent pointer-events-none"></div>
       <?php if ($ytId !== ''): ?>
