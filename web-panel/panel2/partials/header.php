@@ -49,7 +49,7 @@ if ($cmsMenu) {
 <script src="https://cdn.tailwindcss.com/3.4.14"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="<?= $B ?>/assets/css/app.css?v=2">
+<?php require __DIR__ . '/theme.php'; ?>
 <script>
   tailwind.config = {
     theme: {
