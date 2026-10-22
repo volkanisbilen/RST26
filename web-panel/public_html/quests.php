@@ -11,7 +11,14 @@ $lvl = (int)($_GET['lvl'] ?? 0);                // character level: shows quests
 $page = max(1, (int)($_GET['p'] ?? 1));
 $per = 20;
 
-$where = ['h.s_event_data_index > 0'];
+// Only real quests of the main towns / fields that pay exp or items; plain NPC exchange scripts (item swap
+// without exp, kill target or reward) are left out.
+$where = [
+    'h.s_event_data_index > 0',
+    'h.b_zone IN (1, 2, 11, 12, 21, 71, 72, 73)',
+    "(h.n_exp > 0 OR EXISTS (SELECT 1 FROM item_exchange e WHERE e.n_index = h.n_exchange_index AND e.exchange_item_num1 > 0
+        AND (e.origin_item_num1 = 0 OR EXISTS (SELECT 1 FROM quest_monster m WHERE m.s_quest_num = h.s_event_data_index))))",
+];
 $args = [];
 if ($q !== '') {
     $where[] = '(nt.str_name ILIKE :q OR t.str_talk ILIKE :q)';
@@ -23,7 +30,7 @@ $cond = implode(' AND ', $where);
 
 $base = "SELECT DISTINCT ON (h.s_event_data_index)
             h.s_event_data_index q, h.b_level lvl, h.b_nation nation, h.b_zone zone, h.s_npc_id npc,
-            h.n_exchange_index ex, nt.str_name npc_name, z.zone_name, t.str_talk
+            h.n_exchange_index ex, h.n_exp exp, nt.str_name npc_name, z.zone_name, t.str_talk
          FROM quest_helper h
          LEFT JOIN npc_template nt ON nt.s_sid = h.s_npc_id AND nt.is_monster = false
          LEFT JOIN zone_info z ON z.zone_no = h.b_zone
@@ -118,6 +125,7 @@ $nationName = [1 => 'Karus', 2 => 'El Morad', 3 => 'Her iki ırk', 0 => 'Her iki
           $targets = jstko_quest_targets($kills[(int)$r['q']] ?? null, $mobs);
           $ex = $exch[(int)$r['ex']] ?? null;
           $rewards = [];
+          $exp = (int)$r['exp'];
           if ($ex) for ($i = 1; $i <= 5; $i++) {
               $id = (int)$ex["exchange_item_num$i"];
               if ($id > 0) $rewards[] = ['id' => $id, 'count' => (int)$ex["exchange_item_count$i"]];
@@ -139,9 +147,10 @@ $nationName = [1 => 'Karus', 2 => 'El Morad', 3 => 'Her iki ırk', 0 => 'Her iki
             <?php foreach ($targets as $t): ?><span class="text-xs px-2 py-1 rounded bg-ink-700 border border-ink-500 text-white"><?= jstko_e($t) ?></span><?php endforeach; ?>
           </div>
         <?php endif; ?>
-        <?php if ($rewards): ?>
+        <?php if ($rewards || $exp > 0): ?>
           <div class="text-xs text-slate-500 mb-1">Ödül</div>
           <div class="flex flex-wrap gap-2">
+            <?php if ($exp > 0): ?><div class="flex items-center bg-ink-700 border border-ink-500 rounded-lg px-3 py-1 text-sm text-white"><span class="text-gold-400 font-semibold"><?= number_format($exp, 0, ',', '.') ?></span>&nbsp;EXP</div><?php endif; ?>
             <?php foreach ($rewards as $w): $it = $items[$w['id']] ?? null; ?>
               <div class="flex items-center gap-2 bg-ink-700 border border-ink-500 rounded-lg px-2 py-1">
                 <img src="<?= jstko_e(jstko_item_icon_url(($it['item_icon_id1'] ?? null) ?: null)) ?>" alt="" class="w-8 h-8 rounded border border-ink-500 bg-ink-800 object-contain">
