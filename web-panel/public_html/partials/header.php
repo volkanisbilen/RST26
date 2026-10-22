@@ -34,7 +34,7 @@ $cmsMenu = jstko_cms_menu();
 <body class="bg-ink-900 text-slate-200 font-sans min-h-screen flex flex-col"<?php if ($bgImage): ?> style="background-image:linear-gradient(rgba(11,14,20,.78),rgba(11,14,20,.9)),url('<?= jstko_e($bgImage) ?>');background-size:cover;background-position:center;background-attachment:fixed"<?php endif; ?>>
 
 <header class="bg-ink-800 border-b border-ink-500 sticky top-0 z-40">
-  <div class="max-w-6xl mx-auto px-4">
+  <div class="px-4">
     <div class="flex items-center justify-between h-16">
       <a href="/" class="flex items-center gap-2 font-extrabold text-lg text-white shrink-0">
         <?php if ($logo): ?>
@@ -68,6 +68,7 @@ $cmsMenu = jstko_cms_menu();
         <a href="/" class="hover:text-gold-400 transition">Anasayfa</a>
         <a href="/rankings.php" class="hover:text-gold-400 transition">Sıralamalar</a>
         <a href="/items.php" class="hover:text-gold-400 transition">Droplar</a>
+        <a href="/craft.php" class="hover:text-gold-400 transition">Craft</a>
         <div class="relative group">
           <button type="button" class="hover:text-gold-400 transition flex items-center gap-1">
             Etkinlikler
@@ -126,6 +127,7 @@ $cmsMenu = jstko_cms_menu();
       <a href="/" class="py-2 hover:text-gold-400">Anasayfa</a>
       <a href="/rankings.php" class="py-2 hover:text-gold-400">Sıralamalar</a>
       <a href="/items.php" class="py-2 hover:text-gold-400">Droplar</a>
+      <a href="/craft.php" class="py-2 hover:text-gold-400">Craft</a>
       <div class="py-1 text-xs uppercase text-slate-500 mt-1">Etkinlikler</div>
       <a href="/events.php" class="py-2 pl-3 hover:text-gold-400">Etkinlik Takvimi</a>
       <a href="/daily_quests.php" class="py-2 pl-3 hover:text-gold-400">Günlük Görevler</a>
