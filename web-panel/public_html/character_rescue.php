@@ -14,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = 'Çok fazla deneme yaptınız, lütfen biraz bekleyin.';
         $messageType = 'error';
     } else {
-        $result = jstko_rescue_character($user['str_account_id'], (string)($_POST['char_name'] ?? ''));
+        $result = jstko_rescue_character($user['str_account_id'], (string)($_POST['char_name'] ?? ''), ($_POST['do'] ?? '') === 'moradon');
         $message = $result['message'];
         $messageType = $result['ok'] ? 'success' : 'error';
     }
@@ -28,7 +28,7 @@ require __DIR__ . '/partials/header.php';
 <section class="max-w-2xl mx-auto px-4 py-10">
   <h1 class="text-2xl font-bold text-white mb-1">Karakter Kurtar</h1>
   <p class="text-sm text-slate-400 mb-6">
-    "Zaten oyunda" hatası alıp giriş yapamıyorsanız, karakteriniz sunucuda askıda kalmış olabilir. Aşağıdan kurtarabilirsiniz.
+    "Zaten oyunda" hatası alıp giriş yapamıyorsanız, karakteriniz sunucuda askıda kalmış olabilir. Aşağıdan kurtarabilirsiniz. Bir bölgede takılı kalan ya da giriş yapınca hata veren karakteri "Moradon'a Gönder" ile Moradon'a taşıyabilirsiniz.
   </p>
 
   <?php if ($message): ?>
@@ -45,15 +45,23 @@ require __DIR__ . '/partials/header.php';
           <div class="font-semibold text-white"><?= jstko_e($c['name']) ?></div>
           <div class="text-xs text-slate-400"><?= jstko_e(jstko_nation_name((int)$c['nation'])) ?> · <?= jstko_e(jstko_class_name((int)$c['class'])) ?> · Sv.<?= (int)$c['level'] ?></div>
         </div>
-        <?php if (jstko_pg_bool($c['stuck'])): ?>
-          <form method="post">
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <?php if (jstko_pg_bool($c['stuck'])): ?>
+            <form method="post">
+              <?= jstko_csrf_field() ?>
+              <input type="hidden" name="char_name" value="<?= jstko_e($c['name']) ?>">
+              <button type="submit" class="btn-primary !bg-none !bg-red-600 !border-red-500 !text-white">Askıdan Kurtar</button>
+            </form>
+          <?php else: ?>
+            <span class="text-xs px-3 py-1.5 rounded-full bg-emerald-900/30 border border-emerald-700 text-emerald-300">Normal</span>
+          <?php endif; ?>
+          <form method="post" onsubmit="return confirm('Karakter Moradon’a taşınacak. Oyundaysa oyundan atılır. Devam edilsin mi?')">
             <?= jstko_csrf_field() ?>
             <input type="hidden" name="char_name" value="<?= jstko_e($c['name']) ?>">
-            <button type="submit" class="text-sm px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold transition">Askıdan Kurtar</button>
+            <input type="hidden" name="do" value="moradon">
+            <button type="submit" class="btn-ghost" title="Başka bir bölgede takılı kalan karakter için">Moradon'a Gönder</button>
           </form>
-        <?php else: ?>
-          <span class="text-xs px-3 py-1.5 rounded-full bg-emerald-900/30 border border-emerald-700 text-emerald-300">Normal</span>
-        <?php endif; ?>
+        </div>
       </div>
     <?php endforeach; ?>
   </div>

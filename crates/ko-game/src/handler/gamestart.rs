@@ -2349,7 +2349,7 @@ fn check_ishome_relocation(
 
 /// Get Moradon relocation coordinates using start_position table.
 /// Falls back to hardcoded Moradon coords if start_position lookup fails.
-fn get_moradon_coords(nation: u8, world: &crate::world::WorldState) -> Option<(u16, f32, f32)> {
+pub(crate) fn get_moradon_coords(nation: u8, world: &crate::world::WorldState) -> Option<(u16, f32, f32)> {
     use rand::Rng;
     if let Some(sp) = world.get_start_position(ZONE_MORADON) {
         let (x, z) = if nation == 1 {

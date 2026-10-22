@@ -109,6 +109,31 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 None => Ok(format!("{name} is not online")),
             }
         }
+        // Web "Karakter Kurtar" with the Moradon option: kick the character if it is online (that saves it where it
+        // stands), then put it at the Moradon start point of its nation so a character stuck in a zone can log in again.
+        "rescue_move" => {
+            let name = s("name");
+            if let Some(id) = world.find_session_by_name(&name) {
+                world.kick_session_for_duplicate(id).await;
+            }
+            let nation: Option<i16> = sqlx::query_scalar("SELECT nation FROM userdata WHERE lower(str_user_id)=lower($1)")
+                .bind(&name)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            let Some(nation) = nation else { return Ok(format!("{name} not found")) };
+            let (zone, x, z) = crate::handler::gamestart::get_moradon_coords(nation as u8, world).unwrap_or((21, 267.0, 303.0));
+            let n = sqlx::query("UPDATE userdata SET zone=$2, px=$3, py=0, pz=$4 WHERE lower(str_user_id)=lower($1)")
+                .bind(&name)
+                .bind(zone as i16)
+                .bind((x * 100.0) as i32)
+                .bind((z * 100.0) as i32)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?
+                .rows_affected();
+            Ok(format!("{name} moved to zone {zone} ({x:.0},{z:.0}), rows {n}"))
+        }
         "kick_account" => {
             let account = s("account");
             let names: Vec<String> = sqlx::query_scalar(
