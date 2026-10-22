@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../includes/bootstrap.php';
+require_once __DIR__ . '/../includes/mailer.php';
 $user = jstko_require_gm();
 
 $id = (int)($_GET['id'] ?? 0);
@@ -14,6 +15,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && jstko_csrf_check()) {
             $pdo->prepare('INSERT INTO web_ticket_reply (ticket_id, author, is_staff, body) VALUES (:id, :a, TRUE, :b)')
                 ->execute(['id' => $ticketId, 'a' => $user['str_account_id'], 'b' => $body]);
             $pdo->prepare('UPDATE web_ticket SET updated_at = now() WHERE id = :id')->execute(['id' => $ticketId]);
+            // guest tickets: tell the player by e-mail that there is an answer (link has the private token)
+            $g = $pdo->prepare('SELECT guest, contact_email, access_token, subject FROM web_ticket WHERE id = :id');
+            $g->execute(['id' => $ticketId]);
+            $gt = $g->fetch();
+            if ($gt && jstko_pg_bool($gt['guest']) && $gt['contact_email'] !== '') {
+                $link = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '')
+                    . '/support_ticket.php?id=' . $ticketId . '&t=' . $gt['access_token'];
+                try {
+                    jstko_send_mail($gt['contact_email'], $gt['contact_email'], 'Destek talebinize yanıt geldi (#' . $ticketId . ')',
+                        jstko_mail_layout('Destek talebinize yanıt geldi', '<p>"' . htmlspecialchars($gt['subject']) . '" talebinize yetkilimiz yanıt verdi:</p><blockquote>' . nl2br(htmlspecialchars($body)) . '</blockquote><p><a href="' . htmlspecialchars($link, ENT_QUOTES) . '">Yazışmayı aç ve yanıtla</a></p>'));
+                } catch (Throwable $e) {
+                    error_log('ticket reply mail: ' . $e->getMessage());
+                }
+            }
         }
     } elseif ($action === 'close') {
         $pdo->prepare("UPDATE web_ticket SET status = 'closed' WHERE id = :id")->execute(['id' => $ticketId]);
@@ -49,11 +64,22 @@ if ($id > 0) {
           <button type="submit" class="text-xs px-3 py-1.5 rounded bg-ink-600 hover:bg-ink-500"><?= $ticket['status'] === 'open' ? 'Kapat' : 'Yeniden Aç' ?></button>
         </form>
       </div>
-      <div class="text-sm text-slate-400 mb-4">Hesap: <span class="text-white font-semibold"><?= jstko_e($ticket['account_id']) ?></span></div>
+      <?php if (jstko_pg_bool($ticket['guest'])): ?>
+        <div class="card p-4 mb-4 text-sm border-amber-700/50">
+          <div class="text-amber-300 font-semibold mb-1">Misafir talebi (giriş yapmadan gönderildi)</div>
+          <div class="text-slate-300">E-posta: <b class="text-white"><?= jstko_e($ticket['contact_email']) ?></b>
+            · Hesap: <b class="text-white"><?= jstko_e($ticket['guest_account'] ?: '-') ?></b>
+            · Karakter: <b class="text-white"><?= jstko_e($ticket['guest_char'] ?: '-') ?></b>
+            · IP: <span class="text-slate-400"><?= jstko_e($ticket['client_ip']) ?></span></div>
+          <div class="text-xs text-slate-500 mt-1">Yanıt yazdığında oyuncuya e-posta gider. Bu kişinin gerçekten hesabın sahibi olduğundan emin olmadan hesap işlemi yapma.</div>
+        </div>
+      <?php else: ?>
+        <div class="text-sm text-slate-400 mb-4">Hesap: <span class="text-white font-semibold"><?= jstko_e($ticket['account_id']) ?></span></div>
+      <?php endif; ?>
 
       <div class="space-y-4 mb-8">
         <div class="card p-4">
-          <div class="text-xs text-slate-500 mb-2"><?= jstko_e($ticket['account_id']) ?> · <?= jstko_time_ago($ticket['created_at']) ?></div>
+          <div class="text-xs text-slate-500 mb-2"><?= jstko_e(jstko_pg_bool($ticket['guest']) ? 'Misafir' : $ticket['account_id']) ?> · <?= jstko_time_ago($ticket['created_at']) ?></div>
           <div class="text-sm text-slate-200 whitespace-pre-wrap"><?= jstko_e($ticket['body']) ?></div>
         </div>
         <?php foreach ($replies as $r): ?>
@@ -85,7 +111,7 @@ if ($id > 0) {
           <a href="?id=<?= (int)$t['id'] ?>" class="card p-4 flex items-center justify-between hover:border-gold-400 transition">
             <div>
               <div class="font-medium text-white"><?= jstko_e($t['subject']) ?></div>
-              <div class="text-xs text-slate-500 mt-1"><?= jstko_e($t['account_id']) ?> · <?= jstko_time_ago($t['created_at']) ?></div>
+              <div class="text-xs text-slate-500 mt-1"><?= jstko_pg_bool($t['guest']) ? '<span class="text-amber-300">Misafir</span> · ' . jstko_e($t['contact_email']) : jstko_e($t['account_id']) ?> · <?= jstko_time_ago($t['created_at']) ?></div>
             </div>
             <span class="text-xs px-2 py-1 rounded-full <?= $t['status'] === 'open' ? 'bg-amber-900/30 text-amber-300 border border-amber-700' : 'bg-slate-800 text-slate-400 border border-slate-700' ?>">
               <?= $t['status'] === 'open' ? 'Açık' : 'Kapalı' ?>
