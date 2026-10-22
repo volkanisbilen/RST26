@@ -444,4 +444,9 @@ main input[type=text]:focus, main input[type=search]:focus, main input[type=numb
 .rank-row-wide { grid-template-columns: 1.7rem 4px minmax(0,1fr) auto auto minmax(90px,24%); }
 @media (max-width: 640px) { .rank-row-wide { grid-template-columns: 1.4rem 4px minmax(0,1fr) auto minmax(70px,28%); } }
 
+.vid-btn { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 999px; color: #fff; cursor: pointer;
+  background: rgba(5, 9, 18, .72); border: 1px solid var(--gold-line); backdrop-filter: blur(4px); transition: color .15s, border-color .15s, transform .15s; }
+.vid-btn:hover { color: #f5c451; border-color: #f5c451; transform: scale(1.08); }
+.vid-btn .off { display: none; } .vid-btn.is-muted .on { display: none; } .vid-btn.is-muted .off { display: block; }
+
 </style>

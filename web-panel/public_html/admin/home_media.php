@@ -14,10 +14,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $mode = (string)($_POST['media_mode'] ?? 'video');
             if (!in_array($mode, ['video', 'image', 'none'], true)) $mode = 'video';
-            $video = trim((string)($_POST['video_url'] ?? ''));
-            if ($mode === 'video' && $video !== '' && !preg_match('~^https?://~i', $video)) {
-                throw new RuntimeException('Video bağlantısı http:// veya https:// ile başlamalı.');
+            // one YouTube link per line; every page load of the home page shows a random one
+            $links = [];
+            foreach (preg_split('/\R+/', (string)($_POST['video_urls'] ?? '')) as $line) {
+                $line = trim($line);
+                if ($line === '') continue;
+                if (!preg_match('~(?:youtu\.be/|v=|embed/|shorts/)([A-Za-z0-9_-]{11})~', $line)) {
+                    throw new RuntimeException('Geçerli bir YouTube bağlantısı değil: ' . $line);
+                }
+                $links[] = $line;
             }
+            if (count($links) > 20) throw new RuntimeException('En çok 20 video eklenebilir.');
+            $video = $links[0] ?? '';
+            jstko_set_content('video_urls', implode("\n", $links), 'text', $by);
             jstko_set_content('media_mode', $mode, 'text', $by);
             jstko_set_content('video_url', $video, 'text', $by);
             jstko_set_content('video_title', trim((string)($_POST['video_title'] ?? '')), 'text', $by);
@@ -56,7 +65,7 @@ require __DIR__ . '/_nav.php';
     <fieldset>
       <legend class="text-sm font-semibold text-white mb-2">Ne gösterilsin?</legend>
       <div class="grid sm:grid-cols-3 gap-3 text-sm">
-        <?php foreach (['video' => ['Video', 'YouTube tanıtım videosu, ortada oynat butonu'], 'image' => ['Görsel', 'Resim; istersen tıklayınca bir sayfaya gider (etkinlik, duyuru, indirme…)'], 'none' => ['Gizle', 'Kutu görünmez, Güncelleme Notları tam genişlikte olur']] as $v => [$t, $d]): ?>
+        <?php foreach (['video' => ['Video', 'Birden çok YouTube videosu, sessiz kendiliğinden oynar, her açılışta rastgele biri'], 'image' => ['Görsel', 'Resim; istersen tıklayınca bir sayfaya gider (etkinlik, duyuru, indirme…)'], 'none' => ['Gizle', 'Kutu görünmez, Güncelleme Notları tam genişlikte olur']] as $v => [$t, $d]): ?>
           <label class="block cursor-pointer rounded-lg border p-3 <?= $mode === $v ? 'border-gold-400 bg-gold-500/10' : 'border-ink-500' ?>">
             <input type="radio" name="media_mode" value="<?= $v ?>" <?= $mode === $v ? 'checked' : '' ?> class="mr-1"> <b class="text-white"><?= $t ?></b>
             <span class="block text-xs text-slate-400 mt-1"><?= $d ?></span>
@@ -65,8 +74,9 @@ require __DIR__ . '/_nav.php';
       </div>
     </fieldset>
 
-    <label class="block text-sm text-slate-300">YouTube video bağlantısı <span class="text-slate-500">(sadece "Video" seçiliyken)</span>
-      <input class="input mt-1" type="text" name="video_url" value="<?= jstko_e(jstko_c('video_url')) ?>" placeholder="https://www.youtube.com/watch?v=...">
+    <label class="block text-sm text-slate-300">YouTube video bağlantıları <span class="text-slate-500">(her satıra bir tane, en çok 20; sadece "Video" seçiliyken)</span>
+      <textarea class="input mt-1 font-mono text-xs" name="video_urls" rows="7" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."><?= jstko_e(trim(jstko_c('video_urls') !== '' ? jstko_c('video_urls') : jstko_c('video_url'))) ?></textarea>
+      <span class="block text-xs text-slate-500 mt-1">Anasayfa her açıldığında bunlardan rastgele biri sessiz olarak kendiliğinden oynar. Ziyaretçi sağ üstteki düğmelerle sesi açabilir veya başka bir videoya geçebilir.</span>
     </label>
 
     <label class="block text-sm text-slate-300">Görsele tıklayınca gidilecek adres <span class="text-slate-500">(sadece "Görsel" seçiliyken, boş bırakılırsa tıklanmaz)</span>

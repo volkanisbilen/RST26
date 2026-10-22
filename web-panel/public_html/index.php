@@ -42,12 +42,17 @@ $dl = jstko_c('download_url');
 // intro area next to the release notes (admin: Tanıtım Alanı): a YouTube video, a picture with a link, or hidden
 $video = jstko_c('video_url');
 $poster = jstko_c_image('video_poster') ?: ($heroBg[0] ?? '');
-$mediaMode = jstko_c('media_mode', $video !== '' ? 'video' : 'image');
+// every YouTube link of the admin list (one per line) + the old single link; a random one is shown at each page load
+$ytIds = [];
+foreach (preg_split('/\R+/', jstko_c('video_urls') . "\n" . $video) as $line) {
+    if (preg_match('~(?:youtu\.be/|v=|embed/|shorts/)([A-Za-z0-9_-]{11})~', trim($line), $m)) $ytIds[$m[1]] = $m[1];
+}
+$ytIds = array_values($ytIds);
+$mediaMode = jstko_c('media_mode', $ytIds ? 'video' : 'image');
 if (!in_array($mediaMode, ['video', 'image', 'none'], true)) $mediaMode = 'image';
-if ($mediaMode === 'video' && $video === '') $mediaMode = 'image';
+if ($mediaMode === 'video' && !$ytIds) $mediaMode = 'image';
 $mediaLink = jstko_c('media_link');
-$ytId = '';
-if ($mediaMode === 'video' && preg_match('~(?:youtu\.be/|v=|embed/)([A-Za-z0-9_-]{11})~', $video, $m)) $ytId = $m[1];
+$ytId = ($mediaMode === 'video' && $ytIds) ? $ytIds[array_rand($ytIds)] : '';
 $B = JSTKO_BASE;
 
 function jstko_news_tag(string $title): string
@@ -151,13 +156,22 @@ function jstko_date_tr(string $ts): string
     <?php if ($mediaMode !== 'none'): ?>
     <div class="panel overflow-hidden relative min-h-[260px] sm:min-h-[340px] lg:min-h-[0] aspect-video lg:aspect-auto" id="videoBox">
       <?php if ($poster): ?><img src="<?= jstko_e($poster) ?>" alt="" class="absolute inset-0 w-full h-full object-cover"><?php endif; ?>
-      <div class="absolute inset-0 bg-gradient-to-t from-ink-900/95 via-ink-900/20 to-ink-900/10"></div>
+      <div class="absolute inset-0 bg-gradient-to-t from-ink-900/90 via-transparent to-transparent pointer-events-none"></div>
       <?php if ($ytId !== ''): ?>
-        <button type="button" id="videoPlay" data-yt="<?= jstko_e($ytId) ?>" class="absolute inset-0 grid place-items-center group" aria-label="Videoyu oynat">
-          <span class="w-20 h-20 rounded-full grid place-items-center bg-ink-900/70 border-2 border-gold-400 shadow-[0_0_30px_rgba(245,196,81,.5)] group-hover:scale-105 transition">
-            <svg width="34" height="34" viewBox="0 0 24 24" fill="#f5c451"><path d="M8 5v14l11-7z"/></svg>
-          </span>
-        </button>
+        <iframe id="ytFrame" class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none border-0" title="Tanıtım videosu" loading="eager"
+                src="https://www.youtube-nocookie.com/embed/<?= jstko_e($ytId) ?>?autoplay=1&mute=1&loop=1&playlist=<?= jstko_e($ytId) ?>&controls=0&modestbranding=1&rel=0&playsinline=1&iv_load_policy=3&disablekb=1&enablejsapi=1"
+                allow="autoplay; encrypted-media; picture-in-picture" data-ids="<?= jstko_e(json_encode($ytIds)) ?>" data-cur="<?= jstko_e($ytId) ?>"></iframe>
+        <div class="absolute right-3 top-3 z-10 flex gap-2">
+          <button type="button" id="ytMute" class="vid-btn" aria-label="Sesi aç / kapat" title="Sesi aç / kapat">
+            <svg class="on" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.400v2.100a9 9 0 0 0 0-17.600z"/></svg>
+            <svg class="off" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 4V5L7 9zm13.600 3 2.400-2.400-1.400-1.400-2.400 2.400-2.400-2.400-1.400 1.400 2.400 2.400-2.400 2.400 1.400 1.400 2.400-2.400 2.400 2.400 1.400-1.400z"/></svg>
+          </button>
+          <?php if (count($ytIds) > 1): ?>
+          <button type="button" id="ytNext" class="vid-btn" aria-label="Başka video" title="Başka video">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6l8.500 6L6 18zm9 0h2v12h-2z"/></svg>
+          </button>
+          <?php endif; ?>
+        </div>
       <?php elseif ($mediaMode === 'video'): ?>
         <a href="<?= jstko_e($video) ?>" target="_blank" rel="noopener" class="absolute inset-0 grid place-items-center group" aria-label="Videoyu aç">
           <span class="w-20 h-20 rounded-full grid place-items-center bg-ink-900/70 border-2 border-gold-400 shadow-[0_0_30px_rgba(245,196,81,.5)] group-hover:scale-105 transition"><svg width="34" height="34" viewBox="0 0 24 24" fill="#f5c451"><path d="M8 5v14l11-7z"/></svg></span>
@@ -303,11 +317,28 @@ function jstko_date_tr(string $ts): string
   dots.forEach(function (d) { d.addEventListener('click', function () { show(+d.dataset.i); start(); }); });
   start();
 
-  var play = document.getElementById('videoPlay');
-  if (play) play.addEventListener('click', function () {
-    var box = document.getElementById('videoBox');
-    box.innerHTML = '<iframe class="absolute inset-0 w-full h-full" src="https://www.youtube.com/embed/' + play.dataset.yt + '?autoplay=1&rel=0" title="Tanıtım videosu" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>';
-  });
+  var yt = document.getElementById('ytFrame');
+  if (yt) {
+    var box = document.getElementById('videoBox'), muted = true;
+    function fit() {
+      var w = box.clientWidth, h = box.clientHeight, r = 16 / 9;
+      var fw = w / h > r ? w : h * r, fh = w / h > r ? w / r : h;
+      yt.style.width = Math.ceil(fw * 1.02) + 'px'; yt.style.height = Math.ceil(fh * 1.02) + 'px';
+    }
+    fit(); window.addEventListener('resize', fit);
+    function cmd(f, a) { try { yt.contentWindow.postMessage(JSON.stringify({ event: 'command', func: f, args: a || '' }), '*'); } catch (e) {} }
+    var mb = document.getElementById('ytMute');
+    mb.classList.add('is-muted');
+    mb.addEventListener('click', function () {
+      muted = !muted; cmd(muted ? 'mute' : 'unMute'); if (!muted) cmd('setVolume', [60]); mb.classList.toggle('is-muted', muted);
+    });
+    var nb = document.getElementById('ytNext');
+    if (nb) nb.addEventListener('click', function () {
+      var ids = JSON.parse(yt.dataset.ids), cur = yt.dataset.cur, pool = ids.filter(function (i) { return i !== cur; });
+      var id = pool[Math.floor(Math.random() * pool.length)]; yt.dataset.cur = id;
+      yt.src = 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&mute=' + (muted ? 1 : 0) + '&loop=1&playlist=' + id + '&controls=0&modestbranding=1&rel=0&playsinline=1&iv_load_policy=3&disablekb=1&enablejsapi=1';
+    });
+  }
 })();
 </script>
 
