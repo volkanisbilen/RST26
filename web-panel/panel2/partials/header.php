@@ -106,7 +106,7 @@ if ($cmsMenu) {
             <?= jstko_e($user['str_account_id']) ?>
           </a>
           <?php if (jstko_is_gm((int)$user['str_authority'])): ?>
-            <a href="<?= $B ?>/admin/" class="btn-ghost text-xs">Admin</a>
+            <a href="/admin/" class="btn-ghost text-xs">Admin</a>
           <?php endif; ?>
           <a href="<?= $B ?>/logout.php" class="btn-ghost">Çıkış</a>
         <?php else: ?>
@@ -137,7 +137,7 @@ if ($cmsMenu) {
       <div class="h-px bg-gold-600/30 my-2"></div>
       <?php if ($user): ?>
         <a href="<?= $B ?>/account.php" class="py-2 font-semibold text-white">Hesabım (<?= jstko_e($user['str_account_id']) ?>)</a>
-        <?php if (jstko_is_gm((int)$user['str_authority'])): ?><a href="<?= $B ?>/admin/" class="py-2 text-gold-400">Admin Paneli</a><?php endif; ?>
+        <?php if (jstko_is_gm((int)$user['str_authority'])): ?><a href="/admin/" class="py-2 text-gold-400">Admin Paneli</a><?php endif; ?>
         <a href="<?= $B ?>/logout.php" class="py-2">Çıkış Yap</a>
       <?php else: ?>
         <div class="flex gap-2 py-2">

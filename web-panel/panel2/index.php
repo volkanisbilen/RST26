@@ -67,8 +67,8 @@ function jstko_date_tr(string $ts): string
     <?php foreach ($heroBg as $i => $src): ?>
       <img src="<?= jstko_e($src) ?>" alt="" class="hero-slide absolute inset-0 w-full h-full object-cover object-[65%_center] transition-opacity duration-700 <?= $i === 0 ? 'opacity-100' : 'opacity-0' ?>">
     <?php endforeach; ?>
-    <div class="absolute inset-0 bg-gradient-to-r from-ink-900 via-ink-900/70 to-transparent sm:via-ink-900/45"></div>
-    <div class="absolute inset-0 bg-gradient-to-t from-ink-900/90 via-transparent to-ink-900/30"></div>
+    <div class="absolute inset-0 bg-gradient-to-r from-ink-900/90 via-ink-900/35 to-transparent sm:via-ink-900/20 sm:to-transparent"></div>
+    <div class="absolute inset-0 bg-gradient-to-t from-ink-900/70 via-transparent to-transparent"></div>
   </div>
 
   <div class="relative mx-auto max-w-[1400px] px-5 lg:px-8 min-h-[480px] sm:min-h-[560px] lg:min-h-[640px] flex items-center py-14">
