@@ -1024,17 +1024,14 @@ fn tick_guards_vs_bots(world: &WorldState, now_ms: u64) {
             None => continue,
         };
         for nid in zone.get_npcs_in_3x3(bot.region_x, bot.region_z) {
-            let ai = match world.get_npc_ai(nid) {
-                Some(a) => a,
-                None => continue,
-            };
-            if ai.nation == 0 || ai.nation == bot.nation || world.is_npc_dead(nid) {
-                continue;
-            }
+            // towers / guards are static NPCs without an AI entry: position and nation come from the instance
             let npc = match world.get_npc_instance(nid) {
                 Some(n) => n,
                 None => continue,
             };
+            if npc.nation == 0 || npc.nation == bot.nation || world.is_npc_dead(nid) {
+                continue;
+            }
             let tmpl = match world.get_npc_template(npc.proto_id, npc.is_monster) {
                 Some(t) => t,
                 None => continue,
@@ -1043,7 +1040,7 @@ fn tick_guards_vs_bots(world: &WorldState, now_ms: u64) {
                 continue;
             }
             let range = (tmpl.search_range as f32).max(tmpl.attack_range as f32).max(30.0);
-            let (dx, dz) = (ai.cur_x - bot.x, ai.cur_z - bot.z);
+            let (dx, dz) = (npc.x - bot.x, npc.z - bot.z);
             if (dx * dx + dz * dz).sqrt() > range {
                 continue;
             }
@@ -1067,7 +1064,7 @@ fn tick_guards_vs_bots(world: &WorldState, now_ms: u64) {
             pkt.write_u8(if new_hp <= 0 { ATTACK_TARGET_DEAD } else { ATTACK_SUCCESS });
             pkt.write_u32(nid);
             pkt.write_u32(id as u32);
-            world.broadcast_to_3x3(ai.zone_id, ai.region_x, ai.region_z, Arc::new(pkt), None, npc.event_room);
+            world.broadcast_to_3x3(npc.zone_id, npc.region_x, npc.region_z, Arc::new(pkt), None, npc.event_room);
             broadcast_bot_party_hp(world, id);
             if new_hp <= 0 {
                 bot_on_death(world, id, now_ms);
