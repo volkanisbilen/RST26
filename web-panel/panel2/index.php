@@ -193,45 +193,68 @@ function jstko_date_tr(string $ts): string
   <?php if ($b = jstko_banner_html('home_mid')): ?><div class="space-y-3"><?= $b ?></div><?php endif; ?>
 
   <!-- top 10 + announcements -->
-  <div class="grid lg:grid-cols-[1fr_1.45fr] gap-6">
-    <div class="panel">
+  <div class="grid lg:grid-cols-[1.2fr_1fr] gap-6">
+    <div class="panel overflow-hidden">
       <div class="panel-head">
-        <h2><span class="head-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7 3h10v2h3v3c0 2.400-1.700 4.300-4 4.800-.6 1.700-2 3-3.500 3.200V19h3v2H8.500v-2h3v-2c-1.500-.2-2.900-1.500-3.500-3.200C5.700 12.300 4 10.400 4 8V5h3zm0 4H6v1c0 1 .5 1.800 1.200 2.300A9 9 0 0 1 7 8zm10 0v1c0 1.300-.1 2-.2 2.300C17.500 9.800 18 9 18 8V7z"/></svg></span>En İyi 10 Oyuncu</h2>
+        <h2><span class="head-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7 3h10v2h3v3c0 2.4-1.7 4.3-4 4.8-.6 1.7-2 3-3.5 3.2V19h3v2h-7v-2h3v-2c-1.5-.2-2.9-1.5-3.5-3.2C5.7 12.3 4 10.4 4 8V5h3zm0 4H6v1c0 1 .5 1.8 1.2 2.3A9 9 0 0 1 7 8zm10 0v1c0 1.3-.1 2-.2 2.3C17.5 9.8 18 9 18 8V7z"/></svg></span>En İyi 10 Oyuncu</h2>
         <a href="<?= $B ?>/rankings.php" class="more">Tümünü Gör <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12h14m-6-6l6 6-6 6"/></svg></a>
       </div>
-      <div class="overflow-x-auto px-2 pb-2">
-        <table class="w-full text-[13px]">
-          <thead class="text-left text-slate-500 text-[10px] uppercase tracking-wider">
-            <tr><th class="py-2 px-2 w-8">#</th><th class="py-2 px-2">Oyuncu</th><th class="py-2 px-2 hidden sm:table-cell">Klan</th><th class="py-2 px-2 text-right">Level</th><th class="py-2 px-2 text-right">NP</th></tr>
-          </thead>
-          <tbody>
-            <?php foreach ($top as $i => $r): ?>
-            <tr class="table-row border-t border-gold-600/10 <?= $i === 0 ? 'bg-gold-500/10' : '' ?>">
-              <td class="py-2 px-2 <?= $i < 3 ? 'text-gold-400 font-bold' : 'text-slate-500' ?>"><?= $i + 1 ?></td>
-              <td class="py-2 px-2 font-semibold text-white">
-                <span class="inline-flex items-center gap-2">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="<?= (int)$r['nation'] === 1 ? 'text-rose-400' : 'text-sky-400' ?>"><path d="M3 8l4.500 4L12 5l4.500 7L21 8l-2 11H5z"/></svg>
-                  <?= jstko_e($r['name']) ?>
-                  <?php if (jstko_pg_bool($r['online'])): ?><span class="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Online"></span><?php endif; ?>
-                </span>
-              </td>
-              <td class="py-2 px-2 text-slate-400 hidden sm:table-cell"><?= jstko_e($r['clan'] ?: 'Klan Yok') ?></td>
-              <td class="py-2 px-2 text-right text-slate-300"><?= (int)$r['lvl'] ?></td>
-              <td class="py-2 px-2 text-right text-gold-400 font-semibold"><?= jstko_number($r['np']) ?></td>
-            </tr>
-            <?php endforeach; ?>
-            <?php if (!$top): ?><tr><td colspan="5" class="py-6 text-center text-slate-500">Henüz veri yok.</td></tr><?php endif; ?>
-          </tbody>
-        </table>
+      <?php
+      $maxNp = max(1, (int)($top[0]['np'] ?? 1));
+      $podium = array_slice($top, 0, 3);
+      $rest = array_slice($top, 3);
+      $order = [1, 0, 2]; // visual order: 2nd, 1st, 3rd
+      $medal = [0 => 'gold', 1 => 'silver', 2 => 'bronze'];
+      ?>
+      <?php if ($podium): ?>
+      <div class="podium">
+        <?php foreach ($order as $pi): if (!isset($podium[$pi])) continue; $r = $podium[$pi]; $m = $medal[$pi]; ?>
+          <div class="pod pod-<?= $m ?> pod-<?= $pi + 1 ?>">
+            <div class="pod-rank"><?= $pi + 1 ?></div>
+            <div class="pod-avatar">
+              <span class="pod-ring"></span>
+              <svg class="pod-crown" viewBox="0 0 24 24" fill="currentColor"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5zm2.3 13h13.4v2H5.3z"/></svg>
+              <?php if ($pi === 0): ?><i class="spark s1"></i><i class="spark s2"></i><i class="spark s3"></i><i class="spark s4"></i><?php endif; ?>
+            </div>
+            <div class="pod-name" title="<?= jstko_e($r['name']) ?>"><?= jstko_e($r['name']) ?><?php if (jstko_pg_bool($r['online'])): ?><span class="dot-on" title="Online"></span><?php endif; ?></div>
+            <div class="pod-clan"><?= jstko_e($r['clan'] ?: 'Klan Yok') ?></div>
+            <div class="pod-meta">
+              <span class="chip-nation <?= (int)$r['nation'] === 1 ? 'karus' : 'elmo' ?>"><?= (int)$r['nation'] === 1 ? 'Karus' : 'El Morad' ?></span>
+              <span class="chip-lvl">Lv <?= (int)$r['lvl'] ?></span>
+            </div>
+            <div class="pod-np"><?= jstko_number($r['np']) ?><small>NP</small></div>
+            <div class="pod-base"></div>
+          </div>
+        <?php endforeach; ?>
       </div>
+      <?php endif; ?>
+
+      <ul class="rank-list">
+        <?php foreach ($rest as $i => $r): $pos = $i + 4; $pct = max(4, (int)round(((int)$r['np'] / $maxNp) * 100)); ?>
+          <li class="rank-row" style="--d:<?= $i ?>">
+            <span class="rank-pos"><?= $pos ?></span>
+            <span class="rank-nation <?= (int)$r['nation'] === 1 ? 'karus' : 'elmo' ?>" title="<?= (int)$r['nation'] === 1 ? 'Karus' : 'El Morad' ?>"></span>
+            <span class="rank-who">
+              <b><?= jstko_e($r['name']) ?><?php if (jstko_pg_bool($r['online'])): ?><span class="dot-on" title="Online"></span><?php endif; ?></b>
+              <em><?= jstko_e($r['clan'] ?: 'Klan Yok') ?></em>
+            </span>
+            <span class="chip-lvl">Lv <?= (int)$r['lvl'] ?></span>
+            <span class="rank-np">
+              <b><?= jstko_number($r['np']) ?></b>
+              <i><u style="width:<?= $pct ?>%"></u></i>
+            </span>
+          </li>
+        <?php endforeach; ?>
+        <?php if (!$top): ?><li class="py-8 text-center text-slate-500 text-sm">Henüz veri yok.</li><?php endif; ?>
+      </ul>
     </div>
 
-    <div class="panel">
+    <div class="panel flex flex-col">
       <div class="panel-head">
         <h2><span class="head-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 10v4l3 .5L9 19h2.500l-1.800-4.300L19 18V6L9.700 9.500 6 10zM21 9v6a3 3 0 0 0 0-6z"/></svg></span>Haberler &amp; Duyurular</h2>
         <a href="<?= $B ?>/news.php" class="more">Tümünü Gör <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12h14m-6-6l6 6-6 6"/></svg></a>
       </div>
-      <div class="p-3 grid sm:grid-cols-2 gap-3">
+      <div class="p-3 grid sm:grid-cols-2 gap-3 auto-rows-fr flex-1">
         <?php foreach ($cards as $n): $img = jstko_news_img($n); ?>
           <a href="<?= $B ?>/news.php?id=<?= (int)$n['id'] ?>" class="news-card group block min-h-[130px] <?= $img ? 'bg-ink-700' : 'news-ph' ?>">
             <?php if ($img): ?><img src="<?= jstko_e($img) ?>" alt="" loading="lazy" class="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition duration-500"><?php endif; ?>
