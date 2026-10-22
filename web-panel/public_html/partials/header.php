@@ -69,6 +69,7 @@ $cmsMenu = jstko_cms_menu();
         <a href="/rankings.php" class="hover:text-gold-400 transition">Sıralamalar</a>
         <a href="/items.php" class="hover:text-gold-400 transition">Droplar</a>
         <a href="/craft.php" class="hover:text-gold-400 transition">Craft</a>
+        <a href="/quests.php" class="hover:text-gold-400 transition">Görevler</a>
         <div class="relative group">
           <button type="button" class="hover:text-gold-400 transition flex items-center gap-1">
             Etkinlikler
@@ -83,6 +84,7 @@ $cmsMenu = jstko_cms_menu();
               <a href="/event_puzzle.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Puzzle Etkinliği</a>
               <a href="/event_roulette.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Çark Ödülleri</a>
               <a href="/event_lottery.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Lottery</a>
+              <a href="/collection_race.php" class="block px-4 py-2 text-sm hover:bg-ink-600 hover:text-gold-400">Collection Race</a>
             </div>
           </div>
         </div>
@@ -128,6 +130,7 @@ $cmsMenu = jstko_cms_menu();
       <a href="/rankings.php" class="py-2 hover:text-gold-400">Sıralamalar</a>
       <a href="/items.php" class="py-2 hover:text-gold-400">Droplar</a>
       <a href="/craft.php" class="py-2 hover:text-gold-400">Craft</a>
+      <a href="/quests.php" class="py-2 hover:text-gold-400">Görevler</a>
       <div class="py-1 text-xs uppercase text-slate-500 mt-1">Etkinlikler</div>
       <a href="/events.php" class="py-2 pl-3 hover:text-gold-400">Etkinlik Takvimi</a>
       <a href="/daily_quests.php" class="py-2 pl-3 hover:text-gold-400">Günlük Görevler</a>
@@ -135,6 +138,7 @@ $cmsMenu = jstko_cms_menu();
       <a href="/event_puzzle.php" class="py-2 pl-3 hover:text-gold-400">Puzzle Etkinliği</a>
       <a href="/event_roulette.php" class="py-2 pl-3 hover:text-gold-400">Çark Ödülleri</a>
       <a href="/event_lottery.php" class="py-2 pl-3 hover:text-gold-400">Lottery</a>
+      <a href="/collection_race.php" class="py-2 pl-3 hover:text-gold-400">Collection Race</a>
       <a href="/online.php" class="py-2 hover:text-gold-400 mt-1">Online Oyuncular</a>
       <a href="/gms.php" class="py-2 hover:text-gold-400">Online GM'ler</a>
       <a href="/character_rescue.php" class="py-2 hover:text-gold-400">Karakter Kurtar</a>
