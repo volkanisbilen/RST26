@@ -77,7 +77,7 @@ if ($cmsMenu) {
         <?php endif; ?>
       </a>
 
-      <nav class="hidden lg:flex items-center gap-1 xl:gap-2 text-[13px] font-medium" aria-label="Ana menü">
+      <nav class="hidden min-[1500px]:flex items-center gap-1.5 text-[13px]" aria-label="Ana menü">
         <?php foreach ($menu as $mi): ?>
           <?php if ($mi['kids']): ?>
             <div class="relative group">
@@ -99,7 +99,7 @@ if ($cmsMenu) {
         <?php endforeach; ?>
       </nav>
 
-      <div class="hidden lg:flex items-center gap-2 shrink-0">
+      <div class="hidden min-[1500px]:flex items-center gap-2 shrink-0">
         <?php if ($user): ?>
           <a href="<?= $B ?>/account.php" class="flex items-center gap-2 text-[13px] font-semibold text-white hover:text-gold-400">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-gold-400"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z"/></svg>
@@ -116,33 +116,38 @@ if ($cmsMenu) {
         <?php endif; ?>
       </div>
 
-      <button id="menuBtn" type="button" class="lg:hidden p-2 rounded hover:bg-ink-600" aria-label="Menü" aria-controls="mobileMenu">
+      <button id="menuBtn" type="button" class="min-[1500px]:hidden nav-link !p-2" aria-label="Menü" aria-controls="mobileMenu">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
     </div>
   </div>
 
-  <div id="mobileMenu" class="hidden lg:hidden border-t border-gold-600/30 bg-ink-800/95 backdrop-blur max-h-[80vh] overflow-y-auto">
-    <nav class="flex flex-col px-4 py-3 gap-1 text-sm font-medium">
-      <?php foreach ($menu as $mi): ?>
-        <?php if ($mi['kids']): ?>
-          <div class="py-1 text-xs uppercase tracking-wider text-gold-500 mt-2"><?= jstko_e($mi['label']) ?></div>
-          <?php foreach ($mi['kids'] as $ch): ?>
-            <a href="<?= jstko_e($ch['url']) ?>" class="py-2 pl-3 hover:text-gold-400"><?= jstko_e($ch['label']) ?></a>
-          <?php endforeach; ?>
-        <?php else: ?>
-          <a href="<?= jstko_e($mi['url']) ?>" class="py-2 hover:text-gold-400 <?= $mi['active'] ? 'text-gold-400' : '' ?>"><?= jstko_e($mi['label']) ?></a>
-        <?php endif; ?>
+  <div id="mobileMenu" class="hidden min-[1500px]:hidden border-t border-gold-600/30 bg-ink-800/95 backdrop-blur max-h-[80vh] overflow-y-auto">
+    <nav class="px-4 py-4 text-sm" aria-label="Mobil menü">
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <?php foreach ($menu as $mi): if ($mi['kids']) continue; ?>
+        <a href="<?= jstko_e($mi['url']) ?>" class="nav-link justify-center text-center <?= $mi['active'] ? 'is-active' : '' ?>"><?= jstko_e($mi['label']) ?></a>
       <?php endforeach; ?>
-      <div class="h-px bg-gold-600/30 my-2"></div>
+      </div>
+      <?php foreach ($menu as $mi): if (!$mi['kids']) continue; ?>
+        <div class="mt-4 mb-2 text-[11px] uppercase tracking-widest text-gold-500 font-bold"><?= jstko_e($mi['label']) ?></div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <?php foreach ($mi['kids'] as $ch): ?>
+            <a href="<?= jstko_e($ch['url']) ?>" class="nav-link justify-center text-center"><?= jstko_e($ch['label']) ?></a>
+          <?php endforeach; ?>
+        </div>
+      <?php endforeach; ?>
+      <div class="h-px bg-gold-600/30 my-4"></div>
       <?php if ($user): ?>
-        <a href="<?= $B ?>/account.php" class="py-2 font-semibold text-white">Hesabım (<?= jstko_e($user['str_account_id']) ?>)</a>
-        <?php if (jstko_is_gm((int)$user['str_authority'])): ?><a href="/admin/" class="py-2 text-gold-400">Admin Paneli</a><?php endif; ?>
-        <a href="<?= $B ?>/logout.php" class="py-2">Çıkış Yap</a>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <a href="<?= $B ?>/account.php" class="btn-gold col-span-2 sm:col-span-1">Hesabım (<?= jstko_e($user['str_account_id']) ?>)</a>
+          <?php if (jstko_is_gm((int)$user['str_authority'])): ?><a href="/admin/" class="btn-ghost">Admin Paneli</a><?php endif; ?>
+          <a href="<?= $B ?>/logout.php" class="btn-ghost">Çıkış Yap</a>
+        </div>
       <?php else: ?>
-        <div class="flex gap-2 py-2">
-          <a href="<?= $B ?>/login.php" class="btn-ghost flex-1 text-center">Giriş Yap</a>
-          <a href="<?= $B ?>/register.php" class="btn-gold flex-1 text-center">Kayıt Ol</a>
+        <div class="grid grid-cols-2 gap-2">
+          <a href="<?= $B ?>/login.php" class="btn-ghost">Giriş Yap</a>
+          <a href="<?= $B ?>/register.php" class="btn-gold">Kayıt Ol</a>
         </div>
       <?php endif; ?>
     </nav>

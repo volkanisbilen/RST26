@@ -22,16 +22,24 @@ body {
 }
 .nav-link {
   position: relative;
-  padding: .55rem .6rem;
-  color: #e6e9f2;
+  display: inline-flex; align-items: center; gap: .3rem;
+  padding: .45rem .8rem;
+  color: #eef0f7;
   white-space: nowrap;
-  transition: color .15s;
+  font-weight: 600;
+  border: 1px solid var(--gold-line-soft);
+  border-radius: .4rem;
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.01));
+  transition: color .15s, border-color .15s, background .15s, box-shadow .15s, transform .15s;
 }
-.nav-link:hover { color: #f5c451; }
-.nav-link.is-active { color: #fff; }
-.nav-link.is-active::after {
-  content: ""; position: absolute; left: .5rem; right: .5rem; bottom: -4px; height: 2px;
-  background: linear-gradient(90deg, transparent, #f5c451, transparent);
+.nav-link:hover {
+  color: #f5c451; border-color: #f5c451; background: rgba(245,196,81,.08);
+  box-shadow: 0 0 14px rgba(224,165,42,.2); transform: translateY(-1px);
+}
+.nav-link.is-active {
+  background: linear-gradient(180deg, #fbd36a 0%, #e0a52a 55%, #b97d12 100%);
+  color: #1a1204; border-color: #f8dc8a;
+  box-shadow: 0 0 18px rgba(224,165,42,.28), inset 0 1px 0 rgba(255,255,255,.35);
 }
 .drop-panel {
   background: #0a111d;
@@ -146,6 +154,16 @@ body {
 }
 
 /* ---- news ---- */
+.news-ph {
+  background:
+    radial-gradient(circle at 80% 15%, rgba(245,196,81,.30), transparent 45%),
+    radial-gradient(circle at 10% 100%, rgba(60,100,200,.30), transparent 50%),
+    linear-gradient(135deg, #16254a 0%, #0d1525 55%, #3a2608 100%);
+}
+.news-ph::before {
+  content: ""; position: absolute; inset: 0; opacity: .18;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23f5c451'%3E%3Cpath d='M3 8l4.5 4L12 5l4.500 7L21 8l-2 11H5zm2.300 13h13.400v2H5.300z'/%3E%3C/svg%3E") center / 38% no-repeat;
+}
 .tag {
   display: inline-block; font-size: .58rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
   padding: .15rem .45rem; border-radius: .25rem; background: #e0a52a; color: #1a1204;

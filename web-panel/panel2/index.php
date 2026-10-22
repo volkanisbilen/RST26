@@ -169,7 +169,7 @@ function jstko_date_tr(string $ts): string
       <div class="p-3 space-y-2">
         <?php foreach ($notes as $n): $img = jstko_news_img($n); ?>
           <a href="<?= $B ?>/news.php?id=<?= (int)$n['id'] ?>" class="flex items-center gap-3 p-2 rounded-lg hover:bg-ink-600/60 transition group">
-            <span class="w-24 h-14 sm:w-28 sm:h-16 rounded-md overflow-hidden border border-gold-600/30 bg-ink-700 flex-none">
+            <span class="relative w-24 h-14 sm:w-28 sm:h-16 rounded-md overflow-hidden border border-gold-600/30 bg-ink-700 flex-none <?= $img ? '' : 'news-ph' ?>">
               <?php if ($img): ?><img src="<?= jstko_e($img) ?>" alt="" loading="lazy" class="w-full h-full object-cover"><?php endif; ?>
             </span>
             <span class="min-w-0 flex-1">
@@ -233,7 +233,7 @@ function jstko_date_tr(string $ts): string
       </div>
       <div class="p-3 grid sm:grid-cols-2 gap-3">
         <?php foreach ($cards as $n): $img = jstko_news_img($n); ?>
-          <a href="<?= $B ?>/news.php?id=<?= (int)$n['id'] ?>" class="news-card group block min-h-[130px] bg-ink-700">
+          <a href="<?= $B ?>/news.php?id=<?= (int)$n['id'] ?>" class="news-card group block min-h-[130px] <?= $img ? 'bg-ink-700' : 'news-ph' ?>">
             <?php if ($img): ?><img src="<?= jstko_e($img) ?>" alt="" loading="lazy" class="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition duration-500"><?php endif; ?>
             <span class="absolute inset-0 bg-gradient-to-t from-ink-900/95 via-ink-900/55 to-ink-900/10"></span>
             <span class="relative flex flex-col justify-end h-full min-h-[130px] p-3">
