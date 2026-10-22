@@ -142,3 +142,4 @@ docs/rift_review.zip
 Map/nav/*.walked
 Map/nav/*.walked.tmp
 Map/nav/debug/
+web-panel/panel2/config.php
