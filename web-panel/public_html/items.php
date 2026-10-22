@@ -83,6 +83,7 @@ function jstko_monster_drops(PDO $pdo, int $sIndex, bool $isMonster): array
     foreach ($acc as $itemId => $pct) {
         $it = $names[$itemId] ?? null;
         $out[] = [
+            'num' => $itemId,
             'str_name' => $it['str_name'] ?? null,
             'item_icon_id1' => $it['item_icon_id1'] ?? null,
             'pct' => $pct,
@@ -185,7 +186,7 @@ if ($mobResults) {
   </form>
 
   <?php if ($mob): ?>
-    <a href="/items.php<?= $q !== '' ? '?q=' . urlencode($q) : '' ?>" class="text-sm text-gold-400 hover:underline mb-4 inline-block">&larr; Arama sonuçlarına dön</a>
+    <a href="<?= JSTKO_BASE ?>/items.php<?= $q !== '' ? '?q=' . urlencode($q) : '' ?>" class="text-sm text-gold-400 hover:underline mb-4 inline-block">&larr; Arama sonuçlarına dön</a>
     <div class="card p-6 mb-8">
       <h2 class="text-xl font-bold text-white"><?= jstko_e($mob['str_name'] ?: 'Yaratık') ?></h2>
       <p class="text-xs text-slate-500 mt-0.5">Lv<?= (int)$mob['s_level'] ?></p>
@@ -202,13 +203,14 @@ if ($mobResults) {
     <?php if (!$mobDrops): ?>
       <p class="text-sm text-slate-500">Bu yaratığın drop listesi tanımlı değil ya da tüm slotlar seviye/ulus bazlı üretim kodu (önizlenemiyor).</p>
     <?php else: ?>
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-        <?php foreach ($mobDrops as $d): ?>
-        <div class="card p-3 flex items-center gap-3">
-          <img src="<?= jstko_e(jstko_item_icon_url($d['item_icon_id1'] ?: null)) ?>" alt="" class="w-10 h-10 rounded border border-ink-500 bg-ink-700 object-contain shrink-0">
-          <div class="min-w-0">
+      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+        <?php foreach ($mobDrops as $di => $d): $pw = max(3, min(100, (int)round($d['pct'] / 100))); ?>
+        <div class="item-card" data-item="<?= (int)$d['num'] ?>" style="--i:<?= min($di, 20) ?>">
+          <img src="<?= jstko_e(jstko_item_icon_url($d['item_icon_id1'] ?: null)) ?>" alt="" class="item-ico">
+          <div class="min-w-0 flex-1">
             <div class="text-sm font-medium text-white truncate"><?= jstko_e($d['str_name']) ?></div>
             <div class="text-xs text-gold-400 font-semibold"><?= jstko_pct_text((float)$d['pct']) ?></div>
+            <span class="pct-bar"><u style="width:<?= $pw ?>%"></u></span>
           </div>
         </div>
         <?php endforeach; ?>
@@ -225,7 +227,7 @@ if ($mobResults) {
             $token = (int)$r['s_sid'] . ':' . $suffix;
             $zones = $resultZones[(int)$r['s_sid'] . ':' . $suffix] ?? [];
         ?>
-        <a href="/items.php?mob=<?= urlencode($token) ?><?= $q !== '' ? '&q=' . urlencode($q) : '' ?>"
+        <a href="<?= JSTKO_BASE ?>/items.php?mob=<?= urlencode($token) ?><?= $q !== '' ? '&q=' . urlencode($q) : '' ?>"
            class="card p-3 flex items-center justify-between hover:border-gold-400 border border-transparent transition">
           <span class="text-sm font-medium text-white"><?= jstko_e($r['str_name'] ?: 'Yaratık') ?></span>
           <span class="text-xs text-slate-500">Lv<?= (int)$r['s_level'] ?> &middot; <?= jstko_e($zones ? implode(', ', $zones) : '-') ?></span>

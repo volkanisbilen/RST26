@@ -79,7 +79,7 @@ function jstko_craft_icon(array $items, int $id): string
 
   <div class="flex flex-wrap gap-2 mb-4">
     <?php foreach ($npcs as $id => $label): ?>
-      <a href="/craft.php?npc=<?= $id ?>" class="px-4 py-2 rounded-lg text-sm font-semibold border transition <?= $id === $npc ? 'bg-gold-500 text-ink-900 border-gold-500' : 'bg-ink-700 border-ink-500 text-slate-300 hover:border-gold-400' ?>"><?= jstko_e($label) ?></a>
+      <a href="<?= JSTKO_BASE ?>/craft.php?npc=<?= $id ?>" class="px-4 py-2 rounded-lg text-sm font-semibold border transition <?= $id === $npc ? 'bg-gold-500 text-ink-900 border-gold-500' : 'bg-ink-700 border-ink-500 text-slate-300 hover:border-gold-400' ?>"><?= jstko_e($label) ?></a>
     <?php endforeach; ?>
   </div>
 
@@ -101,8 +101,8 @@ function jstko_craft_icon(array $items, int $id): string
           <div class="text-xs text-slate-500 mb-2">Gerekli malzemeler (sıra önemli değil)</div>
           <div class="flex flex-wrap gap-3 mb-4">
             <?php foreach ($g['mats'] as [$id, $cnt]): ?>
-              <div class="flex items-center gap-2 bg-ink-700 border border-ink-500 rounded-lg px-2 py-1.5">
-                <img src="<?= jstko_craft_icon($items, $id) ?>" alt="" class="w-9 h-9 rounded border border-ink-500 bg-ink-800 object-contain">
+              <div data-item="<?= (int)$id ?>" class="item-card !p-1.5 !gap-2">
+                <img src="<?= jstko_craft_icon($items, $id) ?>" alt="" class="item-ico !w-9 !h-9">
                 <div class="text-sm text-white"><?= jstko_e($items[$id]['str_name'] ?? ('#' . $id)) ?> <span class="text-gold-400 font-semibold">×<?= $cnt ?></span></div>
               </div>
             <?php endforeach; ?>
@@ -110,8 +110,8 @@ function jstko_craft_icon(array $items, int $id): string
           <div class="text-xs text-slate-500 mb-2"><?= count($g['results']) > 1 ? 'Olası sonuçlar (sınıfına uygun olan verilir)' : 'Sonuç' ?></div>
           <div class="grid sm:grid-cols-2 gap-2">
             <?php foreach ($g['results'] as $res): ?>
-              <div class="flex items-center gap-3 bg-ink-700 border border-ink-500 rounded-lg px-3 py-2">
-                <img src="<?= jstko_craft_icon($items, $res['id']) ?>" alt="" class="w-10 h-10 rounded border border-ink-500 bg-ink-800 object-contain shrink-0">
+              <div data-item="<?= (int)$res['id'] ?>" class="item-card">
+                <img src="<?= jstko_craft_icon($items, $res['id']) ?>" alt="" class="item-ico">
                 <div class="min-w-0 flex-1">
                   <div class="text-sm font-medium text-white truncate"><?= jstko_e($items[$res['id']]['str_name'] ?? ('#' . $res['id'])) ?><?= $res['count'] > 1 ? ' ×' . $res['count'] : '' ?></div>
                   <div class="text-xs text-gold-400 font-semibold">Başarı oranı: <?= jstko_craft_pct($res['rate']) ?></div>
@@ -125,11 +125,11 @@ function jstko_craft_icon(array $items, int $id): string
     <?php if ($pages > 1):
         $from = max(1, $page - 2); $to = min($pages, $page + 2); ?>
       <nav class="flex flex-wrap items-center justify-center gap-2 mt-6" aria-label="Sayfalar">
-        <?php if ($page > 1): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $page - 1)) ?>" class="px-3 py-1.5 rounded-lg border text-sm transition border-ink-500 text-slate-300 hover:border-gold-400">&larr; Önceki</a><?php endif; ?>
-        <?php if ($from > 1): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, 1)) ?>" class="px-3 py-1.5 rounded-lg border text-sm transition border-ink-500 text-slate-300 hover:border-gold-400">1</a><?php if ($from > 2): ?><span class="text-slate-500">…</span><?php endif; ?><?php endif; ?>
-        <?php for ($i = $from; $i <= $to; $i++): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $i)) ?>" class="px-3 py-1.5 rounded-lg border text-sm transition <?= $i === $page ? 'bg-gold-500 text-ink-900 border-gold-500 font-semibold' : 'border-ink-500 text-slate-300 hover:border-gold-400' ?>"><?= $i ?></a><?php endfor; ?>
-        <?php if ($to < $pages): ?><?php if ($to < $pages - 1): ?><span class="text-slate-500">…</span><?php endif; ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $pages)) ?>" class="px-3 py-1.5 rounded-lg border text-sm transition border-ink-500 text-slate-300 hover:border-gold-400"><?= $pages ?></a><?php endif; ?>
-        <?php if ($page < $pages): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $page + 1)) ?>" class="px-3 py-1.5 rounded-lg border text-sm transition border-ink-500 text-slate-300 hover:border-gold-400">Sonraki &rarr;</a><?php endif; ?>
+        <?php if ($page > 1): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $page - 1)) ?>" class="tab-pill">&larr; Önceki</a><?php endif; ?>
+        <?php if ($from > 1): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, 1)) ?>" class="tab-pill">1</a><?php if ($from > 2): ?><span class="text-slate-500">…</span><?php endif; ?><?php endif; ?>
+        <?php for ($i = $from; $i <= $to; $i++): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $i)) ?>" class="tab-pill <?= $i === $page ? 'on' : '' ?>"><?= $i ?></a><?php endfor; ?>
+        <?php if ($to < $pages): ?><?php if ($to < $pages - 1): ?><span class="text-slate-500">…</span><?php endif; ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $pages)) ?>" class="tab-pill"><?= $pages ?></a><?php endif; ?>
+        <?php if ($page < $pages): ?><a href="<?= jstko_e(jstko_craft_page_url($npc, $q, $page + 1)) ?>" class="tab-pill">Sonraki &rarr;</a><?php endif; ?>
       </nav>
     <?php endif; ?>
 

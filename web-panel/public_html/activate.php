@@ -13,12 +13,12 @@ require __DIR__ . '/partials/header.php';
       <div class="text-5xl mb-4">✅</div>
       <h1 class="text-xl font-bold text-white mb-2">Hesabın Aktifleştirildi!</h1>
       <p class="text-sm text-slate-400 mb-6">Artık giriş yapabilir ve oyuna başlayabilirsin.</p>
-      <a href="/login.php" class="btn-primary inline-block">Giriş Yap</a>
+      <a href="<?= JSTKO_BASE ?>/login.php" class="btn-primary inline-block">Giriş Yap</a>
     <?php else: ?>
       <div class="text-5xl mb-4">⚠️</div>
       <h1 class="text-xl font-bold text-white mb-2">Aktivasyon Başarısız</h1>
       <p class="text-sm text-slate-400 mb-6"><?= jstko_e($result['error']) ?></p>
-      <a href="/register.php" class="text-gold-400 hover:underline text-sm">Yeniden kayıt ol</a>
+      <a href="<?= JSTKO_BASE ?>/register.php" class="text-gold-400 hover:underline text-sm">Yeniden kayıt ol</a>
     <?php endif; ?>
   </div>
 </section>

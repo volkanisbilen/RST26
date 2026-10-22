@@ -29,11 +29,11 @@ require __DIR__ . '/partials/header.php';
     <?php if (!$account && !$success): ?>
       <h1 class="text-xl font-bold text-white mb-2">Bağlantı Geçersiz</h1>
       <p class="text-sm text-slate-400 mb-6">Bu şifre yenileme bağlantısının süresi dolmuş ya da zaten kullanılmış.</p>
-      <a href="/forgot_password.php" class="text-gold-400 hover:underline text-sm">Yeni bağlantı iste</a>
+      <a href="<?= JSTKO_BASE ?>/forgot_password.php" class="text-gold-400 hover:underline text-sm">Yeni bağlantı iste</a>
     <?php elseif ($success): ?>
       <h1 class="text-xl font-bold text-white mb-2">Şifren Güncellendi</h1>
       <p class="text-sm text-slate-400 mb-6">Yeni şifrenle giriş yapabilirsin.</p>
-      <a href="/login.php" class="btn-primary inline-block">Giriş Yap</a>
+      <a href="<?= JSTKO_BASE ?>/login.php" class="btn-primary inline-block">Giriş Yap</a>
     <?php else: ?>
       <h1 class="text-2xl font-bold text-white mb-1">Yeni Şifre Belirle</h1>
       <p class="text-sm text-slate-400 mb-6">Hesap: <span class="text-white font-semibold"><?= jstko_e($account) ?></span></p>

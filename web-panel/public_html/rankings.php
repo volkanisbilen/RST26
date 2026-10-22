@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/includes/bootstrap.php';
+require_once __DIR__ . '/partials/podium.php';
 $pageTitle = 'Sıralamalar';
 require __DIR__ . '/partials/header.php';
 
@@ -34,57 +35,59 @@ $tabs = [
     'genel' => 'Genel Sıralama', 'aylik' => 'Aylık Sıralama', 'karus' => 'Karus',
     'elmorad' => 'El Morad', 'clan' => 'Klan Sıralaması',
 ];
+
+// podium rows (same shape for players and clans)
+$pod = [];
+foreach (array_slice($rows, 0, 3) as $r) {
+    if ($tab === 'clan') {
+        $pod[] = ['name' => $r['name'], 'sub' => (int)$r['members'] . ' üye', 'nation' => $r['nation'], 'lvl' => null, 'value' => jstko_number($r['points']), 'unit' => 'Puan', 'online' => false];
+    } else {
+        $pod[] = ['name' => $r['name'], 'sub' => $r['clan'] ?: 'Klan Yok', 'nation' => $r['nation'], 'lvl' => (int)$r['level'],
+                  'value' => jstko_number($tab === 'aylik' ? $r['loyalty_monthly'] : $r['loyalty']), 'unit' => 'NP', 'online' => jstko_pg_bool($r['online'])];
+    }
+}
+$rest = array_slice($rows, 3);
+$maxVal = 1;
+if ($rows) $maxVal = max(1, (int)($tab === 'clan' ? $rows[0]['points'] : ($tab === 'aylik' ? $rows[0]['loyalty_monthly'] : $rows[0]['loyalty'])));
 ?>
 <section class="max-w-5xl mx-auto px-4 py-10">
-  <h1 class="text-2xl font-bold text-white mb-1">Sıralamalar</h1>
+  <h1>Sıralamalar</h1>
   <p class="text-sm text-slate-400 mb-6">İlk 100 <?= $tab === 'clan' ? 'klan' : 'karakter' ?>.</p>
 
   <div class="flex flex-wrap gap-2 mb-6">
     <?php foreach ($tabs as $key => $label): ?>
-      <a href="?tab=<?= $key ?>" class="text-sm px-3 py-1.5 rounded-lg border <?= $tab === $key ? 'bg-gold-500 text-ink-900 border-gold-500 font-semibold' : 'border-ink-500 text-slate-300 hover:border-gold-400' ?> transition"><?= jstko_e($label) ?></a>
+      <a href="?tab=<?= $key ?>" class="tab-pill <?= $tab === $key ? 'on' : '' ?>"><?= jstko_e($label) ?></a>
     <?php endforeach; ?>
   </div>
 
-  <div class="card overflow-x-auto">
-    <table class="w-full text-sm">
-      <?php if ($tab === 'clan'): ?>
-      <thead class="text-left text-slate-500 text-xs uppercase bg-ink-600/50">
-        <tr><th class="py-3 px-4">#</th><th class="py-3 px-4">Klan</th><th class="py-3 px-4">Ulus</th><th class="py-3 px-4">Üye</th><th class="py-3 px-4 text-right">Puan</th></tr>
-      </thead>
-      <tbody>
-        <?php foreach ($rows as $i => $r): ?>
-        <tr class="table-row border-t border-ink-500/50">
-          <td class="py-2.5 px-4 text-slate-500">#<?= $i + 1 ?></td>
-          <td class="py-2.5 px-4 font-medium text-white"><?= jstko_e($r['name']) ?></td>
-          <td class="py-2.5 px-4 <?= ((int)$r['nation'] === 1) ? 'text-red-400' : 'text-blue-400' ?>"><?= jstko_e(jstko_nation_name((int)$r['nation'])) ?></td>
-          <td class="py-2.5 px-4 text-slate-300"><?= (int)$r['members'] ?></td>
-          <td class="py-2.5 px-4 text-right text-gold-400 font-semibold"><?= jstko_number($r['points']) ?></td>
-        </tr>
-        <?php endforeach; ?>
-      </tbody>
-      <?php else: ?>
-      <thead class="text-left text-slate-500 text-xs uppercase bg-ink-600/50">
-        <tr><th class="py-3 px-4">#</th><th class="py-3 px-4">Oyuncu</th><th class="py-3 px-4">Klan</th><th class="py-3 px-4">Seviye</th><th class="py-3 px-4 text-right">NP</th></tr>
-      </thead>
-      <tbody>
-        <?php foreach ($rows as $i => $r): ?>
-        <tr class="table-row border-t border-ink-500/50">
-          <td class="py-2.5 px-4 text-slate-500">
-            <?php if ($i < 3): ?><span class="text-gold-400">🏅</span><?php endif; ?> #<?= $i + 1 ?>
-          </td>
-          <td class="py-2.5 px-4 font-medium text-white">
-            <?php if (jstko_pg_bool($r['online'])): ?><span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5"></span><?php endif; ?>
-            <?= jstko_e($r['name']) ?>
-          </td>
-          <td class="py-2.5 px-4 text-slate-400"><?= jstko_e($r['clan'] ?: 'Klan Yok') ?></td>
-          <td class="py-2.5 px-4 text-slate-300"><?= (int)$r['level'] ?><?= $r['rebirth_level'] ? ' / ' . (int)$r['rebirth_level'] : '' ?></td>
-          <td class="py-2.5 px-4 text-right text-gold-400 font-semibold"><?= jstko_number($tab === 'aylik' ? $r['loyalty_monthly'] : $r['loyalty']) ?></td>
-        </tr>
-        <?php endforeach; ?>
-      <?php endif; ?>
-      <?php if (!$rows): ?><tr><td colspan="5" class="py-10 text-center text-slate-500">Veri yok.</td></tr><?php endif; ?>
-      </tbody>
-    </table>
+  <?php if (!$rows): ?>
+    <div class="card p-10 text-center text-slate-500">Veri yok.</div>
+  <?php else: ?>
+  <div class="panel overflow-hidden">
+    <?= jstko_podium_html($pod) ?>
+    <ul class="rank-list">
+      <?php foreach ($rest as $i => $r): $pos = $i + 4;
+          $val = $tab === 'clan' ? (int)$r['points'] : (int)($tab === 'aylik' ? $r['loyalty_monthly'] : $r['loyalty']);
+          $pct = max(3, (int)round($val / $maxVal * 100));
+          $nat = (int)$r['nation'] === 1 ? 'karus' : 'elmo'; ?>
+        <li class="rank-row rank-row-wide" style="--d:<?= min($i, 14) ?>">
+          <span class="rank-pos"><?= $pos ?></span>
+          <span class="rank-nation <?= $nat ?>" title="<?= $nat === 'karus' ? 'Karus' : 'El Morad' ?>"></span>
+          <span class="rank-who">
+            <b><?= jstko_e($r['name']) ?><?php if ($tab !== 'clan' && jstko_pg_bool($r['online'])): ?><span class="dot-on" title="Online"></span><?php endif; ?></b>
+            <em><?= $tab === 'clan' ? (int)$r['members'] . ' üye' : jstko_e($r['clan'] ?: 'Klan Yok') ?></em>
+          </span>
+          <?php if ($tab !== 'clan'): ?>
+            <span class="cls-chip hidden sm:inline-block"><?= jstko_e(jstko_class_name((int)$r['class'])) ?></span>
+            <span class="chip-lvl">Lv <?= (int)$r['level'] ?><?= $r['rebirth_level'] ? ' / ' . (int)$r['rebirth_level'] : '' ?></span>
+          <?php else: ?>
+            <span class="chip-nation <?= $nat ?>"><?= $nat === 'karus' ? 'Karus' : 'El Morad' ?></span><span></span>
+          <?php endif; ?>
+          <span class="rank-np"><b><?= jstko_number($val) ?></b><i><u style="width:<?= $pct ?>%"></u></i></span>
+        </li>
+      <?php endforeach; ?>
+    </ul>
   </div>
+  <?php endif; ?>
 </section>
 <?php require __DIR__ . '/partials/footer.php'; ?>

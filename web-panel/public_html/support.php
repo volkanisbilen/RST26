@@ -50,7 +50,7 @@ require __DIR__ . '/partials/header.php';
   <?php else: ?>
   <div class="space-y-2">
     <?php foreach ($tickets as $t): ?>
-      <a href="/support_ticket.php?id=<?= (int)$t['id'] ?>" class="card p-4 flex items-center justify-between hover:border-gold-400 transition">
+      <a href="<?= JSTKO_BASE ?>/support_ticket.php?id=<?= (int)$t['id'] ?>" class="card p-4 flex items-center justify-between hover:border-gold-400 transition">
         <div>
           <div class="font-medium text-white"><?= jstko_e($t['subject']) ?></div>
           <div class="text-xs text-slate-500 mt-1"><?= jstko_time_ago($t['created_at']) ?></div>

@@ -32,7 +32,7 @@ $pageTitle = $ticket['subject'];
 require __DIR__ . '/partials/header.php';
 ?>
 <section class="max-w-3xl mx-auto px-4 py-10">
-  <a href="/support.php" class="text-sm text-slate-400 hover:text-gold-400">&larr; Taleplerim</a>
+  <a href="<?= JSTKO_BASE ?>/support.php" class="text-sm text-slate-400 hover:text-gold-400">&larr; Taleplerim</a>
   <h1 class="text-2xl font-bold text-white mt-2 mb-6"><?= jstko_e($ticket['subject']) ?></h1>
 
   <div class="space-y-4 mb-8">

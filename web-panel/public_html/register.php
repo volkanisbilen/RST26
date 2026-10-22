@@ -107,13 +107,13 @@ require __DIR__ . '/partials/header.php';
 
         <label class="flex items-start gap-2 text-sm text-slate-400">
           <input type="checkbox" name="accept_terms" value="1" class="mt-1" required>
-          <span><a href="/terms.php" target="_blank" class="text-gold-400 hover:underline">Kullanıcı Sözleşmesi</a>'ni okudum, kabul ediyorum.</span>
+          <span><a href="<?= JSTKO_BASE ?>/terms.php" target="_blank" class="text-gold-400 hover:underline">Kullanıcı Sözleşmesi</a>'ni okudum, kabul ediyorum.</span>
         </label>
 
         <button type="submit" class="btn-primary w-full">Kabul Et &amp; Kayıt Ol</button>
       </form>
 
-      <p class="text-sm text-slate-400 mt-5">Zaten hesabın var mı? <a href="/login.php" class="text-gold-400 hover:underline font-semibold">Giriş Yap</a></p>
+      <p class="text-sm text-slate-400 mt-5">Zaten hesabın var mı? <a href="<?= JSTKO_BASE ?>/login.php" class="text-gold-400 hover:underline font-semibold">Giriş Yap</a></p>
     <?php endif; ?>
   </div>
 </section>

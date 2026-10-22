@@ -152,8 +152,8 @@ $nationName = [1 => 'Karus', 2 => 'El Morad', 3 => 'Her iki ırk', 0 => 'Her iki
           <div class="flex flex-wrap gap-2">
             <?php if ($exp > 0): ?><div class="flex items-center bg-ink-700 border border-ink-500 rounded-lg px-3 py-1 text-sm text-white"><span class="text-gold-400 font-semibold"><?= number_format($exp, 0, ',', '.') ?></span>&nbsp;EXP</div><?php endif; ?>
             <?php foreach ($rewards as $w): $it = $items[$w['id']] ?? null; ?>
-              <div class="flex items-center gap-2 bg-ink-700 border border-ink-500 rounded-lg px-2 py-1">
-                <img src="<?= jstko_e(jstko_item_icon_url(($it['item_icon_id1'] ?? null) ?: null)) ?>" alt="" class="w-8 h-8 rounded border border-ink-500 bg-ink-800 object-contain">
+              <div data-item="<?= (int)$w['id'] ?>" class="item-card !p-1.5 !gap-2">
+                <img src="<?= jstko_e(jstko_item_icon_url(($it['item_icon_id1'] ?? null) ?: null)) ?>" alt="" class="item-ico !w-8 !h-8">
                 <span class="text-sm text-white"><?= jstko_e($it['str_name'] ?? ('#' . $w['id'])) ?> <span class="text-gold-400 font-semibold">×<?= $w['count'] ?></span></span>
               </div>
             <?php endforeach; ?>

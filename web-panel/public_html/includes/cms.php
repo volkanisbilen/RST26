@@ -20,6 +20,7 @@ function jstko_image_specs(): array
         'page_top'      => [1200, 160,  'Sayfa üstü banner'],
         'page_header'   => [1920, 400,  'Sayfa başlık görseli'],
         'news'          => [1200, 630,  'Haber görseli'],
+        'video_poster'  => [1280, 720,  'Anasayfa tanıtım alanı görseli'],
     ];
 }
 

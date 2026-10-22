@@ -9,8 +9,12 @@ function jstko_config(): array
     if ($config !== null) {
         return $config;
     }
-    $real = __DIR__ . '/../config.php';
+    // panel2 has no secrets of its own: it uses the config.php next to it, else the main panel's (one folder up)
+    $real = null;
+    foreach ([__DIR__ . '/../config.php', __DIR__ . '/../../config.php'] as $cand) {
+        if (is_file($cand)) { $real = $cand; break; }
+    }
     $example = __DIR__ . '/../config.example.php';
-    $config = is_file($real) ? require $real : require $example;
+    $config = $real !== null ? require $real : require $example;
     return $config;
 }

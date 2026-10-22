@@ -42,7 +42,7 @@ require __DIR__ . '/partials/header.php';
         <button type="submit" class="btn-primary w-full">Bağlantı Gönder</button>
       </form>
     <?php endif; ?>
-    <p class="text-sm text-slate-400 mt-5"><a href="/login.php" class="text-gold-400 hover:underline">Girişe dön</a></p>
+    <p class="text-sm text-slate-400 mt-5"><a href="<?= JSTKO_BASE ?>/login.php" class="text-gold-400 hover:underline">Girişe dön</a></p>
   </div>
 </section>
 <?php require __DIR__ . '/partials/footer.php'; ?>

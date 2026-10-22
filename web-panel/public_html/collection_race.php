@@ -67,8 +67,8 @@ $now = (int)date('G') * 60 + (int)date('i');
         <div class="text-xs text-slate-500 mb-1">Ödüller</div>
         <div class="flex flex-wrap gap-2">
           <?php foreach ($rewards[(int)$e['event_index']] as $r): $it = $items[(int)$r['item_id']] ?? null; if (!$it) continue; ?>
-            <div class="flex items-center gap-2 bg-ink-700 border border-ink-500 rounded-lg px-2 py-1">
-              <img src="<?= jstko_e(jstko_item_icon_url(($it['item_icon_id1'] ?? null) ?: null)) ?>" alt="" class="w-8 h-8 rounded border border-ink-500 bg-ink-800 object-contain">
+            <div data-item="<?= (int)$r['item_id'] ?>" class="item-card !p-1.5 !gap-2">
+              <img src="<?= jstko_e(jstko_item_icon_url(($it['item_icon_id1'] ?? null) ?: null)) ?>" alt="" class="item-ico !w-8 !h-8">
               <span class="text-sm text-white"><?= jstko_e($it['str_name']) ?> <span class="text-gold-400 font-semibold">×<?= (int)$r['item_count'] ?></span></span>
               <?php if ((int)$r['rate'] < 100): ?><span class="text-xs text-slate-400">%<?= (int)$r['rate'] ?></span><?php endif; ?>
             </div>

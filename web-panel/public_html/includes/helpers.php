@@ -82,11 +82,17 @@ function jstko_item_icon_url(?int $iconId): string
 {
     if (!$iconId) return '/assets/itemicon/noicon.png';
     foreach (jstko_item_icon_candidates($iconId) as $file) {
-        if (is_file(__DIR__ . '/../assets/itemicon/' . $file)) {
+        if (is_file(rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/\\') . '/assets/itemicon/' . $file) || is_file(__DIR__ . '/../assets/itemicon/' . $file)) {
             return '/assets/itemicon/' . $file;
         }
     }
     return '/assets/itemicon/noicon.png';
+}
+
+/** Internal link inside this panel (CMS menu urls etc.): adds the sub folder prefix, leaves full urls alone. */
+function jstko_url(string $u): string
+{
+    return (strpos($u, '/') === 0 && strpos($u, '//') !== 0 && strpos($u, '/uploads/') !== 0) ? JSTKO_BASE . $u : $u;
 }
 
 function jstko_e(?string $s): string
@@ -96,7 +102,7 @@ function jstko_e(?string $s): string
 
 function jstko_redirect(string $path): never
 {
-    header('Location: ' . $path);
+    header('Location: ' . (strpos($path, '/') === 0 ? JSTKO_BASE : '') . $path);
     exit;
 }
 

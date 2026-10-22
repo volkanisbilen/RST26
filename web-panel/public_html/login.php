@@ -55,8 +55,8 @@ require __DIR__ . '/partials/header.php';
     </form>
 
     <div class="flex items-center justify-between mt-5 text-sm text-slate-400">
-      <a href="/forgot_password.php" class="hover:text-gold-400">Şifremi Unuttum</a>
-      <a href="/register.php" class="hover:text-gold-400 font-semibold">Hesap Oluştur</a>
+      <a href="<?= JSTKO_BASE ?>/forgot_password.php" class="hover:text-gold-400">Şifremi Unuttum</a>
+      <a href="<?= JSTKO_BASE ?>/register.php" class="hover:text-gold-400 font-semibold">Hesap Oluştur</a>
     </div>
   </div>
 </section>
