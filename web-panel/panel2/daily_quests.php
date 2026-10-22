@@ -37,7 +37,7 @@ $quests = $pdo->query(
         $rewards = [];
         for ($i = 1; $i <= 4; $i++) {
             if (!empty($q["reward_{$i}"]) && !empty($q["r{$i}_name"])) {
-                $rewards[] = ['name' => $q["r{$i}_name"], 'icon' => $q["r{$i}_icon"], 'count' => (int)$q["count_{$i}"]];
+                $rewards[] = ['id' => (int)$q["reward_{$i}"], 'name' => $q["r{$i}_name"], 'icon' => $q["r{$i}_icon"], 'count' => (int)$q["count_{$i}"]];
             }
         }
     ?>
@@ -59,8 +59,8 @@ $quests = $pdo->query(
       <?php if ($rewards): ?>
         <div class="flex flex-wrap gap-2 mt-4">
           <?php foreach ($rewards as $r): ?>
-          <div class="flex items-center gap-2 bg-ink-700 border border-ink-500 rounded-lg px-2.5 py-1.5">
-            <img src="<?= jstko_e(jstko_item_icon_url($r['icon'])) ?>" alt="" class="w-8 h-8 rounded border border-ink-500 bg-ink-800 object-contain">
+          <div data-item="<?= (int)$r['id'] ?>" class="item-card !p-1.5 !gap-2">
+            <img src="<?= jstko_e(jstko_item_icon_url($r['icon'])) ?>" alt="" class="item-ico !w-8 !h-8">
             <div class="text-xs">
               <div class="text-white font-medium"><?= jstko_e($r['name']) ?></div>
               <div class="text-slate-500">&times;<?= $r['count'] ?: 1 ?></div>

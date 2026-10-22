@@ -79,6 +79,104 @@ document.addEventListener('DOMContentLoaded', function () {
     requestAnimationFrame(step);
   });
 })();
+
+(function () {
+  var sel = 'main .card, main .panel';
+  var els = document.querySelectorAll(sel), seen = new Map();
+  els.forEach(function (el) {
+    if (el.hasAttribute('data-reveal') || el.closest('[data-reveal]')) return;
+    var p = el.parentElement, i = seen.get(p) || 0; seen.set(p, i + 1);
+    el.setAttribute('data-reveal', ''); el.style.setProperty('--i', Math.min(i, 8));
+    if (el.getBoundingClientRect().top < innerHeight) { /* already on screen: observer below shows it at once */ }
+  });
+  var rv = document.querySelectorAll('[data-reveal]:not(.in)');
+  if ('IntersectionObserver' in window) {
+    var io2 = new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add('in'); io2.unobserve(e.target); } }); }, { threshold: .08 });
+    rv.forEach(function (el) { io2.observe(el); });
+  } else rv.forEach(function (el) { el.classList.add('in'); });
+})();
+window.JSTKO_BASE = <?= json_encode(JSTKO_BASE) ?>;
+
+/* ---- item tooltip: hover (or tap) any element carrying data-item="<item number>" ---- */
+(function () {
+  var KIND = {11:'Dagger',21:'Sword',22:'Two-handed Sword',31:'Axe',32:'Two-handed Axe',41:'Mace',42:'Two-handed Mace',51:'Spear',52:'Long Spear',60:'Shield',70:'Bow',71:'Crossbow',91:'Earring',92:'Necklace',93:'Ring',94:'Belt',95:'Item',97:'Consumable',110:'Staff',120:'Arm band',130:'Armor',140:'Pet',151:'Pet',252:'Cosplay',255:'Unique'};
+  var STAT = {str_b:['Strength Bonus','#ff8a70'],sta_b:['Stamina Bonus','#ffd166'],dex_b:['Dexterity Bonus','#7ee081'],intel_b:['Intelligence Bonus','#6cb6ff'],cha_b:['Charisma Bonus','#d3a0ff'],max_hp_b:['Max HP Bonus','#ff7a9a'],max_mp_b:['Max MP Bonus','#4fd1f5']};
+  var ELEM = {fire_damage:['Fire Damage','#ff9442'],ice_damage:['Ice Damage','#8fdcff'],lightning_damage:['Lightning Damage','#ffe45c'],poison_damage:['Poison Damage','#6fd36f'],hp_drain:['HP Drain','#ff7a9a'],mp_damage:['MP Damage','#4fd1f5'],mp_drain:['MP Drain','#4fd1f5'],mirror_damage:['Damage Reflect','#c4b5fd']};
+  var RESIST = {fire_r:['Fire Resistance','#ff9442'],cold_r:['Ice Resistance','#8fdcff'],lightning_r:['Lightning Resistance','#ffe45c'],magic_r:['Magic Resistance','#c4b5fd'],poison_r:['Poison Resistance','#6fd36f'],curse_r:['Curse Resistance','#d3a0ff']};
+  var ACS = {dagger_ac:'Dagger',sword_ac:'Sword',club_ac:'Mace',mace_ac:'Mace',axe_ac:'Axe',spear_ac:'Spear',bow_ac:'Bow',jamadar_ac:'Jamadar'};
+  var tip = document.createElement('div'); tip.id = 'itemTip'; document.body.appendChild(tip);
+  var cache = {}, token = 0, base = (window.JSTKO_BASE || '');
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function speed(d) { return d <= 0 ? null : d <= 60 ? 'Very Fast' : d <= 90 ? 'Fast' : d <= 130 ? 'Normal' : d <= 170 ? 'Slow' : 'Very Slow'; }
+  function render(it) {
+    var n = function (k) { return Number(it[k] || 0); }, body = '';
+    var row = function (l, v, c) { body += '<div class="ln"><span' + (c ? ' style="color:' + c + '"' : '') + '>' + esc(l) + ' : ' + esc(v) + '</span></div>'; };
+    var bonus = Object.keys(STAT).some(function (k) { return n(k); }) || Object.keys(ELEM).some(function (k) { return n(k); });
+    var unique = Number(it.kind) === 255 || n('item_class') >= 4;
+    var dur = n('duration');
+    var head = '<div class="th"><img src="' + esc(it.icon) + '" alt=""><div class="tn"><div class="nm' + (unique ? ' unique' : bonus ? ' magic' : '') + '">' + esc(it.str_name || ('#' + it.num)) + '</div><div class="ty">' + (unique ? 'Unique item. ' : '') + esc(KIND[it.kind] || ('Type ' + it.kind)) + '</div></div>' + (dur ? '<div class="dbar"><i style="width:100%"></i></div>' : '') + '</div>';
+    if (dur) row('Durability', dur);
+    body += '<hr>';
+    var lo = n('min_damage') || n('damage'), hi = n('max_damage');
+    if (lo || hi) row('Attack Power', lo + (hi && hi !== lo ? ' - ' + hi : ''));
+    if (n('delay')) row('Attack Speed', speed(n('delay')));
+    if (n('range')) row('Effective Range', (n('range') / 10).toFixed(2));
+    if (n('ac')) row('Defense', n('ac'));
+    if (n('hitrate')) row('Hit Rate', n('hitrate'));
+    if (n('evasionrate')) row('Evasion', n('evasionrate'));
+    Object.keys(ELEM).forEach(function (k) { if (n(k)) row(ELEM[k][0], n(k), ELEM[k][1]); });
+    Object.keys(ACS).forEach(function (k) { if (n(k)) row(ACS[k] + ' Defense', '+' + n(k), '#9fc4ff'); });
+    Object.keys(STAT).forEach(function (k) { if (n(k)) row(STAT[k][0], (n(k) > 0 ? '+' : '') + n(k), STAT[k][1]); });
+    Object.keys(RESIST).forEach(function (k) { if (n(k)) row(RESIST[k][0], '+' + n(k), RESIST[k][1]); });
+    row('Weight', (n('weight') / 10).toFixed(2));
+    if (n('req_level')) row('Required Level', n('req_level'));
+    [['req_str','Strength'],['req_sta','Stamina'],['req_dex','Dexterity'],['req_intel','Intelligence'],['req_cha','Charisma']].forEach(function (p) { if (n(p[0])) row('Required ' + p[1], n(p[0])); });
+    if (n('req_rank')) row('Required Rank', n('req_rank'));
+    var foot = '';
+    if (n('by_grade')) foot += '<div class="gd">Item Grade : Grade ' + n('by_grade') + '</div>';
+    if (n('bound')) foot += '<div class="gd">Sealed item</div>';
+    if (it.description) { var d = String(it.description).replace(/\|/g, '\n').replace(/<[^>]+>/g, '').trim(); if (d) foot += '<div class="ds">*' + esc(d) + '*</div>'; }
+    return head + body + (foot ? '<hr class="gold">' + foot : '') + '<div class="ft">#' + esc(it.num) + (n('buy_price') ? ' · Price ' + n('buy_price').toLocaleString('tr-TR') : '') + '</div>';
+  }
+  function load(id) {
+    if (!cache[id]) cache[id] = fetch(base + '/tip.php?id=' + id).then(function (r) { return r.json(); }).catch(function () { return null; });
+    return cache[id];
+  }
+  function place(x, y) {
+    var w = tip.offsetWidth, h = tip.offsetHeight, pad = 16, px = x + pad, py = y + pad;
+    if (px + w > innerWidth - 8) px = x - w - pad;
+    if (py + h > innerHeight - 8) py = Math.max(8, innerHeight - h - 8);
+    if (px < 8) px = 8;
+    tip.style.left = px + 'px'; tip.style.top = py + 'px';
+  }
+  function hide() { token++; tip.style.display = 'none'; }
+  function show(el, x, y) {
+    var id = parseInt(el.getAttribute('data-item'), 10); if (!id) return;
+    var my = ++token;
+    tip.innerHTML = '<div class="ln" style="color:#8b96ad">Yükleniyor…</div>'; tip.style.display = 'block'; place(x, y);
+    load(id).then(function (it) {
+      if (my !== token) return;
+      tip.innerHTML = it ? render(it) : '<div class="ln" style="color:#8b96ad">Eşya #' + id + ' bulunamadı</div>';
+      place(x, y);
+    });
+  }
+  document.addEventListener('mouseover', function (e) {
+    var el = e.target.closest && e.target.closest('[data-item]');
+    if (el) show(el, e.clientX, e.clientY);
+  });
+  document.addEventListener('mousemove', function (e) { if (tip.style.display === 'block') place(e.clientX, e.clientY); });
+  document.addEventListener('mouseout', function (e) {
+    var el = e.target.closest && e.target.closest('[data-item]');
+    if (el && !(e.relatedTarget && el.contains(e.relatedTarget))) hide();
+  });
+  // touch: tap shows, tap elsewhere hides
+  document.addEventListener('click', function (e) {
+    if (!('ontouchstart' in window)) return;
+    var el = e.target.closest && e.target.closest('[data-item]');
+    if (el) { var r = el.getBoundingClientRect(); show(el, r.left, r.bottom); } else hide();
+  });
+})();
 </script>
 </body>
 </html>

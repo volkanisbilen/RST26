@@ -90,8 +90,8 @@ function jstko_craft_icon(array $items, int $id): string
           <div class="text-xs text-slate-500 mb-2">Gerekli malzemeler (sıra önemli değil)</div>
           <div class="flex flex-wrap gap-3 mb-4">
             <?php foreach ($g['mats'] as [$id, $cnt]): ?>
-              <div class="flex items-center gap-2 bg-ink-700 border border-ink-500 rounded-lg px-2 py-1.5">
-                <img src="<?= jstko_craft_icon($items, $id) ?>" alt="" class="w-9 h-9 rounded border border-ink-500 bg-ink-800 object-contain">
+              <div data-item="<?= (int)$id ?>" class="item-card !p-1.5 !gap-2">
+                <img src="<?= jstko_craft_icon($items, $id) ?>" alt="" class="item-ico !w-9 !h-9">
                 <div class="text-sm text-white"><?= jstko_e($items[$id]['str_name'] ?? ('#' . $id)) ?> <span class="text-gold-400 font-semibold">×<?= $cnt ?></span></div>
               </div>
             <?php endforeach; ?>
@@ -99,8 +99,8 @@ function jstko_craft_icon(array $items, int $id): string
           <div class="text-xs text-slate-500 mb-2"><?= count($g['results']) > 1 ? 'Olası sonuçlar (sınıfına uygun olan verilir)' : 'Sonuç' ?></div>
           <div class="grid sm:grid-cols-2 gap-2">
             <?php foreach ($g['results'] as $res): ?>
-              <div class="flex items-center gap-3 bg-ink-700 border border-ink-500 rounded-lg px-3 py-2">
-                <img src="<?= jstko_craft_icon($items, $res['id']) ?>" alt="" class="w-10 h-10 rounded border border-ink-500 bg-ink-800 object-contain shrink-0">
+              <div data-item="<?= (int)$res['id'] ?>" class="item-card">
+                <img src="<?= jstko_craft_icon($items, $res['id']) ?>" alt="" class="item-ico">
                 <div class="min-w-0 flex-1">
                   <div class="text-sm font-medium text-white truncate"><?= jstko_e($items[$res['id']]['str_name'] ?? ('#' . $res['id'])) ?><?= $res['count'] > 1 ? ' ×' . $res['count'] : '' ?></div>
                   <div class="text-xs text-gold-400 font-semibold">Başarı oranı: <?= jstko_craft_pct($res['rate']) ?></div>
