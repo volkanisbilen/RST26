@@ -93,12 +93,13 @@ function jstko_date_tr(string $ts): string
       </div>
     </div>
 
-    <div class="online-card hidden md:flex absolute right-6 lg:right-10 bottom-8 items-center gap-4 px-5 py-4">
-      <svg width="42" height="42" viewBox="0 0 24 24" fill="#f5c451"><circle cx="8" cy="8" r="3"/><circle cx="16.500" cy="8.500" r="2.500"/><circle cx="12" cy="9" r="3.500"/><path d="M2 20c0-3.300 2.700-5.500 6-5.500 1 0 1.800.2 2.600.6A7 7 0 0 0 9 20zM22 20c0-2.600-2-4.500-4.700-4.700-.7.100-1.300.3-1.900.6.900.9 1.400 2.200 1.400 4.100zM12 14.500c3.300 0 6 2 6 5.500H6c0-3.500 2.700-5.500 6-5.500z"/></svg>
-      <div>
-        <div class="text-[10px] font-semibold tracking-widest text-slate-400">AKTİF OYUNCU</div>
-        <div class="text-3xl font-extrabold text-gold-400 leading-none my-1"><?= jstko_number($online) ?></div>
-        <div class="flex items-center gap-1.5 text-[11px] text-slate-300"><span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]"></span>Sunucu Online</div>
+    <div class="online-card hidden md:flex right-6 lg:right-10 bottom-10 items-center gap-4">
+      <span class="oc-glow"></span>
+      <span class="oc-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="8" r="3"/><circle cx="16.5" cy="8.5" r="2.5"/><circle cx="12" cy="9" r="3.5"/><path d="M2 20c0-3.3 2.7-5.5 6-5.5 1 0 1.800.2 2.600.6A7 7 0 0 0 9 20zM22 20c0-2.600-2-4.500-4.700-4.700-.7.100-1.300.3-1.900.6.900.9 1.400 2.200 1.400 4.100zM12 14.500c3.300 0 6 2 6 5.500H6c0-3.500 2.700-5.500 6-5.500z"/></svg></span>
+      <div class="relative">
+        <div class="oc-label">AKTİF OYUNCU</div>
+        <div class="oc-num" data-count="<?= (int)$online ?>"><?= jstko_number($online) ?></div>
+        <div class="oc-live"><span class="live-dot"></span>Sunucu Online<span class="eq"><i></i><i></i><i></i><i></i></span></div>
       </div>
     </div>
 
@@ -114,7 +115,7 @@ function jstko_date_tr(string $ts): string
 
 <!-- ============ FEATURE STRIP ============ -->
 <section class="feature-strip" aria-label="Öne çıkanlar">
-  <div class="mx-auto max-w-[1400px] px-5 lg:px-8 py-4 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-4">
+  <div class="mx-auto max-w-[1400px] px-5 lg:px-8 py-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
     <?php
     $features = [
         ['Aktif Etkinlikler', 'Her gün yeni etkinlikler ve ödüller', '<path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.2l-6.1 3.4 1.4-6.8L2.2 9.1l6.9-.8z"/>'],
@@ -122,12 +123,12 @@ function jstko_date_tr(string $ts): string
         ['Güçlü Topluluk', 'Binlerce oyuncu, tek aile', '<circle cx="12" cy="7.500" r="3"/><circle cx="5.500" cy="9" r="2.200"/><circle cx="18.500" cy="9" r="2.200"/><path d="M6.500 20c0-3.500 2.500-5.500 5.500-5.500s5.500 2 5.500 5.500zM1 18c0-2.600 1.800-4 4.200-4 .6 0 1.200.1 1.700.3A7 7 0 0 0 5.500 18zM23 18c0-2.600-1.800-4-4.200-4-.6 0-1.200.1-1.700.3.600 1 .900 2.200.9 3.700z"/>'],
         ['Klasik Knight Online', 'Efsanevi atmosfer, nostaljik his', '<path d="M3 8l4.500 4L12 5l4.500 7L21 8l-2 11H5zm2.300 13h13.400v2H5.300z"/>'],
     ];
-    foreach ($features as [$ft, $fd, $icon]): ?>
-      <div class="flex items-center gap-3 lg:justify-center">
+    foreach ($features as $fi => [$ft, $fd, $icon]): ?>
+      <div class="feature" data-reveal style="--i:<?= $fi ?>">
         <span class="feature-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><?= $icon ?></svg></span>
         <div class="min-w-0">
-          <div class="text-sm font-semibold text-gold-400"><?= $ft ?></div>
-          <div class="text-[11px] text-slate-400 leading-snug"><?= $fd ?></div>
+          <div class="ft-title"><?= $ft ?></div>
+          <div class="ft-desc"><?= $fd ?></div>
         </div>
       </div>
     <?php endforeach; ?>

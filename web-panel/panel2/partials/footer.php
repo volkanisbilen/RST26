@@ -55,6 +55,30 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 
+
+(function () {
+  var hd = document.querySelector('.site-header');
+  function onScroll() { if (hd) hd.classList.toggle('scrolled', window.scrollY > 10); }
+  onScroll(); window.addEventListener('scroll', onScroll, { passive: true });
+
+  var rv = document.querySelectorAll('[data-reveal]');
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }); }, { threshold: .15 });
+    rv.forEach(function (el) { io.observe(el); });
+  } else { rv.forEach(function (el) { el.classList.add('in'); }); }
+
+  document.querySelectorAll('[data-count]').forEach(function (el) {
+    var to = parseInt(el.getAttribute('data-count'), 10) || 0, t0 = null;
+    if (!to || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    function step(t) {
+      if (t0 === null) t0 = t;
+      var p = Math.min(1, (t - t0) / 1400), v = Math.round(to * (1 - Math.pow(1 - p, 3)));
+      el.textContent = v.toLocaleString('tr-TR');
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  });
+})();
 </script>
 </body>
 </html>

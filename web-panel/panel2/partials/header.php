@@ -71,17 +71,17 @@ if ($cmsMenu) {
     <div class="flex items-center justify-between h-[60px] gap-4">
       <a href="<?= $B ?>/" class="flex items-center gap-2 shrink-0" aria-label="<?= jstko_e($siteName) ?>">
         <?php if ($logo): ?>
-          <img src="<?= jstko_e($logo) ?>" alt="<?= jstko_e($siteName) ?>" class="h-11 w-auto">
+          <span class="logo-wrap"><img src="<?= jstko_e($logo) ?>" alt="<?= jstko_e($siteName) ?>" class="h-11 w-auto"></span>
         <?php else: ?>
-          <span class="font-display font-extrabold text-2xl text-gold-400 tracking-wide drop-shadow"><?= jstko_e($siteName) ?></span>
+          <span class="logo-wrap"><span class="font-display font-extrabold text-2xl text-gold-400 tracking-wide"><?= jstko_e($siteName) ?></span></span>
         <?php endif; ?>
       </a>
 
       <nav class="hidden min-[1500px]:flex items-center gap-1.5 text-[13px]" aria-label="Ana menü">
-        <?php foreach ($menu as $mi): ?>
+        <?php foreach ($menu as $ni => $mi): ?>
           <?php if ($mi['kids']): ?>
             <div class="relative group">
-              <button type="button" class="nav-link flex items-center gap-1 <?= $mi['active'] ? 'is-active' : '' ?>">
+              <button type="button" style="--i:<?= $ni ?>" class="nav-link flex items-center gap-1 <?= $mi['active'] ? 'is-active' : '' ?>">
                 <?= jstko_e($mi['label']) ?>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 9l6 6 6-6"/></svg>
               </button>
@@ -94,7 +94,7 @@ if ($cmsMenu) {
               </div>
             </div>
           <?php else: ?>
-            <a href="<?= jstko_e($mi['url']) ?>" class="nav-link <?= $mi['active'] ? 'is-active' : '' ?>"><?= jstko_e($mi['label']) ?></a>
+            <a href="<?= jstko_e($mi['url']) ?>" style="--i:<?= $ni ?>" class="nav-link <?= $mi['active'] ? 'is-active' : '' ?>"><?= jstko_e($mi['label']) ?></a>
           <?php endif; ?>
         <?php endforeach; ?>
       </nav>
