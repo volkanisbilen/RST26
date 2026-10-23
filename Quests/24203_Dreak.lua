@@ -347,21 +347,29 @@ if (EVENT == 626) then
 	SaveEvent(UID, 3455);
 	SelectMsg(UID, 2, 336, 3242, NPC, 32, -1);
 end
-
-if (EVENT == 628) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379247000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379248000);
-	ITEM_COUNT3 = HowmuchItem(UID, 379065000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 0 and ITEM_COUNT3 > 0) then
+if (EVENT == 628) then -- Spell Stone Powder x5 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 5) then
 		SelectMsg(UID, 4, 336, 3243, NPC, 41, 630, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1 or ITEM_COUNT2 < 1) then
-			SelectMsg(UID, 2, 336, 3240, NPC, 18, 629);
-		elseif (ITEM_COUNT3 < 1) then
-			SelectMsg(UID, 2, 336, 3240, NPC, 18, 632);
-		end
+		SelectMsg(UID, 2, 336, 3240, NPC, 18, 629);
 	end
 end
+
+if (EVENT == 630) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 5) then
+		SelectMsg(UID, 2, 336, 3240, NPC, 18, 629);
+	else
+		RunQuestExchange(UID, 331);
+		SaveEvent(UID, 3454);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 629) then
 	ShowMap(UID, 19);
@@ -371,18 +379,6 @@ if (EVENT == 632) then
 	ShowMap(UID, 336);
 end
 
-
-if (EVENT == 630) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID,331);
-			SaveEvent(UID, 3454);
-			--Skill Açma Komutu--
-end
-end
 
 if (EVENT == 923) then
 	SelectMsg(UID, 2, 348, 5158, NPC, 10, 924);
@@ -401,22 +397,29 @@ if (EVENT == 926) then
 	SaveEvent(UID, 5170);
 	SelectMsg(UID, 2, 348, 5164, NPC, 32, -1);
 end
-
-if (EVENT == 928) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379044000); --- Zombie Eye 50x
-	ITEM_COUNT2 = HowmuchItem(UID, 379043000); --- Gavolt Wing 50x
-	ITEM_COUNT3 = HowmuchItem(UID, 379236000); --- Magic Jewel Powder 2x
-	ITEM_COUNT4 = HowmuchItem(UID, 900000000); --- 10M Coin
-	if (ITEM_COUNT1 > 49 and ITEM_COUNT2 > 49 and ITEM_COUNT3 > 1 and ITEM_COUNT4 > 9999999) then
+if (EVENT == 928) then -- Spell Stone Powder x7 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 7) then
 		SelectMsg(UID, 4, 348, 5165, NPC, 41, 930, 27, -1);
 	else
-		if (ITEM_COUNT1 < 50 or ITEM_COUNT2 < 50 or ITEM_COUNT3 < 2) then
-			SelectMsg(UID, 2, 348, 5162, NPC, 18, 929);
-		elseif (ITEM_COUNT4 < 10000000) then
-			SelectMsg(UID, 2, 348, 5162, NPC, 18, 932);
-		end
+		SelectMsg(UID, 2, 348, 5162, NPC, 18, 929);
 	end
 end
+
+if (EVENT == 930) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 7) then
+		SelectMsg(UID, 2, 348, 5162, NPC, 18, 929);
+	else
+		RunQuestExchange(UID, 525);
+		SaveEvent(UID, 5169);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 929) then
 	ShowMap(UID, 19);
@@ -426,17 +429,6 @@ if (EVENT == 932) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 930) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID,525);
-			SaveEvent(UID, 5169);
-			--Skill Açma Komutu--
-end
-end
 
 if (EVENT == 1023) then
 	SelectMsg(UID, 2, 361, 5169, NPC, 10, 1024);
@@ -455,21 +447,29 @@ if (EVENT == 1026) then
 	SaveEvent(UID, 5176);
 	SelectMsg(UID, 2, 361, 5175, NPC, 32, -1);
 end
-
-if (EVENT == 1028) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379248000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 1 and ITEM_COUNT3 > 9999999) then
+if (EVENT == 1028) then -- Spell Stone Powder x10 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 10) then
 		SelectMsg(UID, 4, 361, 5176, NPC, 41, 1030, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1 or ITEM_COUNT2 < 2) then
-			SelectMsg(UID, 2, 361, 5173, NPC, 18, 1029);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, 361, 5173, NPC, 18, 1032);
-		end
+		SelectMsg(UID, 2, 361, 5173, NPC, 18, 1029);
 	end
 end
+
+if (EVENT == 1030) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 10) then
+		SelectMsg(UID, 2, 361, 5173, NPC, 18, 1029);
+	else
+		RunQuestExchange(UID, 526);
+		SaveEvent(UID, 5181);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 1029) then
 	ShowMap(UID, 19);
@@ -479,17 +479,6 @@ if (EVENT == 1032) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 1030) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID,526);
-			SaveEvent(UID, 5181);
-			--Skill Açma Komutu--
-end
-end
 
 if (EVENT == 1123) then
 	SelectMsg(UID, 2, 367, 5180, NPC, 10, 1124);
@@ -508,21 +497,29 @@ if (EVENT == 1126) then
 	SaveEvent(UID, 5194);
 	SelectMsg(UID, 2, 367, 5186, NPC, 32, -1);
 end
-
-if (EVENT == 1128) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379247000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 1 and ITEM_COUNT3 > 9999999) then
+if (EVENT == 1128) then -- Spell Stone Powder x15 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 15) then
 		SelectMsg(UID, 4, 367, 5187, NPC, 41, 1130, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1 or ITEM_COUNT2 < 2) then
-			SelectMsg(UID, 2, 367, 5184, NPC, 18, 1129);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, 367, 5184, NPC, 18, 1132);
-		end
+		SelectMsg(UID, 2, 367, 5184, NPC, 18, 1129);
 	end
 end
+
+if (EVENT == 1130) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 15) then
+		SelectMsg(UID, 2, 367, 5184, NPC, 18, 1129);
+	else
+		RunQuestExchange(UID, 527);
+		SaveEvent(UID, 5193);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 1129) then
 	ShowMap(UID, 19);
@@ -532,17 +529,6 @@ if (EVENT == 1132) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 1130) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID,527);
-			SaveEvent(UID, 5193);
-			--Skill Açma Komutu--
-end
-end
 
 if (EVENT == 1302) then
 	SelectMsg(UID, 4, 528, 20025, NPC, 22, 1303, 27, -1);

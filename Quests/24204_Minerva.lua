@@ -182,20 +182,29 @@ if (EVENT == 626) then
 end
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
-if (EVENT == 628) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379249000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379250000);
-	ITEM_COUNT3 = HowmuchItem(UID, 379066000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 0 and ITEM_COUNT3 > 0) then
+if (EVENT == 628) then -- Spell Stone Powder x5 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 5) then
 		SelectMsg(UID, 4, 337, 3253, NPC, 41, 630, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1 or ITEM_COUNT2 < 1) then
-			SelectMsg(UID, 2, 54, 3250, NPC, 18, 629);
-		elseif (ITEM_COUNT3 < 1) then
-			SelectMsg(UID, 2, 54, 3250, NPC, 18, 632);
-		end
+		SelectMsg(UID, 2, 337, 3250, NPC, 18, 629);
 	end
 end
+
+if (EVENT == 630) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 5) then
+		SelectMsg(UID, 2, 337, 3250, NPC, 18, 629);
+	else
+		RunQuestExchange(UID, 332);
+		SaveEvent(UID, 3474);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 629) then
 	ShowMap(UID, 303);
@@ -204,18 +213,7 @@ end
 if (EVENT == 632) then
 	ShowMap(UID, 336);
 end
-
-if (EVENT == 630) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID,332);
-			SaveEvent(UID, 3474);
-			--Skill Açma Komutu-- 
-end
-end	
+	
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
@@ -375,22 +373,29 @@ end
 
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
-if (EVENT == 728) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379250000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 0 and ITEM_COUNT3 > 9999999) then
-	SelectMsg(UID, 2, 349, 5195, NPC, 18, 730);
+if (EVENT == 728) then -- Spell Stone Powder x7 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 7) then
+		SelectMsg(UID, 4, 349, 5198, NPC, 41, 730, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5195, NPC, 18, 729);
-		elseif (ITEM_COUNT2 < 1) then
-			SelectMsg(UID, 2, savenum, 5195, NPC, 18, 732);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5195, NPC, 18, 733);
-		end
+		SelectMsg(UID, 2, 349, 5195, NPC, 18, 729);
 	end
 end
+
+if (EVENT == 730) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 7) then
+		SelectMsg(UID, 2, 349, 5195, NPC, 18, 729);
+	else
+		RunQuestExchange(UID, 528);
+		SaveEvent(UID, 5205);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 729) then
 	ShowMap(UID, 303);
@@ -403,18 +408,7 @@ end
 if (EVENT == 733) then
 	ShowMap(UID, 336);
 end
-
-if (EVENT == 730) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID, 528);
-			SaveEvent(UID, 5205);
-			--Skill Açma Komutu-- 
-end
-end	
+	
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
@@ -516,22 +510,29 @@ if (EVENT == 826) then
 end
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
-if (EVENT == 828) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379249000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 0 and ITEM_COUNT3 > 9999999) then
-	SelectMsg(UID, 2, 357, 5206, NPC, 10, 830);
+if (EVENT == 828) then -- Spell Stone Powder x9 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 9) then
+		SelectMsg(UID, 4, 357, 5209, NPC, 41, 830, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5206, NPC, 10, 829);
-		elseif (ITEM_COUNT2 < 1) then
-			SelectMsg(UID, 2, savenum, 5206, NPC, 10, 832);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5206, NPC, 10, 833);
-		end
+		SelectMsg(UID, 2, 357, 5206, NPC, 18, 829);
 	end
 end
+
+if (EVENT == 830) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 9) then
+		SelectMsg(UID, 2, 357, 5206, NPC, 18, 829);
+	else
+		RunQuestExchange(UID, 529);
+		SaveEvent(UID, 5217);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 829) then
 	ShowMap(UID, 303);
@@ -544,18 +545,7 @@ end
 if (EVENT == 833) then
 	ShowMap(UID, 336);
 end
-
-if (EVENT == 830) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID, 529);
-			SaveEvent(UID, 5217);
-			--Skill Açma Komutu-- 
-end
-end	
+	
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
@@ -579,22 +569,33 @@ end
 
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
-if (EVENT == 928) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379250000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 1 and ITEM_COUNT3 > 9999999) then
-	SelectMsg(UID, 4, 362, 5220, NPC, 41, 930, 27, -1);
+if (EVENT == 928) then -- Spell Stone Powder x10 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 10) then
+		SelectMsg(UID, 4, 362, 5220, NPC, 41, 930, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5217, NPC, 18, -1);
-		elseif (ITEM_COUNT2 < 2) then
-			SelectMsg(UID, 2, savenum, 5217, NPC, 18, 932);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5217, NPC, 18, 933);
-		end
+		SelectMsg(UID, 2, 362, 5217, NPC, 18, 929);
 	end
 end
+
+if (EVENT == 930) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 10) then
+		SelectMsg(UID, 2, 362, 5217, NPC, 18, 929);
+	else
+		RunQuestExchange(UID, 530);
+		SaveEvent(UID, 5229);
+	end
+end
+
+
+
+if (EVENT == 929) then
+	ShowMap(UID, 18);
+end
+
+
+
 
 if (EVENT == 932) then
 	ShowMap(UID, 19);
@@ -604,17 +605,6 @@ if (EVENT == 933) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 930) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			--Skill Açma Komutu--
-			RunQuestExchange(UID, 530);
-			SaveEvent(UID, 5229);	 
-end
-end
 
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
@@ -641,22 +631,29 @@ end
 
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
-if (EVENT == 1028) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379249000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 1 and ITEM_COUNT3 > 9999999) then
-	SelectMsg(UID, 4, 363, 5231, NPC, 41, 1030, 27, -1);
+if (EVENT == 1028) then -- Spell Stone Powder x11 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 11) then
+		SelectMsg(UID, 4, 363, 5231, NPC, 41, 1030, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5228, NPC, 18, 1029);
-		elseif (ITEM_COUNT2 < 2) then
-			SelectMsg(UID, 2, savenum, 5228, NPC, 18, 1032);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5228, NPC, 18, 1033);
-		end
+		SelectMsg(UID, 2, 363, 5228, NPC, 18, 1029);
 	end
 end
+
+if (EVENT == 1030) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 11) then
+		SelectMsg(UID, 2, 363, 5228, NPC, 18, 1029);
+	else
+		RunQuestExchange(UID, 531);
+		SaveEvent(UID, 5241);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 1029) then
 	ShowMap(UID, 303);
@@ -669,18 +666,7 @@ end
 if (EVENT == 1033) then
 	ShowMap(UID, 336);
 end
-
-if (EVENT == 1030) then  
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID, 531);
-			SaveEvent(UID, 5241);
-			--Skill Açma Komutu-- 
-end
-end	
+	
 ------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
@@ -704,22 +690,29 @@ if (EVENT == 1126) then
 end
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
-if (EVENT == 1128) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379250000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 2 and ITEM_COUNT3 > 9999999) then
-	SelectMsg(UID, 4, 364, 5242, NPC, 41, 1130, 27, -1);
+if (EVENT == 1128) then -- Spell Stone Powder x12 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 12) then
+		SelectMsg(UID, 4, 364, 5242, NPC, 41, 1130, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5239, NPC, 18, 1129);
-		elseif (ITEM_COUNT2 < 3) then
-			SelectMsg(UID, 2, savenum, 5239, NPC, 18, 1132);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5239, NPC, 18, 1133);
-		end
+		SelectMsg(UID, 2, 364, 5239, NPC, 18, 1129);
 	end
 end
+
+if (EVENT == 1130) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 12) then
+		SelectMsg(UID, 2, 364, 5239, NPC, 18, 1129);
+	else
+		RunQuestExchange(UID, 532);
+		SaveEvent(UID, 5253);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 1129) then
 	ShowMap(UID, 303);
@@ -733,17 +726,6 @@ if (EVENT == 1133) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 1130) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID, 532);
-			SaveEvent(UID, 5253); 
-			--Skill Açma Komutu-- 
-end
-end
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 
@@ -767,22 +749,29 @@ if (EVENT == 1226) then
 end
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
-if (EVENT == 1228) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379249000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 2 and ITEM_COUNT3 > 9999999) then
+if (EVENT == 1228) then -- Spell Stone Powder x15 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 15) then
 		SelectMsg(UID, 4, 368, 5253, NPC, 41, 1230, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5251, NPC, 18, 1229);
-		elseif (ITEM_COUNT2 < 3) then
-			SelectMsg(UID, 2, savenum, 5251, NPC, 18, 1232);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5251, NPC, 18, 1233);
-		end
+		SelectMsg(UID, 2, 368, 5250, NPC, 18, 1229);
 	end
 end
+
+if (EVENT == 1230) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 15) then
+		SelectMsg(UID, 2, 368, 5250, NPC, 18, 1229);
+	else
+		RunQuestExchange(UID, 533);
+		SaveEvent(UID, 5265);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 1229) then
 	ShowMap(UID, 303);
@@ -795,18 +784,7 @@ end
 if (EVENT == 1233) then
 	ShowMap(UID, 336);
 end
-
-if (EVENT == 1230) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-			RunQuestExchange(UID, 533);
-			SaveEvent(UID, 5265);
-			--Skill Açma Komutu-- 
-end
-end	
+	
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 

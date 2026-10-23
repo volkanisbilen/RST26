@@ -321,21 +321,29 @@ if (EVENT == 826) then
 	SaveEvent(UID, 3435);
 	SelectMsg(UID, 2, 335, 3232, NPC, 32, 193);
 end
-
-if (EVENT == 828) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379245000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379246000);
-	ITEM_COUNT3 = HowmuchItem(UID, 379064000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 0 and ITEM_COUNT3 > 0) then
-		SelectMsg(UID, 4, 335, 3233, NPC, 41, 830, 27, 193);
+if (EVENT == 828) then -- Spell Stone Powder x5 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 5) then
+		SelectMsg(UID, 4, 335, 3233, NPC, 41, 830, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1 or ITEM_COUNT2 < 1) then
-			SelectMsg(UID, 2, 335, 3230, NPC, 18, 829);
-		elseif (ITEM_COUNT3 < 1) then
-			SelectMsg(UID, 2, 335, 3230, NPC, 18, 834);
-		end
+		SelectMsg(UID, 2, 335, 3230, NPC, 18, 829);
 	end
 end
+
+if (EVENT == 830) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 5) then
+		SelectMsg(UID, 2, 335, 3230, NPC, 18, 829);
+	else
+		RunQuestExchange(UID, 330);
+		SaveEvent(UID, 3434);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 829) then
 	ShowMap(UID, 307);
@@ -345,16 +353,6 @@ if (EVENT == 834) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 830) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-RunQuestExchange(UID, 330);
-	SaveEvent(UID, 3434);
-end
-end
 
 local savenum = 347;
 
@@ -397,26 +395,29 @@ if (EVENT == 926) then
 	SaveEvent(UID, 5134);
 	SelectMsg(UID, 2, savenum, 5131, NPC, 32, 193);
 end
-
-if (EVENT == 928) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379040000); --- Tail of Shaula
-	ITEM_COUNT2 = HowmuchItem(UID, 379041000); --- Tail of Lesath
-	ITEM_COUNT3 = HowmuchItem(UID, 379042000); --- Fang of Bakirra
-	ITEM_COUNT4 = HowmuchItem(UID, 379236000); --- Magic Jewel Powder 3x
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 0 and ITEM_COUNT3 > 0 and ITEM_COUNT4 > 2) then
-		SelectMsg(UID, 4, savenum, 5132, NPC, 41, 930, 27, 193);
+if (EVENT == 928) then -- Spell Stone Powder x7 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 7) then
+		SelectMsg(UID, 4, 347, 5132, NPC, 41, 930, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5129, NPC, 18, 929);
-		elseif (ITEM_COUNT2 < 1) then
-			SelectMsg(UID, 2, savenum, 5129, NPC, 18, 932);
-		elseif (ITEM_COUNT3 < 1) then
-			SelectMsg(UID, 2, savenum, 5129, NPC, 18, 933);
-		elseif (ITEM_COUNT4 < 3) then
-			SelectMsg(UID, 2, savenum, 5129, NPC, 18, 933);
-		end
+		SelectMsg(UID, 2, 347, 5129, NPC, 18, 929);
 	end
 end
+
+if (EVENT == 930) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 7) then
+		SelectMsg(UID, 2, 347, 5129, NPC, 18, 929);
+	else
+		RunQuestExchange(UID, 522);
+		SaveEvent(UID, 5133);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 929) then
 	ShowMap(UID, 307);
@@ -430,16 +431,6 @@ if (EVENT == 933) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 930) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-RunQuestExchange(UID, 522);
-	SaveEvent(UID, 5133);
-end
-end
 
 local savenum = 360;
 
@@ -482,23 +473,29 @@ if (EVENT == 1026) then
 	SaveEvent(UID, 5146);
 	SelectMsg(UID, 2, savenum, 5142, NPC, 32, 193);
 end
-
-if (EVENT == 1028) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379246000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 2 and ITEM_COUNT3 > 9999999) then
-		SelectMsg(UID, 4, savenum, 5143, NPC, 41, 1030, 27, 193);
+if (EVENT == 1028) then -- Spell Stone Powder x10 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 10) then
+		SelectMsg(UID, 4, 360, 5143, NPC, 41, 1030, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5140, NPC, 18, 1029);
-		elseif (ITEM_COUNT2 < 3) then
-			SelectMsg(UID, 2, savenum, 5140, NPC, 18, 1032);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5140, NPC, 18, 1033);
-		end
+		SelectMsg(UID, 2, 360, 5140, NPC, 18, 1029);
 	end
 end
+
+if (EVENT == 1030) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 10) then
+		SelectMsg(UID, 2, 360, 5140, NPC, 18, 1029);
+	else
+		RunQuestExchange(UID, 523);
+		SaveEvent(UID, 5145);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 1029) then
 	ShowMap(UID, 307);
@@ -512,16 +509,6 @@ if (EVENT == 1033) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 1030) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-RunQuestExchange(UID, 523);
-	SaveEvent(UID, 5145);   
-end
-end
 
 local savenum = 366;
 
@@ -564,23 +551,29 @@ if (EVENT == 1126) then
 	SaveEvent(UID, 5158);
 	SelectMsg(UID, 2, savenum, 5153, NPC, 32, 193);
 end
-
-if (EVENT == 1128) then
-	ITEM_COUNT1 = HowmuchItem(UID, 379245000);
-	ITEM_COUNT2 = HowmuchItem(UID, 379236000);
-	ITEM_COUNT3 = HowmuchItem(UID, 900000000);
-	if (ITEM_COUNT1 > 0 and ITEM_COUNT2 > 2 and ITEM_COUNT3 > 9999999) then
-		SelectMsg(UID, 4, savenum, 5154, NPC, 41, 1130, 27, 193);
+if (EVENT == 1128) then -- Spell Stone Powder x15 -> opens the skill
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER >= 15) then
+		SelectMsg(UID, 4, 366, 5154, NPC, 41, 1130, 27, -1);
 	else
-		if (ITEM_COUNT1 < 1) then
-			SelectMsg(UID, 2, savenum, 5151, NPC, 18, 1129);
-		elseif (ITEM_COUNT2 < 3) then
-			SelectMsg(UID, 2, savenum, 5151, NPC, 18, 1132);
-		elseif (ITEM_COUNT3 < 10000000) then
-			SelectMsg(UID, 2, savenum, 5151, NPC, 18, 1133);
-		end
+		SelectMsg(UID, 2, 366, 5151, NPC, 18, 1129);
 	end
 end
+
+if (EVENT == 1130) then
+	POWDER = HowmuchItem(UID, 810369000);
+	if (POWDER < 15) then
+		SelectMsg(UID, 2, 366, 5151, NPC, 18, 1129);
+	else
+		RunQuestExchange(UID, 524);
+		SaveEvent(UID, 5157);
+	end
+end
+
+
+
+
+
 
 if (EVENT == 1129) then
 	ShowMap(UID, 307);
@@ -594,16 +587,6 @@ if (EVENT == 1133) then
 	ShowMap(UID, 336);
 end
 
-if (EVENT == 1130) then
-AGIRLIKKONTROL = CheckWeight(UID,379243000,1)
-SLOTKONTROL = CheckGiveSlot(UID, 1)
-     if SLOTKONTROL == false then
-	 elseif AGIRLIKKONTROL == false then	
-     else
-RunQuestExchange(UID, 524);
-	SaveEvent(UID, 5157); 
-end
-end
 
 local savenum = 492;
 
