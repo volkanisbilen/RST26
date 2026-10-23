@@ -1401,7 +1401,7 @@ if (EVENT == 2536) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810294000);
-		if(ITEMA > 9) then
+		if(ITEMA > 4) then
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2534, 27, -1);
 		else
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, -1);
@@ -1415,7 +1415,7 @@ if (EVENT == 2534)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810294000);
-		if(ITEMA < 10) then
+		if(ITEMA < 5) then
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, -1);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -1456,7 +1456,7 @@ if (EVENT == 2546) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810295000);
-		if(ITEMA < 10) then
+		if(ITEMA < 5) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2544, 27, -1);
@@ -1470,7 +1470,7 @@ if (EVENT == 2544)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810295000);
-		if(ITEMA < 10) then
+		if(ITEMA < 5) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -1502,7 +1502,7 @@ if (EVENT == 2555) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810296000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SaveEvent(UID, 4643);
@@ -1516,7 +1516,7 @@ if (EVENT == 2556) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810296000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2554, 27, -1);
@@ -1530,7 +1530,7 @@ if (EVENT == 2554)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810296000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -1571,7 +1571,7 @@ if (EVENT == 2566) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810297000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2564, 27, -1);
@@ -1585,7 +1585,7 @@ if (EVENT == 2564)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810297000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -1617,7 +1617,7 @@ if (EVENT == 2575) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810298000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SaveEvent(UID, 4663);
@@ -1631,7 +1631,7 @@ if (EVENT == 2576) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810298000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2574, 27, -1);
@@ -1645,7 +1645,7 @@ if (EVENT == 2574)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810298000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid);
@@ -1686,7 +1686,7 @@ if (EVENT == 2586) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810299000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2584, 27, -1);
@@ -1700,7 +1700,7 @@ if (EVENT == 2584)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810299000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -1732,7 +1732,7 @@ if (EVENT == 2595) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810301000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SaveEvent(UID, 4683);
@@ -1746,7 +1746,7 @@ if (EVENT == 2596) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810301000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2594, 27, -1);
@@ -1760,7 +1760,7 @@ if (EVENT == 2594)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810301000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -1852,7 +1852,7 @@ if (EVENT == 2615) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810303000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SaveEvent(UID, 4703);
@@ -1866,7 +1866,7 @@ if (EVENT == 2616) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810303000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2614, 27, -1);
@@ -1880,7 +1880,7 @@ if (EVENT == 2614)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810303000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -2812,7 +2812,7 @@ if (EVENT == 2625) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810304000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SaveEvent(UID, 4713);
@@ -2826,7 +2826,7 @@ if (EVENT == 2626) then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810304000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2624, 27, -1);
@@ -2840,7 +2840,7 @@ if (EVENT == 2624)then
 			SelectMsg(UID, 2, -1, 44614, NPC, 10, -1);
 		else
 	ITEMA  = HowmuchItem(UID, 810304000);
-		if(ITEMA < 20) then
+		if(ITEMA < 10) then
 			SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
 		else
 			RunQuestExchange(UID, exchangeid)
@@ -2852,7 +2852,7 @@ end
 local savenum=1007
 local talknum=8772
 local exchangeid=1300
-local moncount=20 
+local moncount=40 
 local accept=5702 
 local iscomplate=5704 
 local complate=5703 
@@ -3032,7 +3032,7 @@ end
 savenum				=1013
 talknum				=8690
 exchangeid			=1306
-moncount			=7 	  
+moncount			=40 	  
 accept				=5738 
 iscomplate			=5740 
 complate			=5739 
@@ -3589,8 +3589,7 @@ if (EVENT == 193) then
 	if(QuestStatusCheck == 2) then
 		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
 	else
-		RunQuestExchange(UID, 158);
-		SaveEvent(UID, 921);
+		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
 	end
 end
 
@@ -3973,831 +3972,13 @@ if (EVENT == 2247) then
 	ShowMap(UID, 11);
 end
 
--- [AUTO-GEN] quest=1036 status=0 n_index=5842
-if (EVENT == 2262) then
-	SelectMsg(UID, 4, 1036, 11343, NPC, 628, 2263, 23, -1);
-end
-
--- [AUTO-GEN] quest=1036 status=0 n_index=5842
-if (EVENT == 2263) then
-	SaveEvent(UID, 5843);
-end
-
--- [AUTO-GEN] quest=1036 status=1 n_index=5843
-if (EVENT == 2265) then
-	QuestStatusCheck = GetQuestStatus(UID, 1036)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1361);
-		SaveEvent(UID, 5844);
-	end
-end
-
--- [AUTO-GEN] quest=1036 status=1 n_index=5843
-if (EVENT == 2266) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1036, 11343, NPC, 22, 2265, 23, -1);
-	else
-		SelectMsg(UID, 2, 1036, 11343, NPC, 18, 2267);
-	end
-end
-
--- [AUTO-GEN] quest=1036 status=1 n_index=5843
-if (EVENT == 2267) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1040 status=0 n_index=5862
-if (EVENT == 2282) then
-	SelectMsg(UID, 4, 1040, 11349, NPC, 630, 2283, 23, -1);
-end
-
--- [AUTO-GEN] quest=1040 status=0 n_index=5862
-if (EVENT == 2283) then
-	SaveEvent(UID, 5863);
-end
-
--- [AUTO-GEN] quest=1040 status=1 n_index=5863
-if (EVENT == 2285) then
-	QuestStatusCheck = GetQuestStatus(UID, 1040)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1363);
-		SaveEvent(UID, 5864);
-	end
-end
-
--- [AUTO-GEN] quest=1040 status=1 n_index=5863
-if (EVENT == 2286) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1040, 11349, NPC, 22, 2285, 23, -1);
-	else
-		SelectMsg(UID, 2, 1040, 11349, NPC, 18, 2287);
-	end
-end
-
--- [AUTO-GEN] quest=1040 status=1 n_index=5863
-if (EVENT == 2287) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1042 status=0 n_index=5872
-if (EVENT == 2292) then
-	SelectMsg(UID, 4, 1042, 11351, NPC, 631, 2293, 23, -1);
-end
-
--- [AUTO-GEN] quest=1042 status=0 n_index=5872
-if (EVENT == 2293) then
-	SaveEvent(UID, 5873);
-end
-
--- [AUTO-GEN] quest=1042 status=1 n_index=5873
-if (EVENT == 2295) then
-	QuestStatusCheck = GetQuestStatus(UID, 1042)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1364);
-		SaveEvent(UID, 5874);
-	end
-end
-
--- [AUTO-GEN] quest=1042 status=1 n_index=5873
-if (EVENT == 2296) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1042, 11351, NPC, 22, 2295, 23, -1);
-	else
-		SelectMsg(UID, 2, 1042, 11351, NPC, 18, 2297);
-	end
-end
-
 -- [AUTO-GEN] quest=1042 status=1 n_index=5873
 if (EVENT == 2297) then
 	ShowMap(UID, 11);
 end
 
--- [AUTO-GEN] quest=1044 status=0 n_index=5882
-if (EVENT == 2302) then
-	SelectMsg(UID, 4, 1044, 11355, NPC, 632, 2303, 23, -1);
-end
-
--- [AUTO-GEN] quest=1044 status=0 n_index=5882
-if (EVENT == 2303) then
-	SaveEvent(UID, 5883);
-end
-
--- [AUTO-GEN] quest=1044 status=1 n_index=5883
-if (EVENT == 2305) then
-	QuestStatusCheck = GetQuestStatus(UID, 1044)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1365);
-		SaveEvent(UID, 5884);
-	end
-end
-
--- [AUTO-GEN] quest=1044 status=1 n_index=5883
-if (EVENT == 2306) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1044, 11355, NPC, 22, 2305, 23, -1);
-	else
-		SelectMsg(UID, 2, 1044, 11355, NPC, 18, 2307);
-	end
-end
-
--- [AUTO-GEN] quest=1044 status=1 n_index=5883
-if (EVENT == 2307) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1046 status=0 n_index=5892
-if (EVENT == 2312) then
-	SelectMsg(UID, 4, 1046, 11357, NPC, 633, 2313, 23, -1);
-end
-
--- [AUTO-GEN] quest=1046 status=0 n_index=5892
-if (EVENT == 2313) then
-	SaveEvent(UID, 5893);
-end
-
--- [AUTO-GEN] quest=1046 status=1 n_index=5893
-if (EVENT == 2315) then
-	QuestStatusCheck = GetQuestStatus(UID, 1046)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1366);
-		SaveEvent(UID, 5894);
-	end
-end
-
--- [AUTO-GEN] quest=1046 status=1 n_index=5893
-if (EVENT == 2316) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1046, 11357, NPC, 22, 2315, 23, -1);
-	else
-		SelectMsg(UID, 2, 1046, 11357, NPC, 18, 2317);
-	end
-end
-
 -- [AUTO-GEN] quest=1046 status=1 n_index=5893
 if (EVENT == 2317) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1048 status=0 n_index=5902
-if (EVENT == 2322) then
-	SelectMsg(UID, 4, 1048, 11360, NPC, 634, 2323, 23, -1);
-end
-
--- [AUTO-GEN] quest=1048 status=0 n_index=5902
-if (EVENT == 2323) then
-	SaveEvent(UID, 5903);
-end
-
--- [AUTO-GEN] quest=1048 status=1 n_index=5903
-if (EVENT == 2325) then
-	QuestStatusCheck = GetQuestStatus(UID, 1048)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1367);
-		SaveEvent(UID, 5904);
-	end
-end
-
--- [AUTO-GEN] quest=1048 status=1 n_index=5903
-if (EVENT == 2326) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1048, 11360, NPC, 22, 2325, 23, -1);
-	else
-		SelectMsg(UID, 2, 1048, 11360, NPC, 18, 2327);
-	end
-end
-
--- [AUTO-GEN] quest=1048 status=1 n_index=5903
-if (EVENT == 2327) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1050 status=0 n_index=5912
-if (EVENT == 2332) then
-	SelectMsg(UID, 4, 1050, 11364, NPC, 635, 2333, 23, -1);
-end
-
--- [AUTO-GEN] quest=1050 status=0 n_index=5912
-if (EVENT == 2333) then
-	SaveEvent(UID, 5913);
-end
-
--- [AUTO-GEN] quest=1050 status=1 n_index=5913
-if (EVENT == 2335) then
-	QuestStatusCheck = GetQuestStatus(UID, 1050)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1368);
-		SaveEvent(UID, 5914);
-	end
-end
-
--- [AUTO-GEN] quest=1050 status=1 n_index=5913
-if (EVENT == 2336) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1050, 11364, NPC, 22, 2335, 23, -1);
-	else
-		SelectMsg(UID, 2, 1050, 11364, NPC, 18, 2337);
-	end
-end
-
--- [AUTO-GEN] quest=1050 status=1 n_index=5913
-if (EVENT == 2337) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1052 status=0 n_index=5922
-if (EVENT == 2342) then
-	SelectMsg(UID, 4, 1052, 11368, NPC, 636, 2343, 23, -1);
-end
-
--- [AUTO-GEN] quest=1052 status=0 n_index=5922
-if (EVENT == 2343) then
-	SaveEvent(UID, 5923);
-end
-
--- [AUTO-GEN] quest=1052 status=1 n_index=5923
-if (EVENT == 2345) then
-	QuestStatusCheck = GetQuestStatus(UID, 1052)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1369);
-		SaveEvent(UID, 5924);
-	end
-end
-
--- [AUTO-GEN] quest=1052 status=1 n_index=5923
-if (EVENT == 2346) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1052, 11368, NPC, 22, 2345, 23, -1);
-	else
-		SelectMsg(UID, 2, 1052, 11368, NPC, 18, 2347);
-	end
-end
-
--- [AUTO-GEN] quest=1052 status=1 n_index=5923
-if (EVENT == 2347) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1054 status=0 n_index=5932
-if (EVENT == 2352) then
-	SelectMsg(UID, 4, 1054, 11371, NPC, 637, 2353, 23, -1);
-end
-
--- [AUTO-GEN] quest=1054 status=0 n_index=5932
-if (EVENT == 2353) then
-	SaveEvent(UID, 5933);
-end
-
--- [AUTO-GEN] quest=1054 status=1 n_index=5933
-if (EVENT == 2355) then
-	QuestStatusCheck = GetQuestStatus(UID, 1054)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1370);
-		SaveEvent(UID, 5934);
-	end
-end
-
--- [AUTO-GEN] quest=1054 status=1 n_index=5933
-if (EVENT == 2356) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1054, 11371, NPC, 22, 2355, 23, -1);
-	else
-		SelectMsg(UID, 2, 1054, 11371, NPC, 18, 2357);
-	end
-end
-
--- [AUTO-GEN] quest=1054 status=1 n_index=5933
-if (EVENT == 2357) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1056 status=0 n_index=5942
-if (EVENT == 2362) then
-	SelectMsg(UID, 4, 1056, 11375, NPC, 638, 2363, 23, -1);
-end
-
--- [AUTO-GEN] quest=1056 status=0 n_index=5942
-if (EVENT == 2363) then
-	SaveEvent(UID, 5943);
-end
-
--- [AUTO-GEN] quest=1056 status=1 n_index=5943
-if (EVENT == 2365) then
-	QuestStatusCheck = GetQuestStatus(UID, 1056)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1371);
-		SaveEvent(UID, 5944);
-	end
-end
-
--- [AUTO-GEN] quest=1056 status=1 n_index=5943
-if (EVENT == 2366) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1056, 11375, NPC, 22, 2365, 23, -1);
-	else
-		SelectMsg(UID, 2, 1056, 11375, NPC, 18, 2367);
-	end
-end
-
--- [AUTO-GEN] quest=1056 status=1 n_index=5943
-if (EVENT == 2367) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1058 status=0 n_index=5952
-if (EVENT == 2372) then
-	SelectMsg(UID, 4, 1058, 11378, NPC, 639, 2373, 23, -1);
-end
-
--- [AUTO-GEN] quest=1058 status=0 n_index=5952
-if (EVENT == 2373) then
-	SaveEvent(UID, 5953);
-end
-
--- [AUTO-GEN] quest=1058 status=1 n_index=5953
-if (EVENT == 2375) then
-	QuestStatusCheck = GetQuestStatus(UID, 1058)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1372);
-		SaveEvent(UID, 5954);
-	end
-end
-
--- [AUTO-GEN] quest=1058 status=1 n_index=5953
-if (EVENT == 2376) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1058, 11378, NPC, 22, 2375, 23, -1);
-	else
-		SelectMsg(UID, 2, 1058, 11378, NPC, 18, 2377);
-	end
-end
-
--- [AUTO-GEN] quest=1058 status=1 n_index=5953
-if (EVENT == 2377) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1060 status=0 n_index=5962
-if (EVENT == 2382) then
-	SelectMsg(UID, 4, 1060, 11380, NPC, 640, 2383, 23, -1);
-end
-
--- [AUTO-GEN] quest=1060 status=0 n_index=5962
-if (EVENT == 2383) then
-	SaveEvent(UID, 5963);
-end
-
--- [AUTO-GEN] quest=1060 status=1 n_index=5963
-if (EVENT == 2385) then
-	QuestStatusCheck = GetQuestStatus(UID, 1060)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1373);
-		SaveEvent(UID, 5964);
-	end
-end
-
--- [AUTO-GEN] quest=1060 status=1 n_index=5963
-if (EVENT == 2386) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1060, 11380, NPC, 22, 2385, 23, -1);
-	else
-		SelectMsg(UID, 2, 1060, 11380, NPC, 18, 2387);
-	end
-end
-
--- [AUTO-GEN] quest=1060 status=1 n_index=5963
-if (EVENT == 2387) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1062 status=0 n_index=5972
-if (EVENT == 2392) then
-	SelectMsg(UID, 4, 1062, 11382, NPC, 641, 2393, 23, -1);
-end
-
--- [AUTO-GEN] quest=1062 status=0 n_index=5972
-if (EVENT == 2393) then
-	SaveEvent(UID, 5973);
-end
-
--- [AUTO-GEN] quest=1062 status=1 n_index=5973
-if (EVENT == 2395) then
-	QuestStatusCheck = GetQuestStatus(UID, 1062)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1374);
-		SaveEvent(UID, 5974);
-	end
-end
-
--- [AUTO-GEN] quest=1062 status=1 n_index=5973
-if (EVENT == 2396) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1062, 11382, NPC, 22, 2395, 23, -1);
-	else
-		SelectMsg(UID, 2, 1062, 11382, NPC, 18, 2397);
-	end
-end
-
--- [AUTO-GEN] quest=1062 status=1 n_index=5973
-if (EVENT == 2397) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1064 status=0 n_index=5982
-if (EVENT == 2402) then
-	SelectMsg(UID, 4, 1064, 11384, NPC, 642, 2403, 23, -1);
-end
-
--- [AUTO-GEN] quest=1064 status=0 n_index=5982
-if (EVENT == 2403) then
-	SaveEvent(UID, 5983);
-end
-
--- [AUTO-GEN] quest=1064 status=1 n_index=5983
-if (EVENT == 2405) then
-	QuestStatusCheck = GetQuestStatus(UID, 1064)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1375);
-		SaveEvent(UID, 5984);
-	end
-end
-
--- [AUTO-GEN] quest=1064 status=1 n_index=5983
-if (EVENT == 2406) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1064, 11384, NPC, 22, 2405, 23, -1);
-	else
-		SelectMsg(UID, 2, 1064, 11384, NPC, 18, 2407);
-	end
-end
-
--- [AUTO-GEN] quest=1064 status=1 n_index=5983
-if (EVENT == 2407) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1066 status=0 n_index=4500
-if (EVENT == 2412) then
-	SelectMsg(UID, 4, 1066, 11386, NPC, 643, 2413, 23, -1);
-end
-
--- [AUTO-GEN] quest=1066 status=0 n_index=4500
-if (EVENT == 2413) then
-	SaveEvent(UID, 4501);
-end
-
--- [AUTO-GEN] quest=1066 status=1 n_index=4501
-if (EVENT == 2415) then
-	QuestStatusCheck = GetQuestStatus(UID, 1066)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1376);
-		SaveEvent(UID, 4502);
-	end
-end
-
--- [AUTO-GEN] quest=1066 status=1 n_index=4501
-if (EVENT == 2416) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1066, 11386, NPC, 22, 2415, 23, -1);
-	else
-		SelectMsg(UID, 2, 1066, 11386, NPC, 18, 2417);
-	end
-end
-
--- [AUTO-GEN] quest=1066 status=1 n_index=4501
-if (EVENT == 2417) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1068 status=0 n_index=4510
-if (EVENT == 2422) then
-	SelectMsg(UID, 4, 1068, 11390, NPC, 644, 2423, 23, -1);
-end
-
--- [AUTO-GEN] quest=1068 status=0 n_index=4510
-if (EVENT == 2423) then
-	SaveEvent(UID, 4511);
-end
-
--- [AUTO-GEN] quest=1068 status=1 n_index=4511
-if (EVENT == 2425) then
-	QuestStatusCheck = GetQuestStatus(UID, 1068)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1377);
-		SaveEvent(UID, 4512);
-	end
-end
-
--- [AUTO-GEN] quest=1068 status=1 n_index=4511
-if (EVENT == 2426) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1068, 11390, NPC, 22, 2425, 23, -1);
-	else
-		SelectMsg(UID, 2, 1068, 11390, NPC, 18, 2427);
-	end
-end
-
--- [AUTO-GEN] quest=1068 status=1 n_index=4511
-if (EVENT == 2427) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1070 status=0 n_index=4520
-if (EVENT == 2432) then
-	SelectMsg(UID, 4, 1070, 11392, NPC, 645, 2433, 23, -1);
-end
-
--- [AUTO-GEN] quest=1070 status=0 n_index=4520
-if (EVENT == 2433) then
-	SaveEvent(UID, 4521);
-end
-
--- [AUTO-GEN] quest=1070 status=1 n_index=4521
-if (EVENT == 2435) then
-	QuestStatusCheck = GetQuestStatus(UID, 1070)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1378);
-		SaveEvent(UID, 4522);
-	end
-end
-
--- [AUTO-GEN] quest=1070 status=1 n_index=4521
-if (EVENT == 2436) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1070, 11392, NPC, 22, 2435, 23, -1);
-	else
-		SelectMsg(UID, 2, 1070, 11392, NPC, 18, 2437);
-	end
-end
-
--- [AUTO-GEN] quest=1070 status=1 n_index=4521
-if (EVENT == 2437) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1072 status=0 n_index=4530
-if (EVENT == 2442) then
-	SelectMsg(UID, 4, 1072, 11394, NPC, 646, 2443, 23, -1);
-end
-
--- [AUTO-GEN] quest=1072 status=0 n_index=4530
-if (EVENT == 2443) then
-	SaveEvent(UID, 4531);
-end
-
--- [AUTO-GEN] quest=1072 status=1 n_index=4531
-if (EVENT == 2445) then
-	QuestStatusCheck = GetQuestStatus(UID, 1072)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1379);
-		SaveEvent(UID, 4532);
-	end
-end
-
--- [AUTO-GEN] quest=1072 status=1 n_index=4531
-if (EVENT == 2446) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1072, 11394, NPC, 22, 2445, 23, -1);
-	else
-		SelectMsg(UID, 2, 1072, 11394, NPC, 18, 2447);
-	end
-end
-
--- [AUTO-GEN] quest=1072 status=1 n_index=4531
-if (EVENT == 2447) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1074 status=0 n_index=4540
-if (EVENT == 2452) then
-	SelectMsg(UID, 4, 1074, 11396, NPC, 647, 2453, 23, -1);
-end
-
--- [AUTO-GEN] quest=1074 status=0 n_index=4540
-if (EVENT == 2453) then
-	SaveEvent(UID, 4541);
-end
-
--- [AUTO-GEN] quest=1074 status=1 n_index=4541
-if (EVENT == 2455) then
-	QuestStatusCheck = GetQuestStatus(UID, 1074)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1380);
-		SaveEvent(UID, 4542);
-	end
-end
-
--- [AUTO-GEN] quest=1074 status=1 n_index=4541
-if (EVENT == 2456) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1074, 11396, NPC, 22, 2455, 23, -1);
-	else
-		SelectMsg(UID, 2, 1074, 11396, NPC, 18, 2457);
-	end
-end
-
--- [AUTO-GEN] quest=1074 status=1 n_index=4541
-if (EVENT == 2457) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1076 status=0 n_index=4550
-if (EVENT == 2462) then
-	SelectMsg(UID, 4, 1076, 11399, NPC, 648, 2463, 23, -1);
-end
-
--- [AUTO-GEN] quest=1076 status=0 n_index=4550
-if (EVENT == 2463) then
-	SaveEvent(UID, 4551);
-end
-
--- [AUTO-GEN] quest=1076 status=1 n_index=4551
-if (EVENT == 2465) then
-	QuestStatusCheck = GetQuestStatus(UID, 1076)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1381);
-		SaveEvent(UID, 4552);
-	end
-end
-
--- [AUTO-GEN] quest=1076 status=1 n_index=4551
-if (EVENT == 2466) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1076, 11399, NPC, 22, 2465, 23, -1);
-	else
-		SelectMsg(UID, 2, 1076, 11399, NPC, 18, 2467);
-	end
-end
-
--- [AUTO-GEN] quest=1076 status=1 n_index=4551
-if (EVENT == 2467) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1078 status=0 n_index=4560
-if (EVENT == 2472) then
-	SelectMsg(UID, 4, 1078, 11402, NPC, 649, 2473, 23, -1);
-end
-
--- [AUTO-GEN] quest=1078 status=0 n_index=4560
-if (EVENT == 2473) then
-	SaveEvent(UID, 4561);
-end
-
--- [AUTO-GEN] quest=1078 status=1 n_index=4561
-if (EVENT == 2475) then
-	QuestStatusCheck = GetQuestStatus(UID, 1078)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1382);
-		SaveEvent(UID, 4562);
-	end
-end
-
--- [AUTO-GEN] quest=1078 status=1 n_index=4561
-if (EVENT == 2476) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1078, 11402, NPC, 22, 2475, 23, -1);
-	else
-		SelectMsg(UID, 2, 1078, 11402, NPC, 18, 2477);
-	end
-end
-
--- [AUTO-GEN] quest=1078 status=1 n_index=4561
-if (EVENT == 2477) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1082 status=0 n_index=4580
-if (EVENT == 2492) then
-	SelectMsg(UID, 4, 1082, 11406, NPC, 651, 2493, 23, -1);
-end
-
--- [AUTO-GEN] quest=1082 status=0 n_index=4580
-if (EVENT == 2493) then
-	SaveEvent(UID, 4581);
-end
-
--- [AUTO-GEN] quest=1082 status=1 n_index=4581
-if (EVENT == 2495) then
-	QuestStatusCheck = GetQuestStatus(UID, 1082)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1384);
-		SaveEvent(UID, 4582);
-	end
-end
-
--- [AUTO-GEN] quest=1082 status=1 n_index=4581
-if (EVENT == 2496) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1082, 11406, NPC, 22, 2495, 23, -1);
-	else
-		SelectMsg(UID, 2, 1082, 11406, NPC, 18, 2497);
-	end
-end
-
--- [AUTO-GEN] quest=1082 status=1 n_index=4581
-if (EVENT == 2497) then
-	ShowMap(UID, 11);
-end
-
--- [AUTO-GEN] quest=1086 status=0 n_index=4600
-if (EVENT == 2512) then
-	SelectMsg(UID, 4, 1086, 11410, NPC, 653, 2513, 23, -1);
-end
-
--- [AUTO-GEN] quest=1086 status=0 n_index=4600
-if (EVENT == 2513) then
-	SaveEvent(UID, 4601);
-end
-
--- [AUTO-GEN] quest=1086 status=1 n_index=4601
-if (EVENT == 2515) then
-	QuestStatusCheck = GetQuestStatus(UID, 1086)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1386);
-		SaveEvent(UID, 4602);
-	end
-end
-
--- [AUTO-GEN] quest=1086 status=1 n_index=4601
-if (EVENT == 2516) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1086, 11410, NPC, 22, 2515, 23, -1);
-	else
-		SelectMsg(UID, 2, 1086, 11410, NPC, 18, 2517);
-	end
-end
-
--- [AUTO-GEN] quest=1086 status=1 n_index=4601
-if (EVENT == 2517) then
 	ShowMap(UID, 11);
 end
 
@@ -4806,81 +3987,9 @@ if (EVENT == 8370) then
 	SaveEvent(UID, 5713);
 end
 
--- [AUTO-GEN] quest=1009 status=0 n_index=5713
-if (EVENT == 8372) then
-	SelectMsg(UID, 4, 1009, 8686, NPC, 613, 8373, 23, -1);
-end
-
--- [AUTO-GEN] quest=1009 status=0 n_index=5713
-if (EVENT == 8373) then
-	SaveEvent(UID, 5714);
-end
-
--- [AUTO-GEN] quest=1009 status=1 n_index=5714
-if (EVENT == 8376) then
-	QuestStatusCheck = GetQuestStatus(UID, 1009)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1302);
-		SaveEvent(UID, 5715);
-	end
-end
-
--- [AUTO-GEN] quest=1009 status=1 n_index=5714
-if (EVENT == 8377) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1009, 8686, NPC, 22, 8376, 23, -1);
-	else
-		SelectMsg(UID, 2, 1009, 8686, NPC, 18, 8378);
-	end
-end
-
--- [AUTO-GEN] quest=1009 status=1 n_index=5714
-if (EVENT == 8378) then
-	ShowMap(UID, 11);
-end
-
 -- [AUTO-GEN] quest=1011 status=255 n_index=5724
 if (EVENT == 8380) then
 	SaveEvent(UID, 5725);
-end
-
--- [AUTO-GEN] quest=1011 status=0 n_index=5725
-if (EVENT == 8382) then
-	SelectMsg(UID, 4, 1011, 8688, NPC, 615, 8383, 23, -1);
-end
-
--- [AUTO-GEN] quest=1011 status=0 n_index=5725
-if (EVENT == 8383) then
-	SaveEvent(UID, 5726);
-end
-
--- [AUTO-GEN] quest=1011 status=1 n_index=5726
-if (EVENT == 8386) then
-	QuestStatusCheck = GetQuestStatus(UID, 1011)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1304);
-		SaveEvent(UID, 5727);
-	end
-end
-
--- [AUTO-GEN] quest=1011 status=1 n_index=5726
-if (EVENT == 8387) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1011, 8688, NPC, 22, 8386, 23, -1);
-	else
-		SelectMsg(UID, 2, 1011, 8688, NPC, 18, 8388);
-	end
-end
-
--- [AUTO-GEN] quest=1011 status=1 n_index=5726
-if (EVENT == 8388) then
-	ShowMap(UID, 11);
 end
 
 -- [AUTO-GEN] quest=1013 status=255 n_index=5736
@@ -4888,81 +3997,9 @@ if (EVENT == 8390) then
 	SaveEvent(UID, 5737);
 end
 
--- [AUTO-GEN] quest=1013 status=0 n_index=5737
-if (EVENT == 8392) then
-	SelectMsg(UID, 4, 1013, 8690, NPC, 617, 8393, 23, -1);
-end
-
--- [AUTO-GEN] quest=1013 status=0 n_index=5737
-if (EVENT == 8393) then
-	SaveEvent(UID, 5738);
-end
-
--- [AUTO-GEN] quest=1013 status=1 n_index=5738
-if (EVENT == 8396) then
-	QuestStatusCheck = GetQuestStatus(UID, 1013)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1306);
-		SaveEvent(UID, 5739);
-	end
-end
-
--- [AUTO-GEN] quest=1013 status=1 n_index=5738
-if (EVENT == 8397) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1013, 8690, NPC, 22, 8396, 23, -1);
-	else
-		SelectMsg(UID, 2, 1013, 8690, NPC, 18, 8398);
-	end
-end
-
--- [AUTO-GEN] quest=1013 status=1 n_index=5738
-if (EVENT == 8398) then
-	ShowMap(UID, 11);
-end
-
 -- [AUTO-GEN] quest=1015 status=255 n_index=5748
 if (EVENT == 8410) then
 	SaveEvent(UID, 5749);
-end
-
--- [AUTO-GEN] quest=1015 status=0 n_index=5749
-if (EVENT == 8412) then
-	SelectMsg(UID, 4, 1015, 8694, NPC, 619, 8413, 23, -1);
-end
-
--- [AUTO-GEN] quest=1015 status=0 n_index=5749
-if (EVENT == 8413) then
-	SaveEvent(UID, 5750);
-end
-
--- [AUTO-GEN] quest=1015 status=1 n_index=5750
-if (EVENT == 8416) then
-	QuestStatusCheck = GetQuestStatus(UID, 1015)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1308);
-		SaveEvent(UID, 5751);
-	end
-end
-
--- [AUTO-GEN] quest=1015 status=1 n_index=5750
-if (EVENT == 8417) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1015, 8694, NPC, 22, 8416, 23, -1);
-	else
-		SelectMsg(UID, 2, 1015, 8694, NPC, 18, 8418);
-	end
-end
-
--- [AUTO-GEN] quest=1015 status=1 n_index=5750
-if (EVENT == 8418) then
-	ShowMap(UID, 11);
 end
 
 -- [AUTO-GEN] quest=1017 status=255 n_index=5760
@@ -5009,42 +4046,6 @@ end
 -- [AUTO-GEN] quest=1007 status=255 n_index=5700
 if (EVENT == 8540) then
 	SaveEvent(UID, 5701);
-end
-
--- [AUTO-GEN] quest=1007 status=0 n_index=5701
-if (EVENT == 8542) then
-	SelectMsg(UID, 4, 1007, 8772, NPC, 610, 8543, 23, -1);
-end
-
--- [AUTO-GEN] quest=1007 status=0 n_index=5701
-if (EVENT == 8543) then
-	SaveEvent(UID, 5702);
-end
-
--- [AUTO-GEN] quest=1007 status=1 n_index=5702
-if (EVENT == 8546) then
-	QuestStatusCheck = GetQuestStatus(UID, 1007)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1300);
-		SaveEvent(UID, 5703);
-	end
-end
-
--- [AUTO-GEN] quest=1007 status=1 n_index=5702
-if (EVENT == 8547) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1007, 8772, NPC, 22, 8546, 23, -1);
-	else
-		SelectMsg(UID, 2, 1007, 8772, NPC, 18, 8548);
-	end
-end
-
--- [AUTO-GEN] quest=1007 status=1 n_index=5702
-if (EVENT == 8548) then
-	ShowMap(UID, 11);
 end
 
 -- [AUTO-GEN] quest=311 status=255 n_index=9398
