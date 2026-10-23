@@ -79,6 +79,7 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                 .await
                 .map(|(a, r, c, s)| format!("npc_spawn: +{a} added, -{r} removed, ~{c} changed, {s} skipped"))
                 .map_err(|e| e.to_string()),
+            "system_merchants" => crate::systems::system_merchant::reload(world, pool).await,
             "rankings" => {
                 world.reload_user_rankings(pool).await;
                 Ok("user rankings reloaded".into())

@@ -969,6 +969,9 @@ async fn merchant_item_buy(
     // a slave's stall pays its owner
     if merchant_is_bot {
         super::slave_merchant::on_sale(&world, session.pool(), merchant_sid as u32, req_price, if is_tl { 2 } else if is_kc { 1 } else { 0 });
+        // a system stall (quest items, Moradon) restocks itself and logs the sale
+        let buyer = world.get_character_info(sid).map(|c| c.name.clone()).unwrap_or_default();
+        crate::systems::system_merchant::on_sale(&world, session.pool(), merchant_sid as u32, &buyer, item_id, item_count, req_price, item_slot as usize);
     }
 
     // Daily rank stat: GMTotalSold += req_price (merchant seller earns gold)

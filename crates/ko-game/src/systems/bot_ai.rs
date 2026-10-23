@@ -6855,7 +6855,7 @@ pub fn despawn_bots_in_zone(world: &WorldState, zone_id: u16) -> usize {
     let bot_ids: Vec<BotId> = world
         .bots
         .iter()
-        .filter(|e| e.value().zone_id == zone_id && !crate::handler::slave_merchant::is_slave(*e.key()))
+        .filter(|e| e.value().zone_id == zone_id && !crate::handler::slave_merchant::is_slave(*e.key()) && !crate::systems::system_merchant::is_system(*e.key()))
         .map(|e| *e.key())
         .collect();
 
@@ -7042,7 +7042,7 @@ pub async fn autospawn_pk_bots(world: &WorldState, pool: &ko_db::DbPool) -> Resu
 /// Despawn all bots server-wide and return the count removed.
 /// `UserInOut(INOUT_OUT)` + `RemoveMapBotList()` for each.
 pub fn despawn_all_bots(world: &WorldState) -> usize {
-    let bot_ids: Vec<BotId> = world.bots.iter().map(|e| *e.key()).filter(|id| !crate::handler::slave_merchant::is_slave(*id)).collect();
+    let bot_ids: Vec<BotId> = world.bots.iter().map(|e| *e.key()).filter(|id| !crate::handler::slave_merchant::is_slave(*id) && !crate::systems::system_merchant::is_system(*id)).collect();
     let count = bot_ids.len();
     for id in bot_ids {
         despawn_bot(world, id);

@@ -1804,7 +1804,14 @@ impl WorldState {
 
         // 7. Remove from sessions DashMap — drops tx, closing the channel.
         // The old session's writer task will detect the closed receiver and exit.
-        self.sessions.remove(&id);
+        // The name index has to go too: a stale entry made the next login of the same character fail with
+        // "already in-game under different account" (nation transfer / web rescue kicks).
+        if let Some((_, handle)) = self.sessions.remove(&id) {
+            if let Some(ref ch) = handle.character {
+                self.name_to_session.remove_if(&ch.name.to_lowercase(), |_, v| *v == id);
+                self.online_count.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
     }
 
     /// Try to acquire the login lock for an account (case-insensitive).

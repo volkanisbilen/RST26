@@ -1124,7 +1124,7 @@ async fn send_command(
     Ok(Json(json!({"ok":true,"id":id,"status":StatusCode::ACCEPTED.as_u16()})))
 }
 
-const ASSETS: [(&str, &str, &str); 21] = [
+const ASSETS: [(&str, &str, &str); 22] = [
     ("style.css", "text/css; charset=utf-8", include_str!("../assets/style.css")),
     ("core.js", "text/javascript; charset=utf-8", include_str!("../assets/core.js")),
     ("containers.js", "text/javascript; charset=utf-8", include_str!("../assets/containers.js")),
@@ -1142,6 +1142,7 @@ const ASSETS: [(&str, &str, &str); 21] = [
     ("bot_loadout.js", "text/javascript; charset=utf-8", include_str!("../assets/bot_loadout.js")),
     ("bot_brain.js", "text/javascript; charset=utf-8", include_str!("../assets/bot_brain.js")),
     ("field_bots.js", "text/javascript; charset=utf-8", include_str!("../assets/field_bots.js")),
+    ("merchants.js", "text/javascript; charset=utf-8", include_str!("../assets/merchants.js")),
     ("info_panel.js", "text/javascript; charset=utf-8", include_str!("../assets/info_panel.js")),
     ("event_bots.js", "text/javascript; charset=utf-8", include_str!("../assets/event_bots.js")),
     ("server.js", "text/javascript; charset=utf-8", include_str!("../assets/server.js")),
