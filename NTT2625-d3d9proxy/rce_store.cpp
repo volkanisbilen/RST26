@@ -836,6 +836,7 @@ static tInvRClick g_oInvRClick = nullptr;
 // game thread: send the open request right away (same thread the game sends from)
 static bool OnInventoryRightClick(int slot)
 {
+    return false;   // generic RCE right-click stays off (it fought with item breaking); only the special scrolls in SoloCapeRightClick are handled
     if (slot < 0 || slot >= HAVE_MAX_CLIENT) return false;
     EnterCriticalSection(&g_dataLockR);
     bool en = g_slotEnabled[slot] != 0 && g_slotItemID[slot] != 0;
@@ -1215,7 +1216,8 @@ void Rce_Init()
     // with the in-game item breaking system. Leaving it uninstalled means a right-click
     // always falls straight through to the native handler; the rest of this panel (Cross
     // Exchange, opened via its own inventory button for Ticket Exchange) is unaffected.
-    // CloseHandle(CreateThread(nullptr, 0, InstallInvHook, nullptr, 0, nullptr));
+    // Re-enabled: hkInvRClick now only intercepts the Solo Cape / Tag / Job Change scrolls, everything else falls through.
+    CloseHandle(CreateThread(nullptr, 0, InstallInvHook, nullptr, 0, nullptr));
 }
 
 // kept for pus_store.cpp's declaration; the panel now opens from the inventory right-click

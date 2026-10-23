@@ -869,7 +869,6 @@ end
 
 if (EVENT == 1202) then
 	SelectMsg(UID, 2, 552, 20465, NPC, 10, -1);
-	SaveEvent(UID, 11512);
 	SaveEvent(UID, 11501);
 end
 
@@ -1238,14 +1237,14 @@ end
 
 if (EVENT == 2535) then
 	ITEMA  = HowmuchItem(UID, 810294000);
-	if(ITEMA > 9) then
+	if(ITEMA > 4) then
 		SaveEvent(UID, 4628);
 	end	
 end
 
 if (EVENT == 2536) then
 	ITEMA  = HowmuchItem(UID, 810294000);
-	if(ITEMA > 9) then
+	if(ITEMA > 4) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2534, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, -1);
@@ -1258,7 +1257,7 @@ if (EVENT == 2534)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 	ITEMA  = HowmuchItem(UID, 810294000);
-	if(ITEMA > 9) then
+	if(ITEMA > 4) then
 RunQuestExchange(UID, exchangeid)
 	SaveEvent(UID, 4627);
 		else
@@ -1286,14 +1285,14 @@ end
 
 if (EVENT == 2545) then
 	ITEMA  = HowmuchItem(UID, 810295000);
-	if(ITEMA > 9) then
+	if(ITEMA > 4) then
 		SaveEvent(UID, 4638);
 	end	
 end
 
 if (EVENT == 2546) then
 ITEMA  = HowmuchItem(UID, 810295000);
-	if(ITEMA > 9) then
+	if(ITEMA > 4) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2544, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -1306,7 +1305,7 @@ if (EVENT == 2544)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMA  = HowmuchItem(UID, 810295000);
-	if(ITEMA > 9) then
+	if(ITEMA > 4) then
 RunQuestExchange(UID, exchangeid)
 	SaveEvent(UID,4637)
 		else
@@ -1334,14 +1333,14 @@ end
 
 if (EVENT == 2555) then
 	ITEMA  = HowmuchItem(UID, 810296000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SaveEvent(UID, 4648);
 	end	
 end
 
 if (EVENT == 2556) then
 ITEMA  = HowmuchItem(UID, 810296000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2554, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -1354,7 +1353,7 @@ if (EVENT == 2554)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMA  = HowmuchItem(UID, 810296000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		RunQuestExchange(UID, exchangeid)
 	SaveEvent(UID,4647);
 		else
@@ -1382,14 +1381,14 @@ end
 
 if (EVENT == 2565) then
 	ITEMA  = HowmuchItem(UID, 810297000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SaveEvent(UID, 4658)
 	end	
 end
 
 if (EVENT == 2566) then
 ITEMA  = HowmuchItem(UID, 810297000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2564, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -1402,7 +1401,7 @@ if (EVENT == 2564)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMA  = HowmuchItem(UID, 810297000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 RunQuestExchange(UID, exchangeid)
 	SaveEvent(UID,4657);
 		else
@@ -1430,14 +1429,14 @@ end
 
 if (EVENT == 2575) then
 	ITEMA  = HowmuchItem(UID, 810298000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SaveEvent(UID, 4668)
 	end	
 end
 
 if (EVENT == 2576) then
 ITEMA  = HowmuchItem(UID, 810298000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2574, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -1450,7 +1449,7 @@ if (EVENT == 2574)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMA  = HowmuchItem(UID, 810298000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 	Prem = GetPremium(UID);
 	if (Prem > 0) then
 		RunQuestExchange(UID, exchangeid, 1)
@@ -1485,14 +1484,14 @@ end
 
 if (EVENT == 2585) then
 	ITEMA  = HowmuchItem(UID, 810299000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SaveEvent(UID, 4678);
 	end	
 end
 
 if (EVENT == 2586) then
 ITEMA  = HowmuchItem(UID, 810299000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2584, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -1505,7 +1504,7 @@ if (EVENT == 2584)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMA  = HowmuchItem(UID, 810299000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 	Prem = GetPremium(UID);
 	if (Prem > 0) then
 		RunQuestExchange(UID, exchangeid)
@@ -1538,14 +1537,14 @@ end
 
 if (EVENT == 2595) then
 	ITEMA  = HowmuchItem(UID, 810301000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SaveEvent(UID, 4688)
 	end	
 end
 
 if (EVENT == 2596) then
 ITEMA  = HowmuchItem(UID, 810301000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2594, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -1558,7 +1557,7 @@ if (EVENT == 2594)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMA  = HowmuchItem(UID, 810301000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 	Prem = GetPremium(UID);
 	if (Prem > 0) then
 		RunQuestExchange(UID, exchangeid)
@@ -1644,14 +1643,14 @@ end
 
 if (EVENT == 2615) then
 	ITEMA  = HowmuchItem(UID, 810303000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SaveEvent(UID, 4708)
 	end	
 end
 
 if (EVENT == 2616) then
 ITEMA  = HowmuchItem(UID, 810303000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2614, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -1664,7 +1663,7 @@ if (EVENT == 2614)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMA  = HowmuchItem(UID, 810303000);
-	if(ITEMA > 19) then
+	if(ITEMA > 9) then
 		Prem = GetPremium(UID);
 	if (Prem > 0) then
 		RunQuestExchange(UID, exchangeid)
@@ -2414,14 +2413,14 @@ end
 
 if (EVENT == 2625) then
 	ITEMS  = HowmuchItem(UID, 810304000);
-	if(ITEMS > 19) then
+	if(ITEMS > 9) then
 		SaveEvent(UID, 4718)
 	end	
 end
 
 if (EVENT == 2626) then
 ITEMS  = HowmuchItem(UID, 810304000);
-	if(ITEMS > 19) then
+	if(ITEMS > 9) then
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 2624, 27, -1);
 	else
 		SelectMsg(UID, 2, savenum, talknum, NPC, 10, 217);
@@ -2434,7 +2433,7 @@ if (EVENT == 2624)then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 ITEMS  = HowmuchItem(UID, 810304000);
-	if(ITEMS > 19) then
+	if(ITEMS > 9) then
 	Prem = GetPremium(UID);
 	if (Prem > 0) then
 		RunQuestExchange(UID, exchangeid)
@@ -2470,7 +2469,7 @@ end
 
 if(EVENT == 8547) then
 	MonsterCount = CountMonsterQuestSub(UID, savenum, 1);
-	if (MonsterCount < 20) then
+	if (MonsterCount < 40) then
 		SelectMsg(UID, 2, savenum, talknum, NPC, 18, -1);
 	else
 		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 8549, 27, -1);
@@ -2483,11 +2482,11 @@ if(EVENT == 8549) then
 		SelectMsg(UID, 2, -1, 673, NPC, 10, -1);
 	else
 	MonsterCount = CountMonsterQuestSub(UID, savenum, 1);
-	if (MonsterCount < 20) then
+	if (MonsterCount >= 40) then
 	RunQuestExchange(UID, 1301)
 	SaveEvent(UID, 5709)
 		else
-		SelectMsg(UID, 4, savenum, talknum, NPC, 41, 8549, 27, -1);
+		SelectMsg(UID, 2, savenum, talknum, NPC, 18, -1);
 	end
 end
 end
@@ -2599,7 +2598,7 @@ end
 savenum				=1014
 talknum				=8691
 exchangeid			=1307
-moncount			=7 	  -- Yaratık sayısı
+moncount			=40 	  -- Yaratık sayısı
 accept				=5744 -- Görevi al
 iscomplate			=5746 -- Görevi kontrol et
 complate			=5745 -- Görevi verme event
@@ -3062,8 +3061,7 @@ if (EVENT == 193) then
 	if(QuestStatusCheck == 2) then
 		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
 	else
-		RunQuestExchange(UID, 159);
-		SaveEvent(UID, 927);
+		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
 	end
 end
 
@@ -3421,122 +3419,14 @@ if (EVENT == 8380) then
 	SaveEvent(UID, 5731);
 end
 
--- [AUTO-GEN] quest=1012 status=0 n_index=5731
-if (EVENT == 8382) then
-	SelectMsg(UID, 4, 1012, 8689, NPC, 614, 8383, 23, -1);
-end
-
--- [AUTO-GEN] quest=1012 status=0 n_index=5731
-if (EVENT == 8383) then
-	SaveEvent(UID, 5732);
-end
-
--- [AUTO-GEN] quest=1012 status=1 n_index=5732
-if (EVENT == 8386) then
-	QuestStatusCheck = GetQuestStatus(UID, 1012)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1305);
-		SaveEvent(UID, 5733);
-	end
-end
-
--- [AUTO-GEN] quest=1012 status=1 n_index=5732
-if (EVENT == 8387) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1012, 8689, NPC, 22, 8386, 23, -1);
-	else
-		SelectMsg(UID, 2, 1012, 8689, NPC, 18, 8388);
-	end
-end
-
--- [AUTO-GEN] quest=1012 status=1 n_index=5732
-if (EVENT == 8388) then
-	ShowMap(UID, 12);
-end
-
 -- [AUTO-GEN] quest=1014 status=255 n_index=5742
 if (EVENT == 8390) then
 	SaveEvent(UID, 5743);
 end
 
--- [AUTO-GEN] quest=1014 status=0 n_index=5743
-if (EVENT == 8392) then
-	SelectMsg(UID, 4, 1014, 8691, NPC, 616, 8393, 23, -1);
-end
-
--- [AUTO-GEN] quest=1014 status=0 n_index=5743
-if (EVENT == 8393) then
-	SaveEvent(UID, 5744);
-end
-
--- [AUTO-GEN] quest=1014 status=1 n_index=5744
-if (EVENT == 8396) then
-	QuestStatusCheck = GetQuestStatus(UID, 1014)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1307);
-		SaveEvent(UID, 5745);
-	end
-end
-
--- [AUTO-GEN] quest=1014 status=1 n_index=5744
-if (EVENT == 8397) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1014, 8691, NPC, 22, 8396, 23, -1);
-	else
-		SelectMsg(UID, 2, 1014, 8691, NPC, 18, 8398);
-	end
-end
-
--- [AUTO-GEN] quest=1014 status=1 n_index=5744
-if (EVENT == 8398) then
-	ShowMap(UID, 12);
-end
-
 -- [AUTO-GEN] quest=1016 status=255 n_index=5754
 if (EVENT == 8410) then
 	SaveEvent(UID, 5755);
-end
-
--- [AUTO-GEN] quest=1016 status=0 n_index=5755
-if (EVENT == 8412) then
-	SelectMsg(UID, 4, 1016, 8695, NPC, 618, 8413, 23, -1);
-end
-
--- [AUTO-GEN] quest=1016 status=0 n_index=5755
-if (EVENT == 8413) then
-	SaveEvent(UID, 5756);
-end
-
--- [AUTO-GEN] quest=1016 status=1 n_index=5756
-if (EVENT == 8416) then
-	QuestStatusCheck = GetQuestStatus(UID, 1016)
-	if(QuestStatusCheck == 2) then
-		SelectMsg(UID, 2, -1, 8779, NPC, 10, -1);
-	else
-		RunQuestExchange(UID, 1309);
-		SaveEvent(UID, 5757);
-	end
-end
-
--- [AUTO-GEN] quest=1016 status=1 n_index=5756
-if (EVENT == 8417) then
-	MonsterSub = ExistMonsterQuestSub(UID);
-	if (MonsterSub == 0) then
-		SelectMsg(UID, 4, 1016, 8695, NPC, 22, 8416, 23, -1);
-	else
-		SelectMsg(UID, 2, 1016, 8695, NPC, 18, 8418);
-	end
-end
-
--- [AUTO-GEN] quest=1016 status=1 n_index=5756
-if (EVENT == 8418) then
-	ShowMap(UID, 12);
 end
 
 -- [AUTO-GEN] quest=1018 status=255 n_index=5766

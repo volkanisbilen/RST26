@@ -167,7 +167,7 @@ def consolidated_entries(first, last):
     chosen = {}
     for rel, full in collect():
         low = rel.lower()
-        if rel == 'd3d9.dll' or low.startswith('data/') or 'xldr_' in low or low.startswith('jstko/daily_ui/'):
+        if rel == 'd3d9.dll' or low.startswith('data/') or 'xldr_' in low or low.startswith('jstko/daily_ui/') or low.startswith('jstko/jc_ui/'):
             chosen[rel] = full
     for v in range(first, last + 1):
         zp = os.path.join(zips_dir, '%d.zip' % v)
