@@ -443,7 +443,7 @@ pub fn seeking_entries(world: &WorldState, nation: u8) -> Vec<crate::world::Seek
                 is_party_leader: 0,
                 level: b.level as i16,
                 zone: b.zone_id as u8,
-                seeking_note: "Party arıyorum, davet et! / Looking for a party".to_string(),
+                seeking_note: "Party araniyor".to_string(), // the client reads at most 40 ASCII bytes per note
                 name: b.name.clone(),
                 nation: b.nation,
                 party_id: 0,
