@@ -9,6 +9,8 @@
 
 void Log(const char* msg);
 
+int PriceFix_TipCurrency();   // price_fix.cpp
+
 namespace
 {
     const DWORD VT_STRING = 0x01009EC8;
@@ -26,6 +28,19 @@ namespace
 
     void __fastcall HkSetString(void* self, void*, const std::string* s)
     {
+        // a Knight Cash / TL stall item: its tooltip names the currency (price_fix.cpp knows which item is being shown)
+        if (s && s->size() > 15 && s->size() < 120 && !_strnicmp(s->c_str(), "Purchasing Price", 16))
+        {
+            int cur = PriceFix_TipCurrency();
+            static int logged = 0;
+            if (logged < 6) { logged++; char b[160]; sprintf_s(b, "MERCHTIP: \"%s\" currency=%d", s->c_str(), cur); Log(b); }
+            if (cur == 1 || cur == 2)
+            {
+                std::string t = *s + (cur == 1 ? " Knight Cash" : " TL");
+                g_orig(self, &t);
+                return;
+            }
+        }
         if (IsBdwTitle(s))
         {
             if (g_title != self) { char b[64]; sprintf_s(b, "EVTITLE: join window title at %p", self); Log(b); }

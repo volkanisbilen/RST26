@@ -758,6 +758,23 @@ async fn merchant_item_list(
 
     session.send_packet(&result).await?;
 
+    // client DLL (price_fix.cpp, hook sub 0xF8): which items of this stall are paid in Knight Cash / TL, for the tooltip
+    {
+        let cur: Vec<(u32, u8)> = merch_items
+            .iter()
+            .filter(|m| m.item_id != 0 && !m.sold_out && (m.is_kc || m.is_tl))
+            .map(|m| (m.item_id, if m.is_tl { 2 } else { 1 }))
+            .collect();
+        let mut pkt = Packet::new(Opcode::EXT_HOOK_S2C);
+        pkt.write_u8(0xF8);
+        pkt.write_u8(cur.len().min(12) as u8);
+        for (id, c) in cur.iter().take(12) {
+            pkt.write_u32(*id);
+            pkt.write_u8(*c);
+        }
+        session.send_packet(&pkt).await?;
+    }
+
     // the native window shows every price as coins: name the real currency of the Knight Cash / TL items in the chat
     let lines: Vec<String> = merch_items
         .iter()

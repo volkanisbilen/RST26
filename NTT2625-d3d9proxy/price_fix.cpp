@@ -36,6 +36,10 @@ namespace
     struct Frame { DWORD ret; DWORD* slot; int kind; BYTE* obj; };
 
     CRITICAL_SECTION g_lock;
+    // Knight Cash / TL stalls: the server (hook sub 0xF8, sent after every stall list) names the items that are not paid
+    // in coins; the tooltip of such an item in the stall window says so (event_title.cpp's SetString hook reads g_tipCur)
+    std::unordered_map<UINT32, BYTE>* g_stallCur = nullptr;   // g_lock
+    volatile LONG g_tipCur = 0;                               // 0 coins, 1 Knight Cash, 2 TL: the tooltip being built
     std::unordered_map<UINT32, Price>*  g_price = nullptr;    // g_lock
     std::unordered_map<UINT64, Clone*>* g_clones = nullptr;   // item | mode << 32; game thread
     std::unordered_map<BYTE*, Clone*>*  g_byRow = nullptr;    // copied basic / ext row -> its clone; game thread
@@ -119,6 +123,19 @@ namespace
         if (kind == K_TIP)
         {
             BYTE* icon = (BYTE*)slot[1];
+            g_tipCur = 0;
+            if (icon && self[TIP_SHOW] && self[TIP_BUYSIDE] && g_stallCur)
+            {
+                BYTE* b0 = *(BYTE**)(icon + IT_BASIC), *e0 = *(BYTE**)(icon + IT_EXT);
+                if (b0 && e0)
+                {
+                    UINT32 item0 = *(UINT32*)b0 + *(UINT32*)e0 % 1000;
+                    EnterCriticalSection(&g_lock);
+                    auto sc = g_stallCur->find(item0);
+                    if (sc != g_stallCur->end()) g_tipCur = sc->second;
+                    LeaveCriticalSection(&g_lock);
+                }
+            }
             if (!icon || !self[TIP_SHOW]) return;
             Normalize(icon);
             int mode = !self[TIP_BUYSIDE] ? M_SELL : (!self[TIP_ALT] && !self[TIP_SELLFULL]) ? M_BUY : -1;
@@ -272,11 +289,27 @@ void PriceFix_Init()
     g_price = new std::unordered_map<UINT32, Price>;
     g_clones = new std::unordered_map<UINT64, Clone*>;
     g_byRow = new std::unordered_map<BYTE*, Clone*>;
+    g_stallCur = new std::unordered_map<UINT32, BYTE>;
     CloseHandle(CreateThread(nullptr, 0, HookThread, nullptr, 0, nullptr));
 }
 
+// event_title.cpp (SetString hook): the currency of the item whose tooltip is being built (0 coins, 1 KC, 2 TL)
+int PriceFix_TipCurrency() { return (int)g_tipCur; }
+
 void PriceFix_OnRecv(const BYTE* buf, size_t len)
 {
+    if (g_stallCur && len >= 3 && buf[0] == WIZ_HSACS_HOOK && buf[1] == 0xF8)      // [u8 n] n * ([u32 item][u8 currency])
+    {
+        size_t n = buf[2];
+        if (len < 3 + n * 5) return;
+        EnterCriticalSection(&g_lock);
+        g_stallCur->clear();
+        for (size_t i = 0; i < n; i++) (*g_stallCur)[*(const UINT32*)(buf + 3 + i * 5)] = buf[3 + i * 5 + 4];
+        LeaveCriticalSection(&g_lock);
+        char m[64]; sprintf_s(m, "PRICE: stall currency list, %u item(s) not paid in coins", (unsigned)n);
+        Log(m);
+        return;
+    }
     if (!g_price || len < 4 || buf[0] != WIZ_HSACS_HOOK || buf[1] != SUB_NPCPRICES) return;
     size_t n = *(const UINT16*)(buf + 2);
     if (len < 4 + n * 13) return;
