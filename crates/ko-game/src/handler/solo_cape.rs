@@ -24,6 +24,8 @@ use crate::zone::SessionId;
 pub const EXT_SUB_SOLOCAPEICON: u8 = 0xF3;
 pub const EXT_SUB_HGGENIE: u8 = 0xED;
 pub const SCROLL_ITEM: u32 = 810521000;
+/// "Superior Cape Exchange Voucher": also pays a Solo Cape for a player outside a clan (or a non-leader) at the cape NPC.
+pub const VOUCHER_ITEM: u32 = 914006000;
 const KNIGHTS_CAPE_NPC: u8 = 0x1B;
 const WIZ_CAPE: u8 = 0x70;
 
@@ -254,6 +256,8 @@ pub async fn try_buy(
         return Ok(true);
     };
     let has_scroll = super::class_change::has_item_in_inventory(&world, sid, SCROLL_ITEM);
+    // the voucher only counts for players who cannot buy a clan cape anyway (non-leaders)
+    let has_voucher = !is_leader && super::class_change::has_item_in_inventory(&world, sid, VOUCHER_ITEM);
     if is_leader && !has_scroll {
         return Ok(false); // a clan leader buying at the cape NPC: normal clan cape
     }
@@ -262,7 +266,14 @@ pub async fn try_buy(
         p.write_i16(code);
         p
     };
-    if !has_scroll || !world.rob_item(sid, SCROLL_ITEM, 1) {
+    let paid = if has_scroll {
+        world.rob_item(sid, SCROLL_ITEM, 1)
+    } else if has_voucher {
+        world.rob_item(sid, VOUCHER_ITEM, 1)
+    } else {
+        false
+    };
+    if !paid {
         session.send_packet(&fail(-10)).await?;
         return Ok(true);
     }
