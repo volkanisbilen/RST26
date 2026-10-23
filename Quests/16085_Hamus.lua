@@ -6,7 +6,7 @@ if (EVENT == 165) then
 end
 
 if (EVENT == 520) then
-	SelectMsg(UID, 3, -1, 1111, NPC, 4583, 521, 4584, 522, 7162, 525, 4585, 523, 4586, 524, 7163, 526, 45486, 2860, 7772, 2899, 4296, 165); --535
+	SelectMsg(UID, 3, -1, 1111, NPC, 4583, 521, 4584, 522, 7162, 525, 4585, 523, 4586, 524, 7163, 526, 45486, 2850); --535 (the client window shows at most 7 buttons: Job Change / Nation Transfer live in a sub menu)
 end
 
 ----------------------------------------------------------------------------------------------------------------------
@@ -927,6 +927,10 @@ end
 
 ----------------------------------------------------------------------------------------------------------------------
 -- JOB CHANGE: Job Change (Master) scroll 700112000 or Job Change (No Master) scroll 700113000 (the Master one is used first)
+
+if (EVENT == 2850) then -- sub menu: Job Change / Nation Transfer
+	SelectMsg(UID, 3, -1, 4131, NPC, 45486, 2860, 7772, 2899, 4296, 520);
+end
 
 if (EVENT == 2860) then
 	SelectMsg(UID, 3, -1, 4131, NPC, 45428, 2871, 45429, 2872, 45430, 2873, 45431, 2874, 4296, 520);
