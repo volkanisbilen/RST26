@@ -6,7 +6,7 @@ if (EVENT == 165) then
 end
 
 if (EVENT == 520) then
-	SelectMsg(UID, 3, -1, 1111, NPC, 4583, 521, 4584, 522, 7162, 525, 4585, 523, 4586, 524, 7163, 526, 45486, 2850); --535 (the client window shows at most 7 buttons: Job Change / Nation Transfer live in a sub menu)
+	SelectMsg(UID, 3, -1, 1111, NPC, 4583, 521, 4584, 522, 7162, 525, 4585, 523, 4586, 524, 7163, 526, 4296, 165); --535
 end
 
 ----------------------------------------------------------------------------------------------------------------------
@@ -924,48 +924,3 @@ if (EVENT == 5000) then
 end
 
 ----------------------------------------------------------------------------------------------------------------------
-
-----------------------------------------------------------------------------------------------------------------------
--- JOB CHANGE: Job Change (Master) scroll 700112000 or Job Change (No Master) scroll 700113000 (the Master one is used first)
-
-if (EVENT == 2850) then -- sub menu: Job Change / Nation Transfer
-	SelectMsg(UID, 3, -1, 4131, NPC, 45486, 2860, 7772, 2899, 4296, 520);
-end
-
-if (EVENT == 2860) then
-	SelectMsg(UID, 3, -1, 4131, NPC, 45428, 2871, 45429, 2872, 45430, 2873, 45431, 2874, 4296, 520);
-end
-
-local function JobChangeTo(uid, job)
-	if (HowmuchItem(uid, 700112000) > 0) then
-		JobChange(uid, 0, job);
-	elseif (HowmuchItem(uid, 700113000) > 0) then
-		JobChange(uid, 1, job);
-	else
-		SelectMsg(uid, 2, -1, 45055, NPC, 18, 5000);
-	end
-end
-
-if (EVENT == 2871) then JobChangeTo(UID, 1); end -- Warrior
-if (EVENT == 2872) then JobChangeTo(UID, 2); end -- Rogue
-if (EVENT == 2873) then JobChangeTo(UID, 3); end -- Mage
-if (EVENT == 2874) then JobChangeTo(UID, 4); end -- Priest
-
-----------------------------------------------------------------------------------------------------------------------
--- NATION TRANSFER: Nation Transfer scroll 810096000
-
-if (EVENT == 2899) then
-	if (HowmuchItem(UID, 810096000) < 1) then
-		SelectMsg(UID, 2, -1, 1523, NPC, 18, 5000);
-	else
-		SelectMsg(UID, 2, -1, 1524, NPC, 72, 2900, 73, -1);
-	end
-end
-
-if (EVENT == 2900) then
-	if (HowmuchItem(UID, 810096000) < 1) then
-		SelectMsg(UID, 2, -1, 1523, NPC, 10, -1);
-	else
-		SendNationTransfer(UID);
-	end
-end
