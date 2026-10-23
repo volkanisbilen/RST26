@@ -292,6 +292,9 @@ pub fn broadcast_death_with_killer(world: &WorldState, dead_sid: SessionId, kill
                 ZONE_DUNGEON_DEFENCE => {
                     super::dungeon_defence::on_player_death(world, dead_sid);
                 }
+                // Ultima's Dungeon shares the Forgotten Temple zone: its own tick revives and removes the dead
+                // (kicking a dead player here left the character stuck).
+                ZONE_FORGOTTEN_TEMPLE if super::ultima::is_busy() => {}
                 ZONE_FORGOTTEN_TEMPLE | ZONE_DELOS_CASTELLAN => {
                     let nation = world
                         .get_character_info(dead_sid)

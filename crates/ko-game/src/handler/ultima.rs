@@ -584,11 +584,17 @@ fn mark_eliminated(world: &WorldState, room: &mut Room) {
         if p.out_stage.is_some() {
             continue;
         }
-        let here = !world.is_player_dead(p.sid)
-            && world.get_event_room(p.sid) == event_room
+        let in_zone = world.get_event_room(p.sid) == event_room
             && world.get_position(p.sid).is_some_and(|pos| pos.zone_id == ZONE_ULTIMA);
+        let here = !world.is_player_dead(p.sid) && in_zone;
         if !here {
             p.out_stage = Some(done);
+            if in_zone {
+                // died in the dungeon: bring them back to life and out (the generic Forgotten Temple kick of a
+                // dead player left the character stuck "dead" in the zone)
+                world.update_session(p.sid, |h| h.event_room = 0);
+                revive_and_leave(world, p.sid);
+            }
         }
     }
 }
