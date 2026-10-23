@@ -781,6 +781,10 @@ async fn handle_withdraw(session: &mut ClientSession) -> anyhow::Result<()> {
     result.write_u8(1); // success
     session.send_packet(&result).await?;
 
+    // Everybody nearby (and the player) sees the character without the clan name / mark / cape right away,
+    // instead of after the next relog or zone change.
+    super::solo_cape::refresh_appearance(session.world(), sid);
+
     Ok(())
 }
 
@@ -899,6 +903,7 @@ async fn handle_remove(
         notify.write_u8(KNIGHTS_REMOVE);
         notify.write_u8(1); // you were removed
         session.world().send_to_session_owned(target_sid, notify);
+        super::solo_cape::refresh_appearance(session.world(), target_sid);
     }
 
     // Confirm to the remover

@@ -60,13 +60,55 @@ pub const BONUS_DEFENCE_PCT: i32 = 5;
 
 /// character name → (cape id, r, g, b)
 static CAPES: LazyLock<DashMap<String, (u16, u8, u8, u8)>> = LazyLock::new(DashMap::new);
+/// character name → unix time the Solo Cape ends (7 days after the purchase)
+static EXPIRES: LazyLock<DashMap<String, i64>> = LazyLock::new(DashMap::new);
+/// A Solo Cape lasts one week.
+pub const LIFETIME_SECS: i64 = 7 * 24 * 3600;
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+fn expired(name: &str) -> bool {
+    EXPIRES.get(name).is_some_and(|t| *t <= now_unix())
+}
 
 pub fn get(name: &str) -> Option<(u16, u8, u8, u8)> {
+    if expired(name) {
+        return None;
+    }
     CAPES.get(name).map(|c| *c)
 }
 
 pub fn has(name: &str) -> bool {
-    CAPES.contains_key(name)
+    !expired(name) && CAPES.contains_key(name)
+}
+
+/// Remove the capes whose week is over (called every few seconds): the cape disappears from the character and
+/// everybody around, the stats bonus ends and the top-bar icon is hidden.
+pub fn expire_tick(world: &WorldState) {
+    let now = now_unix();
+    let gone: Vec<String> = EXPIRES.iter().filter(|e| *e.value() <= now).map(|e| e.key().clone()).collect();
+    for name in gone {
+        EXPIRES.remove(&name);
+        CAPES.remove(&name);
+        if let Some(pool) = world.db_pool().cloned() {
+            let n = name.clone();
+            tokio::spawn(async move {
+                let _ = sqlx::query("DELETE FROM solo_cape WHERE char_name = $1").bind(&n).execute(&pool).await;
+            });
+        }
+        if let Some(sid) = world.find_session_by_name(&name) {
+            world.set_user_ability(sid);
+            refresh_appearance(world, sid);
+            world.send_to_session_owned(sid, icon_packet(&name));
+            world.send_to_session_owned(sid, notice_packet("Solo Cape suren doldu."));
+        }
+    }
+}
+
+fn notice_packet(msg: &str) -> Packet {
+    crate::systems::timed_notice::build_notice_packet(8, msg)
 }
 
 pub fn is_solo_cape_id(cape_id: i16) -> bool {
@@ -88,7 +130,7 @@ fn design_name(cape_id: u16) -> &'static str {
 
 /// Load every character's Solo Cape at start-up (the table is small).
 pub async fn load_all(pool: &ko_db::DbPool) {
-    match sqlx::query("SELECT char_name, cape_id, r, g, b FROM solo_cape")
+    match sqlx::query("SELECT char_name, cape_id, r, g, b, EXTRACT(EPOCH FROM expires_at)::bigint AS exp FROM solo_cape")
         .fetch_all(pool)
         .await
     {
@@ -100,6 +142,9 @@ pub async fn load_all(pool: &ko_db::DbPool) {
                 let g = row.try_get::<i16, _>("g").unwrap_or(0) as u8;
                 let b = row.try_get::<i16, _>("b").unwrap_or(0) as u8;
                 if !name.is_empty() {
+                    if let Ok(Some(exp)) = row.try_get::<Option<i64>, _>("exp") {
+                        EXPIRES.insert(name.clone(), exp);
+                    }
                     CAPES.insert(name, (cape, r, g, b));
                 }
             }
@@ -125,9 +170,14 @@ fn icon_packet(name: &str) -> Packet {
                 (1u8, format!("+{BONUS_HP} Max HP")),
                 (1, format!("+{BONUS_ATTACK_PCT}% Attack")),
                 (1, format!("+{BONUS_DEFENCE_PCT}% Defense")),
+                (2, EXPIRES.get(name).map(|t| {
+                    let left = (*t - now_unix()).max(0);
+                    format!("Kalan sure: {} gun {} saat", left / 86_400, left % 86_400 / 3_600)
+                }).unwrap_or_default()),
             ];
+            let lines: Vec<&(u8, String)> = lines.iter().filter(|(_, l)| !l.is_empty()).collect();
             pkt.write_u8(lines.len() as u8);
-            for (colour, line) in &lines {
+            for (colour, line) in lines {
                 pkt.write_u8(*colour);
                 pkt.write_string(line);
             }
@@ -155,7 +205,7 @@ pub fn send_icon(world: &WorldState, sid: SessionId) {
 }
 
 /// Show the new cape to everybody nearby.
-fn refresh_appearance(world: &WorldState, sid: SessionId) {
+pub(crate) fn refresh_appearance(world: &WorldState, sid: SessionId) {
     let Some((pos, ch, event_room)) = world.with_session(sid, |h| (h.position, h.character.clone(), h.event_room))
     else {
         return;
@@ -225,6 +275,7 @@ pub async fn handle_icon(session: &mut ClientSession, pkt: Packet) -> anyhow::Re
     let Some(ch) = world.get_character_info(sid) else {
         return Ok(());
     };
+    EXPIRES.remove(&ch.name);
     if CAPES.remove(&ch.name).is_none() {
         return Ok(());
     }
@@ -277,16 +328,19 @@ pub async fn try_buy(
         session.send_packet(&fail(-10)).await?;
         return Ok(true);
     }
+    let expires_at = now_unix() + LIFETIME_SECS;
     CAPES.insert(ch.name.clone(), (cape_id as u16, r, g, b));
+    EXPIRES.insert(ch.name.clone(), expires_at);
     let _ = sqlx::query(
-        "INSERT INTO solo_cape(char_name, cape_id, r, g, b) VALUES($1,$2,$3,$4,$5) \
-         ON CONFLICT (char_name) DO UPDATE SET cape_id=$2, r=$3, g=$4, b=$5",
+        "INSERT INTO solo_cape(char_name, cape_id, r, g, b, expires_at) VALUES($1,$2,$3,$4,$5, to_timestamp($6)) \
+         ON CONFLICT (char_name) DO UPDATE SET cape_id=$2, r=$3, g=$4, b=$5, expires_at=to_timestamp($6)",
     )
     .bind(&ch.name)
     .bind(cape_id as i32)
     .bind(r as i16)
     .bind(g as i16)
     .bind(b as i16)
+    .bind(expires_at as f64)
     .execute(session.pool())
     .await;
     world.set_user_ability(sid);

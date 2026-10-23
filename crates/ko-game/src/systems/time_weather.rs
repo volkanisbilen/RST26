@@ -96,6 +96,7 @@ pub fn start_time_broadcast_task(world: Arc<WorldState>) -> tokio::task::JoinHan
             interval.tick().await;
             let pkt = build_time_packet();
             world.broadcast_to_all(Arc::new(pkt), None);
+            crate::handler::solo_cape::expire_tick(&world);
         }
     })
 }
