@@ -162,6 +162,12 @@ struct GroupRow {
     name_prefix: String,
     advert: String,
     max_stalls: i16,
+    mode: String,
+    bot_count: i32,
+    area_w: f32,
+    area_h: f32,
+    per_bot_min: i16,
+    per_bot_max: i16,
 }
 
 async fn write_status(pool: &DbPool, id: i32, status: &str, live: usize) {
@@ -181,11 +187,34 @@ fn despawn_all(world: &WorldState) {
     }
 }
 
+/// A player-like name for a stall from the shared bot nickname pool (stable per group + stall number); `used` is updated.
+fn pick_name(used: &mut std::collections::HashSet<String>, group: &str, n: usize, fallback_prefix: &str) -> String {
+    let pool = bot_ai::bot_name_pool();
+    if pool.is_empty() {
+        return format!("{}{:02}", fallback_prefix.chars().take(14).collect::<String>(), n + 1);
+    }
+    let mut h: u64 = 1469598103934665603;
+    for b in group.bytes().chain((n as u64).to_le_bytes()) {
+        h = (h ^ b as u64).wrapping_mul(1099511628211);
+    }
+    let start = (h % pool.len() as u64) as usize;
+    for off in 0..pool.len() {
+        let name: String = pool[(start + off) % pool.len()].chars().take(21).collect();
+        if used.insert(name.to_lowercase()) {
+            return name;
+        }
+    }
+    let name = format!("{}{}", pool[start].chars().take(16).collect::<String>(), n + 2);
+    used.insert(name.to_lowercase());
+    name
+}
+
 /// (Re)build every stall from the tables. Returns a one-line summary.
 pub async fn reload(world: &WorldState, pool: &DbPool) -> Result<String, String> {
     despawn_all(world);
     let groups: Vec<GroupRow> = sqlx::query_as(
-        "SELECT id, key, zone, nation, anchor_x, anchor_z, columns, spacing, name_prefix, advert, max_stalls \
+        "SELECT id, key, zone, nation, anchor_x, anchor_z, columns, spacing, name_prefix, advert, max_stalls, \
+         mode, bot_count, area_w, area_h, per_bot_min, per_bot_max \
          FROM system_merchant_group WHERE enabled ORDER BY id",
     )
     .fetch_all(pool)
@@ -194,6 +223,11 @@ pub async fn reload(world: &WorldState, pool: &DbPool) -> Result<String, String>
     // groups that are switched off say so
     let _ = sqlx::query("UPDATE system_merchant_group SET status = 'Kapalı', live_stalls = 0, status_at = NOW() WHERE NOT enabled").execute(pool).await;
 
+    // names already taken: live bots, saved characters
+    let mut used: std::collections::HashSet<String> = world.bots.iter().map(|e| e.value().name.to_lowercase()).collect();
+    if let Ok(names) = sqlx::query_scalar::<_, String>("SELECT lower(str_user_id) FROM userdata").fetch_all(pool).await {
+        used.extend(names);
+    }
     let mut defs: Vec<StallDef> = Vec::new();
     let mut spans: Vec<(i32, usize, usize, Vec<String>)> = Vec::new(); // group id, first def, count, notes
     for g in &groups {
@@ -219,8 +253,8 @@ pub async fn reload(world: &WorldState, pool: &DbPool) -> Result<String, String>
         }
         let first = defs.len();
         let cols = g.columns.max(1) as usize;
-        for (n, chunk) in items.chunks(MAX_MERCH_ITEMS).enumerate().take(g.max_stalls.max(0) as usize) {
-            let nation = match g.nation {
+        let nation_of = |n: usize| -> u8 {
+            match g.nation {
                 1 => 1u8,
                 2 => 2u8,
                 _ => {
@@ -230,21 +264,83 @@ pub async fn reload(world: &WorldState, pool: &DbPool) -> Result<String, String>
                         1
                     }
                 }
-            };
-            defs.push(StallDef {
-                group_key: g.key.clone(),
-                name: format!("{}{:02}", g.name_prefix.chars().take(14).collect::<String>(), n + 1),
-                zone: g.zone as u16,
-                x: g.anchor_x + (n % cols) as f32 * g.spacing,
-                z: g.anchor_z + (n / cols) as f32 * g.spacing,
-                nation,
-                advert: g.advert.chars().take(60).collect(),
-                items: chunk.to_vec(),
-                look: (g.id as usize) * 7 + n * 3,
-            });
-        }
-        if items.len() > g.max_stalls.max(0) as usize * MAX_MERCH_ITEMS {
-            notes.push(format!("havuzda {} item var, yalnızca ilk {} tanesi satılıyor (en çok {} stall)", items.len(), g.max_stalls as usize * MAX_MERCH_ITEMS, g.max_stalls));
+            }
+        };
+        if g.mode == "mixed" {
+            // many stalls, each with its own random selection of the pool, standing on valid ground of the box
+            let want = g.bot_count.clamp(0, 400) as usize;
+            let mut spots: Vec<(f32, f32)> = Vec::new();
+            if let Some(zone) = world.get_zone(g.zone as u16) {
+                let step = g.spacing.max(1.5);
+                let mut zz = g.anchor_z;
+                while zz <= g.anchor_z + g.area_h && spots.len() < want {
+                    let mut xx = g.anchor_x;
+                    while xx <= g.anchor_x + g.area_w && spots.len() < want {
+                        if zone.is_valid_position(xx, zz) {
+                            spots.push((xx, zz));
+                        }
+                        xx += step;
+                    }
+                    zz += step;
+                }
+            }
+            if spots.len() < want {
+                notes.push(format!("kutuda yalnızca {} geçerli yer var ({} istendi) - alanı büyüt", spots.len(), want));
+            }
+            if items.is_empty() {
+                notes.push("havuz boş".to_string());
+            } else {
+                use rand::seq::SliceRandom;
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let lo = g.per_bot_min.clamp(1, 12) as usize;
+                let hi = g.per_bot_max.clamp(g.per_bot_min.max(1), 12) as usize;
+                let mut sets: Vec<Vec<DefItem>> = (0..spots.len())
+                    .map(|_| {
+                        let k = rng.gen_range(lo..=hi).min(items.len());
+                        items.choose_multiple(&mut rng, k).cloned().collect()
+                    })
+                    .collect();
+                // every pool item is sold by at least one stall
+                for it in &items {
+                    if !sets.iter().any(|st| st.iter().any(|x| x.item_id == it.item_id)) {
+                        let free: Vec<usize> = (0..sets.len()).filter(|&i| sets[i].len() < MAX_MERCH_ITEMS).collect();
+                        if let Some(&i) = free.choose(&mut rng) {
+                            sets[i].push(it.clone());
+                        }
+                    }
+                }
+                for (n, ((x, z), set)) in spots.iter().zip(sets).enumerate() {
+                    defs.push(StallDef {
+                        group_key: g.key.clone(),
+                        name: pick_name(&mut used, &g.key, n, &g.name_prefix),
+                        zone: g.zone as u16,
+                        x: *x,
+                        z: *z,
+                        nation: nation_of(n),
+                        advert: g.advert.chars().take(60).collect(),
+                        items: set,
+                        look: (g.id as usize) * 7 + n * 3,
+                    });
+                }
+            }
+        } else {
+            for (n, chunk) in items.chunks(MAX_MERCH_ITEMS).enumerate().take(g.max_stalls.max(0) as usize) {
+                defs.push(StallDef {
+                    group_key: g.key.clone(),
+                    name: pick_name(&mut used, &g.key, n, &g.name_prefix),
+                    zone: g.zone as u16,
+                    x: g.anchor_x + (n % cols) as f32 * g.spacing,
+                    z: g.anchor_z + (n / cols) as f32 * g.spacing,
+                    nation: nation_of(n),
+                    advert: g.advert.chars().take(60).collect(),
+                    items: chunk.to_vec(),
+                    look: (g.id as usize) * 7 + n * 3,
+                });
+            }
+            if items.len() > g.max_stalls.max(0) as usize * MAX_MERCH_ITEMS {
+                notes.push(format!("havuzda {} item var, yalnızca ilk {} tanesi satılıyor (en çok {} stall)", items.len(), g.max_stalls as usize * MAX_MERCH_ITEMS, g.max_stalls));
+            }
         }
         spans.push((g.id, first, defs.len() - first, notes));
     }

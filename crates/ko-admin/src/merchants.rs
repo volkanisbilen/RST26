@@ -49,7 +49,7 @@ async fn queue_reload(app: &App) -> Result<i64, ApiError> {
 async fn list(headers: HeaderMap, State(app): State<App>) -> R {
     auth(&headers, false)?;
     let groups = sqlx::query(
-        "SELECT id, key, title, kind, zone, nation, anchor_x, anchor_z, columns, spacing, name_prefix, advert, max_stalls, enabled, status, live_stalls, \
+        "SELECT id, key, title, kind, zone, nation, anchor_x, anchor_z, columns, spacing, name_prefix, advert, max_stalls, enabled, status, live_stalls, mode, bot_count, area_w, area_h, per_bot_min, per_bot_max, \
          COALESCE(EXTRACT(EPOCH FROM (NOW() - status_at))::float8, -1) AS status_age FROM system_merchant_group ORDER BY id",
     )
     .fetch_all(&app.pool)
@@ -114,6 +114,12 @@ async fn list(headers: HeaderMap, State(app): State<App>) -> R {
                 "name_prefix": g.try_get::<String, _>("name_prefix").unwrap_or_default(),
                 "advert": g.try_get::<String, _>("advert").unwrap_or_default(),
                 "max_stalls": g.try_get::<i16, _>("max_stalls").unwrap_or(12),
+                "mode": g.try_get::<String, _>("mode").unwrap_or_default(),
+                "bot_count": g.try_get::<i32, _>("bot_count").unwrap_or(0),
+                "area_w": g.try_get::<f32, _>("area_w").unwrap_or(60.0),
+                "area_h": g.try_get::<f32, _>("area_h").unwrap_or(60.0),
+                "per_bot_min": g.try_get::<i16, _>("per_bot_min").unwrap_or(4),
+                "per_bot_max": g.try_get::<i16, _>("per_bot_max").unwrap_or(10),
                 "enabled": g.try_get::<bool, _>("enabled").unwrap_or(false),
                 "status": g.try_get::<String, _>("status").unwrap_or_default(),
                 "live_stalls": g.try_get::<i32, _>("live_stalls").unwrap_or(0),
@@ -147,13 +153,41 @@ struct GroupIn {
     max_stalls: i16,
     enabled: bool,
     #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    bot_count: i32,
+    #[serde(default = "sixty")]
+    area_w: f32,
+    #[serde(default = "sixty")]
+    area_h: f32,
+    #[serde(default = "four")]
+    per_bot_min: i16,
+    #[serde(default = "ten")]
+    per_bot_max: i16,
+    #[serde(default)]
     key: Option<String>,
     #[serde(default)]
     kind: Option<String>,
 }
 
+fn sixty() -> f32 {
+    60.0
+}
+fn four() -> i16 {
+    4
+}
+fn ten() -> i16 {
+    10
+}
+
 fn valid_group(p: &GroupIn) -> bool {
-    ZONES.iter().any(|(z, _)| *z == p.zone)
+    (0..=400).contains(&p.bot_count)
+        && (10.0..=400.0).contains(&p.area_w)
+        && (10.0..=400.0).contains(&p.area_h)
+        && (1..=12).contains(&p.per_bot_min)
+        && (p.per_bot_min..=12).contains(&p.per_bot_max)
+        && matches!(p.mode.as_deref(), None | Some("ordered") | Some("mixed"))
+        && ZONES.iter().any(|(z, _)| *z == p.zone)
         && (0..=2).contains(&p.nation)
         && p.anchor_x.is_finite()
         && p.anchor_z.is_finite()
@@ -183,8 +217,8 @@ async fn create_group(headers: HeaderMap, ConnectInfo(peer): ConnectInfo<SocketA
     let kind = if p.kind.as_deref() == Some("quest") { "quest" } else { "custom" };
     let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
     let id: i32 = sqlx::query_scalar(
-        "INSERT INTO system_merchant_group (key, title, kind, zone, nation, anchor_x, anchor_z, columns, spacing, name_prefix, advert, max_stalls, enabled) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id",
+        "INSERT INTO system_merchant_group (key, title, kind, zone, nation, anchor_x, anchor_z, columns, spacing, name_prefix, advert, max_stalls, enabled, mode, bot_count, area_w, area_h, per_bot_min, per_bot_max) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id",
     )
     .bind(&key)
     .bind(p.title.trim())
@@ -199,6 +233,12 @@ async fn create_group(headers: HeaderMap, ConnectInfo(peer): ConnectInfo<SocketA
     .bind(p.advert.trim())
     .bind(p.max_stalls)
     .bind(p.enabled)
+    .bind(p.mode.as_deref().unwrap_or("ordered"))
+    .bind(p.bot_count)
+    .bind(p.area_w)
+    .bind(p.area_h)
+    .bind(p.per_bot_min)
+    .bind(p.per_bot_max)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -222,7 +262,7 @@ async fn save_group(headers: HeaderMap, ConnectInfo(peer): ConnectInfo<SocketAdd
     }
     let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
     let n = sqlx::query(
-        "UPDATE system_merchant_group SET title=$2, zone=$3, nation=$4, anchor_x=$5, anchor_z=$6, columns=$7, spacing=$8, name_prefix=$9, advert=$10, max_stalls=$11, enabled=$12 WHERE id=$1",
+        "UPDATE system_merchant_group SET title=$2, zone=$3, nation=$4, anchor_x=$5, anchor_z=$6, columns=$7, spacing=$8, name_prefix=$9, advert=$10, max_stalls=$11, enabled=$12, mode=$13, bot_count=$14, area_w=$15, area_h=$16, per_bot_min=$17, per_bot_max=$18 WHERE id=$1",
     )
     .bind(id)
     .bind(p.title.trim())
@@ -236,6 +276,12 @@ async fn save_group(headers: HeaderMap, ConnectInfo(peer): ConnectInfo<SocketAdd
     .bind(p.advert.trim())
     .bind(p.max_stalls)
     .bind(p.enabled)
+    .bind(p.mode.as_deref().unwrap_or("ordered"))
+    .bind(p.bot_count)
+    .bind(p.area_w)
+    .bind(p.area_h)
+    .bind(p.per_bot_min)
+    .bind(p.per_bot_max)
     .execute(&mut *tx)
     .await
     .map_err(internal("merchant group save"))?
@@ -419,6 +465,12 @@ mod tests {
             advert: "x".into(),
             max_stalls: 4,
             enabled: true,
+            mode: None,
+            bot_count: 0,
+            area_w: 60.0,
+            area_h: 60.0,
+            per_bot_min: 4,
+            per_bot_max: 10,
             key: None,
             kind: None,
         }

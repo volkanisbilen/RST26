@@ -42,7 +42,7 @@ PAGE.merchantbots = async function (main) {
 
   /* ───── settings dialog (create + edit) ───── */
   function groupDialog(g) {
-    const v = g || { title: '', zone: 21, nation: 0, anchor_x: 800, anchor_z: 600, columns: 6, spacing: 3, name_prefix: '', advert: '', max_stalls: 12, enabled: true, kind: 'custom' };
+    const v = g || { title: '', zone: 21, nation: 0, anchor_x: 800, anchor_z: 600, columns: 6, spacing: 3, name_prefix: '', advert: '', max_stalls: 12, enabled: true, kind: 'custom', mode: 'ordered', bot_count: 100, area_w: 100, area_h: 100, per_bot_min: 4, per_bot_max: 10 };
     const title = h('input', { value: v.title, style: 'width:100%' });
     const zone = h('select', {}, ...data.zones.map(z => h('option', { value: z.zone, selected: z.zone === v.zone }, z.name + ' (' + z.zone + ')')));
     const nation = h('select', {}, ...[0, 1, 2].map(n => h('option', { value: n, selected: n === v.nation }, MB_NATION[n])));
@@ -51,18 +51,24 @@ PAGE.merchantbots = async function (main) {
     const prefix = h('input', { value: v.name_prefix, maxlength: 14, style: 'width:160px' });
     const advert = h('input', { value: v.advert, maxlength: 60, style: 'width:100%' });
     const en = h('input', { type: 'checkbox', checked: v.enabled });
+    const mode = h('select', {}, h('option', { value: 'ordered', selected: v.mode !== 'mixed' }, 'Sıralı: havuz 12\'şer eşyayla stallere bölünür'),
+      h('option', { value: 'mixed', selected: v.mode === 'mixed' }, 'Karışık pazar: çok sayıda bot, her biri havuzdan rastgele eşya satar'));
+    const bots = num(v.bot_count), aw = num(v.area_w), ah = num(v.area_h), pmin = num(v.per_bot_min), pmax = num(v.per_bot_max);
     const kind = h('select', {}, h('option', { value: 'custom', selected: v.kind !== 'quest' }, 'Serbest havuz'), h('option', { value: 'quest', selected: v.kind === 'quest' }, 'Görev itemleri (bölgenin görevlerinden doldurulabilir)'));
     if (g) kind.disabled = true;
     modal(g ? 'Grup ayarları' : 'Yeni pazar grubu', h('div', { class: 'form' },
       field('Başlık', title), field('Bölge', zone), field('Irk', nation), field('Havuz türü', kind),
       field('Başlangıç X', ax), field('Başlangıç Z', az), field('Satır başına stall', cols), field('Stall aralığı (m)', sp),
-      field('Stall isim ön eki (harf/rakam, en çok 14)', prefix), field('En çok stall', mx),
+      field('Satış şekli', mode), field('Bot sayısı (karışık pazar)', bots), field('Alan genişliği (m)', aw), field('Alan derinliği (m)', ah),
+      field('Bot başına en az eşya', pmin), field('Bot başına en çok eşya (≤12)', pmax),
+      field('Yedek isim ön eki (isimler normal olarak isim havuzundan gelir)', prefix), field('En çok stall (sıralı)', mx),
       field('Stall üstündeki yazı', advert), field('Aktif', h('label', { class: 'row', style: 'gap:6px' }, en, 'Pazarlar açık'))),
       [{ label: 'Vazgeç', cls: 'ghost' }, {
         label: 'Kaydet', cls: 'primary', fn: async () => {
           const body = {
             title: title.value, zone: Number(zone.value), nation: Number(nation.value), anchor_x: Number(ax.value), anchor_z: Number(az.value),
             columns: Number(cols.value), spacing: Number(sp.value), name_prefix: prefix.value, advert: advert.value, max_stalls: Number(mx.value), enabled: en.checked,
+            mode: mode.value, bot_count: Number(bots.value) || 0, area_w: Number(aw.value), area_h: Number(ah.value), per_bot_min: Number(pmin.value), per_bot_max: Number(pmax.value),
           };
           try {
             if (g) await api('/merchant-bots/' + g.id, { body });
@@ -85,6 +91,7 @@ PAGE.merchantbots = async function (main) {
     function mark() { dirty = true; saveBtn.disabled = false; paintInfo(); }
     function paintInfo() {
       const on = items.filter(i => i.enabled).length;
+      if (g.mode === 'mixed') { clear(info).append('Havuz: ' + items.length + ' eşya (' + on + ' aktif) → ' + g.bot_count + ' bot, her biri ' + g.per_bot_min + '–' + g.per_bot_max + ' rastgele eşya satar' + (dirty ? ' · kaydedilmedi' : '')); return; }
       clear(info).append('Havuz: ' + items.length + ' eşya (' + on + ' aktif) → ' + stalls(on) + ' stall' + (stalls(on) > g.max_stalls ? ' — en çok ' + g.max_stalls + ' stall açılır, fazlası satılmaz' : '') + (dirty ? ' · kaydedilmedi' : ''));
     }
     async function save() {
@@ -106,7 +113,7 @@ PAGE.merchantbots = async function (main) {
         const en = h('input', { type: 'checkbox', checked: it.enabled, onchange: () => { it.enabled = en.checked; mark(); drawItems(); } });
         const img = h('div', { class: 'slot full', style: 'width:34px;height:34px' }, h('img', { src: icon(it.icon), onerror: iconErr }));
         attachTip(img, () => ({ id: it.item_id }));
-        const stallNo = it.enabled ? stalls(items.slice(0, idx + 1).filter(x => x.enabled).length) : '–';
+        const stallNo = g.mode === 'mixed' ? '–' : (it.enabled ? stalls(items.slice(0, idx + 1).filter(x => x.enabled).length) : '–');
         return h('tr', { style: it.enabled ? '' : 'opacity:.5' },
           h('td', {}, img),
           h('td', {}, h('div', {}, it.name || ('#' + it.item_id)), h('div', { class: 'xs muted' }, '#' + it.item_id + (it.tradable ? '' : ' · TAKAS EDİLEMEZ') + (it.known ? '' : ' · tabloda yok'))),
@@ -154,7 +161,7 @@ PAGE.merchantbots = async function (main) {
     }
 
     const head_ = h('div', { class: 'row', style: 'margin-bottom:10px;gap:10px;flex-wrap:wrap' },
-      h('h2', {}, g.title), h('span', { class: 'chip' }, zoneName(g.zone)), h('span', { class: 'chip blue' }, MB_NATION[g.nation]),
+      h('h2', {}, g.title), h('span', { class: 'chip' }, zoneName(g.zone)), h('span', { class: 'chip blue' }, MB_NATION[g.nation]), g.mode === 'mixed' ? h('span', { class: 'chip' }, 'Karışık · ' + g.bot_count + ' bot') : null,
       h('span', { class: 'chip ' + (g.enabled ? 'ok' : 'bad') }, g.enabled ? 'Aktif' : 'Kapalı'), h('span', { class: 'grow' }),
       h('button', { class: 'btn ghost', onclick: () => groupDialog(g) }, ico('cog'), 'Ayarlar'),
       h('button', { class: 'btn danger', onclick: async () => {

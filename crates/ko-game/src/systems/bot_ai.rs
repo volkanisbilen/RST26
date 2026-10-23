@@ -5792,6 +5792,11 @@ static BOT_NAME_POOL: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLo
         .collect()
 });
 
+/// The shared nickname pool (also used by the system merchants).
+pub fn bot_name_pool() -> &'static [&'static str] {
+    &BOT_NAME_POOL
+}
+
 /// Pick a name for a new GM-spawned bot, avoiding a collision with any
 /// currently active bot's name. Falls back to a numbered suffix only once
 /// the pool is exhausted (e.g. a full-capacity "+pkbots all" spawn).

@@ -1071,6 +1071,23 @@ async fn merchant_item_buy(
     buy_result.write_u8(dest_slot);
     session.send_packet(&buy_result).await?;
 
+    // the client does not redraw the bag from the buy result alone: send the new state of the destination slot
+    {
+        let slot = world.get_inventory_slot(sid, actual_dest).unwrap_or_default();
+        let mut sync = Packet::new(Opcode::WizItemCountChange as u8);
+        sync.write_u16(1);
+        sync.write_u8(1); // inventory
+        sync.write_u8(dest_slot);
+        sync.write_u32(slot.item_id);
+        sync.write_u32(slot.count as u32);
+        sync.write_u8(if dest_item.item_id == 0 { 100 } else { 0 }); // new item flag
+        sync.write_u16(slot.durability as u16);
+        sync.write_u32(0);
+        sync.write_u32(0); // expire time
+        sync.write_u16(0); // v2625 trailing field
+        session.send_packet(&sync).await?;
+    }
+
     // FerihaLog: MerchantShoppingDetailInsertLog
     {
         let merchant_acc = world
