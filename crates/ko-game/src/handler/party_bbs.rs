@@ -390,7 +390,11 @@ fn send_party_bbs_list(
         return;
     }
 
-    let all_entries = world.get_seeking_party_list();
+    let mut all_entries = world.get_seeking_party_list();
+    // Every free field bot of the viewer's nation is listed as a player looking for a party, so it can be
+    // invited from this window like anybody else (the invite itself goes through the normal party UI by name).
+    let viewer_nation = world.get_character_info(sid).map(|c| c.nation).unwrap_or(0);
+    all_entries.extend(crate::systems::field_bots::seeking_entries(world, viewer_nation));
 
     // Build the header with a placeholder count
     // [type=0][sub=11][status=1][page:u16][count:u16]

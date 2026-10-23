@@ -25,11 +25,11 @@
 //!   quest credit to anybody and takes no damage rights, so it can never be used to feed a player.
 //!   It also never takes a kill: it skips monsters a player has touched, that target a player, or
 //!   that stand within [`POLITE_RADIUS`] of a real player.
-//! * **Party play.** A real player invites a field bot with the normal party UI. The bot accepts
-//!   by rule (nation/zone/level/health), follows the leader, priests heal and buff, and every bot
-//!   *softens* monsters the party is already fighting down to [`ASSIST_FLOOR_PERCENT`] of their HP
-//!   -- the finishing hit must come from a real player, so exp/loot/quest credit stay honest and an
-//!   AFK leader cannot be carried.
+//! * **Party play.** A real player invites a field bot with the normal party UI (or from the seeking-party
+//!   window, where every free field bot is listed). The bot accepts by rule (nation/zone/level/health), follows
+//!   the leader, priests heal and buff, and the bots fight like any other party member -- including the last
+//!   hit. A kill made by a bot of a party is paid to the real party (exp, NP, quest and daily-quest credit, loot,
+//!   as if the real member with the most damage had dealt it); the bot itself never receives exp or loot.
 //! * **Bounded cost.** At most [`TICK_BUDGET_MS`] of work per tick, a round-robin cursor so every
 //!   bot is served, a scan budget per tick, and bots in zones without any player are frozen.
 
@@ -64,8 +64,9 @@ pub const MAX_FIELD_BOTS_TOTAL: usize = 5000;
 pub const MAX_BOTS_PER_PARTY: usize = 3;
 /// Highest level a bot can be configured to.
 pub const MAX_BOT_LEVEL: u8 = 83;
-/// A bot never fights below this share of a monster's max HP while it assists a party.
-pub const ASSIST_FLOOR_PERCENT: i32 = 30;
+/// A bot used to stop at this share of a monster's HP so a player always took the last hit; bots now finish
+/// monsters for their party like a normal player, so the floor is 0.
+pub const ASSIST_FLOOR_PERCENT: i32 = 0;
 
 const TICK_MS: u64 = 250;
 const MANAGE_INTERVAL_MS: u64 = 2_000;
@@ -419,6 +420,40 @@ pub fn find_field_bot_by_name(world: &WorldState, name: &str) -> Option<BotInsta
             is_field_bot(b) && b.in_game && b.name.eq_ignore_ascii_case(name)
         })
         .map(|e| e.value().clone())
+}
+
+/// Free (partyless) field bots of `nation` as seeking-party list rows for the party BBS window.
+pub fn seeking_entries(world: &WorldState, nation: u8) -> Vec<crate::world::SeekingPartyUser> {
+    let mut rows: Vec<crate::world::SeekingPartyUser> = world
+        .bots
+        .iter()
+        .filter(|e| {
+            let b = e.value();
+            is_field_bot(b)
+                && b.in_game
+                && b.is_alive()
+                && (nation == 0 || b.nation == nation)
+                && world.get_party_id(b.id as SessionId).is_none()
+        })
+        .map(|e| {
+            let b = e.value();
+            crate::world::SeekingPartyUser {
+                sid: b.id as u16,
+                class: b.class,
+                is_party_leader: 0,
+                level: b.level as i16,
+                zone: b.zone_id as u8,
+                seeking_note: "Party arıyorum, davet et! / Looking for a party".to_string(),
+                name: b.name.clone(),
+                nation: b.nation,
+                party_id: 0,
+                seek_type: 0,
+                login_type: 0,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| a.zone.cmp(&b.zone).then(b.level.cmp(&a.level)).then_with(|| a.name.cmp(&b.name)));
+    rows
 }
 
 /// Number of field bots per (zone, nation), for the admin status columns.
@@ -1041,6 +1076,52 @@ fn finish_prey(world: &WorldState, p: &PreyView) {
     );
 }
 
+/// Kills made by a party bot, waiting for the async death handler (exp / loot / quest credit for the party).
+static PENDING_KILLS: Mutex<Vec<(SessionId, NpcId)>> = Mutex::new(Vec::new());
+
+/// The real party member a bot's kill is credited to: the one with the most damage on the monster, else the
+/// first real member in the bot's zone.
+fn party_credit_sid(world: &WorldState, bot: &BotInstance, npc_id: NpcId) -> Option<SessionId> {
+    let pid = world.get_party_id(bot.id as SessionId)?;
+    let party = world.get_party(pid)?;
+    let members: Vec<SessionId> = party.active_members().into_iter().filter(|s| is_real(*s)).collect();
+    let best = world
+        .get_npc_damage_entries(npc_id)
+        .into_iter()
+        .filter(|(sid, _)| members.contains(sid))
+        .max_by_key(|(_, d)| *d)
+        .map(|(sid, _)| sid);
+    best.or_else(|| {
+        members
+            .into_iter()
+            .find(|sid| world.get_position(*sid).is_some_and(|p| p.zone_id == bot.zone_id) && !world.is_player_dead(*sid))
+    })
+}
+
+/// A party bot lands the last hit: the monster dies through the normal death path on behalf of `killer`.
+fn queue_party_kill(world: &WorldState, killer: SessionId, p: &PreyView) {
+    let id = p.npc.nid;
+    if world.get_npc_damage_entries(id).iter().all(|(sid, _)| *sid != killer) {
+        // the exp split needs at least one real damage entry
+        world.record_npc_damage(id, killer, 1);
+    }
+    world.update_npc_hp(id, 0);
+    PENDING_KILLS.lock().push((killer, id));
+}
+
+/// Pay out the kills queued by party bots (called from the field bot task).
+pub async fn drain_party_kills(world: &WorldState) {
+    let kills: Vec<(SessionId, NpcId)> = std::mem::take(&mut *PENDING_KILLS.lock());
+    for (killer, id) in kills {
+        let Some(npc) = world.get_npc_instance(id) else { continue };
+        let Some(tmpl) = world.get_npc_template(npc.proto_id, npc.is_monster) else { continue };
+        if !world.is_npc_dead(id) {
+            continue; // protected target: nothing to pay
+        }
+        crate::handler::attack::handle_npc_death(world, killer, id, &npc, &tmpl, false).await;
+    }
+}
+
 /// Simulated monster hit on the bot. Monsters ignore bots in their own AI; this keeps the HP bar
 /// moving so bots rest and priests heal like players, but it can never kill the bot.
 fn mob_retaliate(world: &WorldState, bot: &BotInstance, tmpl: &NpcTemplate, rng: &mut impl Rng) {
@@ -1280,8 +1361,12 @@ fn find_party_prey(
         if p.hp <= p.tmpl.max_hp as i32 * ASSIST_FLOOR_PERCENT / 100 {
             continue;
         }
-        if best.as_ref().is_none_or(|(d, _)| near_leader < *d) {
-            best = Some((near_leader, p));
+        // closest to the leader first, and a monster that is already hurt (the party is on it) before a fresh one,
+        // so the bots finish what the party started instead of spreading over every monster in range
+        let hp_pct = p.hp as f32 * 100.0 / (p.tmpl.max_hp as f32).max(1.0);
+        let score = near_leader.sqrt() + hp_pct * 0.08;
+        if best.as_ref().is_none_or(|(d, _)| score < *d) {
+            best = Some((score, p));
         }
     }
     best.map(|(_, p)| p)
@@ -1393,7 +1478,10 @@ fn engage(
     });
 
     if new_hp <= 0 {
-        finish_prey(world, &live);
+        match if assist { party_credit_sid(world, bot, npc_id) } else { None } {
+            Some(killer) => queue_party_kill(world, killer, &live),
+            None => finish_prey(world, &live),
+        }
         return Engagement::Over;
     }
     if now_ms >= st.mob_hit_ms {
@@ -2410,6 +2498,7 @@ pub fn start_field_bot_task(world: Arc<WorldState>, pool: ko_db::DbPool) -> toki
             interval.tick().await;
             let now = bot_ai::tick_ms();
             tick(&world, now);
+            drain_party_kills(&world).await;
             if now.saturating_sub(last_cfg) >= CONFIG_REFRESH_MS {
                 last_cfg = now;
                 if let Err(e) = reload_config(&world, &pool).await {
@@ -3410,7 +3499,7 @@ mod tests {
     }
 
     #[test]
-    fn party_bots_soften_engaged_monsters_but_the_finishing_blow_stays_with_the_players() {
+    fn party_bots_finish_engaged_monsters_for_the_party() {
         let (world, x, z) = party_setup();
         let _rx = add_player(&world, 7, NATION_KARUS, 40, MORADON, x, z);
         let engaged = add_monster(&world, MORADON, x + 8.0, z, 40, 3000);
@@ -3431,16 +3520,14 @@ mod tests {
             a.target_id = Some(7);
             a.state = NpcState::Fighting;
         });
-        let floor = 3000 * ASSIST_FLOOR_PERCENT / 100;
-        let mut low = i32::MAX;
         for _ in 0..400 {
             now = run(&world, now, 1);
-            low = low.min(world.get_npc_hp(engaged).unwrap());
         }
-        let hp = world.get_npc_hp(engaged).unwrap();
-        assert!((floor..=floor + 2).contains(&hp), "softened to the floor, hp={hp}, floor={floor}");
-        assert!(low >= floor, "never below the floor, lowest {low}");
-        assert_ne!(world.get_npc_ai(engaged).unwrap().state, NpcState::Dead);
+        assert_eq!(world.get_npc_hp(engaged), Some(0), "the party bots finish it themselves");
+        assert!(
+            PENDING_KILLS.lock().iter().any(|(killer, npc)| *killer == 7 && *npc == engaged),
+            "the kill is credited to the real party member"
+        );
         assert_eq!(world.get_npc_hp(bystander), Some(3000), "still ignoring the unengaged one");
         // damage rights belong to real players only
         assert!(
