@@ -9,6 +9,11 @@
 //! character (the normal WIZ_SEL_CHAR path) and, once the character is in the world, answers
 //!   S->C `[0x03][u8 ok]`
 //! A failed resume is answered with `[0x03][0]` so the client falls back to the hard re-connect.
+//!
+//! The token is not consumed by a resume attempt (a second drop in the middle of an attempt can retry
+//! with it; it is replaced when the character is in the world again) and it is mirrored into the table
+//! `soft_reconnect_token`, so a server restart does not force players into the hard (process restart)
+//! re-connect.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -73,6 +78,23 @@ pub fn on_game_entered(world: &WorldState, sid: SessionId) {
         token,
         Entry { account: account.clone(), character: ch.name.clone(), expires: now + TOKEN_TTL },
     );
+    if let Some(pool) = world.db_pool().cloned() {
+        let (acc, chr) = (account.clone(), ch.name.clone());
+        tokio::spawn(async move {
+            let _ = sqlx::query("DELETE FROM soft_reconnect_token WHERE account = $1 OR expires_at < now()")
+                .bind(&acc)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query(
+                "INSERT INTO soft_reconnect_token (token, account, character, expires_at) VALUES ($1, $2, $3, now() + interval '15 minutes')",
+            )
+            .bind(&token[..])
+            .bind(&acc)
+            .bind(&chr)
+            .execute(&pool)
+            .await;
+        });
+    }
     if resumed().remove(&sid).is_some() {
         world.send_to_session_owned(sid, ack(true));
     }
@@ -104,14 +126,32 @@ async fn handle_resume(session: &mut ClientSession, r: &mut PacketReader<'_>) ->
     }
     let account = r.read_string().unwrap_or_default();
 
-    let entry = tokens().remove(&token).map(|(_, e)| e);
-    let Some(entry) = entry.filter(|e| e.expires > Instant::now() && e.account == account) else {
+    let world = session.world().clone();
+    let mut entry = tokens()
+        .get(&token)
+        .map(|e| Entry { account: e.account.clone(), character: e.character.clone(), expires: e.expires })
+        .filter(|e| e.expires > Instant::now() && e.account == account);
+    if entry.is_none() {
+        // not in memory (server restarted since the token was issued): the table has it
+        if let Some(pool) = world.db_pool() {
+            let row: Option<(String, String)> = sqlx::query_as(
+                "SELECT account, character FROM soft_reconnect_token WHERE token = $1 AND expires_at > now()",
+            )
+            .bind(&token[..])
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+            entry = row
+                .filter(|(a, _)| *a == account)
+                .map(|(a, c)| Entry { account: a, character: c, expires: Instant::now() + TOKEN_TTL });
+        }
+    }
+    let Some(entry) = entry else {
         tracing::info!("[{}] soft reconnect refused (unknown / expired token) for '{}'", session.addr(), account);
         session.send_packet(&ack(false)).await?;
         return Ok(());
     };
 
-    let world = session.world().clone();
     let sid = session.session_id();
 
     // The old connection may still be registered: same handling as a duplicate login.
