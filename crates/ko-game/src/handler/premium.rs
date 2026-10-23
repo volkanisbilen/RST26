@@ -823,3 +823,12 @@ mod tests {
         assert!((world.get_premium_exp_restore(sid) - 0.0).abs() < f64::EPSILON);
     }
 }
+
+/// Rows for `account_premium` in the order the login picks the active premium: the premium the player has
+/// switched to is stored in slot 0 (the HashMap order was random, so a different premium could come back
+/// after every relog), the others follow by type.
+pub(crate) fn premium_slots_for_save(map: &std::collections::HashMap<u8, u32>, in_use: u8) -> Vec<(i16, i16, i32)> {
+    let mut v: Vec<(u8, u32)> = map.iter().map(|(&t, &e)| (t, e)).collect();
+    v.sort_by_key(|&(t, _)| (t != in_use, t));
+    v.into_iter().enumerate().map(|(i, (t, e))| (i as i16, t as i16, e as i32)).collect()
+}

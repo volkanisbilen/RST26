@@ -670,12 +670,7 @@ async fn save_all_characters(world: &WorldState, pool: &DbPool) {
             if h.account_id.is_empty() || h.premium_map.is_empty() {
                 None
             } else {
-                let slots: Vec<(i16, i16, i32)> = h
-                    .premium_map
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, (&p_type, &expiry))| (idx as i16, p_type as i16, expiry as i32))
-                    .collect();
+                let slots = crate::handler::premium::premium_slots_for_save(&h.premium_map, h.premium_in_use);
                 Some((h.account_id.clone(), slots))
             }
         });
@@ -1066,11 +1061,7 @@ pub async fn save_single_character_sync(
     if !account_id.is_empty() {
         let premium_slots: Vec<(i16, i16, i32)> = world
             .with_session(sid, |h| {
-                h.premium_map
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, (&p_type, &expiry))| (idx as i16, p_type as i16, expiry as i32))
-                    .collect::<Vec<_>>()
+                crate::handler::premium::premium_slots_for_save(&h.premium_map, h.premium_in_use)
             })
             .unwrap_or_default();
         if !premium_slots.is_empty() {
@@ -1557,12 +1548,7 @@ mod tests {
             if h.account_id.is_empty() || h.premium_map.is_empty() {
                 None
             } else {
-                let slots: Vec<(i16, i16, i32)> = h
-                    .premium_map
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, (&p_type, &expiry))| (idx as i16, p_type as i16, expiry as i32))
-                    .collect();
+                let slots = crate::handler::premium::premium_slots_for_save(&h.premium_map, h.premium_in_use);
                 Some((h.account_id.clone(), slots))
             }
         });

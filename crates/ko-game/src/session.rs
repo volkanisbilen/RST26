@@ -693,13 +693,7 @@ impl ClientSession {
                 let premium_slots: Vec<(i16, i16, i32)> = self
                     .world
                     .with_session(sid, |h| {
-                        h.premium_map
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, (&p_type, &expiry))| {
-                                (idx as i16, p_type as i16, expiry as i32)
-                            })
-                            .collect::<Vec<_>>()
+                        crate::handler::premium::premium_slots_for_save(&h.premium_map, h.premium_in_use)
                     })
                     .unwrap_or_default();
 

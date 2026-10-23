@@ -324,7 +324,7 @@ struct SpawnIn {
     z: Option<i32>,
     num: Option<i16>,
     range: Option<i16>,
-    regen: Option<i16>,
+    regen: Option<i32>,
     dir: Option<i32>,
     act: Option<i16>,
 }
@@ -356,7 +356,7 @@ async fn spawn_create(
     )
     .bind(zone).bind(npc).bind(monster).bind(p.act.unwrap_or(if monster { 1 } else { 0 }))
     .bind(x).bind(z).bind(p.num.unwrap_or(1).clamp(1, 200)).bind(p.range.unwrap_or(5).clamp(0, 200))
-    .bind(p.regen.unwrap_or(30).clamp(0, 32000)).bind(p.dir.unwrap_or(0))
+    .bind(p.regen.unwrap_or(30).clamp(0, 32000) as i16).bind(p.dir.unwrap_or(0))
     .fetch_one(&mut *tx)
     .await
     .map_err(internal("spawn insert"))?;
@@ -389,7 +389,7 @@ async fn spawn_update(
     let mut tx = app.pool.begin().await.map_err(internal("tx"))?;
     let n = sqlx::query("UPDATE npc_spawn SET npc_id=COALESCE($2,npc_id), is_monster=COALESCE($3,is_monster), left_x=COALESCE($4,left_x), top_z=COALESCE($5,top_z), num_npc=COALESCE($6,num_npc), spawn_range=COALESCE($7,spawn_range), regen_time=COALESCE($8,regen_time), direction=COALESCE($9,direction), act_type=COALESCE($10,act_type) WHERE id=$1")
         .bind(id).bind(p.npc).bind(p.monster).bind(p.x).bind(p.z)
-        .bind(p.num.map(|v| v.clamp(1, 200))).bind(p.range.map(|v| v.clamp(0, 200))).bind(p.regen.map(|v| v.clamp(0, 32000))).bind(p.dir).bind(p.act)
+        .bind(p.num.map(|v| v.clamp(1, 200))).bind(p.range.map(|v| v.clamp(0, 200))).bind(p.regen.map(|v| v.clamp(0, 32000) as i16)).bind(p.dir).bind(p.act)
         .execute(&mut *tx).await.map_err(internal("spawn update"))?.rows_affected();
     if n == 0 {
         return Err(ApiError::NotFound);
