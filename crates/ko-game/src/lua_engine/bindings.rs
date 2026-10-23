@@ -4390,35 +4390,14 @@ fn lua_move_middle_statue(lua: &Lua, uid: i32) -> LuaResult<()> {
 }
 
 /// SendNationTransfer(uid) -> ()
+/// The 2625 client has no nation-transfer window, so the whole transfer runs on the server
+/// (handler::nation_transfer::transfer_now): checks, scroll, new nation / race / class, logout.
 fn lua_send_nation_transfer(lua: &Lua, uid: i32) -> LuaResult<()> {
-    const ITEM_NATION_TRANSFER: u32 = 810_096_000;
-
     let w = get_world(lua)?;
-    let sid = uid as SessionId;
-
-    // C++ checks isTransformed() — res_hp_type == 3 means transformed (Type 6 magic)
-    if let Some(ch) = w.get_character_info(sid) {
-        if ch.res_hp_type == 3 {
-            let mut pkt = Packet::new(Opcode::WizNationTransfer as u8);
-            pkt.write_u8(2); // NationOpenBox
-            pkt.write_u8(6); // error: transformed
-            w.send_to_session_owned(sid, pkt);
-            return Ok(());
-        }
+    if let Some(pool) = w.db_pool().cloned() {
+        let sid = uid as SessionId;
+        tokio::spawn(crate::handler::nation_transfer::transfer_now(w, pool, sid));
     }
-
-    if !w.check_exist_item(sid, ITEM_NATION_TRANSFER, 1) {
-        let mut pkt = Packet::new(Opcode::WizNationTransfer as u8);
-        pkt.write_u8(2); // NationOpenBox
-        pkt.write_u8(7); // error: no item
-        w.send_to_session_owned(sid, pkt);
-        return Ok(());
-    }
-
-    // Send open dialog
-    let mut pkt = Packet::new(Opcode::WizNationTransfer as u8);
-    pkt.write_u8(1);
-    w.send_to_session_owned(sid, pkt);
     Ok(())
 }
 

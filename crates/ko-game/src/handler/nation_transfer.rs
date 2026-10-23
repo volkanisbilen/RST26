@@ -10,7 +10,6 @@
 //! - All account characters must not be in a clan
 //! - Cannot transfer if character is king
 
-#[cfg(test)]
 use ko_db::repositories::character::CharacterRepository;
 use ko_protocol::{Opcode, Packet, PacketReader};
 use tracing::debug;
@@ -52,10 +51,8 @@ const ERR_NO_ITEM: u8 = 7;
 // ── Item ────────────────────────────────────────────────────────────────────
 
 /// Nation Transfer scroll item ID.
-#[cfg(test)]
 const ITEM_NATION_TRANSFER: u32 = 810096000;
 
-#[cfg(test)]
 use crate::race_constants::{
     BABARIAN, ELMORAD_MAN, ELMORAD_WOMAN, KARUS_BIG, KARUS_MIDDLE, KARUS_SMALL, KARUS_WOMAN,
     KURIAN, PORUTU,
@@ -317,7 +314,6 @@ async fn handle_confirm(
 
 /// Convert race for nation transfer.
 /// Returns the default target race (0 if invalid).
-#[cfg(test)]
 fn convert_race(current_race: u8, class: u16, nation: u8) -> u8 {
     if nation == 1 {
         // Karus → El Morad
@@ -372,8 +368,6 @@ fn is_valid_target_race(target_race: u8, current_nation: u8) -> bool {
 }
 
 /// Check if player has a specific item in inventory.
-#[cfg(test)]
-#[allow(dead_code)]
 fn has_item(world: &crate::world::WorldState, sid: crate::zone::SessionId, item_id: u32) -> bool {
     world.update_inventory(sid, |inv| {
         for i in 14..42 {
@@ -634,4 +628,88 @@ mod tests {
         assert_eq!(PORUTU, 14);
         assert_eq!(KURIAN, 6);
     }
+}
+
+
+fn notice(world: &crate::world::WorldState, sid: crate::zone::SessionId, text: &str) {
+    let mut chat = Packet::new(Opcode::WizChat as u8);
+    chat.write_u8(7);
+    chat.write_u8(20);
+    chat.write_string(text);
+    world.send_to_session_owned(sid, chat);
+}
+
+/// Nation transfer done on the server alone (the 2625 client has no window for it; opcode 0x82 is the
+/// title system there). Started by the Kaishan NPC (`SendNationTransfer` in Lua) once the player confirmed:
+/// checks, takes the scroll, flips nation / race / class, resets the skill points, puts the character at the
+/// Moradon start point of the new nation and logs it out so the next login loads the new nation.
+pub async fn transfer_now(
+    world: std::sync::Arc<crate::world::WorldState>,
+    pool: ko_db::DbPool,
+    sid: crate::zone::SessionId,
+) {
+    let Some(ch) = world.get_character_info(sid) else {
+        return;
+    };
+    if ch.res_hp_type == 3 {
+        return notice(&world, sid, "Nation Transfer: return to your normal form first.");
+    }
+    if !has_item(&world, sid, ITEM_NATION_TRANSFER) {
+        return notice(&world, sid, "Nation Transfer: you need a Nation Transfer scroll.");
+    }
+    if world.is_war_open() {
+        return notice(&world, sid, "Nation Transfer: not possible while a war is open.");
+    }
+    let account = world.with_session(sid, |h| h.account_id.clone()).unwrap_or_default();
+    let all = match CharacterRepository::new(&pool).load_all_for_account(&account).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("nation transfer: account load failed for {}: {}", ch.name, e);
+            return notice(&world, sid, "Nation Transfer failed, try again later.");
+        }
+    };
+    if all.iter().any(|c| world.is_king(ch.nation, &c.str_user_id)) {
+        return notice(&world, sid, "Nation Transfer: a king cannot change nation.");
+    }
+    if all.iter().any(|c| c.knights > 0) || ch.knights_id > 0 {
+        return notice(&world, sid, "Nation Transfer: leave your clan first (all characters of the account must be clanless).");
+    }
+    let new_race = convert_race(ch.race, ch.class, ch.nation);
+    if new_race == 0 {
+        tracing::warn!("nation transfer: no race mapping for {} race {} class {}", ch.name, ch.race, ch.class);
+        return notice(&world, sid, "Nation Transfer: this character cannot be converted.");
+    }
+    let new_nation = if ch.nation == 1 { 2u8 } else { 1u8 };
+    let new_class = if ch.nation == 1 { ch.class + 100 } else { ch.class.saturating_sub(100) };
+    if !world.rob_item(sid, ITEM_NATION_TRANSFER, 1) {
+        return notice(&world, sid, "Nation Transfer: you need a Nation Transfer scroll.");
+    }
+    let free_skill = (ch.level.saturating_sub(9) as u16) * 2;
+    world.update_character_stats(sid, |c| {
+        c.nation = new_nation;
+        c.race = new_race;
+        c.class = new_class;
+        c.rank = 0;
+        c.title = 0;
+        c.skill_points[0] = free_skill.min(u8::MAX as u16) as u8;
+        for i in 1..9 {
+            c.skill_points[i] = 0;
+        }
+    });
+    notice(&world, sid, "Nation Transfer complete. You will be logged out, log in again.");
+    tracing::warn!("NATION_TRANSFER: {} nation {}->{} race {}->{} class {}->{}", ch.name, ch.nation, new_nation, ch.race, new_race, ch.class, new_class);
+    // kick = save with the new values
+    world.kick_session(sid, "Nation Transfer complete").await;
+    let (zone, x, z) = crate::handler::gamestart::get_moradon_coords(new_nation, &world).unwrap_or((21, 267.0, 303.0));
+    let _ = CharacterRepository::new(&pool)
+        .save_nation_transfer_char(&ch.name, new_nation as i16, new_race as i16, new_class as i16)
+        .await;
+    let _ = sqlx::query("UPDATE userdata SET zone=$2, px=$3, py=0, pz=$4 WHERE lower(str_user_id)=lower($1)")
+        .bind(&ch.name)
+        .bind(zone as i16)
+        .bind((x * 100.0) as i32)
+        .bind((z * 100.0) as i32)
+        .execute(&pool)
+        .await;
+    super::audit_log::log_nation_transfer(&pool, &account, &ch.name, ch.nation, new_nation);
 }
