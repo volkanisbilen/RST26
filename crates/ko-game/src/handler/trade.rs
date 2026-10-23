@@ -914,9 +914,13 @@ fn check_exchange(world: &crate::world::WorldState, sid: u16) -> bool {
 
     let partner_items = world.get_exchange_items(partner_sid);
 
-    let free_slots = world.count_free_slots(sid);
-    let mut total_weight: u32 = 0;
-    let mut item_count: u8 = 0;
+    // What I receive minus what I hand over: both sides are swapped at the same time, so a full bag can still
+    // trade (the old check counted only the incoming weight / slots and refused two heavy, equal trades).
+    let my_items = world.get_exchange_items(sid);
+    let mut free_slots = world.count_free_slots(sid) as i32;
+    let mut incoming_weight: i64 = 0;
+    let mut outgoing_weight: i64 = 0;
+    let mut incoming_slots: i32 = 0;
 
     for ex_item in &partner_items {
         if ex_item.item_id == ITEM_GOLD {
@@ -935,17 +939,41 @@ fn check_exchange(world: &crate::world::WorldState, sid: u16) -> bool {
             None => return false,
         };
 
-        let weight = item_def.weight.unwrap_or(0) as u32;
-        total_weight = total_weight.saturating_add(weight);
-        item_count += 1;
+        let unit = item_def.weight.unwrap_or(0) as i64;
+        let countable = item_def.countable.unwrap_or(0) != 0;
+        incoming_weight += unit * if countable { ex_item.count.max(1) as i64 } else { 1 };
+        incoming_slots += 1;
     }
 
-    if item_count > free_slots {
+    for ex_item in &my_items {
+        if ex_item.item_id == ITEM_GOLD {
+            continue;
+        }
+        let Some(item_def) = world.get_item(ex_item.item_id) else { continue };
+        let unit = item_def.weight.unwrap_or(0) as i64;
+        let countable = item_def.countable.unwrap_or(0) != 0;
+        outgoing_weight += unit * if countable { ex_item.count.max(1) as i64 } else { 1 };
+        // a slot is freed only when the whole stack leaves
+        let whole = world
+            .get_inventory_slot(sid, ex_item.src_pos as usize)
+            .map(|s| s.item_id != ex_item.item_id || s.count as u32 <= ex_item.count)
+            .unwrap_or(true);
+        if whole {
+            free_slots += 1;
+        }
+    }
+
+    if incoming_slots > free_slots {
+        tracing::warn!(sid, incoming_slots, free_slots, "trade refused: not enough free slots");
         return false;
     }
 
     let stats = world.get_equipped_stats(sid);
-    (total_weight + stats.item_weight) <= stats.max_weight
+    let ok = (stats.item_weight as i64 + incoming_weight - outgoing_weight) <= stats.max_weight as i64;
+    if !ok {
+        tracing::warn!(sid, weight = stats.item_weight, max = stats.max_weight, incoming_weight, outgoing_weight, "trade refused: weight");
+    }
+    ok
 }
 
 /// Second-pass validation before executing the trade: verify item placement.
@@ -1026,15 +1054,15 @@ fn check_execute_exchange(world: &crate::world::WorldState, sid: u16) -> bool {
         // C++ line 868-871: must have a valid destination slot
         let dst_slot = match world.find_slot_for_item(sid, ex_item.item_id, ex_item.count as u16) {
             Some(s) if s < SLOT_MAX + HAVE_MAX => s,
-            _ => return false,
+            _ => {
+                tracing::warn!(sid, item = ex_item.item_id, count = ex_item.count, "trade refused: no destination slot");
+                return false;
+            }
         };
 
-        // C++ line 874-877: source item in partner's inventory must match
-        let src_slot = world.get_inventory_slot(partner_sid, ex_item.src_pos as usize);
-        match src_slot {
-            Some(src) if src.item_id == ex_item.item_id => {}
-            _ => return false,
-        }
+        // The offered items were already taken out of the owner's bag when they were added to the trade window
+        // (exchange_add deducts them), so the source slot is normally empty here: the old "source slot must still
+        // hold the item" check refused every trade ("exceeded the possible quantity or the weight").
 
         // C++ line 879-880: kind==255 unique items cannot go into occupied slot
         let kind = item_def.kind.unwrap_or(0);

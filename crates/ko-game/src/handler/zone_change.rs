@@ -1540,6 +1540,23 @@ fn server_teleport_to_zone_impl(
         new_zone.add_user(new_rx, new_rz, sid);
     }
 
+    // 4b. A monster transformation scroll (the Sundries "Transformation Scroll") is not allowed outside the home /
+    // Eslant / Moradon zones. A client zone change cancels it (see the handler above), but event entry (Chaos Zone,
+    // BDW, Juraid ...) goes through this server-side teleport, which used to keep the player transformed and stuck.
+    {
+        let tt = world.with_session(sid, |h| h.transformation_type).unwrap_or(0);
+        if tt == TRANSFORMATION_MONSTER && !is_transform_allowed_zone(dest_zone) {
+            world.clear_transformation(sid);
+            world.update_session(sid, |h| {
+                h.old_abnormal_type = h.abnormal_type;
+                h.abnormal_type = crate::magic_constants::ABNORMAL_NORMAL;
+            });
+            let mut cancel_pkt = Packet::new(Opcode::WizMagicProcess as u8);
+            cancel_pkt.write_u8(crate::magic_constants::MAGIC_CANCEL_TRANSFORMATION);
+            world.send_to_session_owned(sid, cancel_pkt);
+        }
+    }
+
     // 5. Send WIZ_ZONE_CHANGE(Teleport=3) packet
     let mut pkt = Packet::new(Opcode::WizZoneChange as u8);
     pkt.write_u8(ZONE_CHANGE_TELEPORT);
