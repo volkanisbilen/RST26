@@ -127,6 +127,7 @@ exit /b 0</Command>
     <ClCompile Include="item_tooltip.cpp" />
     <ClCompile Include="camera_range.cpp" />
     <ClCompile Include="price_fix.cpp" />
+    <ClCompile Include="merchant_tip.cpp" />
     <ClCompile Include="infinite_stone.cpp" />
   </ItemGroup>
   <ItemGroup>

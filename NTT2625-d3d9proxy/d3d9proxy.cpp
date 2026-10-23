@@ -101,6 +101,8 @@ void NameFlag_Tick();   // client_patches.cpp
 void ItemTip_OnRecv(const BYTE* p, size_t len);
 void PriceFix_Init();
 void PriceFix_OnRecv(const BYTE* p, size_t len);
+void MerchTip_Init();
+void MerchTip_OnRecv(const BYTE* p, size_t len);
 void ItemTip_FlushSendQueue();
 void DropBtn_Tick();
 void ClanKasa_Tick();
@@ -390,6 +392,7 @@ static char __fastcall hkRecv(void* self, void* /*edx*/, DWORD* data, int* offse
                 Integrity_OnRecv(pkt, data[1] - *offset);
                 ItemTip_OnRecv(pkt, data[1] - *offset);
                 PriceFix_OnRecv(pkt, data[1] - *offset);
+                MerchTip_OnRecv(pkt, data[1] - *offset);
                 GmPanel_OnRecv(pkt, data[1] - *offset);
                 JobChange_OnRecv(pkt, data[1] - *offset);
                 Discord_OnRecv(pkt, data[1] - *offset);   // Discord Rich Presence (discord_presence.cpp)
@@ -551,7 +554,8 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
         MannerStore_Init();
         DropBox_Init();
         EvReward_Init();
-        EventTitle_Init();
+        EventTitle_Init();
+        MerchTip_Init();
         LoginRemember_Init();
         Reconnect_Init();
         HoldRepeat_Init();
