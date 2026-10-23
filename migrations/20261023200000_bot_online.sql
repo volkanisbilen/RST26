@@ -11,3 +11,4 @@ CREATE TABLE IF NOT EXISTS bot_online (
 GRANT SELECT ON bot_online TO webpanel;
 GRANT SELECT ON item_upgrade_settings TO webpanel;
 GRANT SELECT ON event_auto_schedule, admin_event_state TO webpanel;
+ALTER TABLE bot_online OWNER TO koserver;
