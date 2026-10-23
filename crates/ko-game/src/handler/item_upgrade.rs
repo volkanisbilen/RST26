@@ -1878,6 +1878,32 @@ async fn shozin_exchange(
     );
     session.send_packet(&pkt).await?;
 
+    // The materials were taken from the bag on the server only: tell the client the new state of every consumed slot
+    // (emptied stacks go out as item 0 / count 0 through the normalizer), otherwise the old rings / materials stay
+    // in the bag display until it is reopened.
+    {
+        let mut touched: Vec<(usize, u32)> = consume.iter().map(|&(idx, id, _)| (idx, id)).collect();
+        if let Some((idx, id)) = shadow_consume {
+            touched.push((idx, id));
+        }
+        for (idx, old_id) in touched {
+            if let Some(slot) = world.get_inventory_slot(sid, idx) {
+                let mut update = Packet::new(Opcode::WizItemCountChange as u8);
+                update.write_u16(1);
+                update.write_u8(1);
+                update.write_u8((idx - SLOT_MAX) as u8);
+                update.write_u32(if slot.item_id == 0 { old_id } else { slot.item_id });
+                update.write_u32(slot.count as u32);
+                update.write_u8(0);
+                update.write_u16(slot.durability as u16);
+                update.write_u32(0);
+                update.write_u32(slot.expire_time);
+                update.write_u16(0);
+                session.send_packet(&update).await?;
+            }
+        }
+    }
+
     // NPC effect broadcast (C++ ShowNpcEffect 31033/31034)
     // C++ ShowNpcEffect uses OBJECT_NPC (11), not OBJECT_ANVIL (8)
     // See User.cpp:2696: Packet result(WIZ_OBJECT_EVENT, uint8(OBJECT_NPC));
