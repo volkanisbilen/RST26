@@ -15,7 +15,7 @@ $defaultMenu = [
     ['Sıralamalar', 'rankings.php', null],
     ['Droplar', 'items.php', null],
     ['Haberler', null, [['Haberler & Duyurular', 'news.php?kind=news'], ['Güncelleme Notları', 'news.php?kind=update']]],
-    ['Rehber', null, [['Görevler', 'quests.php'], ['Craft', 'craft.php']]],
+    ['Rehber', null, [['Görevler', 'quests.php'], ['Craft', 'craft.php'], ['Upgrade Oranları', 'upgrade_rates.php']]],
     ['Etkinlikler', null, [
         ['Etkinlik Takvimi', 'events.php'], ['Günlük Görevler', 'daily_quests.php'], ['Collection Race', 'collection_race.php'],
         ['Coin Etkinliği', 'event_coin.php'], ['Puzzle Etkinliği', 'event_puzzle.php'], ['Çark Ödülleri', 'event_roulette.php'], ['Lottery', 'event_lottery.php'],

@@ -130,3 +130,53 @@ function jstko_csrf_check(): bool
     $token = $_POST['csrf'] ?? '';
     return is_string($token) && !empty($_SESSION['csrf']) && hash_equals($_SESSION['csrf'], $token);
 }
+
+
+/** Bots the game server currently has in the world (table bot_online, refreshed every 10 s); they count as online players. */
+function jstko_bot_online_rows(): array
+{
+    try {
+        return jstko_db()->query("SELECT name, nation, class, level FROM bot_online WHERE updated_at > now() - interval '2 minutes'")->fetchAll();
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+/** Next start of every enabled scheduled event: [event_key, name, group, ts, note] sorted by time. */
+function jstko_upcoming_events(int $limit = 40): array
+{
+    try {
+        $rows = jstko_db()->query(
+            "SELECT s.event_key, s.days, s.hour, s.minute, s.note, COALESCE(NULLIF(e.name, ''), s.event_key) AS name, COALESCE(e.grp, '') AS grp
+             FROM event_auto_schedule s LEFT JOIN admin_event_state e ON e.event_key = s.event_key
+             WHERE s.enabled = true"
+        )->fetchAll();
+    } catch (Throwable $e) {
+        return [];
+    }
+    $now = time();
+    $out = [];
+    foreach ($rows as $r) {
+        $mask = (int)$r['days'];
+        for ($d = 0; $d < 8; $d++) {
+            $ts = mktime((int)$r['hour'], (int)$r['minute'], 0, (int)date('n'), (int)date('j') + $d, (int)date('Y'));
+            if ($ts <= $now) continue;
+            if ($mask & (1 << (int)date('w', $ts))) {
+                $out[] = ['key' => $r['event_key'], 'name' => $r['name'], 'grp' => $r['grp'], 'ts' => $ts, 'note' => (string)$r['note']];
+                break;
+            }
+        }
+    }
+    usort($out, fn($a, $b) => $a['ts'] <=> $b['ts']);
+    return array_slice($out, 0, $limit);
+}
+
+/** "Bugün 22:30" / "Yarın 01:00" / "Cum 20:00" */
+function jstko_when_text(int $ts): string
+{
+    $day = date('Y-m-d', $ts);
+    if ($day === date('Y-m-d')) $d = 'Bugün';
+    elseif ($day === date('Y-m-d', strtotime('+1 day'))) $d = 'Yarın';
+    else $d = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'][(int)date('w', $ts)];
+    return $d . ' ' . date('H:i', $ts);
+}

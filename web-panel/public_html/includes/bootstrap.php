@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 error_reporting(E_ALL);
+date_default_timezone_set('Europe/Istanbul'); // all schedule times on the site are Turkey time
 ini_set('display_errors', '1'); // TEMP while we diagnose the first deploy -- flip back to '0' once it works
 
 // Folder this panel is served from ("" at the web root, "/panel2" in a sub folder): every internal link is

@@ -4,7 +4,9 @@ $pageTitle = 'Anasayfa';
 require __DIR__ . '/partials/header.php';
 
 $pdo = jstko_db();
-$online = (int)$pdo->query('SELECT count(*) FROM currentuser')->fetchColumn();
+$botRows = jstko_bot_online_rows();
+$online = (int)$pdo->query('SELECT count(*) FROM currentuser')->fetchColumn() + count($botRows); // bots count as players
+$upcoming = jstko_upcoming_events();
 
 $top = $pdo->query(
     "SELECT u.str_user_id name, k.id_name clan, u.level lvl, u.loyalty np, u.nation,
@@ -150,6 +152,40 @@ function jstko_date_tr(string $ts): string
 <?php if ($b = jstko_banner_html('home_top')): ?><div class="mx-auto max-w-[1280px] px-4 pt-6 space-y-3"><?= $b ?></div><?php endif; ?>
 
 <div class="mx-auto max-w-[1280px] px-4 lg:px-6 py-8 space-y-6">
+
+  <!-- upcoming events -->
+  <?php if ($upcoming):
+      $tagOf = fn($g) => ['Açık dünya' => 'AÇIK DÜNYA', 'Zindan' => 'ZİNDAN', 'Kayıtlı etkinlik' => 'ETKİNLİK'][$g] ?? 'ETKİNLİK';
+      $levels = ['utc' => 'Seviye 70 – 83'];
+      $nextList = array_slice($upcoming, 0, 5);
+      $evCards = array_slice($upcoming, 0, 8);
+  ?>
+  <div class="grid lg:grid-cols-[1fr_300px] gap-4">
+    <div class="grid sm:grid-cols-2 xl:grid-cols-4 gap-3 content-start">
+      <?php foreach ($evCards as $i => $ev): ?>
+        <div class="ev-card" data-reveal style="--i:<?= $i ?>">
+          <span class="ev-tag"><?= jstko_e($tagOf($ev['grp'])) ?></span>
+          <div class="ev-name"><?= jstko_e($ev['name']) ?></div>
+          <?php if (isset($levels[$ev['key']])): ?><div class="ev-lvl"><?= jstko_e($levels[$ev['key']]) ?></div><?php endif; ?>
+          <div class="ev-when"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><?= jstko_e(jstko_when_text($ev['ts'])) ?></div>
+        </div>
+      <?php endforeach; ?>
+    </div>
+    <div class="panel p-4" data-reveal>
+      <div class="flex items-center gap-2 mb-3 text-white font-bold text-sm">
+        <span class="text-gold-400">⏳</span> Sıradaki Etkinlikler
+      </div>
+      <ul class="ev-next">
+        <?php foreach ($nextList as $ev): ?>
+          <li>
+            <b><?= jstko_e($ev['name']) ?></b>
+            <span><em><?= jstko_e(jstko_when_text($ev['ts'])) ?></em> · <i class="cd" data-ts="<?= (int)$ev['ts'] ?>">--</i></span>
+          </li>
+        <?php endforeach; ?>
+      </ul>
+    </div>
+  </div>
+  <?php endif; ?>
 
   <!-- video + update notes -->
   <div class="grid <?= $mediaMode === 'none' ? '' : 'lg:grid-cols-[1.45fr_1fr]' ?> gap-6">
@@ -301,6 +337,18 @@ function jstko_date_tr(string $ts): string
 </div>
 
 <script>
+(function () { // live countdowns of the upcoming events
+  var els = document.querySelectorAll('.cd');
+  function fmt(sec) {
+    if (sec <= 0) return 'şimdi';
+    var d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    if (d > 0) return d + ' gün ' + h + ' sa';
+    if (h > 0) return h + ' sa ' + m + ' dk';
+    return m + ' dk ' + (s < 10 ? '0' : '') + s + ' sn';
+  }
+  function tick() { var now = Math.floor(Date.now() / 1000); els.forEach(function (e) { e.textContent = fmt(parseInt(e.dataset.ts, 10) - now); }); }
+  tick(); setInterval(tick, 1000);
+})();
 (function () {
   var hero = document.getElementById('hero');
   var imgs = hero.querySelectorAll('.hero-slide'), dots = hero.querySelectorAll('#heroDots button'), cur = 0, timer;

@@ -9,6 +9,11 @@ $rows = jstko_db()->query(
      LEFT JOIN knights k ON k.id_num = u.knights
      ORDER BY u.level DESC NULLS LAST, c.str_char_id LIMIT 500"
 )->fetchAll();
+// the bots the game server has in the world are listed like any other player
+foreach (jstko_bot_online_rows() as $b) {
+    $rows[] = ['name' => $b['name'], 'nation' => $b['nation'], 'class' => $b['class'], 'level' => $b['level'], 'rebirth_level' => 0, 'clan' => null];
+}
+usort($rows, fn($a, $b) => ((int)$b['level'] <=> (int)$a['level']) ?: strcmp((string)$a['name'], (string)$b['name']));
 $karus = $elmo = 0;
 foreach ($rows as $r) { if ((int)$r['nation'] === 1) $karus++; elseif ((int)$r['nation'] === 2) $elmo++; }
 ?>

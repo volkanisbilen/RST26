@@ -449,4 +449,24 @@ main input[type=text]:focus, main input[type=search]:focus, main input[type=numb
 .vid-btn:hover { color: #f5c451; border-color: #f5c451; transform: scale(1.08); }
 .vid-btn .off { display: none; } .vid-btn.is-muted .on { display: none; } .vid-btn.is-muted .off { display: block; }
 
+/* ---- upcoming events ---- */
+.ev-card { position: relative; padding: .9rem 1rem; border-radius: .6rem; background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid var(--gold-line-soft); transition: transform .25s, border-color .25s, box-shadow .25s; overflow: hidden; }
+.ev-card:hover { transform: translateY(-3px); border-color: #f5c451; box-shadow: 0 12px 26px rgba(0,0,0,.5), 0 0 18px rgba(224,165,42,.18); }
+.ev-card::after { content: ""; position: absolute; right: -30px; top: -30px; width: 90px; height: 90px; border-radius: 999px; background: radial-gradient(circle, rgba(245,196,81,.12), transparent 70%); }
+.ev-tag { display: inline-block; font-size: .6rem; font-weight: 800; letter-spacing: .06em; padding: .15rem .55rem; border-radius: 999px; color: #f5c451; border: 1px solid var(--gold-line); background: rgba(224,165,42,.08); }
+.ev-name { margin-top: .6rem; font-weight: 700; color: #fff; font-size: .95rem; line-height: 1.25; }
+.ev-lvl { margin-top: .35rem; font-size: .75rem; color: #94a0b8; }
+.ev-when { margin-top: .4rem; display: flex; align-items: center; gap: .35rem; font-size: .75rem; color: #c9d1e4; }
+.ev-when svg { color: #f5c451; }
+.ev-next { list-style: none; margin: 0; padding: 0; }
+.ev-next li { padding: .55rem 0; border-top: 1px solid rgba(255,255,255,.07); }
+.ev-next li:first-child { border-top: 0; padding-top: 0; }
+.ev-next b { display: block; color: #fff; font-size: .88rem; }
+.ev-next span { font-size: .75rem; color: #94a0b8; }
+.ev-next em { color: #f5c451; font-style: normal; font-weight: 600; }
+.ev-next i { font-style: normal; font-variant-numeric: tabular-nums; }
+/* upgrade rate tables */
+.rate-good { color: #6ee7a0; } .rate-mid { color: #fcd980; } .rate-low { color: #f87171; } .rate-none { color: #5b6680; }
+
 </style>
