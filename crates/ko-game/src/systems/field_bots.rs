@@ -61,7 +61,7 @@ pub const MAX_FIELD_BOTS_PER_NATION_ZONE: u16 = 1000;
 /// Technical safety ceiling: field bots in the whole world (the bot-id range is 5000).
 pub const MAX_FIELD_BOTS_TOTAL: usize = 5000;
 /// Field bots a single real party may hold (the rest of the 8 slots stay for people).
-pub const MAX_BOTS_PER_PARTY: usize = 3;
+pub const MAX_BOTS_PER_PARTY: usize = 6;
 /// Highest level a bot can be configured to.
 pub const MAX_BOT_LEVEL: u8 = 83;
 /// A bot used to stop at this share of a monster's HP so a player always took the last hit; bots now finish
@@ -1122,6 +1122,64 @@ pub async fn drain_party_kills(world: &WorldState) {
     }
 }
 
+/// Radius of a Type3 "area enemy" skill, 0 for everything else.
+fn area_radius(world: &WorldState, skill: u32) -> f32 {
+    let Some(magic) = world.get_magic(skill as i32) else { return 0.0 };
+    if magic.moral.unwrap_or(0) != crate::magic_constants::MORAL_AREA_ENEMY || magic.type1.unwrap_or(0) != 3 {
+        return 0.0;
+    }
+    world
+        .get_magic_type3(magic.magic_num)
+        .and_then(|t| t.radius)
+        .map_or(0.0, |r| r as f32)
+}
+
+/// Real members of the party `bot` belongs to.
+fn party_real_members(world: &WorldState, bot: &BotInstance) -> Vec<SessionId> {
+    world
+        .get_party_id(bot.id as SessionId)
+        .and_then(|pid| world.get_party(pid))
+        .map(|p| p.active_members().into_iter().filter(|s| is_real(*s)).collect())
+        .unwrap_or_default()
+}
+
+/// Area damage around the primary target: every other monster of the group the party is fighting takes 80 %.
+fn splash(world: &WorldState, bot: &BotInstance, primary: &PreyView, skill: u32, damage: i32, radius: f32, rng: &mut impl Rng) {
+    let Some(zone) = world.get_zone(bot.zone_id) else { return };
+    let real = party_real_members(world, bot);
+    let r2 = radius.min(14.0) * radius.min(14.0);
+    for id in zone.get_npcs_in_3x3(primary.npc.region_x, primary.npc.region_z) {
+        if id == primary.npc.nid {
+            continue;
+        }
+        let Some(p) = prey_view(world, id) else { continue };
+        if dist2(p.x, p.z, primary.x, primary.z) > r2 {
+            continue;
+        }
+        let engaged = p.target.is_some_and(|t| real.contains(&t)) || real.iter().any(|m| world.npc_damage_contains(id, *m));
+        if !engaged {
+            continue;
+        }
+        let dmg = ((damage as f32) * 0.8 * rng.gen_range(0.9..1.1f32)).round().max(1.0) as i32;
+        let hp = (p.hp - dmg).max(0);
+        world.update_npc_hp(id, hp);
+        let effect = bot_ai::build_bot_magic_packet(
+            MAGIC_EFFECTING,
+            skill,
+            bot.id,
+            id,
+            [bot.x as i32, bot.y as i32, bot.z as i32, -dmg, 0, 0, 0],
+        );
+        bot_ai::broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect);
+        if hp <= 0 {
+            match party_credit_sid(world, bot, id) {
+                Some(killer) => queue_party_kill(world, killer, &p),
+                None => finish_prey(world, &p),
+            }
+        }
+    }
+}
+
 /// Simulated monster hit on the bot. Monsters ignore bots in their own AI; this keeps the HP bar
 /// moving so bots rest and priests heal like players, but it can never kill the bot.
 fn mob_retaliate(world: &WorldState, bot: &BotInstance, tmpl: &NpcTemplate, rng: &mut impl Rng) {
@@ -1364,7 +1422,10 @@ fn find_party_prey(
         // closest to the leader first, and a monster that is already hurt (the party is on it) before a fresh one,
         // so the bots finish what the party started instead of spreading over every monster in range
         let hp_pct = p.hp as f32 * 100.0 / (p.tmpl.max_hp as f32).max(1.0);
-        let score = near_leader.sqrt() + hp_pct * 0.08;
+        let mut score = near_leader.sqrt() + hp_pct * 0.08;
+        if world.npc_damage_contains(p.npc.nid, leader) {
+            score -= 1000.0; // focus fire: whatever the leader is hitting comes first
+        }
         if best.as_ref().is_none_or(|(d, _)| score < *d) {
             best = Some((score, p));
         }
@@ -1469,6 +1530,14 @@ fn engage(
         [bot.x as i32, bot.y as i32, bot.z as i32, -damage, 0, 0, 0],
     );
     bot_ai::broadcast_to_bot_region(world, bot.zone_id, bot.region_x, bot.region_z, &effect);
+
+    // Area skills of a party mage bot hit every monster of the pulled group, like a player's AoE would.
+    if assist && bot.is_mage() {
+        let radius = area_radius(world, skill);
+        if radius > 0.0 {
+            splash(world, bot, &live, skill, damage, radius, &mut rng);
+        }
+    }
 
     world.update_bot(bot.id, |b| {
         b.skill_cooldown[0] = now_ms;

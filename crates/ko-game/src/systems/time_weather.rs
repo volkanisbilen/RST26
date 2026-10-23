@@ -134,6 +134,9 @@ pub fn start_weather_task(
 /// Hours the client adds to the WIZ_TIME clock (see [`build_time_packet`]).
 pub const CLIENT_CLOCK_SHIFT_HOURS: i64 = 9;
 
+/// Turkey (Istanbul) is UTC+3 all year.
+pub const TURKEY_UTC_OFFSET_HOURS: i64 = 3;
+
 /// Build a WIZ_TIME (0x13) packet with the current real time.
 /// ```text
 /// result << uint16(m_sYear) << uint16(m_sMonth) << uint16(m_sDate)
@@ -142,7 +145,8 @@ pub const CLIENT_CLOCK_SHIFT_HOURS: i64 = 9;
 pub fn build_time_packet() -> Packet {
     // The 2625 client shows the packet time +9 hours (it treats it as UTC and adds Korean time): send the server's
     // local clock minus 9 h so the in-game clock shows the real local time (VPS 21:51 showed 06:51 before).
-    let now = chrono::Local::now() - chrono::Duration::hours(CLIENT_CLOCK_SHIFT_HOURS);
+    // Istanbul time (UTC+3, no DST since 2016) regardless of the host's time zone, minus the client's +9 h.
+    let now = chrono::Utc::now() + chrono::Duration::hours(TURKEY_UTC_OFFSET_HOURS - CLIENT_CLOCK_SHIFT_HOURS);
     let mut pkt = Packet::new(Opcode::WizTime as u8);
     // v2600: year is 2-digit (year - 2000), sniff verified
     let year_2d = now.format("%Y").to_string().parse::<u16>().unwrap_or(2025) - 2000;
