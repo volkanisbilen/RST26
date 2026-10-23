@@ -2064,11 +2064,8 @@ pub fn try_party_invite(world: &WorldState, inviter_sid: SessionId, target_name:
         party_error(world, inviter_sid, PARTY_ERR_LEVEL);
         return true;
     }
-    if dist2(ipos.x, ipos.z, bot.x, bot.z) > PARTY_INVITE_RANGE * PARTY_INVITE_RANGE {
-        party_error(world, inviter_sid, PARTY_ERR_DECLINED);
-        busy_reply("Çok uzaktasın, yaklaş da öyle davet et. / Too far, come closer.");
-        return true;
-    }
+    // No distance limit: the bots are invited from the seeking-party window from anywhere in the zone, and a
+    // party bot more than PARTY_WARP_DISTANCE away from its leader warps next to them (party_behaviour).
     let hp_pct = if bot.max_hp > 0 { bot.hp as i32 * 100 / bot.max_hp as i32 } else { 100 };
     let resting = world
         .field_bots
@@ -2551,6 +2548,41 @@ async fn write_status(world: &WorldState, pool: &ko_db::DbPool) {
         .execute(pool)
         .await;
     }
+    write_bot_online(world, pool).await;
+}
+
+/// Every bot in the game as a row of `bot_online` for the web panel (counted as online players there).
+async fn write_bot_online(world: &WorldState, pool: &ko_db::DbPool) {
+    let mut names: Vec<String> = Vec::new();
+    let (mut nation, mut class, mut level, mut zone) = (Vec::<i16>::new(), Vec::<i16>::new(), Vec::<i16>::new(), Vec::<i16>::new());
+    for e in world.bots.iter() {
+        let b = e.value();
+        if !b.in_game || b.name.is_empty() || names.contains(&b.name) {
+            continue;
+        }
+        names.push(b.name.clone());
+        nation.push(b.nation as i16);
+        class.push(b.class as i16);
+        level.push(b.level as i16);
+        zone.push(b.zone_id as i16);
+    }
+    let Ok(mut tx) = pool.begin().await else { return };
+    if sqlx::query("DELETE FROM bot_online").execute(&mut *tx).await.is_err() {
+        return; // table not migrated yet
+    }
+    if !names.is_empty() {
+        let _ = sqlx::query(
+            "INSERT INTO bot_online (name, nation, class, level, zone_id) SELECT * FROM UNNEST($1::varchar[], $2::int2[], $3::int2[], $4::int2[], $5::int2[]) ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(&names)
+        .bind(&nation)
+        .bind(&class)
+        .bind(&level)
+        .bind(&zone)
+        .execute(&mut *tx)
+        .await;
+    }
+    let _ = tx.commit().await;
 }
 
 /// Start the field-bot scheduler. Call once after the world tables are loaded.
@@ -3498,7 +3530,6 @@ mod tests {
         let (world, x, z) = party_setup();
         world.set_zone_info(1, zone_info("Luferson", true));
         let mut rx = add_player(&world, 7, NATION_KARUS, 50, MORADON, x, z);
-        let far = add_bot(&world, MORADON, NATION_KARUS, 1, 50, x + 300.0, z);
         let weak = add_bot(&world, MORADON, NATION_KARUS, 1, 50, x + 6.0, z);
         let lowlvl = add_bot(&world, MORADON, NATION_KARUS, 1, 30, x + 7.0, z);
         let rival = add_bot(&world, MORADON, NATION_ELMORAD, 1, 50, x + 8.0, z);
@@ -3507,8 +3538,6 @@ mod tests {
 
         assert!(try_party_invite(&world, 7, &name(elsewhere), 0));
         assert_eq!(last_party_error(&mut rx), Some(PARTY_ERR_ZONE), "other zone");
-        assert!(try_party_invite(&world, 7, &name(far), 0));
-        assert_eq!(last_party_error(&mut rx), Some(PARTY_ERR_DECLINED), "too far away");
         world.update_bot(weak, |b| b.hp = b.max_hp / 10);
         assert!(try_party_invite(&world, 7, &name(weak), 0));
         assert_eq!(last_party_error(&mut rx), Some(PARTY_ERR_DECLINED), "too hurt");
