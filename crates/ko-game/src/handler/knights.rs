@@ -702,6 +702,7 @@ async fn handle_withdraw(session: &mut ClientSession) -> anyhow::Result<()> {
 
     let clan_id = ch.knights_id;
     if clan_id == 0 {
+        warn!("[{}] clan withdraw refused: not in a clan", session.addr());
         session
             .send_packet(&knights_error(KNIGHTS_WITHDRAW, 2))
             .await?;
@@ -710,6 +711,7 @@ async fn handle_withdraw(session: &mut ClientSession) -> anyhow::Result<()> {
 
     // Cannot withdraw if command captain
     if ch.fame == COMMAND_CAPTAIN {
+        warn!("[{}] clan withdraw refused: command captain (fame {})", session.addr(), ch.fame);
         session
             .send_packet(&knights_error(KNIGHTS_WITHDRAW, 2))
             .await?;
@@ -724,6 +726,7 @@ async fn handle_withdraw(session: &mut ClientSession) -> anyhow::Result<()> {
                 .as_ref()
                 .is_none_or(|zi| zi.abilities.clan_updates)
             {
+                warn!("[{}] clan withdraw refused: zone {} does not allow clan updates", session.addr(), pos.zone_id);
                 session
                     .send_packet(&knights_error(KNIGHTS_WITHDRAW, 12))
                     .await?;
