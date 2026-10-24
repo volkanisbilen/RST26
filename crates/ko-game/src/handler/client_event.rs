@@ -416,6 +416,17 @@ async fn handle_npc_by_nid(session: &mut ClientSession, npc_nid: u32) -> anyhow:
     // by WIZ_TARGET_HP: that packet is also emitted by ordinary left-click
     // target selection.
     // Chaos Dungeon objects (C++ CUser::ClientEvent, NPCHandler.cpp)
+    // Krowaz Dominion: saws cost 370 HP, rolling stones kill (systems/krowaz.rs)
+    if pos.zone_id == crate::systems::krowaz::ZONE {
+        if proto_id == crate::systems::krowaz::SAW_PROTO {
+            crate::systems::krowaz::touch_saw(&world, sid, npc_nid);
+            return Ok(());
+        }
+        if proto_id == crate::systems::krowaz::STONE_PROTO {
+            crate::systems::krowaz::touch_stone(&world, sid, npc_nid);
+            return Ok(());
+        }
+    }
     if proto_id == crate::systems::chaos_arena::SAW_BLADE_PROTO {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -1349,6 +1349,9 @@ async fn npc_fighting(
 
     if hit_b <= 0 {
         // Attack failed — no damage
+        if ai.zone_id == crate::systems::krowaz::ZONE {
+            tracing::warn!("KROWAZ_FIGHT: hit_b<=0 npc={} damage_stat={} target_ac={} hp={}/{}", tmpl.s_sid, npc_total_hit, target_ac, target.hp, target.max_hp);
+        }
         broadcast_npc_attack(world, npc_id, ai, target_id, ATTACK_FAIL);
         return Some(tmpl.attack_delay as u64);
     }
@@ -1401,6 +1404,17 @@ async fn npc_fighting(
         npc_id, tmpl.s_sid, npc_total_hit, target_ac, hit_b,
         npc_hitrate, target_evasion, rate, hit_result, damage, target.hp, target.max_hp
     );
+
+    // Krowaz Dominion diagnostics (the monsters there were reported not to hurt players): first fights only
+    if ai.zone_id == crate::systems::krowaz::ZONE {
+        static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 400 {
+            tracing::warn!(
+                "KROWAZ_FIGHT: npc={} damage_stat={} target_ac={} hit_b={} rate={:.2} result={} damage={} target_hp={}/{}",
+                tmpl.s_sid, npc_total_hit, target_ac, hit_b, rate, hit_result, damage, target.hp, target.max_hp
+            );
+        }
+    }
 
     if damage <= 0 {
         broadcast_npc_attack(world, npc_id, ai, target_id, ATTACK_FAIL);

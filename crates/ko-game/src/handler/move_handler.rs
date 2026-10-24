@@ -522,6 +522,11 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
         }
     }
 
+    // Krowaz Dominion poison gas (CUser::EventTrapProcess, every movement packet)
+    if zone_id == crate::systems::krowaz::ZONE {
+        crate::systems::krowaz::poison_gas(&world, sid, x, z);
+    }
+
     // Under The Castle has an internal, walk-up transition gate after the
     // final physical door. It is handled by CUser::EventTrapProcess() in the
     // reference server rather than by an NPC or a .aievt entry.

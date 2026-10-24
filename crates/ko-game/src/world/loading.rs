@@ -176,6 +176,17 @@ impl WorldState {
                     }
                 }
 
+            // Krowaz Dominion hazards (systems/krowaz.rs): wandering saw blades, rolling stones on their route
+            if zone_id == crate::systems::krowaz::ZONE {
+                if npc_id == crate::systems::krowaz::SAW_PROTO {
+                    crate::systems::krowaz::register_saw(nid, x, z, range, tmpl.speed_1 as f32);
+                } else if npc_id == crate::systems::krowaz::STONE_PROTO {
+                    if let Some(path) = spawn.path.as_deref() {
+                        crate::systems::krowaz::register_stone(self, nid, x, z, path, spawn.regen_time.max(0) as u64, tmpl.speed_1 as f32);
+                    }
+                }
+            }
+
             if tmpl.is_monster && tmpl.search_range > 0 {
                 let regen_ms = if spawn.regen_time > 0 {
                     spawn.regen_time as u64 * 1000

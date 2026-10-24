@@ -144,7 +144,7 @@ fn travel_ms(dist: f32, speed: f32) -> u64 {
     (((dist / speed) * 1000.0) as u64).max(SAW_TICK_MS)
 }
 
-fn send_npc_move(world: &WorldState, nid: NpcId, x: f32, z: f32, speed: f32) {
+pub(crate) fn send_npc_move(world: &WorldState, nid: NpcId, x: f32, z: f32, speed: f32) {
     let Some(npc) = world.get_npc_instance(nid) else {
         return;
     };

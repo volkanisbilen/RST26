@@ -198,6 +198,7 @@ pub fn start_event_system_task(
     crate::systems::event_bots::start_driver_task(world.clone());
     // Chaos Dungeon saw blades patrol their DB route.
     crate::systems::chaos_arena::start_saw_task(world.clone());
+    crate::systems::krowaz::start_task(world.clone());
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(EVENT_TICK_INTERVAL_SECS));

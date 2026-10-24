@@ -40,6 +40,7 @@ pub mod pet_attack_tick;
 pub mod pet_tick;
 pub mod regen;
 pub mod sp_regen;
+pub mod krowaz;
 pub mod system_merchant;
 pub mod time_weather;
 pub mod timed_notice;
