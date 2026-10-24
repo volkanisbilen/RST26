@@ -8,7 +8,7 @@ PAGE.pkauto = async (main) => {
     const d = await api('/pk-autospawn');
     clear(holder);
     holder.append(h('div', { class: 'hint', style: 'margin-bottom:12px' },
-      'Sunucu her açıldığında (yaklaşık 25 saniye sonra) açık olan bölgelere, her millet için istediğin sayıda PK botu otomatik doğar. Bölgede zaten bot varsa sadece eksik kalan kadarı eklenir. Ayarı kaydet; "Şimdi uygula" ile sunucuyu yeniden başlatmadan da çalıştırabilirsin.'));
+      'Sunucu her açıldığında (yaklaşık 25 saniye sonra) açık olan bölgelere, her millet için istediğin sayıda PK botu otomatik doğar (Warrior, Rogue, Mage, Priest — Kurian/Porutu botları otomatik gelmez, yalnızca "PK Bot Dalgası" sayfasından eklersen gelir). Bölgede zaten bot varsa sadece eksik kalan kadarı eklenir. Ayarı kaydet; "Şimdi uygula" ile sunucuyu yeniden başlatmadan da çalıştırabilirsin.'));
     d.zones.forEach(z => {
       const en = h('input', { type: 'checkbox', checked: z.enabled });
       const cnt = h('input', { type: 'number', min: '0', max: '1000', value: String(z.count), style: 'width:110px' });

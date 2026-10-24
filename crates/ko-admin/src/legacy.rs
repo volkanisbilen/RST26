@@ -2313,6 +2313,9 @@ struct BotSpawn {
     zone: u16,
     count_per_nation: Option<u32>,
     level: Option<u8>,
+    /// GM class shorthand: 1 warrior, 2 rogue, 3 mage, 4 priest, 13 Kurian/Porutu (default: all five)
+    #[serde(default)]
+    classes: Option<Vec<u16>>,
 }
 // Valid PK bot zones -- kept in sync with ZONE_RONARK_LAND/ZONE_ARDREAM/ZONE_RONARK_LAND_BASE
 // in ko-game (crates/ko-game/src/world/types.rs); ko-admin has no dependency on that crate.
@@ -2330,7 +2333,10 @@ async fn bots_spawn(
     if p.level.is_some_and(|l| !(1..=83).contains(&l)) {
         return Err(ApiError::BadRequest);
     }
-    let detail = json!({"action":"spawn","zone":p.zone,"count_per_nation":p.count_per_nation,"level":p.level});
+    if p.classes.as_ref().is_some_and(|c| c.is_empty() || c.iter().any(|x| !matches!(x, 1 | 2 | 3 | 4 | 13))) {
+        return Err(ApiError::BadRequest);
+    }
+    let detail = json!({"action":"spawn","zone":p.zone,"count_per_nation":p.count_per_nation,"level":p.level,"classes":p.classes});
     let id = queue_command(&app.pool, "bot", detail.clone()).await?;
     let mut tx = app.pool.begin().await.map_err(|_| ApiError::Internal)?;
     audit(&mut tx, &s.actor, "bot.spawn.queue", &p.zone.to_string(), detail, peer.ip()).await?;

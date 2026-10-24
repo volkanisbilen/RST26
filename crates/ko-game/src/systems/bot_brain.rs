@@ -1058,11 +1058,61 @@ fn catalog(world: &WorldState) -> Arc<ConsumableCatalog> {
     cat
 }
 
-/// Largest potion of `direct_type` that does not exceed `cap` (else the smallest).
-fn best_potion(cat: &ConsumableCatalog, direct_type: i32, cap: i32) -> Option<PotionSkill> {
+/// Which potions the bots drink (admin page "Bot Potları", tables `bot_potion_setting` / `bot_potion_disabled`).
+#[derive(Debug, Clone, Default)]
+pub struct PotionSettings {
+    /// % of max HP / MP a single potion may heal at most (auto mode); default 60
+    pub hp_cap_percent: u8,
+    pub mp_cap_percent: u8,
+    /// a fixed magic number per kind (0 = automatic: the biggest allowed potion that fits the cap)
+    pub hp_fixed: i32,
+    pub mp_fixed: i32,
+    /// potions the auto choice must never use
+    pub disabled: std::collections::HashSet<i32>,
+}
+
+static POTIONS: OnceLock<RwLock<PotionSettings>> = OnceLock::new();
+
+fn potion_settings() -> PotionSettings {
+    let s = POTIONS.get_or_init(|| RwLock::new(PotionSettings { hp_cap_percent: 60, mp_cap_percent: 60, ..Default::default() })).read().clone();
+    PotionSettings { hp_cap_percent: if s.hp_cap_percent == 0 { 60 } else { s.hp_cap_percent }, mp_cap_percent: if s.mp_cap_percent == 0 { 60 } else { s.mp_cap_percent }, ..s }
+}
+
+pub async fn reload_potion_settings(pool: &ko_db::DbPool) -> anyhow::Result<usize> {
+    use sqlx::Row;
+    let mut s = PotionSettings { hp_cap_percent: 60, mp_cap_percent: 60, ..Default::default() };
+    let rows = sqlx::query("SELECT kind, cap_percent, fixed_skill FROM bot_potion_setting").fetch_all(pool).await?;
+    let n = rows.len();
+    for r in rows {
+        let kind: String = r.try_get("kind")?;
+        let cap = r.try_get::<i16, _>("cap_percent")?.clamp(5, 100) as u8;
+        let fixed = r.try_get::<Option<i32>, _>("fixed_skill")?.unwrap_or(0);
+        if kind == "hp" {
+            s.hp_cap_percent = cap;
+            s.hp_fixed = fixed;
+        } else if kind == "mp" {
+            s.mp_cap_percent = cap;
+            s.mp_fixed = fixed;
+        }
+    }
+    for r in sqlx::query("SELECT skill_id FROM bot_potion_disabled").fetch_all(pool).await? {
+        s.disabled.insert(r.try_get::<i32, _>("skill_id")?);
+    }
+    *POTIONS.get_or_init(|| RwLock::new(PotionSettings::default())).write() = s;
+    Ok(n)
+}
+
+/// Largest potion of `direct_type` that does not exceed `cap` (else the smallest). `fixed` forces one magic number,
+/// `disabled` ones are never picked.
+fn best_potion(cat: &ConsumableCatalog, direct_type: i32, cap: i32, fixed: i32, disabled: &std::collections::HashSet<i32>) -> Option<PotionSkill> {
+    if fixed != 0 {
+        if let Some(p) = cat.potions.iter().find(|p| p.skill_id == fixed && p.direct_type == direct_type && p.amount > 0) {
+            return Some(*p);
+        }
+    }
     let mut fitting: Option<PotionSkill> = None;
     let mut smallest: Option<PotionSkill> = None;
-    for p in cat.potions.iter().filter(|p| p.direct_type == direct_type && p.amount > 0) {
+    for p in cat.potions.iter().filter(|p| p.direct_type == direct_type && p.amount > 0 && !disabled.contains(&p.skill_id)) {
         if p.amount <= cap && fitting.is_none_or(|f| p.amount > f.amount) {
             fitting = Some(*p);
         }
@@ -1115,12 +1165,13 @@ fn use_consumable(
     let cat = catalog(world);
     match what {
         Consumable::HpPotion | Consumable::MpPotion => {
-            let (direct, cap, fallback) = if what == Consumable::HpPotion {
-                (1, (bot.max_hp as i32 * 6 / 10).max(1), FALLBACK_HP_POTION)
+            let ps = potion_settings();
+            let (direct, cap, fallback, fixed) = if what == Consumable::HpPotion {
+                (1, (bot.max_hp as i32 * ps.hp_cap_percent as i32 / 100).max(1), FALLBACK_HP_POTION, ps.hp_fixed)
             } else {
-                (2, (bot.max_mp as i32 * 6 / 10).max(1), FALLBACK_MP_POTION)
+                (2, (bot.max_mp as i32 * ps.mp_cap_percent as i32 / 100).max(1), FALLBACK_MP_POTION, ps.mp_fixed)
             };
-            let (skill_id, amount) = best_potion(&cat, direct, cap)
+            let (skill_id, amount) = best_potion(&cat, direct, cap, fixed, &ps.disabled)
                 .map(|p| (p.skill_id as u32, p.amount.clamp(1, i16::MAX as i32) as i16))
                 .unwrap_or((0, fallback));
             world.update_bot(bot.id, |b| {

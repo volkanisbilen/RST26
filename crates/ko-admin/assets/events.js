@@ -119,12 +119,19 @@ PAGE.bots=async function(main){
   const fillAll=h('input',{type:'checkbox'});
   const count=h('input',{type:'number',min:'1',value:'20',style:'width:100%'});
   const level=h('input',{type:'number',min:'1',max:'83',placeholder:'Varsayılan (83, Ardream 59)'});
+  // classes of the wave (GM shorthand 1 warrior, 2 rogue, 3 mage, 4 priest, 13 Kurian/Porutu); Kurian is off by default
+  const CLS=[[1,'Warrior',true],[2,'Rogue',true],[3,'Mage',true],[4,'Priest',true],[13,'Kurian / Porutu',false]];
+  const clsBoxes=CLS.map(([id,label,on])=>[id,h('input',{type:'checkbox',checked:on})]);
+  const clsRow=h('div',{class:'row',style:'gap:14px;flex-wrap:wrap;margin:4px 0 10px'},
+    ...CLS.map(([id,label],i)=>h('label',{class:'row',style:'gap:6px'},clsBoxes[i][1],label)));
   const toggleCount=()=>{count.disabled=fillAll.checked};
   fillAll.onchange=toggleCount;toggleCount();
 
   const spawnBtn=h('button',{class:'btn primary',onclick:async()=>{
     spawnBtn.disabled=true;
-    await botsRun('/bots/spawn',{zone:Number(zone.value),count_per_nation:fillAll.checked?null:Number(count.value)||null,level:level.value?Number(level.value):null},'Bot dalgası');
+    const classes=clsBoxes.filter(([,b])=>b.checked).map(([id])=>id);
+    if(!classes.length){toast('En az bir sınıf seç','err');spawnBtn.disabled=false;return}
+    await botsRun('/bots/spawn',{zone:Number(zone.value),count_per_nation:fillAll.checked?null:Number(count.value)||null,level:level.value?Number(level.value):null,classes},'Bot dalgası');
     spawnBtn.disabled=false;
   }},ico('plus'),'Bot dalgası gönder');
 
@@ -135,12 +142,13 @@ PAGE.bots=async function(main){
     clearBtn.disabled=false;
   }},ico('trash'),'Bu bölgeyi temizle');
 
-  main.append(head('PK Bot Dalgası','+pkbots komutunun panel karşılığı — her sınıftan (Kurian/Porutu dahil) bot, iki ırk için de aynı anda'),
+  main.append(head('PK Bot Dalgası','+pkbots komutunun panel karşılığı — istediğin sınıflardan (Warrior, Rogue, Mage, Priest, Kurian/Porutu) bot, iki ırk için de aynı anda'),
     h('div',{class:'card'},h('div',{class:'form'},
       field('Bölge',zone),
       field('Oyuncu/ırk sayısı',count),
       h('label',{class:'row',style:'gap:6px;margin:4px 0 10px'},fillAll,'Kapasiteyi tamamen doldur'),
-      field('Seviye',level)),
+      field('Seviye',level),
+      h('div',{class:'xs muted',style:'margin-top:6px'},'Sınıflar (işaretlilerden eşit paylaşımla)'),clsRow),
       h('div',{class:'row',style:'gap:8px;margin-top:10px'},spawnBtn,clearBtn)),
     h('div',{class:'hint',style:'margin-top:10px'},'Oyun içinde incelemek için +botitems <isim> komutunu kullanabilirsin.'));
 };

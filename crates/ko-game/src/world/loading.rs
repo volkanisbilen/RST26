@@ -443,6 +443,9 @@ impl WorldState {
         if let Err(e) = crate::systems::bot_brain::reload_config(pool).await {
             tracing::warn!(error = %e, "bot_brain_config table not found or error; bot brain runs with defaults");
         }
+        if let Err(e) = crate::systems::bot_brain::reload_potion_settings(pool).await {
+            tracing::warn!(error = %e, "bot_potion tables not found or error; bots drink the biggest potion up to 60% of their bar");
+        }
 
         // ─── Event bot configuration (admin panel, default: all OFF) ────────────
         if let Err(e) = crate::systems::event_bots::reload_config(pool, self).await {

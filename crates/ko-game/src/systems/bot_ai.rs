@@ -6892,6 +6892,19 @@ pub fn spawn_pk_bot_wave(
     count_per_nation: Option<usize>,
     level: Option<u8>,
 ) -> Result<PkBotWaveResult, String> {
+    // Warrior, Rogue, Mage, Priest, Kurian/Porutu (5th job)
+    spawn_pk_bot_wave_classes(world, zone_id, count_per_nation, level, &[1, 2, 3, 4, 13])
+}
+
+/// Same wave with the classes picked by the caller (GM shorthand: 1 warrior, 2 rogue, 3 mage, 4 priest, 13 Kurian/Porutu);
+/// the bots of a nation are spread over the classes in turn.
+pub fn spawn_pk_bot_wave_classes(
+    world: &WorldState,
+    zone_id: u16,
+    count_per_nation: Option<usize>,
+    level: Option<u8>,
+    classes: &[u16],
+) -> Result<PkBotWaveResult, String> {
     use crate::world::{BotAiState, ZONE_ARDREAM, ZONE_RONARK_LAND, ZONE_RONARK_LAND_BASE};
 
     if !matches!(zone_id, ZONE_RONARK_LAND | ZONE_ARDREAM | ZONE_RONARK_LAND_BASE) {
@@ -6926,14 +6939,16 @@ pub fn spawn_pk_bot_wave(
         return Err("Target zone is not loaded.".into());
     };
 
-    // Warrior, Rogue, Mage, Priest, Kurian/Porutu (5th job) -- see
-    // gm_class_to_real_class for how each shorthand resolves.
-    const GM_CLASSES: [u16; 5] = [1, 2, 3, 4, 13];
+    // see gm_class_to_real_class for how each shorthand resolves
+    let gm_classes: Vec<u16> = classes.iter().copied().filter(|c| matches!(c, 1 | 2 | 3 | 4 | 13)).collect();
+    if gm_classes.is_empty() {
+        return Err("Pick at least one class.".into());
+    }
 
     let mut spawned = 0usize;
     for nation in [1u8, 2u8] {
         for index in 0..count_per_nation {
-            let class = GM_CLASSES[index % GM_CLASSES.len()];
+            let class = gm_classes[index % gm_classes.len()];
             let (raw_x, raw_z) = get_bot_respawn_position(zone_id, nation);
             // The random offset around the nation base can land on a blocked
             // cell; a bot that starts there can never path out and freezes.
@@ -7033,7 +7048,8 @@ pub async fn autospawn_pk_bots(world: &WorldState, pool: &ko_db::DbPool) -> Resu
             report.push(format!("{zone_id}: tam"));
             continue;
         }
-        match spawn_pk_bot_wave(world, zone_id, Some(deficit), level) {
+        // the automatic top-up never sends Kurian / Porutu bots: they only come from the panel's wave page
+        match spawn_pk_bot_wave_classes(world, zone_id, Some(deficit), level, &[1, 2, 3, 4]) {
             Ok(res) => report.push(format!("{zone_id}: +{} bot", res.spawned)),
             Err(e) => report.push(format!("{zone_id}: {e}")),
         }

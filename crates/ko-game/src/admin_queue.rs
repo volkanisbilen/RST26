@@ -189,7 +189,12 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
                         .and_then(|v| v.as_u64())
                         .map(|v| v as usize);
                     let level = args.get("level").and_then(|v| v.as_u64()).map(|v| v as u8);
-                    crate::systems::bot_ai::spawn_pk_bot_wave(world, zone_id, count_per_nation, level)
+                    let classes: Vec<u16> = args
+                        .get("classes")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|c| c.as_u64()).map(|c| c as u16).collect())
+                        .unwrap_or_else(|| vec![1, 2, 3, 4, 13]);
+                    crate::systems::bot_ai::spawn_pk_bot_wave_classes(world, zone_id, count_per_nation, level, &classes)
                         .map(|r| {
                             format!(
                                 "Spawned {} PK bots in zone {} ({} per nation, level {})",
@@ -219,6 +224,10 @@ async fn run(world: &Arc<WorldState>, pool: &DbPool, command: &str, args: &serde
             }
         }
         "pk_autospawn" => crate::systems::bot_ai::autospawn_pk_bots(world, pool).await,
+        "bot_potion_reload" => crate::systems::bot_brain::reload_potion_settings(pool)
+            .await
+            .map(|n| format!("{n} potion setting row(s) loaded"))
+            .map_err(|e| e.to_string()),
         "bot_snapshot" => crate::systems::bot_ai::write_bot_snapshot(world, pool)
             .await
             .map(|n| format!("{n} bot(s) written to bot_snapshot")),
