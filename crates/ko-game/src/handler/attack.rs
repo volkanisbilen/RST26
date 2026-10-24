@@ -1710,6 +1710,13 @@ async fn handle_player_attack(
     );
 }
 
+/// Diagnostics for "players cannot hurt PK bots" in Ardream / Ronark Land Base: true for the first few hundred
+/// player-vs-bot hits there (the caller logs one warn line each).
+pub(crate) fn bot_diag_ok(zone_id: u16) -> bool {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    matches!(zone_id, ZONE_ARDREAM | ZONE_RONARK_LAND_BASE) && N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 600
+}
+
 /// Handle a player-vs-NPC/Monster attack.
 /// Validates NPC state, calculates damage using a simplified formula
 /// (player AP vs NPC AC), deducts NPC HP, handles death (XP + respawn),
@@ -1751,7 +1758,11 @@ pub(crate) async fn handle_npc_attack(
         let attack_range = DEFAULT_MELEE_RANGE + get_weapon_range(&world, attacker_sid);
         let dx = attacker_pos.x - bot.x;
         let dz = attacker_pos.z - bot.z;
+        let diag = bot_diag_ok(bot.zone_id);
         if dx * dx + dz * dz > attack_range * attack_range {
+            if diag {
+                tracing::warn!("BOTHIT melee: out of range zone={} dist={:.1} range={:.1}", bot.zone_id, (dx * dx + dz * dz).sqrt(), attack_range);
+            }
             return;
         }
 
@@ -1831,6 +1842,12 @@ pub(crate) async fn handle_npc_attack(
             damage,
         );
 
+        if diag {
+            tracing::warn!(
+                "BOTHIT melee: zone={} attacker class={} lvl={} total_hit={} -> bot class={} lvl={} ac={} dex={} final damage={}",
+                bot.zone_id, attacker.class, attacker.level, attacker_stats.total_hit, bot.class, bot.level, bot_full_ac, bot.dex_stat, damage
+            );
+        }
         if damage <= 0 {
             broadcast_attack_result(&world, attacker_sid, b_type, ATTACK_FAIL, npc_id, unknown);
             return;

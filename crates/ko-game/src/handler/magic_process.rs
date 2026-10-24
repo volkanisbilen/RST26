@@ -2404,6 +2404,16 @@ async fn execute_type2(
         // NOT the generic skill.range/is_staff_skill formula used elsewhere, which is
         // what the first attempt at this used and was too strict.
         if !check_type2_npc_range(world, caster_sid, npc_id, &type2_data, skill) {
+            if let Some(b) = world.get_bot(npc_id) {
+                if super::attack::bot_diag_ok(b.zone_id) {
+                    let cp = world.get_position(caster_sid).unwrap_or_default();
+                    tracing::warn!(
+                        "BOTHIT arrow: range check failed skill={} dist={:.1} eff_range={:.1} caster_zone={} bot_zone={}",
+                        skill.magic_num, ((cp.x - b.x).powi(2) + (cp.z - b.z).powi(2)).sqrt(),
+                        type2_skill_range(&type2_data, skill, super::attack::get_weapon_range(world, caster_sid)), cp.zone_id, b.zone_id
+                    );
+                }
+            }
             send_skill_failed(world, caster_sid, instance);
             return false;
         }
@@ -5753,6 +5763,12 @@ async fn execute_type2_bot(
         damage = ((damage as i32 * adp_user as i32) / 100) as i16;
     }
     damage = damage.max(0);
+    if super::attack::bot_diag_ok(bot.zone_id) {
+        tracing::warn!(
+            "BOTHIT arrow: skill={} caster class={} lvl={} total_hit={} hitrate={:.1} -> bot class={} lvl={} ac={} evasion={:.1} damage={}",
+            skill.magic_num, caster.class, caster.level, snap.equipped_stats.total_hit, caster_hitrate, bot.class, bot.level, bt.ac, bt.evasion, damage
+        );
+    }
     instance.data[3] = if damage == 0 { SKILLMAGIC_FAIL_ATTACKZERO } else { 0 };
     instance.data[1] = 1;
     apply_skill_damage_to_npc(world, caster_sid, bot.id, instance, damage, skill, 0).await;
