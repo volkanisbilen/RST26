@@ -1849,7 +1849,8 @@ impl WorldState {
                     direction: 0,
                     region_x,
                     region_z,
-                    gate_open: event.status as u8,
+                    // Krowaz key gates start CLOSED: the original NPC thread closes them on their first standing tick
+                    gate_open: if zone_id == crate::systems::krowaz::ZONE && event.obj_type == 12 { 0 } else { event.status as u8 },
                     object_type: 1, // SPECIAL_OBJECT
                     nation: tmpl.group,
                     special_type: 0,

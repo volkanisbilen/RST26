@@ -1291,8 +1291,17 @@ async fn npc_fighting(
         alert_pack(world, npc_id, ai, tmpl, target_id, is_boss);
     }
 
-    // Ranged/magic attack — NPCs with direct_attack > 0 use skills
-    if tmpl.direct_attack > 0 && tmpl.magic_1 > 0 {
+    // Ranged/magic attack — NPCs with direct_attack > 0 use skills.
+    // C++ `CNpc::Attack`: direct_attack 1 always uses LongAndMagicAttack; direct_attack 2 only when the target is
+    // farther than SHORT_ATTACK_RANGE (3) -- closer than that the monster fights in melee (with its random magic via
+    // magic_attack). Without this the web / curse casters of Krowaz (Cuff Binder, Krowaz, ...) only ever cast their
+    // no-damage debuff and never hit.
+    let melee_range = tmpl.direct_attack == 2
+        && world.get_position(target_id).is_some_and(|p| {
+            let (dx, dz) = (ai.cur_x - p.x, ai.cur_z - p.z);
+            (dx * dx + dz * dz).sqrt() <= 3.0
+        });
+    if tmpl.direct_attack > 0 && tmpl.magic_1 > 0 && !melee_range {
         return long_and_magic_attack(world, npc_id, ai, tmpl, target_id).await;
     }
 

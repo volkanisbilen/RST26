@@ -517,6 +517,18 @@ pub async fn handle(session: &mut ClientSession, pkt: Packet) -> anyhow::Result<
                 //   pGateNpc->SendGateFlag((pGateNpc->m_byGateOpen == 0 ? 1 : 0));
                 let new_state = if gate_npc.gate_open == 0 { 1 } else { 0 };
                 world.send_gate_flag(gate_npc.nid, new_state);
+                // NpcThread (Npc.cpp NPC_KROWAZ_GATE): an open gate closes again after stand_time * 10 ms
+                if new_state == 1 && pos.zone_id == crate::systems::krowaz::ZONE {
+                    let delay = world
+                        .get_npc_template(gate_proto, false)
+                        .map(|t| (t.stand_time as u64).max(1000) * 10)
+                        .unwrap_or(50_000);
+                    let (w, nid) = (world.clone(), gate_npc.nid);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        w.send_gate_flag(nid, 0);
+                    });
+                }
 
                 debug!(
                     "[{}] ObjectEvent: KrowazGate '{}' opened (nid={})",
